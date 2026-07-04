@@ -71,6 +71,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Tauri Linux system dependencies
+        # This crate is a Tauri app, so even a `cargo test` build pulls in
+        # tauri-runtime-wry's Linux backend (gtk/webkit2gtk/glib), none of
+        # which ship on a bare ubuntu-latest runner. Same package list Tauri's
+        # own CI recipes use for Ubuntu 22.04+/24.04 runners.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
