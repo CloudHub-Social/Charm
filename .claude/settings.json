@@ -1,0 +1,56 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./node_modules/.bin/oxfmt --check *)",
+      "Bash(node_modules/.bin/oxfmt --check *)",
+      "Bash(node_modules/.bin/vitest run *)",
+      "Bash(./node_modules/.bin/vitest run *)",
+      "Bash(npx vitest run *)",
+      "Bash(npx tsc --noEmit *)",
+      "Bash(node_modules/.bin/tsc --noEmit *)",
+      "Bash(pnpm tsc --noEmit *)",
+      "Bash(pnpm build *)",
+      "Bash(pnpm tauri *)",
+      "Bash(node_modules/.bin/oxlint *)",
+      "Bash(./node_modules/.bin/oxlint *)",
+      "Bash(git merge-base *)",
+      "mcp__github__pull_request_read",
+      "mcp__github__search_pull_requests",
+      "mcp__Claude_Preview__preview_screenshot",
+      "mcp__Claude_Preview__preview_snapshot",
+      "mcp__Claude_Preview__preview_console_logs",
+      "mcp__Claude_Preview__preview_logs",
+      "mcp__Claude_Preview__preview_inspect",
+      "mcp__Claude_Preview__preview_network",
+      "mcp__obsidian__read_note",
+      "mcp__obsidian__get_notes_info",
+      "mcp__sentry__get_sentry_resource"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/check-pr-base.py"]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/lint-on-edit.py"]
+          }
+        ]
+      }
+    ]
+  }
+}

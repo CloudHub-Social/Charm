@@ -22,4 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-.claude/
+
+# Claude Code — track settings.json + hooks, ignore local/runtime bits (mirrors Charm 1.0)
+.claude/settings.local.json
+.claude/launch.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
+.claude/.DS_Store
