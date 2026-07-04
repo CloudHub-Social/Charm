@@ -31,5 +31,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4RTdERjJFMjdFMURGNDMKUldSRDMrRW5MdC9udU03a1VBWjNVVzdWSlAySDd4cnZXb1JHMUwzeWtuSmNISnp1ZDJkeFEvNGUK"
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": ["charm"]
+      }
+    }
   }
 }

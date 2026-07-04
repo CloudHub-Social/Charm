@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+/* Primitive tier — raw color/scale values, no semantic meaning */
+:root {
+  --gray-950: #0a0a0b;
+  --gray-900: #121214;
+  --gray-800: #1c1c1f;
+  --gray-700: #2a2a2e;
+  --gray-600: #3d3d42;
+  --gray-500: #5c5c63;
+  --gray-400: #86868f;
+  --gray-300: #b0b0b8;
+  --gray-200: #d4d4d9;
+  --gray-100: #ececef;
+  --gray-50: #f7f7f8;
+
+  --accent-500: #6d5ef8;
+  --accent-400: #8a7ffa;
+  --accent-600: #5847e0;
+
+  --danger-500: #ef4444;
+  --success-500: #22c55e;
+  --warning-500: #f59e0b;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 280ms;
+
+  --touch-target-min: 44px;
+
+  --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+}
+
+/* Semantic tier — dark-first (default theme) */
+:root {
+  --color-bg-base: var(--gray-950);
+  --color-bg-surface: var(--gray-900);
+  --color-bg-raised: var(--gray-800);
+  --color-bg-overlay: var(--gray-700);
+
+  --color-border-subtle: var(--gray-700);
+  --color-border-default: var(--gray-600);
+
+  --color-text-primary: var(--gray-50);
+  --color-text-secondary: var(--gray-300);
+  --color-text-muted: var(--gray-400);
+
+  --color-accent: var(--accent-500);
+  --color-accent-hover: var(--accent-400);
+  --color-accent-active: var(--accent-600);
+
+  --color-danger: var(--danger-500);
+  --color-success: var(--success-500);
+  --color-warning: var(--warning-500);
+}
+
+/* Light theme override */
+[data-theme="light"] {
+  --color-bg-base: var(--gray-50);
+  --color-bg-surface: #ffffff;
+  --color-bg-raised: var(--gray-100);
+  --color-bg-overlay: var(--gray-200);
+
+  --color-border-subtle: var(--gray-200);
+  --color-border-default: var(--gray-300);
+
+  --color-text-primary: var(--gray-950);
+  --color-text-secondary: var(--gray-700);
+  --color-text-muted: var(--gray-500);
+}
+
+/* Component tier — element-specific, composed from semantic tokens */
+:root {
+  --radius-contained: var(
+    --radius-md
+  ); /* 8px, per design-doc convention for contained-bg elements */
+  --message-group-window-ms: 300000; /* 5 minutes */
+}
+
+/* shadcn/Radix naming convention, aliased onto our semantic tokens so
+   Tailwind utilities (bg-primary, text-foreground, ...) resolve. */
+:root {
+  --background: var(--color-bg-base);
+  --foreground: var(--color-text-primary);
+  --card: var(--color-bg-surface);
+  --card-foreground: var(--color-text-primary);
+  --popover: var(--color-bg-raised);
+  --popover-foreground: var(--color-text-primary);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--gray-50);
+  --secondary: var(--color-bg-raised);
+  --secondary-foreground: var(--color-text-primary);
+  --muted: var(--color-bg-raised);
+  --muted-foreground: var(--color-text-muted);
+  --accent: var(--color-bg-overlay);
+  --accent-foreground: var(--color-text-primary);
+  --destructive: var(--color-danger);
+  --border: var(--color-border-subtle);
+  --input: var(--color-border-default);
+  --ring: var(--color-accent);
+  --radius: var(--radius-md);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background-color: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+}

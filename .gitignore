@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+coverage
 *.local
 
 # Editor directories and files
@@ -29,3 +30,6 @@ dist-ssr
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .claude/.DS_Store
+
+# Local dev homeserver — generated config, signing keys, DB
+dev/synapse/data/

@@ -1,0 +1,22 @@
+name: Require main base
+
+# Charm 2.0 has no `integration`/`dev` trunk (unlike Charm 1.0) — PRs must target
+# `main` or a `release/*` backport branch. Mirrors the local
+# .claude/hooks/check-pr-base.py guard for GitHub's own PR view.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  check-base:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify base branch
+        run: |
+          base="${{ github.event.pull_request.base.ref }}"
+          if [[ "$base" == "main" || "$base" == release/* ]]; then
+            echo "Base branch '$base' is allowed."
+          else
+            echo "::error::PRs must target 'main' or a 'release/*' branch, not '$base'."
+            exit 1
+          fi

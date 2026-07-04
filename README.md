@@ -19,6 +19,14 @@ published-facing identifier:
 No `charm2`, `charm-2.0`, `Charm 2`, or `social.cloudhub.charm2` anywhere user- or
 store-visible.
 
+## Updater signing key
+
+The real minisign keypair has been generated (`pnpm tauri signer generate -w
+~/.tauri/charm-updater.key`) and the public half is in
+`src-tauri/tauri.conf.json`'s `plugins.updater.pubkey`. The private key stays local,
+password-protected, never committed. Still TODO before shipping updates for real:
+add `endpoints` once a release/update server exists.
+
 ## Planning / source of truth
 
 Scope, architecture, and design decisions live in the vault:

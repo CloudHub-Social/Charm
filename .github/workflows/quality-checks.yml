@@ -1,0 +1,110 @@
+name: Quality checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend (lint, format, typecheck, test, build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+      - run: pnpm fmt:check
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+      - run: pnpm knip
+      - run: pnpm build
+
+  rust:
+    name: Rust (fmt, clippy, lib test)
+    # macos-latest so the keychain-backed persistence tests exercise the real
+    # OS credential store rather than being skipped/mocked. Synapse-dependent
+    # integration tests run separately (see rust-integration below) — macOS
+    # GitHub runners can't run Linux Docker containers.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --lib
+
+  rust-integration:
+    name: Rust (verification + alias-resolution integration tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    env:
+      # Test-only account on an ephemeral, non-public homeserver that's torn
+      # down at the end of this job — not real credentials for anything.
+      # Falls back to the same defaults as local dev when secrets aren't
+      # available (e.g. a fork PR, which GitHub withholds secrets from), so
+      # the suite still runs rather than hard-failing for external
+      # contributors — just against a shared, publicly-known throwaway login.
+      TEST_MATRIX_USERNAME: ${{ secrets.CI_MATRIX_TEST_USERNAME || 'evie' }}
+      TEST_MATRIX_PASSWORD: ${{ secrets.CI_MATRIX_TEST_PASSWORD || 'testpass123' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Start Synapse
+        run: |
+          docker run -d --name synapse -p 8008:8008 \
+            -e SYNAPSE_SERVER_NAME=localhost \
+            -e SYNAPSE_REPORT_STATS=no \
+            matrixdotorg/synapse:latest
+
+      - name: Wait for Synapse to be ready
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:8008/_matrix/client/versions > /dev/null; then
+              echo "Synapse is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Synapse did not become ready in time"
+          docker logs synapse
+          exit 1
+
+      - name: Register test user and alias room
+        working-directory: dev/synapse
+        env:
+          CONTAINER_NAME: synapse
+        run: ./register-test-user.sh
+
+      - run: cargo test --test verification_flow --test alias_resolution
+
+      - name: Stop Synapse
+        if: always()
+        run: docker rm -f synapse
