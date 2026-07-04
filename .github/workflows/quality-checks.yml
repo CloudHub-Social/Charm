@@ -77,11 +77,22 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Generate Synapse config
+        # The synapse image no longer generates its config from env vars at
+        # container start — it must be generated once into a volume first
+        # (same two-step flow as dev/synapse/README.md's local setup).
+        run: |
+          docker volume create synapse-data
+          docker run --rm \
+            -e SYNAPSE_SERVER_NAME=localhost \
+            -e SYNAPSE_REPORT_STATS=no \
+            -v synapse-data:/data \
+            matrixdotorg/synapse:latest generate
+
       - name: Start Synapse
         run: |
           docker run -d --name synapse -p 8008:8008 \
-            -e SYNAPSE_SERVER_NAME=localhost \
-            -e SYNAPSE_REPORT_STATS=no \
+            -v synapse-data:/data \
             matrixdotorg/synapse:latest
 
       - name: Wait for Synapse to be ready

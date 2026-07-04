@@ -4,6 +4,11 @@
 //! no mocking. Requires a local Synapse (`dev/synapse/` locally, a
 //! GitHub Actions service container in CI) with the test user from
 //! `tests/common` already registered.
+//!
+//! See the `recursion_limit` comment in `src/lib.rs` — this test crate hits
+//! the same trait-solver overflow proving Send-ness through
+//! matrix-sdk-crypto's instrumented Store trait when it spawns sync loops.
+#![recursion_limit = "512"]
 
 mod common;
 

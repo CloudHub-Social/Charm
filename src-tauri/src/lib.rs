@@ -1,3 +1,10 @@
+// Deeply nested #[instrument] async fns in matrix-sdk-crypto's Store trait can
+// overflow the default trait-solver recursion limit while proving Send-ness
+// (rustc issue class: "overflow evaluating the requirement ... Send"), which
+// is sensitive to the exact compiler/runner environment — observed on CI's
+// macos-latest runner but not locally. Raising the limit avoids the overflow.
+#![recursion_limit = "512"]
+
 pub mod matrix;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
