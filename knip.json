@@ -1,0 +1,20 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "project": ["src/**/*.{ts,tsx}"],
+  "ignore": ["src/components/ui/**"],
+  "ignoreDependencies": [
+    "autoprefixer",
+    "postcss",
+    "tailwindcss",
+    "@tanstack/react-query",
+    "jotai",
+    "@tauri-apps/plugin-opener",
+    "@tauri-apps/plugin-process",
+    "@tauri-apps/plugin-updater"
+  ],
+  "rules": {
+    "exports": "off",
+    "types": "off",
+    "enumMembers": "off"
+  }
+}
