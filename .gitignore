@@ -33,3 +33,4 @@ coverage
 
 # Local dev homeserver — generated config, signing keys, DB
 dev/synapse/data/
+dev/synapse/data-mas/

@@ -62,6 +62,34 @@ export function cancelSsoLogin(): Promise<void> {
   return invoke("cancel_sso_login");
 }
 
+/** Mirrors src-tauri/src/matrix/qr_login.rs's `QrLoginProgressEvent`. */
+export type QrLoginProgressEvent =
+  | { state: "qr_ready"; qr_code_bytes: number[] }
+  | { state: "waiting_for_check_code" }
+  | { state: "waiting_for_approval" }
+  | { state: "syncing_secrets" }
+  | { state: "done"; session: LoginResponse }
+  | { state: "cancelled"; reason: string }
+  | { state: "error"; message: string };
+
+export function startQrLogin(homeserverUrl: string): Promise<void> {
+  return invoke("start_qr_login", { homeserverUrl });
+}
+
+export function submitQrCheckCode(code: number): Promise<void> {
+  return invoke("submit_qr_check_code", { code });
+}
+
+export function cancelQrLogin(): Promise<void> {
+  return invoke("cancel_qr_login");
+}
+
+export function onQrLoginProgress(
+  callback: (event: QrLoginProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<QrLoginProgressEvent>("qr_login:progress", (e) => callback(e.payload));
+}
+
 export function tryRestoreSession(): Promise<LoginResponse | null> {
   return invoke("try_restore_session");
 }

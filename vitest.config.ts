@@ -30,13 +30,14 @@ export default defineConfig({
       ],
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
-        // Set to roughly current actual coverage (pure logic + one presentational
-        // component are tested; screens wired to Tauri IPC aren't yet) — ratchet
-        // up as more of the app gets covered, don't lower to make CI pass.
-        lines: 15,
-        statements: 13,
-        functions: 10,
-        branches: 10,
+        // These are a RATCHET: set to just under current actual coverage (as of
+        // 2026-07-05: lines 18.3 / statements 17.0 / functions 13.3 / branches 16.1),
+        // so any regression fails CI. When you add tests and coverage rises, raise
+        // these to the new floor in the same PR — never lower them to make CI pass.
+        lines: 18,
+        statements: 17,
+        functions: 13,
+        branches: 16,
       },
     },
   },

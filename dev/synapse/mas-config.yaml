@@ -1,0 +1,59 @@
+# Local-dev-only Matrix Authentication Service config, for testing QR login
+# (MSC4108) against a real MAS-delegated homeserver — see docker-compose.yml's
+# mas/mas-db/synapse-mas services, which are a separate stack from the plain
+# synapse/dex services the password-login/registration/SSO tests use.
+#
+# No `secrets:` section here, even though nothing sensitive is actually at
+# stake for this throwaway local/CI-only instance — a real-looking encryption
+# key or PEM private key checked into the repo trips secret scanners (and
+# rightly so, since nothing in the file itself tells a scanner or a future
+# reader it's meaningless) for a problem generating fresh secrets at setup
+# time solves for free. `configure-mas.sh` generates and appends a `secrets:`
+# block (encryption key + RSA/EC signing keys) on every run, the same way it
+# appends synapse-mas's `matrix_authentication_service:` config below.
+
+http:
+  listeners:
+    - name: web
+      resources:
+        - name: discovery
+        - name: human
+        - name: oauth
+        - name: compat
+        - name: graphql
+        - name: assets
+      binds:
+        - address: "[::]:8080"
+
+  public_base: http://localhost:8080/
+  trusted_proxies: []
+
+database:
+  uri: postgresql://mas:mas_password@mas-db:5432/mas
+
+passwords:
+  enabled: true
+
+matrix:
+  kind: synapse
+  homeserver: localhost
+  secret: "charm-dev-only-mas-synapse-shared-secret"
+  endpoint: "http://synapse-mas:8008"
+
+# A static public client for Charm itself. Confidential clients need a
+# registered secret; Charm is a native app so it can't keep one, hence
+# client_auth_method: none (matches how it already registers as an OAuth
+# public client for the authorization-code-based flows too). QR login uses
+# the device-code grant, which doesn't need a redirect_uri at all, but
+# tests/qr_login.rs also drives the granting ("already signed in") side,
+# which authenticates as this same client via the authorization-code grant
+# — hence the localhost redirect URI, used only by that test.
+clients:
+  - client_id: 01HCHARMDESKTAPP0000000000
+    client_auth_method: none
+    redirect_uris:
+      - http://localhost:0/callback
+
+policy: {}
+
+experimental: {}

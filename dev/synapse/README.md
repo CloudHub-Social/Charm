@@ -47,3 +47,27 @@ docker compose down
 
 `./data` is gitignored — it holds the generated homeserver config, signing keys,
 and the SQLite database for this dev server; never commit it.
+
+## QR login (MSC4108) — separate MAS-delegated stack
+
+QR login needs a homeserver with auth delegated to Matrix Authentication
+Service — plain password/registration/SSO don't support it. `synapse-mas`,
+`mas`, and `mas-db` are a second, separate stack (own port, own data dir) for
+this, kept apart from the `synapse`/`dex` stack above so nothing here can
+regress the already-working password/SSO tests.
+
+```bash
+# First run (generates synapse-mas's config + signing keys into ./data-mas)
+docker compose run --rm -e SYNAPSE_SERVER_NAME=localhost -e SYNAPSE_REPORT_STATS=no synapse-mas generate
+
+docker compose up -d synapse-mas mas mas-db
+./configure-mas.sh
+```
+
+`configure-mas.sh` generates and injects MAS's signing keys (not checked into
+the repo — see `mas-config.yaml`'s header comment), delegates synapse-mas's
+auth to MAS, and enables the MSC4108 rendezvous endpoint QR login needs.
+synapse-mas is then reachable at `http://localhost:8010` — matches
+`tests/qr_login.rs`'s `HOMESERVER` constant.
+
+`./data-mas` is gitignored, same as `./data` above.

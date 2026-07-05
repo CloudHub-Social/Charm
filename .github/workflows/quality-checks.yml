@@ -158,3 +158,87 @@ jobs:
       - name: Stop Synapse and Dex
         if: always()
         run: docker rm -f synapse dex
+
+  rust-integration-qr:
+    name: Rust (QR login / MAS)
+    # Genuinely separate stack from rust-integration above (own Synapse
+    # instance delegated to Matrix Authentication Service, own Postgres) —
+    # matches dev/synapse/docker-compose.yml's synapse-mas/mas/mas-db
+    # services, kept apart from the plain `synapse`/`dex` services so a
+    # regression here can't take down the password/SSO test job and vice
+    # versa. See dev/synapse/mas-config.yaml and configure-mas.sh for why.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Create Docker network
+        run: docker network create charm-ci-mas
+
+      - name: Start mas-db
+        run: |
+          docker run -d --name mas-db --network charm-ci-mas \
+            -e POSTGRES_USER=mas -e POSTGRES_PASSWORD=mas_password -e POSTGRES_DB=mas \
+            postgres:16
+
+      - name: Generate synapse-mas config
+        run: |
+          docker volume create synapse-mas-data
+          docker run --rm \
+            -e SYNAPSE_SERVER_NAME=localhost \
+            -e SYNAPSE_REPORT_STATS=no \
+            -v synapse-mas-data:/data \
+            matrixdotorg/synapse:latest generate
+
+      - name: Start synapse-mas
+        run: |
+          docker run -d --name synapse-mas --network charm-ci-mas -p 8010:8008 \
+            -v synapse-mas-data:/data \
+            matrixdotorg/synapse:latest
+
+      - name: Start MAS
+        # Container is named charm-dev-mas (not "mas") because
+        # tests/qr_login.rs shells out to `docker exec charm-dev-mas ...` to
+        # register fresh test accounts, matching dev/synapse/docker-compose.yml's
+        # container_name locally. --network-alias keeps the "mas" DNS name
+        # that mas-config.yaml/synapse-mas's overrides reference working.
+        run: |
+          docker run -d --name charm-dev-mas --network charm-ci-mas --network-alias mas -p 8080:8080 \
+            -v "$GITHUB_WORKSPACE/dev/synapse/mas-config.yaml:/base-config.yaml:ro" \
+            ghcr.io/element-hq/matrix-authentication-service:1.10.0 \
+            server --config /config.yaml
+
+      - name: Wait for mas-db to accept connections
+        run: |
+          for _ in $(seq 1 30); do
+            if docker exec mas-db pg_isready -U mas > /dev/null 2>&1; then
+              echo "mas-db is up."
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::mas-db did not become ready in time"
+          exit 1
+
+      - name: Configure the MAS-delegated homeserver stack
+        working-directory: dev/synapse
+        run: ./configure-mas.sh synapse-mas charm-dev-mas
+
+      - run: cargo test --test qr_login
+
+      - name: Stop synapse-mas, MAS, and mas-db
+        if: always()
+        run: docker rm -f synapse-mas charm-dev-mas mas-db

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -12,11 +13,45 @@ use tauri::{AppHandle, Manager};
 const KEYCHAIN_SERVICE: &str = "social.cloudhub.charm";
 const PASSPHRASE_ACCOUNT: &str = "sqlite-store-passphrase";
 const SESSION_ACCOUNT: &str = "session";
+/// Separate from `SESSION_ACCOUNT`: password/SSO login use matrix-sdk's
+/// classic `matrix_auth()` module and its `MatrixSession`, but QR login is
+/// OAuth-native (`client.oauth()`) and uses an unrelated `OAuthSession` type
+/// — matrix-sdk doesn't unify the two, so neither does this persistence
+/// layer. `try_restore_session` checks both accounts.
+const OAUTH_SESSION_ACCOUNT: &str = "oauth-session";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedSession {
     pub homeserver_url: String,
     pub session: MatrixSession,
+}
+
+/// `OAuthSession` itself only derives `Debug, Clone` (no `Serialize`), and
+/// `ClientId` doesn't round-trip through serde as cleanly as a plain
+/// `String` — so this mirrors its shape field-for-field rather than wrapping
+/// it directly.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedOAuthSession {
+    pub homeserver_url: String,
+    pub client_id: String,
+    pub user: UserSession,
+}
+
+impl SavedOAuthSession {
+    pub fn from_oauth_session(homeserver_url: &str, session: &OAuthSession) -> Self {
+        Self {
+            homeserver_url: homeserver_url.to_string(),
+            client_id: session.client_id.as_str().to_string(),
+            user: session.user.clone(),
+        }
+    }
+
+    pub fn into_oauth_session(self) -> OAuthSession {
+        OAuthSession {
+            client_id: ClientId::new(self.client_id),
+            user: self.user,
+        }
+    }
 }
 
 /// Where the SQLCipher-encrypted matrix-rust-sdk store lives on disk. The
@@ -89,6 +124,35 @@ pub fn clear_session() -> Result<(), String> {
     }
 }
 
+pub fn save_oauth_session(homeserver_url: &str, session: &OAuthSession) -> Result<(), String> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, OAUTH_SESSION_ACCOUNT).map_err(|e| e.to_string())?;
+    let saved = SavedOAuthSession::from_oauth_session(homeserver_url, session);
+    let json = serde_json::to_string(&saved).map_err(|e| e.to_string())?;
+    entry.set_password(&json).map_err(|e| e.to_string())
+}
+
+pub fn load_oauth_session() -> Result<Option<SavedOAuthSession>, String> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, OAUTH_SESSION_ACCOUNT).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(json) => serde_json::from_str(&json)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn clear_oauth_session() -> Result<(), String> {
+    let entry =
+        keyring::Entry::new(KEYCHAIN_SERVICE, OAUTH_SESSION_ACCOUNT).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +194,45 @@ mod tests {
 
         clear_session().unwrap();
         assert!(load_session().unwrap().is_none());
+    }
+
+    fn dummy_oauth_session() -> OAuthSession {
+        OAuthSession {
+            client_id: ClientId::new("test-client-id".to_string()),
+            user: UserSession {
+                meta: SessionMeta {
+                    user_id: user_id!("@charm-persistence-test:localhost").to_owned(),
+                    device_id: device_id!("TESTDEVICE").to_owned(),
+                },
+                tokens: SessionTokens {
+                    access_token: "test-oauth-access-token".to_string(),
+                    refresh_token: None,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn oauth_session_round_trips_through_keychain() {
+        clear_oauth_session().unwrap();
+        assert!(load_oauth_session().unwrap().is_none());
+
+        let session = dummy_oauth_session();
+        save_oauth_session("https://example.invalid", &session).unwrap();
+
+        let loaded = load_oauth_session()
+            .unwrap()
+            .expect("session was just saved");
+        assert_eq!(loaded.homeserver_url, "https://example.invalid");
+        assert_eq!(loaded.client_id, session.client_id.as_str());
+        assert_eq!(loaded.user.meta.user_id, session.user.meta.user_id);
+        assert_eq!(
+            loaded.user.tokens.access_token,
+            session.user.tokens.access_token
+        );
+
+        clear_oauth_session().unwrap();
+        assert!(load_oauth_session().unwrap().is_none());
     }
 
     #[test]
