@@ -79,6 +79,13 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   // room's answer applied to the other).
   const requestedRoomIdRef = useRef(roomId);
   requestedRoomIdRef.current = roomId;
+  // Tracks "room_id\0sender" keys already requested (or answered), as a
+  // plain ref rather than reading `canRedactBySender` from inside the
+  // `setState` updater below — StrictMode double-invokes updater functions
+  // to surface exactly this kind of side effect, and `canRedact(...)` being
+  // called from inside one meant the `if (sender in prev)` guard couldn't
+  // actually prevent the resulting duplicate IPC call.
+  const requestedRef = useRef<Set<string>>(new Set());
 
   // Redact power levels are per-room, but this cache is keyed only by
   // sender — so switching to a different room must clear it, or a sender
@@ -86,6 +93,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   // instead of being re-queried for the new one.
   useEffect(() => {
     setCanRedactBySender({});
+    requestedRef.current = new Set();
   }, [roomId]);
 
   useEffect(() => {
@@ -97,16 +105,15 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
         setCanRedactBySender((prev) => (prev[sender] ? prev : { ...prev, [sender]: true }));
         continue;
       }
-      setCanRedactBySender((prev) => {
-        if (sender in prev) return prev;
-        canRedact(roomId, sender)
-          .then((allowed) => {
-            if (requestedRoomIdRef.current !== requestedForRoomId) return;
-            setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
-          })
-          .catch(console.error);
-        return prev;
-      });
+      const requestKey = `${roomId}\0${sender}`;
+      if (requestedRef.current.has(requestKey)) continue;
+      requestedRef.current.add(requestKey);
+      canRedact(roomId, sender)
+        .then((allowed) => {
+          if (requestedRoomIdRef.current !== requestedForRoomId) return;
+          setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
+        })
+        .catch(console.error);
     }
   }, [roomId, currentUserId, uniqueSenderKey]);
 

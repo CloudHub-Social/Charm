@@ -1,6 +1,7 @@
+import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { MessageActions } from "./MessageActions";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 
 function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> = {}) {
   const onReply = vi.fn();
@@ -108,5 +109,55 @@ describe("MessageActions", () => {
     // Copy only needs the already-known body text, so it stays enabled even
     // on a pending message.
     expect(copy).not.toHaveAttribute("data-disabled");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not open the menu on a quick tap, even when a parent row forwards the same long-press gesture", () => {
+    // Mirrors ChatShell's actual wiring: a parent element (there, the whole
+    // message row) also calls the same imperative startLongPress/
+    // cancelLongPress via the ref, for touch discoverability. Without
+    // stopPropagation in MessageActions' own touch handlers, a touch here
+    // bubbles to the parent's handler too — overwriting the timer ref with a
+    // *second* timer before the first is ever cleared, so releasing quickly
+    // only clears the second one and the first still fires the menu open
+    // after the long-press delay elapses.
+    const ref = createRef<MessageActionsHandle>();
+    const outerStartLongPress = vi.fn(() => ref.current?.startLongPress());
+    const outerCancelLongPress = vi.fn(() => ref.current?.cancelLongPress());
+    render(
+      <div data-testid="row" onTouchStart={outerStartLongPress} onTouchEnd={outerCancelLongPress}>
+        <MessageActions
+          ref={ref}
+          isOwn={false}
+          canRedact={false}
+          onReply={vi.fn()}
+          onReact={vi.fn()}
+          onEdit={vi.fn()}
+          onDelete={vi.fn()}
+          onCopy={vi.fn()}
+        />
+      </div>,
+    );
+
+    const reactButton = screen.getByRole("button", { name: "React" });
+    fireEvent.touchStart(reactButton, { bubbles: true });
+    fireEvent.touchEnd(reactButton, { bubbles: true });
+
+    // The bug this guards against: without stopPropagation, the touch
+    // bubbles to the row's own handler, which calls the *same* imperative
+    // startLongPress/cancelLongPress a second time, overwriting (and thus
+    // orphaning, uncleared) MessageActions' own first timer.
+    expect(outerStartLongPress).not.toHaveBeenCalled();
+    expect(outerCancelLongPress).not.toHaveBeenCalled();
+
+    vi.useFakeTimers();
+    fireEvent.touchStart(reactButton, { bubbles: true });
+    fireEvent.touchEnd(reactButton, { bubbles: true });
+    vi.advanceTimersByTime(500);
+
+    expect(screen.queryByText("Reply")).not.toBeInTheDocument();
   });
 });

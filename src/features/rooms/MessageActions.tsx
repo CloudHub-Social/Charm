@@ -96,10 +96,29 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     return (
       <div
         className={cn("flex items-center gap-1", className)}
-        onTouchStart={startLongPress}
-        onTouchEnd={cancelLongPress}
-        onTouchCancel={cancelLongPress}
-        onTouchMove={cancelLongPress}
+        // stopPropagation: `ChatShell` forwards the same long-press gesture
+        // from the whole message row via the imperative handle above, so
+        // without this a touch on this component's own area would bubble up
+        // and fire `startLongPress` a second time there — overwriting this
+        // handler's timer reference (never cleared) with the row handler's,
+        // leaving the first timer to fire regardless of how briefly the
+        // touch lasted and open the menu on an ordinary tap.
+        onTouchStart={(e) => {
+          e.stopPropagation();
+          startLongPress();
+        }}
+        onTouchEnd={(e) => {
+          e.stopPropagation();
+          cancelLongPress();
+        }}
+        onTouchCancel={(e) => {
+          e.stopPropagation();
+          cancelLongPress();
+        }}
+        onTouchMove={(e) => {
+          e.stopPropagation();
+          cancelLongPress();
+        }}
       >
         <EmojiPicker onSelect={onReact}>
           <button
