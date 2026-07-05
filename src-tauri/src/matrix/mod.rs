@@ -60,7 +60,6 @@ const MAX_LIVE_TIMELINES: usize = 20;
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
 /// however, is already isolated per account on disk/keychain — see
 /// `persistence::account_key`.
-#[derive(Default)]
 pub struct MatrixState {
     client: Mutex<Option<Client>>,
     /// Set by `start_sso_login`, consumed by `complete_sso_login`. Built
@@ -116,6 +115,7 @@ impl Default for MatrixState {
             pending_sso: Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
+            pending_qr_temp_store_key: std::sync::Mutex::default(),
             media_cache: tokio::sync::OnceCell::default(),
             sync_presence: std::sync::Mutex::default(),
             timelines: Mutex::new(lru::LruCache::new(
@@ -363,25 +363,50 @@ pub async fn try_restore_session(
     // restore the first one with a live saved session. Single-active-client
     // for now (Day-2 multi-account UI will change this), so the first match
     // wins.
+    //
+    // Deliberately no `?` inside this loop: a transient failure for one
+    // account (e.g. a momentarily locked keychain, or a homeserver that's
+    // unreachable right now) shouldn't abort the whole restore attempt and
+    // strand a user who has a perfectly restorable *other* account — log
+    // and move on to the next `account_key` instead.
     for account_key in persistence::known_account_keys(&app)? {
         // Password/SSO login (matrix_auth()) and QR login (oauth()) are
         // unrelated session kinds in matrix-sdk, persisted under separate
         // keychain entries — see persistence::SavedOAuthSession. Only one
         // should ever be present at a time per account, but check both
         // rather than assuming which.
-        if let Some(saved) = persistence::load_oauth_session(&account_key)? {
-            if let Some(response) = restore_oauth_session(&app, &state, &account_key, saved).await?
-            {
-                return Ok(Some(response));
+        let oauth_session = match persistence::load_oauth_session(&account_key) {
+            Ok(session) => session,
+            Err(e) => {
+                eprintln!("failed to load oauth session for {account_key}: {e}");
+                continue;
+            }
+        };
+        if let Some(saved) = oauth_session {
+            match restore_oauth_session(&app, &state, &account_key, saved).await {
+                Ok(Some(response)) => return Ok(Some(response)),
+                Ok(None) => {}
+                Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
             }
             continue;
         }
 
-        let Some(saved) = persistence::load_session(&account_key)? else {
-            continue;
+        let saved = match persistence::load_session(&account_key) {
+            Ok(Some(saved)) => saved,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("failed to load session for {account_key}: {e}");
+                continue;
+            }
         };
 
-        let client = build_client(&app, &saved.homeserver_url, &account_key).await?;
+        let client = match build_client(&app, &saved.homeserver_url, &account_key).await {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!("failed to build client for {account_key}: {e}");
+                continue;
+            }
+        };
 
         if client
             .matrix_auth()
@@ -768,7 +793,14 @@ pub async fn complete_sso_login(
     drop(pending_sso);
     let client = pending.client;
 
-    complete_sso_login_with_callback(&client, &callback_url).await?;
+    if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
+        // The account was never learned, so this temp store would
+        // otherwise sit on disk (and in the keychain) until the next
+        // startup sweep — clean it up now instead, same as a cancelled
+        // attempt.
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err(e);
+    }
 
     let session = client
         .matrix_auth()
