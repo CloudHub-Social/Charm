@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { RoomList } from "./RoomList";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
+import { usePresenceListener } from "@/features/presence/usePresence";
 import { listRooms, onRoomListUpdate, resolveRoomAlias, type RoomSummary } from "@/lib/matrix";
 
 interface RoomsScreenProps {
@@ -18,6 +19,11 @@ export function RoomsScreen({
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
+
+  // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
+  // app; consumers (e.g. a DM-aware header/room-list dot) read the atoms
+  // directly once DM detection lands — see ChatShell/RoomListItem.
+  usePresenceListener();
 
   useEffect(() => {
     listRooms().then(setRooms).catch(console.error);

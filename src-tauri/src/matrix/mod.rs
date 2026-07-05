@@ -1,4 +1,6 @@
+pub mod ephemeral;
 pub mod persistence;
+pub mod presence;
 pub mod qr_login;
 pub mod send;
 pub mod timeline;
@@ -593,6 +595,16 @@ fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
 
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
+    presence::register_presence_handler(app.clone(), &client);
+
+    // Best-effort: some homeservers disable presence entirely, and a failure
+    // here shouldn't ever block or fail login/session-restore.
+    {
+        let client = client.clone();
+        tokio::spawn(async move {
+            let _ = presence::set_presence_online(&client).await;
+        });
+    }
 
     tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
@@ -625,6 +637,48 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
                                 timeline::RoomTimelineUpdate {
                                     room_id: room_id.to_string(),
                                     messages,
+                                },
+                            );
+                        }
+
+                        let own_user_id = client.user_id();
+                        let mut receipts = Vec::new();
+                        for raw_event in &update.ephemeral {
+                            let Ok(event) = raw_event.deserialize() else {
+                                continue;
+                            };
+                            match event {
+                                matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent::Receipt(
+                                    receipt_event,
+                                ) => {
+                                    receipts.extend(ephemeral::receipt_content_to_updates(
+                                        &receipt_event.content,
+                                    ));
+                                }
+                                matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent::Typing(
+                                    typing_event,
+                                ) => {
+                                    let user_ids = ephemeral::typing_content_to_user_ids(
+                                        &typing_event.content,
+                                        own_user_id,
+                                    );
+                                    let _ = app.emit(
+                                        "typing:update",
+                                        ephemeral::TypingUpdate {
+                                            room_id: room_id.to_string(),
+                                            user_ids,
+                                        },
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !receipts.is_empty() {
+                            let _ = app.emit(
+                                "receipts:update",
+                                ephemeral::ReceiptUpdate {
+                                    room_id: room_id.to_string(),
+                                    receipts,
                                 },
                             );
                         }

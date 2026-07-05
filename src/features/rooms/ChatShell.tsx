@@ -1,20 +1,30 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Paperclip, Send } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import {
   getTimelinePage,
+  markRoomRead,
   onTimelineUpdate,
+  onTypingUpdate,
   sendMessage,
+  sendTyping,
   type RoomMessageSummary,
   type RoomSummary,
 } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
+import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
 }
+
+/** Caps the read-receipt avatar stack under a message; the rest collapse into a "+N". */
+const MAX_RECEIPT_AVATARS = 3;
+
+/** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
+const TYPING_REFRESH_MS = 4000;
 
 function formatTime(timestampMs: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
@@ -22,10 +32,26 @@ function formatTime(timestampMs: number): string {
   );
 }
 
+function typingLabel(userIds: string[]): string {
+  if (userIds.length === 0) return "";
+  if (userIds.length === 1) return `${userIds[0]} is typing…`;
+  if (userIds.length === 2) return `${userIds[0]} and ${userIds[1]} are typing…`;
+  const [first, second, ...rest] = userIds;
+  return `${first}, ${second}, and ${rest.length} other${rest.length === 1 ? "" : "s"} are typing…`;
+}
+
 export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
+  const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
+  const lastMarkedReadEventId = useRef<string | null>(null);
+  const lastTypingSentAt = useRef(0);
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
+  // Header presence dot is gated on DM detection, which doesn't exist yet —
+  // no-ops here for the same reason RoomListItem's presence dot no-ops.
 
   useEffect(() => {
     if (!room) {
@@ -59,6 +85,68 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     };
   }, [room]);
 
+  useEffect(() => {
+    if (!room) {
+      setTypingUserIds([]);
+      return undefined;
+    }
+    const unlisten = onTypingUpdate((update) => {
+      if (update.room_id !== room.room_id) return;
+      setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [room, currentUserId]);
+
+  // Mark the room read as soon as it becomes active, and again whenever the
+  // last rendered message scrolls into view — debounced to the newest
+  // event id so we never fire a receipt per scroll tick (see Spec 05's
+  // warning about receipt spam).
+  useEffect(() => {
+    if (!room) return;
+    if (lastMarkedReadEventId.current === room.room_id) return;
+    lastMarkedReadEventId.current = room.room_id;
+    markRoomRead(room.room_id).catch(console.error);
+  }, [room]);
+
+  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
+
+  useEffect(() => {
+    if (!room || !latestEventId) return undefined;
+    const sentinel = bottomSentinelRef.current;
+    if (!sentinel) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const isVisible = entries.some((entry) => entry.isIntersecting);
+        if (!isVisible) return;
+        if (lastMarkedReadEventId.current === latestEventId) return;
+        lastMarkedReadEventId.current = latestEventId;
+        markRoomRead(room.room_id).catch(console.error);
+      },
+      { threshold: 1 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [room, latestEventId]);
+
+  useEffect(() => {
+    return () => {
+      if (room) sendTyping(room.room_id, false).catch(console.error);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room]);
+
+  function handleTypingInput(roomId: string) {
+    const now = Date.now();
+    if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
+    lastTypingSentAt.current = now;
+    sendTyping(roomId, true).catch(console.error);
+  }
+
+  const typingText = useMemo(() => typingLabel(typingUserIds), [typingUserIds]);
+
   if (!room) {
     return (
       <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -81,6 +169,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       timestamp_ms: Date.now(),
     };
     setMessages((prev) => [...prev, optimistic]);
+    sendTyping(room.room_id, false).catch(console.error);
     try {
       await sendMessage(room.room_id, body);
     } catch (err) {
@@ -108,6 +197,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const sameSenderAsNext = next?.sender === message.sender;
           const showAvatar = !own && !sameSenderAsPrev;
           const showMeta = !sameSenderAsNext;
+          const readers = receiptsByEvent.get(message.event_id) ?? [];
+          const isLast = i === messages.length - 1;
 
           return (
             <div
@@ -150,11 +241,33 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                     {formatTime(message.timestamp_ms)}
                   </span>
                 )}
+                {readers.length > 0 && (
+                  <AvatarGroup className="mt-0.5 justify-end">
+                    {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => (
+                      <Avatar key={userId} size="sm">
+                        <AvatarFallback
+                          style={{ background: avatarColor(userId) }}
+                          className="font-bold text-white"
+                        >
+                          {initials(userId, null)}
+                        </AvatarFallback>
+                      </Avatar>
+                    ))}
+                    {readers.length > MAX_RECEIPT_AVATARS && (
+                      <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
+                    )}
+                  </AvatarGroup>
+                )}
               </div>
+              {isLast && <div ref={bottomSentinelRef} className="h-px w-full" />}
             </div>
           );
         })}
       </div>
+
+      {typingText && (
+        <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
+      )}
 
       <div className="p-3">
         <div className="flex items-end gap-2 rounded-lg border border-border bg-card p-2">
@@ -168,7 +281,11 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           <textarea
             rows={1}
             value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
+            onChange={(e) => {
+              setDraft(e.currentTarget.value);
+              handleTypingInput(room.room_id);
+            }}
+            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
