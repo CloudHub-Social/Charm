@@ -80,8 +80,20 @@ export function installMockTauri(seed: {
     return messagesByRoom.get(roomId)?.find((m) => m.event_id === eventId);
   }
 
-  function pushTimelineUpdate(roomId: string, messages: Record<string, unknown>[]) {
-    emit("timeline:update", { room_id: roomId, messages });
+  // `timeline:update` is a full re-snapshot of the room's live Timeline
+  // (Spec 14), not a delta — `ChatShell` replaces its whole message list
+  // with whatever this carries. So this always emits the room's complete
+  // current message set, not just whichever message a handler just touched.
+  // Emits a fresh array copy, not `messagesByRoom.get(roomId)` directly: that
+  // array is mutated in place (e.g. replacing a pending echo with its sent
+  // counterpart by index) — passing the *same* array reference back into
+  // `setMessages` after mutating it means React's state setter sees
+  // `Object.is(next, prev)` as true and bails out of re-rendering entirely,
+  // even though the array's contents changed. A fresh array reference each
+  // call avoids that footgun and matches how the real IPC layer would
+  // deliver a genuinely new array over the wire anyway.
+  function pushTimelineUpdate(roomId: string) {
+    emit("timeline:update", { room_id: roomId, messages: [...(messagesByRoom.get(roomId) ?? [])] });
   }
 
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
@@ -122,13 +134,13 @@ export function installMockTauri(seed: {
         send_state: { state: "pending" },
       };
       messagesByRoom.get(roomId)?.push(pending);
-      pushTimelineUpdate(roomId, [pending]);
+      pushTimelineUpdate(roomId);
       const sent = { ...pending, event_id: eventId, send_state: { state: "sent" } };
       setTimeout(() => {
         const messages = messagesByRoom.get(roomId);
         const index = messages?.indexOf(pending) ?? -1;
         if (messages && index !== -1) messages[index] = sent;
-        pushTimelineUpdate(roomId, [sent]);
+        pushTimelineUpdate(roomId);
       }, 300);
       return transactionId;
     },
@@ -155,13 +167,13 @@ export function installMockTauri(seed: {
         send_state: { state: "pending" },
       };
       messagesByRoom.get(roomId)?.push(pending);
-      pushTimelineUpdate(roomId, [pending]);
+      pushTimelineUpdate(roomId);
       const sent = { ...pending, event_id: eventId, send_state: { state: "sent" } };
       setTimeout(() => {
         const messages = messagesByRoom.get(roomId);
         const index = messages?.indexOf(pending) ?? -1;
         if (messages && index !== -1) messages[index] = sent;
-        pushTimelineUpdate(roomId, [sent]);
+        pushTimelineUpdate(roomId);
       }, 300);
       return transactionId;
     },
@@ -172,7 +184,7 @@ export function installMockTauri(seed: {
       if (message) {
         message.body = args.newBody;
         message.edited = true;
-        pushTimelineUpdate(roomId, [message]);
+        pushTimelineUpdate(roomId);
       }
       return undefined;
     },
@@ -183,7 +195,7 @@ export function installMockTauri(seed: {
       if (message) {
         message.redacted = true;
         message.body = "";
-        pushTimelineUpdate(roomId, [message]);
+        pushTimelineUpdate(roomId);
       }
       return undefined;
     },
@@ -211,7 +223,7 @@ export function installMockTauri(seed: {
         } else {
           reactions.push({ key, count: 1, reacted_by_me: true });
         }
-        pushTimelineUpdate(roomId, [message]);
+        pushTimelineUpdate(roomId);
       }
       return { action };
     },

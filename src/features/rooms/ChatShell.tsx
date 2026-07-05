@@ -182,22 +182,16 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (!room) return undefined;
     const unlisten = onTimelineUpdate((update) => {
       if (update.room_id !== room.room_id) return;
-      setMessages((prev) => {
-        // Reconcile by id: an incoming summary replaces any existing item
-        // with the same event_id or transaction_id (e.g. a local echo being
-        // superseded by the real event once the send is acked), otherwise
-        // it's appended.
-        const incomingKeys = new Set(
-          update.messages.flatMap((m) => [
-            m.event_id,
-            ...(m.transaction_id ? [m.transaction_id] : []),
-          ]),
-        );
-        const kept = prev.filter(
-          (m) => !incomingKeys.has(itemKey(m)) && !incomingKeys.has(m.event_id),
-        );
-        return [...kept, ...update.messages];
-      });
+      // `update.messages` is a full re-snapshot of the room's live Timeline
+      // (Spec 14) — every call to `timeline:update` carries the complete
+      // current item list, not a delta to merge onto existing state. Merging
+      // (as the pre-Spec-14 per-batch model required) would keep stale
+      // items a newer snapshot no longer has — e.g. a local echo keyed by
+      // transaction id lingering alongside the remote event that replaced
+      // it, since the remote item's `transaction_id` is `None` and so
+      // wouldn't match it for removal. Replacing outright is both correct
+      // and simpler.
+      setMessages(update.messages);
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
