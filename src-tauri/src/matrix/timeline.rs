@@ -102,6 +102,18 @@ pub struct RoomTimelineUpdate {
 /// this lives in `tests/message_actions.rs` rather than the `--lib` unit-test
 /// target CI runs without a local Synapse available — same rationale as
 /// `resolve_alias`/`discover` elsewhere in this crate.
+///
+/// Known fast-follow gap from the per-batch folding model: a relation
+/// (edit/reaction/redaction) whose *target* isn't in the same batch/page as
+/// the relation event itself folds onto nothing and is silently dropped —
+/// e.g. reacting to a message from several messages back, once that message
+/// has already scrolled out of the current sync batch, won't show up live;
+/// it needs a refetch/repagination to appear. Fixing this needs
+/// `timeline:update` to carry a refreshed summary for the *target* event
+/// (re-fetched with its relations) when a relation event's target isn't in
+/// the current batch, plus a frontend merge that replaces in place by
+/// timestamp rather than appending. Tracked as a fast-follow rather than
+/// blocking this PR on it — see the Spec 03 planning doc.
 pub fn events_to_summaries(
     events: &[TimelineEvent],
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
@@ -204,7 +216,19 @@ pub fn events_to_summaries(
                         redacted: false,
                         reactions: Vec::new(),
                         in_reply_to: None,
-                        transaction_id: None,
+                        // The homeserver echoes back the sender's own send-queue
+                        // transaction id in `unsigned.transaction_id` for events
+                        // synced back to the sending device (only) — this is
+                        // what lets the frontend reconcile a synced event with
+                        // the local echo/optimistic bubble that produced it,
+                        // instead of the two staying separate forever. Absent
+                        // for events other users sent, which is fine: nothing
+                        // else needs to reconcile those against a local echo.
+                        transaction_id: original
+                            .unsigned
+                            .transaction_id
+                            .as_ref()
+                            .map(ToString::to_string),
                         send_state: SendState::Sent,
                     },
                 );
@@ -340,6 +364,29 @@ mod relation_folding_tests {
 
     fn event(json: serde_json::Value) -> TimelineEvent {
         TimelineEvent::from_plaintext(Raw::new(&json).unwrap().cast_unchecked())
+    }
+
+    /// Regression test for the send/timeline reconciliation bug: a synced
+    /// event for something the current device sent carries the send-queue's
+    /// transaction id in `unsigned.transaction_id`. That's the only thing
+    /// that lets the frontend match this real event back to the optimistic
+    /// echo it created (which has an entirely different, temporary "event
+    /// id") — so it has to survive the fold, not get dropped as `None`.
+    #[test]
+    fn own_message_carries_its_send_queue_transaction_id() {
+        let own_message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$real:example.org",
+            "sender": "@me:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" },
+            "unsigned": { "transaction_id": "txn-1" }
+        }));
+
+        let summaries = events_to_summaries(&[own_message], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].transaction_id.as_deref(), Some("txn-1"));
     }
 
     #[test]

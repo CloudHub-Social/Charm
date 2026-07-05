@@ -167,36 +167,35 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     const replyingTo = replyTarget;
     setReplyTarget(null);
 
-    const transactionId = `local-${Date.now()}`;
-    const optimistic: RoomMessageSummary = {
-      event_id: transactionId,
-      sender: currentUserId,
-      body,
-      formatted_body: null,
-      timestamp_ms: Date.now(),
-      edited: false,
-      redacted: false,
-      reactions: [],
-      in_reply_to: replyingTo,
-      transaction_id: transactionId,
-      send_state: { state: "pending" },
-    };
-    setMessages((prev) => [...prev, optimistic]);
+    // The optimistic echo must be keyed on the *SDK's* send-queue transaction
+    // id, not a client-generated placeholder — that's the same id the synced
+    // event's `transaction_id` (from `unsigned.transaction_id`) and
+    // `send_queue:update` events carry, and reconciliation only works if all
+    // three agree. So this awaits the send call (which itself only waits for
+    // the event to be queued, not for a homeserver round trip) before
+    // rendering anything, rather than rendering an echo immediately under a
+    // key nothing else will ever match.
     try {
-      if (replyingTo) {
-        await sendReply(targetRoom.room_id, replyingTo.event_id, body);
-      } else {
-        await sendMessage(targetRoom.room_id, body);
-      }
+      const transactionId = replyingTo
+        ? await sendReply(targetRoom.room_id, replyingTo.event_id, body)
+        : await sendMessage(targetRoom.room_id, body);
+
+      const optimistic: RoomMessageSummary = {
+        event_id: transactionId,
+        sender: currentUserId,
+        body,
+        formatted_body: null,
+        timestamp_ms: Date.now(),
+        edited: false,
+        redacted: false,
+        reactions: [],
+        in_reply_to: replyingTo,
+        transaction_id: transactionId,
+        send_state: { state: "pending" },
+      };
+      setMessages((prev) => [...prev, optimistic]);
     } catch (err) {
       console.error(err);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.transaction_id === transactionId
-            ? { ...m, send_state: { state: "error", message: String(err) } }
-            : m,
-        ),
-      );
     }
   }
 

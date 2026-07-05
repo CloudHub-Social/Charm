@@ -306,6 +306,51 @@ async fn step_send_reply_carries_in_reply_to(client: &Client, room: &matrix_sdk:
     .expect("reply is reflected in the timeline before timeout");
 }
 
+/// Regression test for the send/timeline reconciliation bug: the transaction
+/// id `send_and_capture_transaction_id` returns for a real send must be the
+/// exact same id the homeserver echoes back in `unsigned.transaction_id` once
+/// the event syncs down — that's what lets the frontend match its optimistic
+/// echo (created under this id) to the real synced event (which has an
+/// entirely different, real `event_id`) instead of ending up with both.
+async fn step_send_message_transaction_id_matches_the_synced_event(
+    client: &Client,
+    room: &matrix_sdk::Room,
+) {
+    let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
+        "reconciliation check",
+    ));
+    let transaction_id =
+        charm_lib::matrix::send::send_and_capture_transaction_id(client, room, content)
+            .await
+            .expect("send succeeds and yields a transaction id");
+
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default().timeout(SYNC_TIMEOUT))
+                .await
+                .ok();
+            let messages = room
+                .messages(MessagesOptions::backward())
+                .await
+                .expect("fetch messages");
+            let summaries = events_to_summaries(&messages.chunk, client.user_id());
+            let synced = summaries.iter().find(|m| m.body == "reconciliation check");
+            if let Some(synced) = synced {
+                assert_eq!(
+                    synced.transaction_id.as_deref(),
+                    Some(transaction_id.as_str()),
+                    "synced event's transaction_id must match what send_and_capture_transaction_id returned"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    })
+    .await
+    .expect("sent message is reflected in the timeline before timeout");
+}
+
 #[tokio::test]
 async fn message_actions_round_trip_against_a_real_homeserver() {
     let client = synced_client().await;
@@ -317,4 +362,5 @@ async fn message_actions_round_trip_against_a_real_homeserver() {
     step_can_redact_false_for_a_genuinely_low_power_member(&client, &room).await;
     step_toggle_reaction_adds_then_removes(&client, &room).await;
     step_send_reply_carries_in_reply_to(&client, &room).await;
+    step_send_message_transaction_id_matches_the_synced_event(&client, &room).await;
 }

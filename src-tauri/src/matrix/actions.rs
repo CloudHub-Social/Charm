@@ -302,14 +302,17 @@ pub async fn toggle_reaction_impl(
 
 /// Sends a reply to `in_reply_to_event_id`: fetches the target event to
 /// build the rich-reply fallback body (quoted sender + text) and `m.mentions`
-/// via ruma's `make_reply_to`, then queues the resulting message.
+/// via ruma's `make_reply_to`, then queues the resulting message. Returns the
+/// SDK's transaction id (see [`super::send::send_and_capture_transaction_id`])
+/// so the frontend can key its optimistic echo the same way the synced event
+/// and `send_queue:update` will.
 #[tauri::command]
 pub async fn send_reply(
     state: State<'_, MatrixState>,
     room_id: String,
     in_reply_to_event_id: String,
     body: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let client = state.require_client().await?;
     send_reply_impl(&client, &room_id, &in_reply_to_event_id, body).await
 }
@@ -320,7 +323,7 @@ pub async fn send_reply_impl(
     room_id: &str,
     in_reply_to_event_id: &str,
     body: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let room = get_room(client, room_id)?;
 
     let parsed_target = EventId::parse(in_reply_to_event_id).map_err(|e| e.to_string())?;
@@ -350,12 +353,12 @@ pub async fn send_reply_impl(
         AddMentions::Yes,
     );
 
-    room.send_queue()
-        .send(AnyMessageLikeEventContent::RoomMessage(content))
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    super::send::send_and_capture_transaction_id(
+        client,
+        &room,
+        AnyMessageLikeEventContent::RoomMessage(content),
+    )
+    .await
 }
 
 #[cfg(test)]

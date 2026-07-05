@@ -119,7 +119,14 @@ export function getTimelinePage(
   return invoke("get_timeline_page", { roomId, cursor, limit });
 }
 
-export function sendMessage(roomId: string, body: string): Promise<void> {
+/**
+ * Queues a message and returns the SDK-generated send-queue transaction id
+ * for it — key the optimistic local echo on this (not a client-generated
+ * placeholder), since it's the same id the synced event's `transaction_id`
+ * and `send_queue:update` events will carry, and reconciliation between the
+ * three depends on all of them agreeing.
+ */
+export function sendMessage(roomId: string, body: string): Promise<string> {
   return invoke("send_message", { roomId, body });
 }
 
@@ -153,7 +160,8 @@ export function toggleReaction(
   return invoke("toggle_reaction", { roomId, targetEventId, key });
 }
 
-export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<void> {
+/** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
+export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
   return invoke("send_reply", { roomId, inReplyToEventId, body });
 }
 

@@ -14,8 +14,8 @@ import type {
 // timeline:update / send_queue:update listeners) — mock lib/matrix entirely
 // so the test exercises only the component, not a real Tauri backend.
 const getTimelinePage = vi.fn();
-const sendMessage = vi.fn().mockResolvedValue(undefined);
-const sendReply = vi.fn().mockResolvedValue(undefined);
+const sendMessage = vi.fn().mockResolvedValue("txn-1");
+const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
@@ -66,31 +66,29 @@ function sendDraft(text: string) {
 describe("ChatShell", () => {
   beforeEach(() => {
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
-    sendMessage.mockReset().mockResolvedValue(undefined);
-    sendReply.mockReset().mockResolvedValue(undefined);
+    sendMessage.mockReset().mockResolvedValue("txn-1");
+    sendReply.mockReset().mockResolvedValue("txn-1");
     toggleReaction.mockReset();
     timelineUpdateCallback = undefined;
     sendQueueUpdateCallback = undefined;
   });
 
   it("flips a bubble from pending to sent when a send_queue:update arrives", async () => {
-    sendMessage.mockImplementation(() => new Promise(() => {})); // never resolves on its own
+    // Resolves with the SDK's transaction id (not a client placeholder) —
+    // that's the id the optimistic echo is keyed on and what a real
+    // `send_queue:update` would carry.
+    sendMessage.mockResolvedValue("txn-1");
     renderChatShell();
     await screen.findByText("No messages yet");
 
     sendDraft("hello");
 
     expect(await screen.findByText(/sending…/)).toBeInTheDocument();
-
-    // The optimistic echo's transaction_id is `local-<timestamp>` — grab it
-    // off the DOM id set by ChatShell rather than guessing the timestamp.
-    const bubble = screen.getByText("hello").closest("[id^='message-local-']");
-    const transactionId = bubble?.id.replace("message-", "");
-    expect(transactionId).toBeTruthy();
+    expect(document.getElementById("message-txn-1")).toBeInTheDocument();
 
     sendQueueUpdateCallback?.({
       room_id: room.room_id,
-      transaction_id: transactionId!,
+      transaction_id: "txn-1",
       send_state: { state: "sent" },
     });
 
@@ -99,31 +97,36 @@ describe("ChatShell", () => {
   });
 
   it("flips a bubble from pending to error when a send_queue:update reports an error", async () => {
-    sendMessage.mockImplementation(() => new Promise(() => {}));
+    sendMessage.mockResolvedValue("txn-1");
     renderChatShell();
     await screen.findByText("No messages yet");
 
     sendDraft("hello");
     await screen.findByText(/sending…/);
 
-    const bubble = screen.getByText("hello").closest("[id^='message-local-']");
-    const transactionId = bubble?.id.replace("message-", "");
-
     sendQueueUpdateCallback?.({
       room_id: room.room_id,
-      transaction_id: transactionId!,
+      transaction_id: "txn-1",
       send_state: { state: "error", message: "network down" },
     });
 
     expect(await screen.findByText(/failed to send/)).toBeInTheDocument();
   });
 
-  it("reconciles a local echo with the real event from a timeline:update", async () => {
-    sendMessage.mockResolvedValue(undefined);
+  it("reconciles a local echo with the real event once the synced event carries the same transaction id", async () => {
+    // Reproduces the real-world mismatch: the optimistic echo only knows the
+    // SDK's transaction id ("txn-1", not a real event id yet), and the
+    // synced event that eventually arrives has an entirely different real
+    // `event_id` — the two only correlate via the matching
+    // `transaction_id` (mirroring `unsigned.transaction_id` on the real
+    // event). If the ids didn't agree, this would render two "hello"
+    // bubbles and the echo would be stuck on "sending…" forever.
+    sendMessage.mockResolvedValue("txn-1");
     renderChatShell();
 
     sendDraft("hello");
-    await screen.findByText("hello");
+    await screen.findByText(/sending…/);
+    expect(document.getElementById("message-txn-1")).toBeInTheDocument();
 
     const realMessage: RoomMessageSummary = {
       event_id: "$real:localhost",
@@ -135,13 +138,18 @@ describe("ChatShell", () => {
       redacted: false,
       reactions: [],
       in_reply_to: null,
-      transaction_id: null,
+      transaction_id: "txn-1",
       send_state: { state: "sent" },
     };
     timelineUpdateCallback?.({ room_id: room.room_id, messages: [realMessage] });
 
-    // Only one "hello" bubble should remain — no duplicate from the local echo.
+    // Exactly one "hello" bubble remains — the real event replaced the echo
+    // in place rather than being appended alongside it — and it reflects
+    // the real event's sent state, not still "sending…".
     expect(await screen.findAllByText("hello")).toHaveLength(1);
+    expect(screen.queryByText(/sending…/)).not.toBeInTheDocument();
+    expect(document.getElementById("message-txn-1")).not.toBeInTheDocument();
+    expect(document.getElementById("message-$real:localhost")).toBeInTheDocument();
   });
 
   it("clicking a reaction chip calls toggleReaction", async () => {
