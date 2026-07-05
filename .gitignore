@@ -37,3 +37,10 @@ dev/synapse/data-mas/
 
 # Storybook build output
 storybook-static/
+
+# Design-sync skill working directory (local only)
+.design-sync/
+
+# graphify code graph — built locally with `graphify update .`, not committed:
+# it goes stale on every code change and oxfmt would fight the generated JSON.
+graphify-out/

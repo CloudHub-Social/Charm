@@ -5,4 +5,4 @@
  * the timeline/event-cache API, which is Phase 1 timeline-rendering scope,
  * not this first sync-wiring cut.
  */
-export type RoomSummary = { room_id: string, name: string | null, unread_count: bigint, };
+export type RoomSummary = { room_id: string, name: string | null, unread_count: number, };
