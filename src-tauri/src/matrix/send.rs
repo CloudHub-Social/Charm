@@ -4,8 +4,8 @@ use std::sync::LazyLock;
 use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
-use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
-use matrix_sdk::ruma::RoomId;
+use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, Mentions};
+use matrix_sdk::ruma::{OwnedUserId, RoomId, UserId};
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk::TransmissionProgress;
 use matrix_sdk::{Client, Room};
@@ -111,7 +111,17 @@ pub async fn send_and_capture_transaction_id(
     }
 }
 
-/// Queues a plain-text message for sending via matrix-rust-sdk's send queue.
+/// Queues a message for sending via matrix-rust-sdk's send queue. When
+/// `formatted_body` is present the event is sent as `msgtype: m.text` with
+/// `format: org.matrix.custom.html` (`RoomMessageEventContent::text_html`);
+/// otherwise it's plain `text_plain`. The frontend (see `Composer.tsx`'s
+/// serializer) is responsible for deciding when formatting is real enough to
+/// warrant a `formatted_body` at all, and for sanitizing the HTML against the
+/// Matrix-permitted tag/attr allowlist before it ever reaches this command —
+/// this command trusts `formatted_body` as already-sanitized.
+/// `mentions` (bare Matrix user ids, e.g. `@alice:example.org`) populate
+/// `m.mentions.user_ids` via `add_mentions`.
+///
 /// This returns as soon as the event is queued, not once the homeserver has
 /// accepted it — the send queue handles the network round-trip, retries, and
 /// offline queueing on its own. Returns the SDK's transaction id (see
@@ -122,6 +132,8 @@ pub async fn send_message(
     state: State<'_, MatrixState>,
     room_id: String,
     body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
 ) -> Result<String, String> {
     let client = state.require_client().await?;
 
@@ -130,9 +142,36 @@ pub async fn send_message(
         .get_room(&parsed_room_id)
         .ok_or_else(|| format!("room {room_id} not found"))?;
 
-    let content =
-        AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(body));
+    let content = build_message_content(body, formatted_body, mentions)?;
+    let content = AnyMessageLikeEventContent::RoomMessage(content);
     send_and_capture_transaction_id(&client, &room, content).await
+}
+
+/// Builds a `RoomMessageEventContent` from a plain body, an optional
+/// sanitized HTML body, and optional mention user ids. Shared by
+/// `send_message` and `commands::run_command`'s `/me` arm (which needs the
+/// same html-vs-plain + mentions logic for `m.emote`).
+pub fn build_message_content(
+    body: String,
+    formatted_body: Option<String>,
+    mentions: Option<Vec<String>>,
+) -> Result<RoomMessageEventContent, String> {
+    let mut content = match formatted_body {
+        Some(html) => RoomMessageEventContent::text_html(body, html),
+        None => RoomMessageEventContent::text_plain(body),
+    };
+
+    if let Some(mention_ids) = mentions {
+        if !mention_ids.is_empty() {
+            let user_ids: Vec<OwnedUserId> = mention_ids
+                .into_iter()
+                .map(|id| UserId::parse(&id).map_err(|e| e.to_string()))
+                .collect::<Result<_, _>>()?;
+            content = content.add_mentions(Mentions::with_user_ids(user_ids));
+        }
+    }
+
+    Ok(content)
 }
 
 /// Sends a file at `file_path` as an `m.image`/`m.video`/`m.audio`/`m.file`
@@ -345,5 +384,51 @@ mod tests {
         let mime: mime::Mime = "audio/ogg".parse().unwrap();
         let info = attachment_info_for(&mime, &[], 42);
         assert!(matches!(info, AttachmentInfo::Audio(_)));
+    }
+
+    #[test]
+    fn build_message_content_without_formatted_body_is_text_plain() {
+        let content = build_message_content("hello".to_string(), None, None).unwrap();
+        let json = serde_json::to_value(&content).unwrap();
+        assert_eq!(json["msgtype"], "m.text");
+        assert_eq!(json["body"], "hello");
+        assert!(json.get("formatted_body").is_none());
+        assert!(json.get("format").is_none());
+    }
+
+    #[test]
+    fn build_message_content_with_formatted_body_is_text_html() {
+        let content = build_message_content(
+            "hello".to_string(),
+            Some("<strong>hello</strong>".to_string()),
+            None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(&content).unwrap();
+        assert_eq!(json["msgtype"], "m.text");
+        assert_eq!(json["format"], "org.matrix.custom.html");
+        assert_eq!(json["formatted_body"], "<strong>hello</strong>");
+    }
+
+    #[test]
+    fn build_message_content_with_mentions_populates_user_ids() {
+        let content = build_message_content(
+            "hi @alice".to_string(),
+            None,
+            Some(vec!["@alice:example.org".to_string()]),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&content).unwrap();
+        assert_eq!(json["m.mentions"]["user_ids"][0], "@alice:example.org");
+    }
+
+    #[test]
+    fn build_message_content_rejects_invalid_mention_id() {
+        let result = build_message_content(
+            "hi".to_string(),
+            None,
+            Some(vec!["not-a-user-id".to_string()]),
+        );
+        assert!(result.is_err());
     }
 }

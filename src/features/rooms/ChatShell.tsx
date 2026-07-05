@@ -14,6 +14,7 @@ import {
   onTypingUpdate,
   onUploadProgress,
   redactEvent,
+  runCommand,
   sendAttachment,
   sendMessage,
   sendReply,
@@ -24,10 +25,13 @@ import {
 } from "@/lib/matrix";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, displayName, initials } from "./roomDisplay";
+import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
+import type { ParsedSlashCommand } from "./slashCommands";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
+import { sanitizeMatrixHtml } from "./composerSanitize";
 import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
@@ -135,10 +139,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [draft, setDraft] = useState("");
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
+  const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerHandle>(null);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
@@ -165,14 +169,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   // Header presence dot is gated on DM detection, which doesn't exist yet —
   // no-ops here for the same reason RoomListItem's presence dot no-ops.
-
-  // `editingEventId` is a per-room atom, so it's already `null` in a freshly
-  // switched-to room — but `draft` isn't room-scoped, so without this a
-  // half-typed edit in room A would carry over as an ordinary draft in room
-  // B, and pressing Send there would post that edit text as a new message.
-  useEffect(() => {
-    setDraft("");
-  }, [roomId]);
 
   useEffect(() => {
     if (!room) {
@@ -335,19 +331,22 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     );
   }
 
-  const body = draft.trim();
   const editingMessage = messages.find((m) => m.event_id === editingEventId) ?? null;
+  const composerMode: ComposerMode = editingEventId ? "edit" : replyTarget ? "reply" : "send";
 
-  async function handleSend() {
-    if (!body || !room) return;
+  async function handleComposerSubmit(content: {
+    body: string;
+    formattedBody: string | null;
+    mentions: string[] | null;
+  }) {
+    if (!room) return;
     const targetRoom = room;
-    setDraft("");
 
     if (editingEventId) {
       const eventId = editingEventId;
       setEditingEventId(null);
       try {
-        await editMessage(targetRoom.room_id, eventId, body);
+        await editMessage(targetRoom.room_id, eventId, content.body);
       } catch (err) {
         console.error(err);
       }
@@ -367,15 +366,23 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // rendering anything, rather than rendering an echo immediately under a
     // key nothing else will ever match.
     try {
+      // Replies don't yet carry formatting/mentions — `send_reply` wasn't
+      // extended in this pass (only `send_message` was, per spec scope); a
+      // formatted reply falls back to its plain body.
       const transactionId = replyingTo
-        ? await sendReply(targetRoom.room_id, replyingTo.event_id, body)
-        : await sendMessage(targetRoom.room_id, body);
+        ? await sendReply(targetRoom.room_id, replyingTo.event_id, content.body)
+        : await sendMessage(
+            targetRoom.room_id,
+            content.body,
+            content.formattedBody,
+            content.mentions,
+          );
 
       const optimistic: RoomMessageSummary = {
         event_id: transactionId,
         sender: currentUserId,
-        body,
-        formatted_body: null,
+        body: content.body,
+        formatted_body: replyingTo ? null : content.formattedBody,
         timestamp_ms: Date.now(),
         edited: false,
         redacted: false,
@@ -402,6 +409,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         if (alreadyReconciled) return prev;
         return [...prev, optimistic];
       });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleSlashCommand(parsed: ParsedSlashCommand) {
+    if (!room) return;
+    try {
+      const result = await runCommand(room.room_id, parsed.command, parsed.args);
+      if (result.status !== "success") {
+        setCommandFeedback(result.message);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -459,7 +478,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     }
   }
 
-  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
     const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
     const file = files.find((f) => f.type.startsWith("image/"));
     if (file?.path) {
@@ -566,6 +585,24 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                       eventId={message.event_id}
                       body={message.body}
                     />
+                  ) : message.formatted_body ? (
+                    // Re-sanitized here rather than trusted from the sender —
+                    // `formatted_body` crosses IPC as untrusted content from
+                    // whoever sent the event (any client, not just this
+                    // one), so the Matrix-allowlist sanitizer runs on both
+                    // the send path (`serializeComposerContent`) and this
+                    // render path independently.
+                    <div
+                      className={cn(
+                        "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1",
+                        own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
+                        isError && "border border-destructive",
+                      )}
+                      // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
+                      dangerouslySetInnerHTML={{
+                        __html: sanitizeMatrixHtml(message.formatted_body),
+                      }}
+                    />
                   ) : (
                     <div
                       className={cn(
@@ -598,7 +635,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                       onEdit={() => {
                         setReplyTarget(null);
                         setEditingEventId(message.event_id);
-                        setDraft(message.body);
                       }}
                       onDelete={() => handleDelete(message.event_id)}
                       onCopy={() => navigator.clipboard?.writeText(message.body)}
@@ -707,10 +743,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             <button
               type="button"
               aria-label="Cancel edit"
-              onClick={() => {
-                setEditingEventId(null);
-                setDraft("");
-              }}
+              onClick={() => setEditingEventId(null)}
               className="text-xs text-muted-foreground hover:underline"
             >
               Cancel
@@ -719,8 +752,27 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       )}
 
+      {commandFeedback && (
+        <div className="px-3 pb-1">
+          <output className="flex items-center justify-between gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground">
+            {commandFeedback}
+            <button
+              type="button"
+              aria-label="Dismiss command feedback"
+              onClick={() => setCommandFeedback(null)}
+              className="shrink-0"
+            >
+              <X size={14} />
+            </button>
+          </output>
+        </div>
+      )}
+
       <div className="p-3">
-        <div className="flex items-end gap-2 rounded-lg border border-border bg-card p-2">
+        <div
+          className="flex items-end gap-2 rounded-lg border border-border bg-card p-2"
+          onPaste={handlePaste}
+        >
           <button
             aria-label="Attach"
             onClick={handleAttachClick}
@@ -728,29 +780,24 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           >
             <Paperclip size={18} />
           </button>
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.currentTarget.value);
-              handleTypingInput(room.room_id);
-            }}
-            onPaste={handlePaste}
-            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
+          <Composer
+            key={`${room.room_id}-${editingEventId ?? "new"}`}
+            ref={composerRef}
+            roomId={room.room_id}
+            mode={composerMode}
+            initialHtml={editingMessage?.formatted_body ?? editingMessage?.body}
             placeholder={`Message ${displayName(room.room_id, room.name)}`}
-            className="max-h-30 min-h-6 flex-1 resize-none bg-transparent px-1 py-2 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
+            onSubmit={handleComposerSubmit}
+            onSlashCommand={handleSlashCommand}
+            onEscape={() => {
+              if (editingEventId) setEditingEventId(null);
+              else if (replyTarget) setReplyTarget(null);
+            }}
+            onTypingInput={() => handleTypingInput(room.room_id)}
           />
           <button
             aria-label="Send"
-            disabled={!body}
-            onClick={handleSend}
+            onClick={() => composerRef.current?.submit()}
             className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground"
           >
             <Send size={16} />

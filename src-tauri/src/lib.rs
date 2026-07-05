@@ -55,6 +55,8 @@ pub fn run() {
             matrix::actions::can_redact,
             matrix::actions::toggle_reaction,
             matrix::actions::send_reply,
+            matrix::commands::run_command,
+            matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
             matrix::verification::accept_verification_request,

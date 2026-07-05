@@ -54,5 +54,15 @@ export default defineConfig({
         "typescript/no-unsafe-enum-comparison": "off",
       },
     },
+    {
+      // The composer autocomplete menu implements the standard ARIA
+      // combobox-listbox pattern (role="listbox"/"option") anchored to a
+      // text caret inside contenteditable — there's no <select>/<datalist>
+      // equivalent for a rich, positioned, icon-bearing suggestion list.
+      files: ["src/features/rooms/AutocompletePopover.tsx"],
+      rules: {
+        "jsx-a11y/prefer-tag-over-role": "off",
+      },
+    },
   ],
 });
