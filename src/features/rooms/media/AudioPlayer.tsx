@@ -1,13 +1,14 @@
 import { useMediaSource } from "./useMediaSource";
 
 interface AudioPlayerProps {
-  source: string;
+  roomId: string;
+  eventId: string;
   className?: string;
 }
 
 /** Inline `<audio>` player for `m.audio` messages — received clips only, no recording UI (out of scope). */
-export function AudioPlayer({ source, className }: AudioPlayerProps) {
-  const { data: href } = useMediaSource(source);
+export function AudioPlayer({ roomId, eventId, className }: AudioPlayerProps) {
+  const { data: href } = useMediaSource(roomId, eventId);
 
   if (!href) {
     return <div className="h-10 w-64 animate-pulse rounded-md bg-secondary" />;

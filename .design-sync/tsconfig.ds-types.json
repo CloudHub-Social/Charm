@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "types",
+    "rootDir": "../src",
+    "allowImportingTsExtensions": false
+  },
+  "include": ["../src/components/ui", "../src/lib"],
+  "references": []
+}

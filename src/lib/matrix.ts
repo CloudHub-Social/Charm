@@ -3,17 +3,28 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
 import type { EmojiPair } from "@bindings/EmojiPair";
+import type { EventReceipt } from "@bindings/EventReceipt";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
-import type { MessageContent } from "@bindings/MessageContent";
+import type { MediaContent } from "@bindings/MediaContent";
+import type { PresenceStateDto } from "@bindings/PresenceStateDto";
+import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
+import type { ReactionGroup } from "@bindings/ReactionGroup";
+import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
+import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
+import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
+import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
+import type { SendQueueUpdateEvent } from "@bindings/SendQueueUpdateEvent";
+import type { SendState } from "@bindings/SendState";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
+import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 
@@ -28,17 +39,28 @@ export type {
   CrossSigningStatusSummary,
   DiscoverHomeserverResponse,
   EmojiPair,
+  EventReceipt,
   LoginRequest,
   LoginResponse,
-  MessageContent,
+  MediaContent,
+  PresenceStateDto,
+  PresenceUpdate,
   QrLoginProgressEvent,
+  ReactionGroup,
+  ReactionToggleResult,
+  ReceiptTypeDto,
+  ReceiptUpdate,
   RegisterRequest,
+  ReplyRef,
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
+  SendQueueUpdateEvent,
+  SendState,
   SyncStateEvent,
   TimelinePage,
+  TypingUpdate,
   UploadProgress,
   VerificationRequestSummary,
 };
@@ -113,7 +135,14 @@ export function getTimelinePage(
   return invoke("get_timeline_page", { roomId, cursor, limit });
 }
 
-export function sendMessage(roomId: string, body: string): Promise<void> {
+/**
+ * Queues a message and returns the SDK-generated send-queue transaction id
+ * for it — key the optimistic local echo on this (not a client-generated
+ * placeholder), since it's the same id the synced event's `transaction_id`
+ * and `send_queue:update` events will carry, and reconciliation between the
+ * three depends on all of them agreeing.
+ */
+export function sendMessage(roomId: string, body: string): Promise<string> {
   return invoke("send_message", { roomId, body });
 }
 
@@ -121,6 +150,41 @@ export function onTimelineUpdate(
   callback: (update: RoomTimelineUpdate) => void,
 ): Promise<UnlistenFn> {
   return listen<RoomTimelineUpdate>("timeline:update", (e) => callback(e.payload));
+}
+
+export function editMessage(roomId: string, eventId: string, newBody: string): Promise<void> {
+  return invoke("edit_message", { roomId, eventId, newBody });
+}
+
+export function redactEvent(
+  roomId: string,
+  eventId: string,
+  reason?: string | null,
+): Promise<void> {
+  return invoke("redact_event", { roomId, eventId, reason: reason ?? null });
+}
+
+export function canRedact(roomId: string, targetSender: string): Promise<boolean> {
+  return invoke("can_redact", { roomId, targetSender });
+}
+
+export function toggleReaction(
+  roomId: string,
+  targetEventId: string,
+  key: string,
+): Promise<ReactionToggleResult> {
+  return invoke("toggle_reaction", { roomId, targetEventId, key });
+}
+
+/** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
+export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
+  return invoke("send_reply", { roomId, inReplyToEventId, body });
+}
+
+export function onSendQueueUpdate(
+  callback: (update: SendQueueUpdateEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SendQueueUpdateEvent>("send_queue:update", (e) => callback(e.payload));
 }
 
 export function bootstrapCrossSigning(password?: string): Promise<void> {
@@ -175,18 +239,56 @@ export function sendAttachment(
 }
 
 /**
- * Resolves a `MediaHandle` (opaque, carried on a `MessageContent` media
- * variant) to a local filesystem path — fetching, decrypting, and caching on
- * a miss. Load the returned path in an `<img>`/`<video>`/`<audio>` tag via
- * `convertFileSrc` from `@tauri-apps/api/core`; never expected to be a
- * remote URL.
+ * Resolves the media attached to `eventId` in `roomId` to a local filesystem
+ * path — fetching, decrypting, and caching on a miss. No handle crosses IPC:
+ * the frontend just passes back the plain `(roomId, eventId)` pair it
+ * already has from `RoomMessageSummary`'s `media` field ({@link MediaContent}
+ * carries display metadata only). Load the returned path in an
+ * `<img>`/`<video>`/`<audio>` tag via `convertFileSrc` from
+ * `@tauri-apps/api/core`; never expected to be a remote URL.
  */
-export function resolveMedia(handle: string, thumbnail: boolean): Promise<string> {
-  return invoke("resolve_media", { handle, thumbnail });
+export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean): Promise<string> {
+  return invoke("resolve_media", { roomId, eventId, thumbnail });
 }
 
 export function onUploadProgress(
   callback: (progress: UploadProgress) => void,
 ): Promise<UnlistenFn> {
   return listen<UploadProgress>("upload:progress", (e) => callback(e.payload));
+}
+
+export function sendReadReceipt(
+  roomId: string,
+  eventId: string,
+  isPrivate: boolean,
+): Promise<void> {
+  return invoke("send_read_receipt", { roomId, eventId, private: isPrivate });
+}
+
+export function sendTyping(roomId: string, typing: boolean): Promise<void> {
+  return invoke("send_typing", { roomId, typing });
+}
+
+export function markRoomRead(roomId: string): Promise<void> {
+  return invoke("mark_room_read", { roomId });
+}
+
+export function onReceiptsUpdate(callback: (update: ReceiptUpdate) => void): Promise<UnlistenFn> {
+  return listen<ReceiptUpdate>("receipts:update", (e) => callback(e.payload));
+}
+
+export function onTypingUpdate(callback: (update: TypingUpdate) => void): Promise<UnlistenFn> {
+  return listen<TypingUpdate>("typing:update", (e) => callback(e.payload));
+}
+
+export function setPresence(presence: PresenceStateDto, statusMsg?: string): Promise<void> {
+  return invoke("set_presence", { presence, statusMsg });
+}
+
+export function getPresence(userId: string): Promise<PresenceUpdate | null> {
+  return invoke("get_presence", { userId });
+}
+
+export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
+  return listen<PresenceUpdate>("presence:update", (e) => callback(e.payload));
 }

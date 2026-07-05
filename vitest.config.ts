@@ -27,21 +27,22 @@ export default defineConfig({
         "src/test/**",
         "src/**/*.test.{ts,tsx}",
         "src/**/*.spec.{ts,tsx}",
-        "src/**/*.stories.{ts,tsx}",
+        "src/**/*.stories.tsx",
         "src/components/ui/**",
         "src/bindings/**",
       ],
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
-        // These are a RATCHET, set to just under current actual coverage as of
-        // Spec 02 (media and attachments) — lines 38.9, statements 37.4,
-        // functions 31.7, branches 40.3 — so any regression fails CI. When you
-        // add tests and coverage rises, raise these to the new floor in the same
-        // PR — never lower them to make CI pass.
-        lines: 38,
-        statements: 37,
-        functions: 31,
-        branches: 40,
+        // These are a RATCHET: set to just under current actual coverage (as of
+        // 2026-07-05, after merging Spec 02 media/attachments with Spec 03
+        // message-actions: lines 54.4 / statements 52.44 / functions 44.75 /
+        // branches 56.36), so any regression fails CI. When you add tests and
+        // coverage rises, raise these to the new floor in the same PR — never
+        // lower them to make CI pass.
+        lines: 54,
+        statements: 52,
+        functions: 44,
+        branches: 56,
       },
     },
   },

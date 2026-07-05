@@ -5,7 +5,8 @@ import { useMediaSource } from "./useMediaSource";
 interface LightboxProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  source: string;
+  roomId: string;
+  eventId: string;
   kind: "image" | "video";
   alt: string;
   /** Optional prev/next handlers to wire arrow-key navigation across a set (e.g. all images in a room). */
@@ -20,8 +21,17 @@ interface LightboxProps {
  * elsewhere. Arrow-key navigation is opt-in via `onPrev`/`onNext` — omit
  * both for a single-image view.
  */
-export function Lightbox({ open, onOpenChange, source, kind, alt, onPrev, onNext }: LightboxProps) {
-  const { data: href } = useMediaSource(source);
+export function Lightbox({
+  open,
+  onOpenChange,
+  roomId,
+  eventId,
+  kind,
+  alt,
+  onPrev,
+  onNext,
+}: LightboxProps) {
+  const { data: href } = useMediaSource(roomId, eventId);
 
   useEffect(() => {
     if (!open) return undefined;

@@ -1,25 +1,29 @@
 import { useState } from "react";
 import { Play } from "lucide-react";
-import type { MessageContent } from "@/lib/matrix";
+import type { MediaContent } from "@/lib/matrix";
 import { AudioPlayer } from "./AudioPlayer";
 import { FileChip } from "./FileChip";
 import { Lightbox } from "./Lightbox";
 import { useMediaSource } from "./useMediaSource";
 
 interface MediaMessageProps {
-  content: MessageContent;
+  content: MediaContent;
+  roomId: string;
+  eventId: string;
+  /** Text-preview fallback (`RoomMessageSummary.body`) — used for alt text. */
+  body: string;
 }
 
-/** Renders the correct media viewer for a non-text `MessageContent` variant; text messages don't reach this component. */
-export function MediaMessage({ content }: MediaMessageProps) {
+/** Renders the correct media viewer for a message's `media` field; text messages (where `media` is `null`) never reach this component. */
+export function MediaMessage({ content, roomId, eventId, body }: MediaMessageProps) {
   const [lightboxOpen, setLightboxOpen] = useState(false);
-
-  if (content.type === "Text") return null;
 
   if (content.type === "Image") {
     return (
       <ImageThumbnail
-        content={content}
+        alt={body}
+        roomId={roomId}
+        eventId={eventId}
         lightboxOpen={lightboxOpen}
         setLightboxOpen={setLightboxOpen}
       />
@@ -29,7 +33,9 @@ export function MediaMessage({ content }: MediaMessageProps) {
   if (content.type === "Video") {
     return (
       <VideoThumbnail
-        content={content}
+        alt={body}
+        roomId={roomId}
+        eventId={eventId}
         lightboxOpen={lightboxOpen}
         setLightboxOpen={setLightboxOpen}
       />
@@ -37,41 +43,45 @@ export function MediaMessage({ content }: MediaMessageProps) {
   }
 
   if (content.type === "Audio") {
-    return <AudioPlayer source={content.source} />;
+    return <AudioPlayer roomId={roomId} eventId={eventId} />;
   }
 
   return (
     <FileChip
-      filename={content.body}
+      filename={content.filename}
       mime={content.mime}
       size={content.size}
-      source={content.source}
+      roomId={roomId}
+      eventId={eventId}
     />
   );
 }
 
 function ImageThumbnail({
-  content,
+  alt,
+  roomId,
+  eventId,
   lightboxOpen,
   setLightboxOpen,
 }: {
-  content: Extract<MessageContent, { type: "Image" }>;
+  alt: string;
+  roomId: string;
+  eventId: string;
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
 }) {
-  const thumbnailHandle = content.thumbnail ?? content.source;
-  const { data: thumbSrc } = useMediaSource(thumbnailHandle, { thumbnail: true });
+  const { data: thumbSrc } = useMediaSource(roomId, eventId, { thumbnail: true });
 
   return (
     <>
       <button
         type="button"
-        aria-label={`Open image ${content.body}`}
+        aria-label={`Open image ${alt}`}
         onClick={() => setLightboxOpen(true)}
         className="block max-w-70 overflow-hidden rounded-md border border-border"
       >
         {thumbSrc ? (
-          <img src={thumbSrc} alt={content.body} className="max-h-70 w-full object-cover" />
+          <img src={thumbSrc} alt={alt} className="max-h-70 w-full object-cover" />
         ) : (
           <div className="h-40 w-70 animate-pulse bg-secondary" />
         )}
@@ -79,36 +89,40 @@ function ImageThumbnail({
       <Lightbox
         open={lightboxOpen}
         onOpenChange={setLightboxOpen}
-        source={content.source}
+        roomId={roomId}
+        eventId={eventId}
         kind="image"
-        alt={content.body}
+        alt={alt}
       />
     </>
   );
 }
 
 function VideoThumbnail({
-  content,
+  alt,
+  roomId,
+  eventId,
   lightboxOpen,
   setLightboxOpen,
 }: {
-  content: Extract<MessageContent, { type: "Video" }>;
+  alt: string;
+  roomId: string;
+  eventId: string;
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
 }) {
-  const thumbnailHandle = content.thumbnail;
-  const { data: thumbSrc } = useMediaSource(thumbnailHandle, { thumbnail: true });
+  const { data: thumbSrc } = useMediaSource(roomId, eventId, { thumbnail: true });
 
   return (
     <>
       <button
         type="button"
-        aria-label={`Play video ${content.body}`}
+        aria-label={`Play video ${alt}`}
         onClick={() => setLightboxOpen(true)}
         className="relative block max-w-70 overflow-hidden rounded-md border border-border"
       >
         {thumbSrc ? (
-          <img src={thumbSrc} alt={content.body} className="max-h-70 w-full object-cover" />
+          <img src={thumbSrc} alt={alt} className="max-h-70 w-full object-cover" />
         ) : (
           <div className="h-40 w-70 animate-pulse bg-secondary" />
         )}
@@ -119,9 +133,10 @@ function VideoThumbnail({
       <Lightbox
         open={lightboxOpen}
         onOpenChange={setLightboxOpen}
-        source={content.source}
+        roomId={roomId}
+        eventId={eventId}
         kind="video"
-        alt={content.body}
+        alt={alt}
       />
     </>
   );

@@ -13,9 +13,12 @@ const PLACEHOLDER_IMAGE =
     ),
   );
 
+const ROOM_ID = "!story:localhost";
+const EVENT_ID = "$story-lightbox";
+
 function withSeededMedia() {
   const client = new QueryClient();
-  client.setQueryData(["media", "story-lightbox-handle", false], PLACEHOLDER_IMAGE);
+  client.setQueryData(["media", ROOM_ID, EVENT_ID, false], PLACEHOLDER_IMAGE);
   return client;
 }
 
@@ -42,7 +45,8 @@ function LightboxDemo() {
       <Lightbox
         open={open}
         onOpenChange={setOpen}
-        source="story-lightbox-handle"
+        roomId={ROOM_ID}
+        eventId={EVENT_ID}
         kind="image"
         alt="A sample image in the lightbox"
       />
@@ -54,7 +58,8 @@ export const Default: Story = {
   args: {
     open: true,
     onOpenChange: () => {},
-    source: "story-lightbox-handle",
+    roomId: ROOM_ID,
+    eventId: EVENT_ID,
     kind: "image",
     alt: "A sample image in the lightbox",
   },

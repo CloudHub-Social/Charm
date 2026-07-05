@@ -21,7 +21,14 @@ function renderWithClient(ui: ReactNode) {
 describe("Lightbox", () => {
   it("renders the image and title when open", async () => {
     renderWithClient(
-      <Lightbox open onOpenChange={() => {}} source="handle-1" kind="image" alt="A cat photo" />,
+      <Lightbox
+        open
+        onOpenChange={() => {}}
+        roomId="!room:localhost"
+        eventId="$event"
+        kind="image"
+        alt="A cat photo"
+      />,
     );
 
     await waitFor(() => expect(screen.getByAltText("A cat photo")).toBeInTheDocument());
@@ -33,7 +40,8 @@ describe("Lightbox", () => {
       <Lightbox
         open={false}
         onOpenChange={() => {}}
-        source="handle-1"
+        roomId="!room:localhost"
+        eventId="$event"
         kind="image"
         alt="A cat photo"
       />,
@@ -47,7 +55,8 @@ describe("Lightbox", () => {
       <Lightbox
         open
         onOpenChange={onOpenChange}
-        source="handle-1"
+        roomId="!room:localhost"
+        eventId="$event"
         kind="image"
         alt="A cat photo"
       />,
@@ -64,7 +73,8 @@ describe("Lightbox", () => {
       <Lightbox
         open
         onOpenChange={() => {}}
-        source="handle-1"
+        roomId="!room:localhost"
+        eventId="$event"
         kind="image"
         alt="A cat photo"
         onNext={onNext}

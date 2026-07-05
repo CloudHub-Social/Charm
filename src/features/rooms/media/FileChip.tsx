@@ -7,13 +7,14 @@ interface FileChipProps {
   filename: string;
   mime?: string | null;
   size?: number | null;
-  source: string;
+  roomId: string;
+  eventId: string;
   className?: string;
 }
 
 /** Generic-file attachment rendered as a download chip: filename + size, click to open/save. */
-export function FileChip({ filename, size, source, className }: FileChipProps) {
-  const { data: href, isLoading } = useMediaSource(source);
+export function FileChip({ filename, size, roomId, eventId, className }: FileChipProps) {
+  const { data: href, isLoading } = useMediaSource(roomId, eventId);
 
   return (
     <a

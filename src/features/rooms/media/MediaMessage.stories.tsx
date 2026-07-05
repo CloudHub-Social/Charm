@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { MessageContent } from "@/lib/matrix";
+import type { MediaContent } from "@/lib/matrix";
 import { MediaMessage } from "./MediaMessage";
 
 /**
@@ -8,13 +8,15 @@ import { MediaMessage } from "./MediaMessage";
  * IPC call has nothing to resolve against. Rather than mocking the module
  * (not supported the same way vitest's `vi.mock` is, in a Storybook static
  * build), each story pre-seeds a fresh `QueryClient`'s cache directly for the
- * exact `["media", handle, thumbnail]` key `useMediaSource` reads — same
- * effect as a resolved IPC call, no network/Tauri dependency.
+ * exact `["media", roomId, eventId, thumbnail]` key `useMediaSource` reads —
+ * same effect as a resolved IPC call, no network/Tauri dependency.
  */
-function withSeededMedia(entries: { handle: string; thumbnail: boolean; url: string }[]) {
+function withSeededMedia(
+  entries: { roomId: string; eventId: string; thumbnail: boolean; url: string }[],
+) {
   const client = new QueryClient();
-  for (const { handle, thumbnail, url } of entries) {
-    client.setQueryData(["media", handle, thumbnail], url);
+  for (const { roomId, eventId, thumbnail, url } of entries) {
+    client.setQueryData(["media", roomId, eventId, thumbnail], url);
   }
   return client;
 }
@@ -29,6 +31,8 @@ const PLACEHOLDER_IMAGE =
     ),
   );
 
+const ROOM_ID = "!story:localhost";
+
 const meta = {
   title: "Rooms/MediaMessage",
   component: MediaMessage,
@@ -39,63 +43,72 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Image: Story = {
-  args: { content: { type: "Text", body: "" } },
+  args: {
+    content: { type: "File", filename: "", mime: null, size: null },
+    roomId: "",
+    eventId: "",
+    body: "",
+  },
   render: () => {
-    const content: MessageContent = {
+    const content: MediaContent = {
       type: "Image",
-      body: "cat.png",
-      source: "story-image-handle",
       mime: "image/png",
       size: 245_000,
       width: 800,
       height: 600,
-      thumbnail: null,
+      has_thumbnail: true,
       blurhash: null,
     };
     const client = withSeededMedia([
-      { handle: "story-image-handle", thumbnail: true, url: PLACEHOLDER_IMAGE },
-      { handle: "story-image-handle", thumbnail: false, url: PLACEHOLDER_IMAGE },
+      { roomId: ROOM_ID, eventId: "$story-image", thumbnail: true, url: PLACEHOLDER_IMAGE },
+      { roomId: ROOM_ID, eventId: "$story-image", thumbnail: false, url: PLACEHOLDER_IMAGE },
     ]);
     return (
       <QueryClientProvider client={client}>
-        <MediaMessage content={content} />
+        <MediaMessage content={content} roomId={ROOM_ID} eventId="$story-image" body="cat.png" />
       </QueryClientProvider>
     );
   },
 };
 
 export const Video: Story = {
-  args: { content: { type: "Text", body: "" } },
+  args: {
+    content: { type: "File", filename: "", mime: null, size: null },
+    roomId: "",
+    eventId: "",
+    body: "",
+  },
   render: () => {
-    const content: MessageContent = {
+    const content: MediaContent = {
       type: "Video",
-      body: "clip.mp4",
-      source: "story-video-handle",
       mime: "video/mp4",
       size: 5_400_000,
       width: 1920,
       height: 1080,
       duration_ms: 12_000,
-      thumbnail: "story-video-thumb-handle",
+      has_thumbnail: true,
     };
     const client = withSeededMedia([
-      { handle: "story-video-thumb-handle", thumbnail: true, url: PLACEHOLDER_IMAGE },
+      { roomId: ROOM_ID, eventId: "$story-video", thumbnail: true, url: PLACEHOLDER_IMAGE },
     ]);
     return (
       <QueryClientProvider client={client}>
-        <MediaMessage content={content} />
+        <MediaMessage content={content} roomId={ROOM_ID} eventId="$story-video" body="clip.mp4" />
       </QueryClientProvider>
     );
   },
 };
 
 export const Audio: Story = {
-  args: { content: { type: "Text", body: "" } },
+  args: {
+    content: { type: "File", filename: "", mime: null, size: null },
+    roomId: "",
+    eventId: "",
+    body: "",
+  },
   render: () => {
-    const content: MessageContent = {
+    const content: MediaContent = {
       type: "Audio",
-      body: "voice-memo.ogg",
-      source: "story-audio-handle",
       mime: "audio/ogg",
       size: 89_000,
       duration_ms: 8_000,
@@ -103,26 +116,40 @@ export const Audio: Story = {
     const client = new QueryClient();
     return (
       <QueryClientProvider client={client}>
-        <MediaMessage content={content} />
+        <MediaMessage
+          content={content}
+          roomId={ROOM_ID}
+          eventId="$story-audio"
+          body="voice-memo.ogg"
+        />
       </QueryClientProvider>
     );
   },
 };
 
 export const FileAttachment: Story = {
-  args: { content: { type: "Text", body: "" } },
+  args: {
+    content: { type: "File", filename: "", mime: null, size: null },
+    roomId: "",
+    eventId: "",
+    body: "",
+  },
   render: () => {
-    const content: MessageContent = {
+    const content: MediaContent = {
       type: "File",
-      body: "quarterly-report.pdf",
-      source: "story-file-handle",
+      filename: "quarterly-report.pdf",
       mime: "application/pdf",
       size: 1_240_000,
     };
     const client = new QueryClient();
     return (
       <QueryClientProvider client={client}>
-        <MediaMessage content={content} />
+        <MediaMessage
+          content={content}
+          roomId={ROOM_ID}
+          eventId="$story-file"
+          body="quarterly-report.pdf"
+        />
       </QueryClientProvider>
     );
   },

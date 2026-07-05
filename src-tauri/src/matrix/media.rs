@@ -4,20 +4,13 @@
 //! Design (see Spec 02 — Media and attachments):
 //! - Frontend never sees raw media bytes, encryption keys, or ciphertext. It
 //!   only ever gets a local filesystem path (loaded via Tauri's asset
-//!   protocol / `convertFileSrc`), or an opaque [`MediaHandle`] string it can
-//!   hand back to [`MediaCache::resolve_handle`] / [`resolve`] /
-//!   [`resolve_avatar_thumbnail`].
-//! - `MediaHandle` is a SHA-256 hash (hex) of the serialized `MediaSource`,
-//!   used purely as a lookup key into an in-process [`MediaCache`] registry
-//!   that holds the real `MediaSource` (`Plain(mxc_uri)` or
-//!   `Encrypted(Box<EncryptedFile>)`) server-side. Earlier revisions of this
-//!   module base64-encoded the serialized `MediaSource` itself as the
-//!   handle — for `Encrypted` sources that meant the AES key inside
-//!   `EncryptedFile` was trivially recoverable by decoding the handle
-//!   client-side, defeating the "keys never cross IPC" goal. A one-way hash
-//!   used only as a map key, with the actual source resolved server-side in
-//!   `resolve_handle`, closes that hole: nothing decodable ever reaches the
-//!   frontend.
+//!   protocol / `convertFileSrc`). The frontend resolves media by the plain
+//!   `(room_id, event_id)` pair it already has from `RoomMessageSummary` —
+//!   `resolve_media` (in `mod.rs`) re-fetches that event server-side and
+//!   pulls the real `MediaSource` (`Plain(mxc_uri)` or
+//!   `Encrypted(Box<EncryptedFile>)`) out of it, so no encoded/opaque form of
+//!   the source (which for `Encrypted` sources would include the AES key)
+//!   ever needs to cross IPC at all.
 //! - Cache is a flat directory of files named by a hash of `(mxc, format)`,
 //!   indexed by an in-memory `BTreeMap` rebuilt from a directory scan at
 //!   startup (simplest option, per the spec's own open question — no
@@ -30,7 +23,7 @@
 //!   mtime is refreshed on cache hits (not just writes) so the policy is a
 //!   true LRU (least-recently-*used*) rather than least-recently-*written*.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -50,18 +43,6 @@ pub const MAX_ENTRY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// When over the size budget, evict (at least) this fraction of entries,
 /// oldest-mtime-first.
 const EVICT_FRACTION: f64 = 0.10;
-
-/// Opaque lookup key into [`MediaCache`]'s in-process source registry —
-/// never decodable back into a `MediaSource` by the frontend; see the
-/// module doc comment.
-pub type MediaHandle = String;
-
-fn hash_media_source(source: &MediaSource) -> Result<MediaHandle, String> {
-    let json = serde_json::to_vec(source).map_err(|e| e.to_string())?;
-    let mut hasher = Sha256::new();
-    hasher.update(&json);
-    Ok(hex_encode(&hasher.finalize()))
-}
 
 /// Which flavor of media to resolve — full file, or a thumbnail at a given
 /// size.
@@ -102,13 +83,6 @@ struct CacheEntry {
 pub struct MediaCache {
     dir: PathBuf,
     index: Mutex<BTreeMap<String, CacheEntry>>,
-    /// Server-side registry backing [`MediaHandle`]s: handle (a one-way hash)
-    /// → the real `MediaSource` it stands for, including any `EncryptedFile`
-    /// key material. Never serialized to the frontend as a whole — only
-    /// individual handles (the map keys) cross IPC. See the module doc
-    /// comment for why this replaced encoding the source directly into the
-    /// handle.
-    sources: Mutex<HashMap<MediaHandle, MediaSource>>,
 }
 
 impl MediaCache {
@@ -116,37 +90,11 @@ impl MediaCache {
         Self {
             dir,
             index: Mutex::new(BTreeMap::new()),
-            sources: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
-    }
-
-    /// Registers `source` and returns its (deterministic) [`MediaHandle`].
-    /// Safe to call repeatedly for the same source — it's idempotent, not
-    /// append-only.
-    pub async fn register_source(&self, source: MediaSource) -> MediaHandle {
-        let handle = hash_media_source(&source).unwrap_or_default();
-        self.sources
-            .lock()
-            .await
-            .entry(handle.clone())
-            .or_insert(source);
-        handle
-    }
-
-    /// Resolves a previously registered [`MediaHandle`] back to its
-    /// `MediaSource`. Unknown handles (stale, forged, or from a different
-    /// process run) fail closed rather than guessing.
-    pub async fn resolve_handle(&self, handle: &str) -> Result<MediaSource, String> {
-        self.sources
-            .lock()
-            .await
-            .get(handle)
-            .cloned()
-            .ok_or_else(|| "unknown media handle".to_string())
     }
 
     /// Scans `dir` and rebuilds the in-memory index, then immediately runs
@@ -367,45 +315,6 @@ mod tests {
 
     fn plain_source(mxc: &str) -> MediaSource {
         MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from(mxc))
-    }
-
-    #[tokio::test]
-    async fn handle_round_trips_a_plain_source_through_the_registry() {
-        let cache = MediaCache::new(tempfile_dir());
-        let source = plain_source("mxc://example.org/abc123");
-        let handle = cache.register_source(source.clone()).await;
-        let resolved = cache.resolve_handle(&handle).await.unwrap();
-        assert_eq!(
-            resolved.unique_key_for_cache(),
-            source.unique_key_for_cache()
-        );
-    }
-
-    #[tokio::test]
-    async fn unknown_handle_fails_to_resolve() {
-        let cache = MediaCache::new(tempfile_dir());
-        assert!(cache.resolve_handle("not-a-real-handle").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn handle_is_a_hash_not_a_decodable_encoding_of_the_source() {
-        // Regression guard for the vulnerability this replaced: an earlier
-        // revision base64-encoded the serialized `MediaSource` (including,
-        // for `Encrypted` sources, the AES key) directly into the handle, so
-        // decoding the handle client-side recovered it. A handle produced
-        // now must be a fixed-length SHA-256 hex digest — structurally
-        // incapable of being decoded back into anything — regardless of how
-        // long or distinctive the underlying source's URI is.
-        let cache = MediaCache::new(tempfile_dir());
-        let source = plain_source(
-            "mxc://example.org/a-distinctively-long-and-recognizable-media-identifier",
-        );
-        let handle = cache.register_source(source).await;
-
-        assert_eq!(handle.len(), 64);
-        assert!(handle.chars().all(|c| c.is_ascii_hexdigit()));
-        assert!(!handle.contains("example.org"));
-        assert!(!handle.contains("distinctively"));
     }
 
     #[tokio::test]

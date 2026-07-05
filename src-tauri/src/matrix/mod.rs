@@ -1,5 +1,8 @@
+pub mod actions;
+pub mod ephemeral;
 pub mod media;
 pub mod persistence;
+pub mod presence;
 pub mod qr_login;
 pub mod send;
 pub mod timeline;
@@ -10,7 +13,7 @@ use matrix_sdk::ruma::api::client::account::register;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
-use matrix_sdk::{Client, LoopCtrl};
+use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -68,6 +71,14 @@ pub struct MatrixState {
     /// swap above: the cache directory doesn't depend on which account is
     /// logged in, and outlives any single `Client`.
     pub(crate) media_cache: tokio::sync::OnceCell<media::MediaCache>,
+    /// The presence state the *next* `/sync` request should report, kept in
+    /// sync with the last successful `set_presence` call. `spawn_sync_loop`
+    /// reads this fresh on every iteration (rather than baking a single
+    /// `SyncSettings::default()` — which always reports `Online` — into one
+    /// long-lived `sync_with_callback` call) so an explicit `unavailable`/
+    /// `offline` choice actually sticks across syncs instead of being
+    /// silently reverted to online by the next long-poll.
+    pub(crate) sync_presence: std::sync::Mutex<presence::PresenceStateDto>,
 }
 
 impl MatrixState {
@@ -603,32 +614,82 @@ pub async fn resolve_alias(client: &Client, alias: &str) -> Result<String, Strin
     Ok(response.room_id.to_string())
 }
 
-/// Resolves a [`media::MediaHandle`] (opaque, produced by
-/// `timeline::events_to_summaries`) to a local cache path, fetching and
-/// decrypting on a cache miss. `thumbnail` requests a 256x256 scaled
-/// thumbnail instead of the full file — callers pick based on where the
-/// media is being rendered (message-list thumbnail vs. lightbox full view).
+/// Resolves the media attached to `event_id` (an image/video/audio/file
+/// `m.room.message`) to a local cache path, fetching and decrypting on a
+/// cache miss. `thumbnail` requests a 256x256 scaled thumbnail instead of the
+/// full file — callers pick based on where the media is being rendered
+/// (message-list thumbnail vs. lightbox full view).
+///
+/// No opaque handle crosses IPC: the frontend passes back the plain
+/// `(room_id, event_id)` it already has from `RoomMessageSummary`, and this
+/// command re-derives the real `MediaSource` — including, for encrypted
+/// media, the `EncryptedFile`'s AES key — by re-fetching the event
+/// server-side. The key never leaves this function.
 #[tauri::command]
 pub async fn resolve_media(
     app: AppHandle,
     state: State<'_, MatrixState>,
-    handle: String,
+    room_id: String,
+    event_id: String,
     thumbnail: bool,
 ) -> Result<String, String> {
     let client = state.require_client().await?;
     let cache = state.require_media_cache(&app).await?;
-    let source = cache.resolve_handle(&handle).await?;
 
-    let kind = if thumbnail {
-        media::MediaKind::Thumbnail {
-            width: 256,
-            height: 256,
+    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+
+    let event = room
+        .event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let raw = event.kind.raw();
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
+        raw.deserialize().map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return Err(format!("event {event_id} is not an m.room.message"));
+    };
+    let original = msg
+        .as_original()
+        .ok_or_else(|| format!("event {event_id} has been redacted"))?;
+
+    let (source, thumbnail_source) = match &original.content.msgtype {
+        matrix_sdk::ruma::events::room::message::MessageType::Image(image) => (
+            image.source.clone(),
+            image.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Video(video) => (
+            video.source.clone(),
+            video.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+            (audio.source.clone(), None)
         }
-    } else {
-        media::MediaKind::File
+        matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+            (file.source.clone(), None)
+        }
+        _ => return Err(format!("event {event_id} has no media")),
     };
 
-    let path = media::resolve(cache, &client, source, kind).await?;
+    let (resolved_source, kind) = if thumbnail {
+        (
+            thumbnail_source.unwrap_or(source),
+            media::MediaKind::Thumbnail {
+                width: 256,
+                height: 256,
+            },
+        )
+    } else {
+        (source, media::MediaKind::File)
+    };
+
+    let path = media::resolve(cache, &client, resolved_source, kind).await?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -644,62 +705,203 @@ fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         .collect()
 }
 
+/// Bridges matrix-rust-sdk's global send-queue update channel to a
+/// `send_queue:update` Tauri event per room, so local echoes for
+/// edit/react/reply/send can flip pending -> sent -> error without a full
+/// timeline diff. Spawned once per login/session-restore alongside the sync
+/// loop, for the lifetime of the session.
+fn spawn_send_queue_listener(app: AppHandle, client: Client) {
+    use matrix_sdk::send_queue::RoomSendQueueUpdate;
+
+    let mut receiver = client.send_queue().subscribe();
+    tokio::spawn(async move {
+        loop {
+            let update = match receiver.recv().await {
+                Ok(update) => update,
+                // A burst of local send-queue activity can outrun this
+                // receiver and drop some updates — that's not the channel
+                // closing, just lag, so keep listening for whatever comes
+                // next rather than silently stopping `send_queue:update`
+                // for the rest of the session.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            let room_id = update.room_id.to_string();
+            let send_state = match update.update {
+                RoomSendQueueUpdate::NewLocalEvent(echo) => Some((
+                    echo.transaction_id.to_string(),
+                    timeline::SendState::Pending,
+                )),
+                RoomSendQueueUpdate::SendError {
+                    transaction_id,
+                    error,
+                    ..
+                } => Some((
+                    transaction_id.to_string(),
+                    timeline::SendState::Error {
+                        message: error.to_string(),
+                    },
+                )),
+                RoomSendQueueUpdate::RetryEvent { transaction_id } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Pending))
+                }
+                RoomSendQueueUpdate::SentEvent { transaction_id, .. } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Sent))
+                }
+                RoomSendQueueUpdate::CancelledLocalEvent { .. }
+                | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+                | RoomSendQueueUpdate::MediaUpload { .. } => None,
+            };
+
+            if let Some((transaction_id, send_state)) = send_state {
+                let _ = app.emit(
+                    "send_queue:update",
+                    actions::SendQueueUpdateEvent {
+                        room_id: room_id.clone(),
+                        transaction_id,
+                        send_state,
+                    },
+                );
+            }
+        }
+    });
+}
+
+/// Emits `timeline:update`/`receipts:update`/`typing:update` for every joined
+/// room in one sync response. Shared by the initial `sync_once` (whose
+/// response can already carry ephemeral events — e.g. receipts left over from
+/// a prior session — and would otherwise be silently dropped) and every
+/// iteration of the long-running `sync_with_callback` loop.
+fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sync::SyncResponse) {
+    let own_user_id = client.user_id();
+    for (room_id, update) in &response.rooms.joined {
+        let messages = timeline::events_to_summaries(&update.timeline.events, own_user_id);
+        if !messages.is_empty() {
+            let _ = app.emit(
+                "timeline:update",
+                timeline::RoomTimelineUpdate {
+                    room_id: room_id.to_string(),
+                    messages,
+                },
+            );
+        }
+
+        let mut receipts = Vec::new();
+        for raw_event in &update.ephemeral {
+            let Ok(event) = raw_event.deserialize() else {
+                continue;
+            };
+            match event {
+                matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent::Receipt(receipt_event) => {
+                    receipts.extend(ephemeral::receipt_content_to_updates(
+                        &receipt_event.content,
+                    ));
+                }
+                matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent::Typing(typing_event) => {
+                    let user_ids =
+                        ephemeral::typing_content_to_user_ids(&typing_event.content, own_user_id);
+                    let _ = app.emit(
+                        "typing:update",
+                        ephemeral::TypingUpdate {
+                            room_id: room_id.to_string(),
+                            user_ids,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+        if !receipts.is_empty() {
+            let _ = app.emit(
+                "receipts:update",
+                ephemeral::ReceiptUpdate {
+                    room_id: room_id.to_string(),
+                    receipts,
+                },
+            );
+        }
+    }
+}
+
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
+    spawn_send_queue_listener(app.clone(), client.clone());
+    presence::register_presence_handler(app.clone(), &client);
+
+    // Best-effort: some homeservers disable presence entirely, and a failure
+    // here shouldn't ever block or fail login/session-restore.
+    {
+        let client = client.clone();
+        tokio::spawn(async move {
+            let _ = presence::set_presence_online(&client).await;
+        });
+    }
 
     tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
 
         // Establish initial sync state before entering the long-running loop below.
-        if let Err(e) = client.sync_once(SyncSettings::default()).await {
-            let _ = app.emit(
-                "sync:state",
-                SyncStateEvent::Error {
-                    message: e.to_string(),
-                },
-            );
-            return;
-        }
+        let initial_response = match client.sync_once(SyncSettings::default()).await {
+            Ok(response) => response,
+            Err(e) => {
+                let _ = app.emit(
+                    "sync:state",
+                    SyncStateEvent::Error {
+                        message: e.to_string(),
+                    },
+                );
+                return;
+            }
+        };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
         let _ = app.emit("room_list:update", snapshot_rooms(&client));
+        emit_room_updates(&app, &client, &initial_response);
 
-        let result = client
-            .sync_with_callback(SyncSettings::default(), |response| {
-                let app = app.clone();
-                let client = client.clone();
-                async move {
+        // A manual loop, not `sync_with_callback` — that method only honors
+        // the `SyncSettings` passed to its *first* call for the whole
+        // lifetime of the loop (only `timeout` is adjusted internally after
+        // that), so a presence change made mid-session via `set_presence`
+        // would otherwise be silently reverted to `Online` on the very next
+        // long-poll. `SyncToken::ReusePrevious` (the default) means each
+        // `sync_once` still picks up from the client's stored sync token, so
+        // this preserves the exact continuation behavior `sync_with_callback`
+        // provided — including, for parity, that it does *not* retry a
+        // `sync_once` failure at the application level either (it has no
+        // callback path for errors; see `Client::sync_with_result_callback`,
+        // which just propagates the first `Err` and stops). But relying on
+        // that parity alone means a single transient network blip kills sync
+        // for the rest of the session, so this loop adds its own bounded
+        // retry with backoff on top: consecutive failures back off up to 30s
+        // and only give up (matching the old terminal behavior) after
+        // `MAX_CONSECUTIVE_SYNC_FAILURES` in a row.
+        const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
+        let mut consecutive_failures: u32 = 0;
+        loop {
+            let presence = *app.state::<MatrixState>().sync_presence.lock().unwrap();
+            let settings = SyncSettings::default().set_presence(presence.into());
+            match client.sync_once(settings).await {
+                Ok(response) => {
+                    consecutive_failures = 0;
                     let _ = app.emit("room_list:update", snapshot_rooms(&client));
-
-                    let matrix_state = app.state::<MatrixState>();
-                    let cache = matrix_state.require_media_cache(&app).await;
-                    if let Ok(cache) = cache {
-                        for (room_id, update) in &response.rooms.joined {
-                            let messages =
-                                timeline::events_to_summaries(&update.timeline.events, cache).await;
-                            if !messages.is_empty() {
-                                let _ = app.emit(
-                                    "timeline:update",
-                                    timeline::RoomTimelineUpdate {
-                                        room_id: room_id.to_string(),
-                                        messages,
-                                    },
-                                );
-                            }
-                        }
-                    }
-
-                    LoopCtrl::Continue
+                    emit_room_updates(&app, &client, &response);
                 }
-            })
-            .await;
-
-        if let Err(e) = result {
-            let _ = app.emit(
-                "sync:state",
-                SyncStateEvent::Error {
-                    message: e.to_string(),
-                },
-            );
+                Err(e) => {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
+                    // Exponential backoff (1s, 2s, 4s, ... capped at 30s) before
+                    // retrying, rather than hammering a struggling homeserver.
+                    let backoff_secs = 1u64 << (consecutive_failures - 1).min(4);
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs.min(30))).await;
+                }
+            }
         }
     });
 }
