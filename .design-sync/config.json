@@ -1,0 +1,22 @@
+{
+  "projectId": "82fcc48e-45b8-4e8f-9496-83645ae4236a",
+  "shape": "storybook",
+  "pkg": "charm",
+  "globalName": "Charm",
+  "storybookConfigDir": ".storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "tsconfig": "tsconfig.json",
+  "entry": ".design-sync/ds-entry.ts",
+  "buildCmd": "node .design-sync/gen-types.mjs",
+  "readmeHeader": ".design-sync/conventions.md",
+  "libOverrides": {
+    "css-fallback.mjs": "Charm is dark-first; append a card-only dark canvas (.ds-grid/.ds-cell/.ds-single) to the scraped CSS so picker cards match the storybook reference and light-on-transparent content stays legible. Real designs untouched."
+  },
+  "overrides": {
+    "Dialog": { "cardMode": "single", "primaryStory": "Default" },
+    "DropdownMenu": { "cardMode": "single", "primaryStory": "Default" },
+    "Popover": { "cardMode": "single", "primaryStory": "Default" },
+    "Tooltip": { "cardMode": "single", "primaryStory": "Default" },
+    "Tabs": { "cardMode": "column" }
+  }
+}

@@ -1,18 +1,21 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
 import type {
   ReactionToggleResult,
+  ReceiptUpdate,
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
   SendQueueUpdateEvent,
+  TypingUpdate,
 } from "@/lib/matrix";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
-// timeline:update / send_queue:update listeners) — mock lib/matrix entirely
-// so the test exercises only the component, not a real Tauri backend.
+// timeline:update / send_queue:update / receipts:update / typing:update
+// listeners, mark_room_read) — mock lib/matrix entirely so the test exercises
+// only the component, not a real Tauri backend.
 const getTimelinePage = vi.fn();
 const sendMessage = vi.fn().mockResolvedValue("txn-1");
 const sendReply = vi.fn().mockResolvedValue("txn-1");
@@ -20,9 +23,13 @@ const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
 const canRedact = vi.fn().mockResolvedValue(true);
+const markRoomRead = vi.fn().mockResolvedValue(undefined);
+const sendTyping = vi.fn().mockResolvedValue(undefined);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let sendQueueUpdateCallback: ((update: SendQueueUpdateEvent) => void) | undefined;
+let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
+let typingCallback: ((update: TypingUpdate) => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
   getTimelinePage: (...args: unknown[]) => getTimelinePage(...args),
@@ -32,12 +39,22 @@ vi.mock("@/lib/matrix", () => ({
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
   canRedact: (...args: unknown[]) => canRedact(...args),
+  markRoomRead: (...args: unknown[]) => markRoomRead(...args),
+  sendTyping: (...args: unknown[]) => sendTyping(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
     timelineUpdateCallback = callback;
     return Promise.resolve(() => {});
   }),
   onSendQueueUpdate: vi.fn((callback: (update: SendQueueUpdateEvent) => void) => {
     sendQueueUpdateCallback = callback;
+    return Promise.resolve(() => {});
+  }),
+  onReceiptsUpdate: vi.fn((callback: (update: ReceiptUpdate) => void) => {
+    receiptsCallback = callback;
+    return Promise.resolve(() => {});
+  }),
+  onTypingUpdate: vi.fn((callback: (update: TypingUpdate) => void) => {
+    typingCallback = callback;
     return Promise.resolve(() => {});
   }),
 }));
@@ -47,6 +64,24 @@ const room: RoomSummary = {
   name: "general",
   unread_count: 0,
 };
+
+/** Minimal-but-complete `RoomMessageSummary` for tests that don't care about
+ * edit/reaction/reply/send-state fields — fills them with inert defaults. */
+function summary(
+  overrides: Partial<RoomMessageSummary> & Pick<RoomMessageSummary, "event_id" | "sender" | "body">,
+): RoomMessageSummary {
+  return {
+    formatted_body: null,
+    timestamp_ms: 1,
+    edited: false,
+    redacted: false,
+    reactions: [],
+    in_reply_to: null,
+    transaction_id: null,
+    send_state: { state: "sent" },
+    ...overrides,
+  };
+}
 
 function renderChatShell() {
   const store = createStore();
@@ -69,8 +104,22 @@ describe("ChatShell", () => {
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
     toggleReaction.mockReset();
+    markRoomRead.mockReset().mockResolvedValue(undefined);
+    sendTyping.mockReset().mockResolvedValue(undefined);
     timelineUpdateCallback = undefined;
     sendQueueUpdateCallback = undefined;
+    receiptsCallback = undefined;
+    typingCallback = undefined;
+  });
+
+  it("prompts to select a room when none is active", () => {
+    render(<ChatShell room={null} currentUserId="@me:localhost" />);
+    expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
+  });
+
+  it("marks the room read once it becomes active", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
   it("flips a bubble from pending to sent when a send_queue:update arrives", async () => {
@@ -128,19 +177,14 @@ describe("ChatShell", () => {
     await screen.findByText(/sending…/);
     expect(document.getElementById("message-txn-1")).toBeInTheDocument();
 
-    const realMessage: RoomMessageSummary = {
+    const realMessage = summary({
       event_id: "$real:localhost",
       sender: "@me:localhost",
       body: "hello",
-      formatted_body: null,
       timestamp_ms: Date.now(),
-      edited: false,
-      redacted: false,
-      reactions: [],
-      in_reply_to: null,
       transaction_id: "txn-1",
       send_state: { state: "sent" },
-    };
+    });
     timelineUpdateCallback?.({ room_id: room.room_id, messages: [realMessage] });
 
     // Exactly one "hello" bubble remains — the real event replaced the echo
@@ -156,19 +200,13 @@ describe("ChatShell", () => {
     toggleReaction.mockResolvedValue({ action: "added" });
     getTimelinePage.mockResolvedValue({
       messages: [
-        {
+        summary({
           event_id: "$msg:localhost",
           sender: "@alice:localhost",
           body: "hi",
-          formatted_body: null,
           timestamp_ms: Date.now(),
-          edited: false,
-          redacted: false,
           reactions: [{ key: "👍", count: 1, reacted_by_me: false }],
-          in_reply_to: null,
-          transaction_id: null,
-          send_state: { state: "sent" },
-        },
+        }),
       ],
       next_cursor: null,
     });
@@ -177,5 +215,110 @@ describe("ChatShell", () => {
     fireEvent.click(await screen.findByRole("button", { name: /👍/ }));
 
     expect(toggleReaction).toHaveBeenCalledWith(room.room_id, "$msg:localhost", "👍");
+  });
+
+  it("renders a read-receipt avatar under the message a user last read", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@me:localhost", body: "hi", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "hey", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await vi.waitFor(() => expect(receiptsCallback).toBeDefined());
+
+    act(() => {
+      receiptsCallback?.({
+        room_id: room.room_id,
+        receipts: [
+          { event_id: "$b", user_id: "@alice:localhost", receipt_type: "read", ts_ms: 100 },
+        ],
+      });
+    });
+
+    await vi.waitFor(() => expect(screen.getAllByText("AL").length).toBeGreaterThan(1));
+  });
+
+  it("does not render a receipt avatar for the current user's own receipt", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@me:localhost", body: "hi", timestamp_ms: 1 }),
+        ],
+      });
+    });
+    await vi.waitFor(() => expect(receiptsCallback).toBeDefined());
+
+    act(() => {
+      receiptsCallback?.({
+        room_id: room.room_id,
+        receipts: [{ event_id: "$a", user_id: "@me:localhost", receipt_type: "read", ts_ms: 100 }],
+      });
+    });
+
+    expect(screen.queryByText("ME")).not.toBeInTheDocument();
+  });
+
+  it("shows a singular typing row for one other user", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+    act(() => {
+      typingCallback?.({ room_id: room.room_id, user_ids: ["@alice:localhost"] });
+    });
+
+    expect(await screen.findByText("@alice:localhost is typing…")).toBeInTheDocument();
+  });
+
+  it("pluralizes the typing row for two other users", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+    act(() => {
+      typingCallback?.({
+        room_id: room.room_id,
+        user_ids: ["@alice:localhost", "@bob:localhost"],
+      });
+    });
+
+    expect(
+      await screen.findByText("@alice:localhost and @bob:localhost are typing…"),
+    ).toBeInTheDocument();
+  });
+
+  it("summarizes three or more typing users", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+    act(() => {
+      typingCallback?.({
+        room_id: room.room_id,
+        user_ids: ["@alice:localhost", "@bob:localhost", "@carol:localhost"],
+      });
+    });
+
+    expect(
+      await screen.findByText("@alice:localhost, @bob:localhost, and 1 other are typing…"),
+    ).toBeInTheDocument();
+  });
+
+  it("filters the current user out of the typing row", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+    act(() => {
+      typingCallback?.({ room_id: room.room_id, user_ids: ["@me:localhost"] });
+    });
+
+    expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
   });
 });

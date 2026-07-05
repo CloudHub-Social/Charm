@@ -60,7 +60,12 @@ pub fn run() {
             matrix::verification::confirm_sas_verification,
             matrix::qr_login::start_qr_login,
             matrix::qr_login::submit_qr_check_code,
-            matrix::qr_login::cancel_qr_login
+            matrix::qr_login::cancel_qr_login,
+            matrix::ephemeral::send_read_receipt,
+            matrix::ephemeral::send_typing,
+            matrix::ephemeral::mark_room_read,
+            matrix::presence::set_presence,
+            matrix::presence::get_presence
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
