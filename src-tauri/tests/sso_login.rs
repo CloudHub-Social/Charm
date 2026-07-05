@@ -15,7 +15,7 @@
 
 mod common;
 
-use charm_lib::matrix::complete_sso_login_with_callback;
+use charm_lib::matrix::{complete_sso_login_with_callback, get_sso_login_url};
 use common::HOMESERVER;
 use matrix_sdk::Client;
 
@@ -129,7 +129,7 @@ async fn drive_sso_flow_to_callback_url(sso_login_url: &str) -> String {
         .await
         .expect("read callback page body");
 
-    let marker = format!("{REDIRECT_URL}?loginToken=");
+    let marker = format!("{REDIRECT_URL}?");
     let start = page
         .find(&marker)
         .expect("callback page links to charm://sso-callback");
@@ -137,7 +137,9 @@ async fn drive_sso_flow_to_callback_url(sso_login_url: &str) -> String {
     let end = rest
         .find('"')
         .expect("closing quote after the callback URL");
-    rest[..end].to_string()
+    // The link lives in an HTML href attribute, so multi-param query strings
+    // come back with their "&" separators HTML-entity-encoded.
+    rest[..end].replace("&amp;", "&")
 }
 
 #[tokio::test]
@@ -148,13 +150,23 @@ async fn sso_login_completes_with_a_real_working_session() {
         .await
         .expect("build client");
 
-    let sso_login_url = client
-        .matrix_auth()
-        .get_sso_login_url(REDIRECT_URL, Some("oidc-dex"))
+    // Uses charm_lib's own get_sso_login_url (not matrix_sdk's directly) so
+    // this test exercises the real redirect_url shape production code
+    // builds, including the `state` query param `complete_sso_login`
+    // verifies — the actual thing being proven here is that Synapse
+    // preserves that param through its whole redirect chain rather than
+    // stripping or reordering it, which is easy to assume wrong without a
+    // real end-to-end check.
+    let attempt_state = "test-attempt-state-12345";
+    let sso_login_url = get_sso_login_url(&client, attempt_state)
         .await
         .expect("get_sso_login_url succeeds");
 
     let callback_url = drive_sso_flow_to_callback_url(&sso_login_url).await;
+    assert!(
+        callback_url.contains(&format!("state={attempt_state}")),
+        "callback URL should still carry our state param: {callback_url}"
+    );
 
     complete_sso_login_with_callback(&client, &callback_url)
         .await
