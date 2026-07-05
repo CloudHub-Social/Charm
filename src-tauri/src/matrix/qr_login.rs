@@ -68,9 +68,12 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     // Guards against a double-start (e.g. a double click) leaving two login
     // tasks running concurrently, one of which would hold a stale
     // pending_qr_check_code no longer reachable from the frontend.
-    cancel_qr_login(app.state::<MatrixState>()).await?;
+    cancel_qr_login(app.clone(), app.state::<MatrixState>()).await?;
 
-    let client = super::build_client(&app, &homeserver_url).await?;
+    // The account isn't known until the OAuth device-code dance completes —
+    // open a temp store now and relocate it once the MXID is known.
+    let temp_key = persistence::temp_store_key();
+    let client = super::build_client(&app, &homeserver_url, &temp_key).await?;
 
     // Device-code grant only — this client only ever needs to be the "new
     // device" side of QR login, never a full browser-based OAuth login.
@@ -83,7 +86,9 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     let registration_data = ClientRegistrationData::new(metadata);
 
     let app_for_state = app.clone();
+    let temp_key_for_task = temp_key.clone();
     let task = tokio::spawn(async move {
+        let temp_key = temp_key_for_task;
         let oauth = client.oauth();
         let login = oauth
             .login_with_qr_code(Some(&registration_data))
@@ -151,9 +156,19 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     );
                     return;
                 };
-                if let Err(e) =
-                    persistence::save_oauth_session(client.homeserver().as_ref(), &session)
-                {
+                let account_key = persistence::account_key(session.user.meta.user_id.as_str());
+                if let Err(e) = persistence::relocate_store(&app, &temp_key, &account_key) {
+                    let _ = app.emit(
+                        "qr_login:progress",
+                        QrLoginProgressEvent::Error { message: e },
+                    );
+                    return;
+                }
+                if let Err(e) = persistence::save_oauth_session(
+                    &account_key,
+                    client.homeserver().as_ref(),
+                    &session,
+                ) {
                     let _ = app.emit(
                         "qr_login:progress",
                         QrLoginProgressEvent::Error { message: e },
@@ -165,7 +180,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // present in the keychain at a time. Best-effort — a failure
                 // here doesn't roll back the OAuth session that already
                 // succeeded and was just saved above.
-                let _ = persistence::clear_session();
+                let _ = persistence::clear_session(&account_key);
 
                 let response = LoginResponse {
                     user_id: session.user.meta.user_id.to_string(),
@@ -174,6 +189,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 
                 let state = app.state::<MatrixState>();
                 *state.client.lock().await = Some(client.clone());
+                *state.pending_qr_temp_store_key.lock().unwrap() = None;
                 spawn_sync_loop(app.clone(), client);
 
                 // The app-level completion event, emitted only now that the
@@ -185,6 +201,13 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 );
             }
             Err(e) => {
+                // The device-code dance itself failed (not cancelled) — no
+                // account was ever learned, so clean up the temp store here
+                // rather than leaving it for a future cancel/start to find.
+                let state = app.state::<MatrixState>();
+                if let Some(temp_key) = state.pending_qr_temp_store_key.lock().unwrap().take() {
+                    let _ = persistence::discard_temp_login_store(&app, &temp_key);
+                }
                 let _ = app.emit(
                     "qr_login:progress",
                     QrLoginProgressEvent::Error {
@@ -195,14 +218,13 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         }
     });
 
-    // Synchronous: no `.await` between `tokio::spawn` returning and this
-    // store, so a concurrent `cancel_qr_login` can never observe a moment
-    // where this attempt has started but has no stored handle to abort.
-    *app_for_state
-        .state::<MatrixState>()
-        .pending_qr_login_task
-        .lock()
-        .unwrap() = Some(task);
+    // Synchronous: no `.await` between `tokio::spawn` returning and these
+    // stores, so a concurrent `cancel_qr_login` can never observe a moment
+    // where this attempt has started but has no stored handle/key to clean
+    // up.
+    let matrix_state = app_for_state.state::<MatrixState>();
+    *matrix_state.pending_qr_login_task.lock().unwrap() = Some(task);
+    *matrix_state.pending_qr_temp_store_key.lock().unwrap() = Some(temp_key);
 
     Ok(())
 }
@@ -212,12 +234,18 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 /// background to abort — it just waits on a deep-link callback) and clears
 /// any pending check-code sender so a stale one can't be used later.
 #[tauri::command]
-pub async fn cancel_qr_login(state: State<'_, MatrixState>) -> Result<(), String> {
+pub async fn cancel_qr_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     let task = state.pending_qr_login_task.lock().unwrap().take();
     if let Some(task) = task {
         task.abort();
     }
     *state.pending_qr_check_code.lock().await = None;
+
+    let temp_key = state.pending_qr_temp_store_key.lock().unwrap().take();
+    if let Some(temp_key) = temp_key {
+        let _ = persistence::discard_temp_login_store(&app, &temp_key);
+    }
+
     Ok(())
 }
 

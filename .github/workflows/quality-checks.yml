@@ -125,7 +125,7 @@ jobs:
           fi
 
   rust-integration:
-    name: Rust (verification, alias-resolution, discovery/registration, SSO)
+    name: Rust (verification, alias-resolution, discovery/registration, SSO, persistence)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -139,6 +139,11 @@ jobs:
       # contributors — just against a shared, publicly-known throwaway login.
       TEST_MATRIX_USERNAME: ${{ secrets.CI_MATRIX_TEST_USERNAME || 'evie' }}
       TEST_MATRIX_PASSWORD: ${{ secrets.CI_MATRIX_TEST_PASSWORD || 'testpass123' }}
+      # A second, distinct account for tests/persistence_isolation.rs, which
+      # needs two genuinely different MXIDs to prove their stores don't
+      # collide (see common::test_username_2).
+      TEST_MATRIX_USERNAME_2: ${{ secrets.CI_MATRIX_TEST_USERNAME_2 || 'evie2' }}
+      TEST_MATRIX_PASSWORD_2: ${{ secrets.CI_MATRIX_TEST_PASSWORD_2 || 'testpass123' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -224,7 +229,16 @@ jobs:
           CONTAINER_NAME: synapse
         run: ./register-test-user.sh
 
-      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login
+      - name: Register second test user (tests/persistence_isolation.rs)
+        # Registration only, deliberately not the full register-test-user.sh
+        # (that also (re-)creates the shared #alias-test-room:localhost,
+        # which only the first account needs to own).
+        run: |
+          docker exec synapse register_new_matrix_user \
+            -u "$TEST_MATRIX_USERNAME_2" -p "$TEST_MATRIX_PASSWORD_2" --no-admin \
+            -c /data/homeserver.yaml http://localhost:8008
+
+      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation
 
       - name: Stop Synapse and Dex
         if: always()
