@@ -42,9 +42,16 @@ struct PendingSso {
     state: String,
 }
 
+/// How many rooms' live `matrix-sdk-ui` `Timeline`s are held open at once
+/// (see `MatrixState::get_or_create_timeline`) — bounds memory so visiting
+/// many rooms in one session doesn't grow the set of subscribed timelines
+/// (and their background listener tasks) without limit. LRU-evicted; the
+/// evicted `Arc<Timeline>`'s `Drop` tears down its background tasks once
+/// every clone (including any in-flight command still holding one) is gone.
+const MAX_LIVE_TIMELINES: usize = 20;
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing is a Phase 1 concern.
-#[derive(Default)]
 pub struct MatrixState {
     client: Mutex<Option<Client>>,
     /// Set by `start_sso_login`, consumed by `complete_sso_login`. Built
@@ -81,6 +88,29 @@ pub struct MatrixState {
     /// `offline` choice actually sticks across syncs instead of being
     /// silently reverted to online by the next long-poll.
     pub(crate) sync_presence: std::sync::Mutex<presence::PresenceStateDto>,
+    /// Live per-room `matrix-sdk-ui` `Timeline`s, built lazily the first time
+    /// a room is opened (`get_timeline_page`) and bounded to
+    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`.
+    timelines: Mutex<
+        lru::LruCache<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<matrix_sdk_ui::Timeline>>,
+    >,
+}
+
+impl Default for MatrixState {
+    fn default() -> Self {
+        Self {
+            client: Mutex::default(),
+            pending_sso: Mutex::default(),
+            pending_qr_check_code: Mutex::default(),
+            pending_qr_login_task: std::sync::Mutex::default(),
+            media_cache: tokio::sync::OnceCell::default(),
+            sync_presence: std::sync::Mutex::default(),
+            timelines: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(MAX_LIVE_TIMELINES)
+                    .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
+            )),
+        }
+    }
 }
 
 impl MatrixState {
@@ -90,6 +120,48 @@ impl MatrixState {
             .await
             .clone()
             .ok_or_else(|| "not logged in".to_string())
+    }
+
+    /// Returns the live `Timeline` for `room_id`, building (and spawning its
+    /// `timeline:update`-emitting listener task) on first use if it isn't
+    /// already held. Bounded LRU: opening more than [`MAX_LIVE_TIMELINES`]
+    /// distinct rooms in a session evicts the least-recently-opened one
+    /// rather than growing unbounded.
+    pub(crate) async fn get_or_create_timeline(
+        &self,
+        app: &AppHandle,
+        client: &Client,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
+        use matrix_sdk_ui::timeline::RoomExt as _;
+
+        if let Some(existing) = self.timelines.lock().await.get(room_id) {
+            return Ok(std::sync::Arc::clone(existing));
+        }
+
+        let room = client
+            .get_room(room_id)
+            .ok_or_else(|| format!("room {room_id} not found"))?;
+        let timeline = std::sync::Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
+
+        let mut timelines = self.timelines.lock().await;
+        // Re-check: another concurrent call may have built and inserted one
+        // for this same room while this call was awaiting `room.timeline()`
+        // above (lock isn't held across that await) — keep whichever was
+        // inserted first rather than running two listener tasks for one room.
+        if let Some(existing) = timelines.get(room_id) {
+            return Ok(std::sync::Arc::clone(existing));
+        }
+
+        timeline::spawn_timeline_listener(
+            app.clone(),
+            room_id.to_owned(),
+            std::sync::Arc::downgrade(&timeline),
+            client.user_id().map(ToOwned::to_owned),
+        );
+        timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));
+
+        Ok(timeline)
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
@@ -868,87 +940,33 @@ async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         .collect()
 }
 
-/// Bridges matrix-rust-sdk's global send-queue update channel to a
-/// `send_queue:update` Tauri event per room, so local echoes for
-/// edit/react/reply/send can flip pending -> sent -> error without a full
-/// timeline diff. Spawned once per login/session-restore alongside the sync
-/// loop, for the lifetime of the session.
-fn spawn_send_queue_listener(app: AppHandle, client: Client) {
-    use matrix_sdk::send_queue::RoomSendQueueUpdate;
+// Spec 14 removed `spawn_send_queue_listener` (and the `send_queue:update`
+// event/`SendQueueUpdateEvent` DTO it fed): a room's live `matrix-sdk-ui`
+// `Timeline` now surfaces the same pending -> sent -> error transitions as
+// per-item `send_state` on the `RoomMessageSummary`s it emits via
+// `timeline:update` (see `timeline::spawn_timeline_listener`), so a second,
+// room-list-wide event carrying the identical information was redundant for
+// the message list this event only ever fed. If a future global "outbox" UI
+// needs cross-room send-queue status independent of any single room's
+// `Timeline` being open, that's a new, narrower listener to add back — not a
+// reason to keep this one around unused in the meantime.
 
-    let mut receiver = client.send_queue().subscribe();
-    tokio::spawn(async move {
-        loop {
-            let update = match receiver.recv().await {
-                Ok(update) => update,
-                // A burst of local send-queue activity can outrun this
-                // receiver and drop some updates — that's not the channel
-                // closing, just lag, so keep listening for whatever comes
-                // next rather than silently stopping `send_queue:update`
-                // for the rest of the session.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            };
-            let room_id = update.room_id.to_string();
-            let send_state = match update.update {
-                RoomSendQueueUpdate::NewLocalEvent(echo) => Some((
-                    echo.transaction_id.to_string(),
-                    timeline::SendState::Pending,
-                )),
-                RoomSendQueueUpdate::SendError {
-                    transaction_id,
-                    error,
-                    ..
-                } => Some((
-                    transaction_id.to_string(),
-                    timeline::SendState::Error {
-                        message: error.to_string(),
-                    },
-                )),
-                RoomSendQueueUpdate::RetryEvent { transaction_id } => {
-                    Some((transaction_id.to_string(), timeline::SendState::Pending))
-                }
-                RoomSendQueueUpdate::SentEvent { transaction_id, .. } => {
-                    Some((transaction_id.to_string(), timeline::SendState::Sent))
-                }
-                RoomSendQueueUpdate::CancelledLocalEvent { .. }
-                | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
-                | RoomSendQueueUpdate::MediaUpload { .. } => None,
-            };
-
-            if let Some((transaction_id, send_state)) = send_state {
-                let _ = app.emit(
-                    "send_queue:update",
-                    actions::SendQueueUpdateEvent {
-                        room_id: room_id.clone(),
-                        transaction_id,
-                        send_state,
-                    },
-                );
-            }
-        }
-    });
-}
-
-/// Emits `timeline:update`/`receipts:update`/`typing:update` for every joined
-/// room in one sync response. Shared by the initial `sync_once` (whose
-/// response can already carry ephemeral events — e.g. receipts left over from
-/// a prior session — and would otherwise be silently dropped) and every
-/// iteration of the long-running `sync_with_callback` loop.
+/// Emits `receipts:update`/`typing:update` for every joined room in one sync
+/// response. Shared by the initial `sync_once` (whose response can already
+/// carry ephemeral events — e.g. receipts left over from a prior session —
+/// and would otherwise be silently dropped) and every iteration of the
+/// long-running sync loop.
+///
+/// Message-timeline updates (`timeline:update`) are no longer driven from
+/// here as of Spec 14: each open room's live `matrix-sdk-ui` `Timeline` (see
+/// `MatrixState::get_or_create_timeline`) subscribes to its own diff stream
+/// and emits `timeline:update` itself (`timeline::spawn_timeline_listener`),
+/// independent of the raw per-sync-batch event list — which is what fixes a
+/// relation (edit/reaction/redaction) targeting an already-loaded-but-out-of-
+/// batch message being silently dropped instead of updating it in place.
 fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sync::SyncResponse) {
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
-        let messages = timeline::events_to_summaries(&update.timeline.events, own_user_id);
-        if !messages.is_empty() {
-            let _ = app.emit(
-                "timeline:update",
-                timeline::RoomTimelineUpdate {
-                    room_id: room_id.to_string(),
-                    messages,
-                },
-            );
-        }
-
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
             let Ok(event) = raw_event.deserialize() else {
@@ -988,7 +1006,6 @@ fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sy
 
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
-    spawn_send_queue_listener(app.clone(), client.clone());
     presence::register_presence_handler(app.clone(), &client);
 
     // Best-effort: some homeservers disable presence entirely, and a failure

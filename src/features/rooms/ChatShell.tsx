@@ -9,7 +9,6 @@ import {
   editMessage,
   getTimelinePage,
   markRoomRead,
-  onSendQueueUpdate,
   onTimelineUpdate,
   onTypingUpdate,
   onUploadProgress,
@@ -150,13 +149,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // on the row open that message's action menu.
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
-  // Tracks the *currently viewed* room id across renders, for handleSend's
-  // async continuation below to check against — the `room` it captured when
-  // the send started may no longer be the active one by the time the send
-  // resolves (the user switched rooms mid-send), and appending that room's
-  // echo into whatever's now showing would misattribute it.
-  const currentRoomIdRef = useRef(roomId);
-  currentRoomIdRef.current = roomId;
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
@@ -175,42 +167,53 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }, [roomId]);
 
   useEffect(() => {
-    if (!room) {
+    // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
+    // this a fresh `room` reference on every `room_list:update`, and
+    // `Timeline::paginate_backwards`'s pagination is now stateful per-room
+    // (Spec 14), so re-running this on every such refresh would silently
+    // walk further back into history each time instead of just loading the
+    // room once.
+    const timelineRoomId = room?.room_id;
+    if (!timelineRoomId) {
       setMessages([]);
       return;
     }
     setLoading(true);
-    getTimelinePage(room.room_id)
-      .then((page) => setMessages(page.messages.toReversed()))
+    // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
+    // which holds items in their natural oldest-to-newest order — unlike the
+    // old `room.messages()` backward-pagination page, which was newest-first
+    // and needed reversing.
+    getTimelinePage(timelineRoomId)
+      .then((page) => setMessages(page.messages))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [room]);
+  }, [room?.room_id]);
 
   useEffect(() => {
     if (!room) return undefined;
     const unlisten = onTimelineUpdate((update) => {
       if (update.room_id !== room.room_id) return;
-      setMessages((prev) => {
-        // Reconcile by id: an incoming summary replaces any existing item
-        // with the same event_id or transaction_id (e.g. a local echo being
-        // superseded by the real event once the send is acked), otherwise
-        // it's appended.
-        const incomingKeys = new Set(
-          update.messages.flatMap((m) => [
-            m.event_id,
-            ...(m.transaction_id ? [m.transaction_id] : []),
-          ]),
-        );
-        const kept = prev.filter(
-          (m) => !incomingKeys.has(itemKey(m)) && !incomingKeys.has(m.event_id),
-        );
-        return [...kept, ...update.messages];
-      });
+      // `update.messages` is a full re-snapshot of the room's live Timeline
+      // (Spec 14) — every call to `timeline:update` carries the complete
+      // current item list, not a delta to merge onto existing state. Merging
+      // (as the pre-Spec-14 per-batch model required) would keep stale
+      // items a newer snapshot no longer has — e.g. a local echo keyed by
+      // transaction id lingering alongside the remote event that replaced
+      // it, since the remote item's `transaction_id` is `None` and so
+      // wouldn't match it for removal. Replacing outright is both correct
+      // and simpler.
+      setMessages(update.messages);
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room]);
+
+  // No `send_queue:update` listener here: the live `Timeline` (Spec 14)
+  // surfaces the same pending -> sent -> error transitions as `send_state` on
+  // the `RoomMessageSummary`s pushed via `timeline:update` above, so a
+  // separate room-wide send-queue event would just be redundant for the
+  // message list.
 
   useEffect(() => {
     const unlisten = onUploadProgress((progress) => {
@@ -230,21 +233,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
-
-  useEffect(() => {
-    if (!room) return undefined;
-    const unlisten = onSendQueueUpdate((update) => {
-      if (update.room_id !== room.room_id) return;
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.transaction_id === update.transaction_id ? { ...m, send_state: update.send_state } : m,
-        ),
-      );
-    });
-    return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
-    };
-  }, [room]);
 
   useEffect(() => {
     // Clear on every room change, not just to `null` — otherwise switching
@@ -358,50 +346,20 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     setReplyTarget(null);
     sendTyping(targetRoom.room_id, false).catch(console.error);
 
-    // The optimistic echo must be keyed on the *SDK's* send-queue transaction
-    // id, not a client-generated placeholder — that's the same id the synced
-    // event's `transaction_id` (from `unsigned.transaction_id`) and
-    // `send_queue:update` events carry, and reconciliation only works if all
-    // three agree. So this awaits the send call (which itself only waits for
-    // the event to be queued, not for a homeserver round trip) before
-    // rendering anything, rather than rendering an echo immediately under a
-    // key nothing else will ever match.
+    // No client-side optimistic echo any more (Spec 14): the room's live
+    // `Timeline` creates the local echo itself the moment the send is queued
+    // (with `send_state: "pending"`) and pushes it via `timeline:update`,
+    // keyed on the SDK's own send-queue transaction id — the same id the
+    // eventual synced event's `transaction_id` carries — so the echo is
+    // replaced in place by the Timeline itself rather than reconciled here.
+    // This call's return value (also that same transaction id) isn't needed
+    // for rendering any more, only for triggering the send.
     try {
-      const transactionId = replyingTo
-        ? await sendReply(targetRoom.room_id, replyingTo.event_id, body)
-        : await sendMessage(targetRoom.room_id, body);
-
-      const optimistic: RoomMessageSummary = {
-        event_id: transactionId,
-        sender: currentUserId,
-        body,
-        formatted_body: null,
-        timestamp_ms: Date.now(),
-        edited: false,
-        redacted: false,
-        reactions: [],
-        in_reply_to: replyingTo,
-        transaction_id: transactionId,
-        send_state: { state: "pending" },
-        media: null,
-      };
-      setMessages((prev) => {
-        // The user may have switched away from `targetRoom` while this send
-        // was in flight — don't misattribute its echo to whatever room is
-        // showing now.
-        if (currentRoomIdRef.current !== targetRoom.room_id) return prev;
-        // A `timeline:update` carrying the real, already-synced event can
-        // race ahead of this continuation (the send-queue's local echo and
-        // the eventual sync response are two independent async paths) and
-        // get reconciled in first. If something with this transaction id
-        // already made it into state, adding the echo now would just be a
-        // duplicate of what's already there.
-        const alreadyReconciled = prev.some(
-          (m) => m.transaction_id === transactionId || m.event_id === transactionId,
-        );
-        if (alreadyReconciled) return prev;
-        return [...prev, optimistic];
-      });
+      if (replyingTo) {
+        await sendReply(targetRoom.room_id, replyingTo.event_id, body);
+      } else {
+        await sendMessage(targetRoom.room_id, body);
+      }
     } catch (err) {
       console.error(err);
     }

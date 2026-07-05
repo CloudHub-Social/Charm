@@ -36,19 +36,6 @@ pub enum ReactionToggleResult {
     Removed,
 }
 
-/// Pushed whenever a queued send changes state — a new local echo, a
-/// successful send, or an error — so the frontend can flip a bubble
-/// pending -> sent -> error without waiting for (or in addition to) a full
-/// `timeline:update` diff. Spawned once at login/session-restore time from a
-/// `room.send_queue()` (global `SendQueue::subscribe`) listener.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../src/bindings/")]
-pub struct SendQueueUpdateEvent {
-    pub room_id: String,
-    pub transaction_id: String,
-    pub send_state: super::timeline::SendState,
-}
-
 /// Edits the sender's own message via an `m.replace` relation
 /// (`m.new_content` + a `* ...` fallback body on `content`). Enforces
 /// client-side that only the sender's own original message is editable —
