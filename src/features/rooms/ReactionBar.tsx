@@ -1,0 +1,63 @@
+import { Plus } from "lucide-react";
+import { cn } from "@/lib/utils";
+import type { ReactionGroup } from "@/lib/matrix";
+import { EmojiPicker } from "./EmojiPicker";
+
+interface ReactionBarProps {
+  reactions: ReactionGroup[];
+  onToggle: (key: string) => void;
+}
+
+/**
+ * Renders a message's `ReactionGroup[]` as toggle chips, plus a trailing
+ * `+` chip that opens a minimal emoji picker to add a new reaction. Own
+ * reactions get an accent highlight; clicking any chip toggles it.
+ */
+export function ReactionBar({ reactions, onToggle }: ReactionBarProps) {
+  if (reactions.length === 0) {
+    return (
+      <div className="mt-0.5">
+        <EmojiPicker onSelect={onToggle}>
+          <button
+            type="button"
+            aria-label="Add reaction"
+            className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary"
+          >
+            <Plus size={12} />
+          </button>
+        </EmojiPicker>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-0.5 flex flex-wrap items-center gap-1">
+      {reactions.map((reaction) => (
+        <button
+          key={reaction.key}
+          type="button"
+          onClick={() => onToggle(reaction.key)}
+          aria-pressed={reaction.reacted_by_me}
+          className={cn(
+            "flex h-6 min-w-11 items-center justify-center gap-1 rounded-full border px-2 text-xs",
+            reaction.reacted_by_me
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-secondary text-secondary-foreground",
+          )}
+        >
+          <span>{reaction.key}</span>
+          <span className="font-mono">{reaction.count}</span>
+        </button>
+      ))}
+      <EmojiPicker onSelect={onToggle}>
+        <button
+          type="button"
+          aria-label="Add reaction"
+          className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary"
+        >
+          <Plus size={12} />
+        </button>
+      </EmojiPicker>
+    </div>
+  );
+}
