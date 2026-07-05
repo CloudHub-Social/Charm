@@ -12,13 +12,12 @@ function applyReceipts(
   if (incoming.length === 0) return state;
   const next = new Map(state);
   for (const receipt of incoming) {
-    // Only the most recent receipt per user matters — a later receipt always
-    // supersedes an earlier one for that same user, regardless of which
-    // event either points at.
-    const existing = next.get(receipt.user_id);
-    if (!existing || existing.ts_ms <= receipt.ts_ms) {
-      next.set(receipt.user_id, receipt);
-    }
+    // `m.receipt` events are deltas that *replace* a user's prior
+    // acknowledgement for the same receipt type/thread — always apply the
+    // incoming one. Gating on `ts_ms` would be wrong: it's frequently absent
+    // (mapped to 0 by the Rust side) or can be lower than a stale existing
+    // value, which would otherwise drop a legitimate newer receipt.
+    next.set(receipt.user_id, receipt);
   }
   return next;
 }

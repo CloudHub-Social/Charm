@@ -22,6 +22,14 @@ pub enum PresenceStateDto {
     Offline,
 }
 
+impl Default for PresenceStateDto {
+    /// Matches the SDK's own `SyncSettings` default (`PresenceState::Online`)
+    /// and what `set_presence_online` sets right after login.
+    fn default() -> Self {
+        Self::Online
+    }
+}
+
 impl From<PresenceStateDto> for PresenceState {
     fn from(dto: PresenceStateDto) -> Self {
         match dto {
@@ -93,6 +101,11 @@ pub fn register_presence_handler(app: AppHandle, client: &Client) {
 /// Sets our own presence state (and optional status message). Called once on
 /// login/session-restore (best-effort — see the caller) and on any explicit
 /// user action; Spec 05 explicitly excludes auto-away/interval-based presence.
+///
+/// Also records `presence` on `MatrixState.sync_presence` so the running
+/// sync loop reports it on the *next* `/sync` too — otherwise a
+/// `Unavailable`/`Offline` choice here would be silently reverted back to
+/// `Online` by the sync loop's own `set_presence` parameter on its next poll.
 #[tauri::command]
 pub async fn set_presence(
     state: State<'_, MatrixState>,
@@ -100,7 +113,9 @@ pub async fn set_presence(
     status_msg: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    set_presence_on(&client, presence, status_msg).await
+    set_presence_on(&client, presence, status_msg).await?;
+    *state.sync_presence.lock().unwrap() = presence;
+    Ok(())
 }
 
 /// Shared by the `set_presence` command and [`set_presence_online`] (the

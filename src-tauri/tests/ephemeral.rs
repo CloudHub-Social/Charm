@@ -1,10 +1,15 @@
 //! End-to-end proof that read receipts and typing notices actually round-trip
-//! over a real homeserver — two independent matrix-rust-sdk clients
-//! (simulating two devices/users), no mocking. Mirrors
-//! `tests/verification_flow.rs`'s two-client harness. Requires a local
-//! Synapse (`dev/synapse/` locally, a GitHub Actions service container in
-//! CI) with a room shared by both test users and the test user from
-//! `tests/common` already registered.
+//! over a real homeserver — two independent matrix-rust-sdk clients for two
+//! distinct *users* sharing a room, no mocking. Deliberately does **not**
+//! mirror `tests/verification_flow.rs`'s two-client harness: that test wants
+//! two devices of the *same* account (device verification), but this one
+//! needs two different users — `typing_content_to_user_ids` filters out the
+//! observer's own user id, so if `sender`/`observer` were the same account
+//! the sender's typing notice would always be filtered out as "own typing"
+//! and the test would hang until timeout. Requires a local Synapse
+//! (`dev/synapse/` locally, a GitHub Actions service container in CI) with a
+//! room shared by both `tests/common`'s primary and secondary test users,
+//! both already registered.
 //!
 //! See the `recursion_limit` comment in `src/lib.rs` — this test crate hits
 //! the same trait-solver overflow proving Send-ness through
@@ -16,7 +21,7 @@ mod common;
 use std::time::Duration;
 
 use charm_lib::matrix::ephemeral::{receipt_content_to_updates, typing_content_to_user_ids};
-use common::synced_client;
+use common::{synced_client, synced_client_2};
 use matrix_sdk::room::Receipts;
 use matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent;
 use tokio::time::timeout;
@@ -33,7 +38,7 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(15);
 #[tokio::test]
 async fn read_receipt_and_typing_notice_round_trip_between_two_clients() {
     let sender = synced_client().await;
-    let observer = synced_client().await;
+    let observer = synced_client_2().await;
 
     let room_id = sender
         .rooms()

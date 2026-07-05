@@ -87,10 +87,11 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }, [room]);
 
   useEffect(() => {
-    if (!room) {
-      setTypingUserIds([]);
-      return undefined;
-    }
+    // Clear on every room change, not just to `null` — otherwise switching
+    // directly from room A (mid "X is typing…") to room B keeps A's typing
+    // row rendered under B until B happens to get its own typing update.
+    setTypingUserIds([]);
+    if (!room) return undefined;
     const unlisten = onTypingUpdate((update) => {
       if (update.room_id !== room.room_id) return;
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
