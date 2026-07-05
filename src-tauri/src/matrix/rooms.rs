@@ -33,6 +33,40 @@ fn parse_room(client: &Client, room_id: &str) -> Result<Room, String> {
         .ok_or_else(|| format!("room {room_id} not found"))
 }
 
+/// Reads the `TagInfo.order` currently governing `room`'s section (see
+/// [`order_tag_name`]), so a favourite/low-priority toggle can carry it over
+/// to the room's new section tag instead of losing the user's manual
+/// ordering — see [`set_room_favourite`]/[`set_room_low_priority`].
+async fn current_manual_order(room: &Room) -> Option<f64> {
+    let tag = order_tag_name(room.is_favourite(), room.is_low_priority());
+    room.tags()
+        .await
+        .ok()
+        .flatten()
+        .and_then(|tags| tags.get(&tag).and_then(|info| info.order))
+}
+
+/// Writes `order` onto `target_tag` if it's `Some` — used to carry a room's
+/// manual order onto its new section tag when [`Room::set_is_favourite`]/
+/// [`Room::set_is_low_priority`] don't do it for us (they only accept an
+/// order for the tag being *added*, not the one left behind when a room is
+/// un-favourited/un-low-priorited back into the plain "Rooms" section).
+async fn migrate_manual_order(
+    room: &Room,
+    target_tag: TagName,
+    order: Option<f64>,
+) -> Result<(), String> {
+    let Some(order) = order else {
+        return Ok(());
+    };
+    let mut tag_info = TagInfo::new();
+    tag_info.order = Some(order);
+    room.set_tag(target_tag, tag_info)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// The single authoritative "does this room need attention" signal.
 ///
 /// Muted rooms with only ambient unread messages don't count — an explicit
@@ -47,6 +81,10 @@ pub fn has_unread(
     is_marked_unread || (!is_muted && unread_messages > 0) || unread_count > 0
 }
 
+/// Moving a room into/out of Favourites carries its manual order over to
+/// whichever tag now governs its section, rather than losing it: dropping
+/// straight to `None` would strand a carefully-dragged position the moment a
+/// room is favourited or un-favourited (see [`current_manual_order`]).
 #[tauri::command]
 pub async fn set_room_favourite(
     state: State<'_, MatrixState>,
@@ -55,11 +93,23 @@ pub async fn set_room_favourite(
 ) -> Result<(), String> {
     let client = state.require_client().await?;
     let room = parse_room(&client, &room_id)?;
-    room.set_is_favourite(favourite, None)
-        .await
-        .map_err(|e| e.to_string())
+    let migrated_order = current_manual_order(&room).await;
+
+    if favourite {
+        room.set_is_favourite(true, migrated_order)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        room.set_is_favourite(false, None)
+            .await
+            .map_err(|e| e.to_string())?;
+        let target = order_tag_name(false, room.is_low_priority());
+        migrate_manual_order(&room, target, migrated_order).await
+    }
 }
 
+/// Same manual-order carry-over as [`set_room_favourite`], for the
+/// Low-priority section.
 #[tauri::command]
 pub async fn set_room_low_priority(
     state: State<'_, MatrixState>,
@@ -68,9 +118,19 @@ pub async fn set_room_low_priority(
 ) -> Result<(), String> {
     let client = state.require_client().await?;
     let room = parse_room(&client, &room_id)?;
-    room.set_is_low_priority(low_priority, None)
-        .await
-        .map_err(|e| e.to_string())
+    let migrated_order = current_manual_order(&room).await;
+
+    if low_priority {
+        room.set_is_low_priority(true, migrated_order)
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        room.set_is_low_priority(false, None)
+            .await
+            .map_err(|e| e.to_string())?;
+        let target = order_tag_name(room.is_favourite(), false);
+        migrate_manual_order(&room, target, migrated_order).await
+    }
 }
 
 #[tauri::command]
