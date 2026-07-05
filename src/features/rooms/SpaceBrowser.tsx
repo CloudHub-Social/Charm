@@ -35,6 +35,9 @@ export function SpaceBrowser({ space, onOpenChange }: SpaceBrowserProps) {
     let stale = false;
     setLoading(true);
     setError(null);
+    // Clear the previous space's children up front — otherwise a fetch that
+    // fails leaves the prior space's rooms on screen alongside the new error.
+    setChildren([]);
     listSpaceChildren(space.room_id)
       .then((result) => {
         if (!stale) setChildren(result);

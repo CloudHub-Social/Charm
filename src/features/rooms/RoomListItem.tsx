@@ -61,7 +61,10 @@ export function RoomListItem({
       <div className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5">
           {room.is_marked_unread && (
-            <span aria-label="Marked unread" className="size-2 shrink-0 rounded-full bg-primary" />
+            <span className="flex shrink-0 items-center">
+              <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
+              <span className="sr-only">Marked unread</span>
+            </span>
           )}
           <span
             className={cn(

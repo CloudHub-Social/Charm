@@ -69,15 +69,22 @@ describe("computeManualOrder", () => {
     expect(computeManualOrder([after], 0)).toBe(4);
   });
 
-  it("defaults to 0 when neither neighbour has a manual order", () => {
+  it("falls back to array position when neither neighbour has a manual order, so the first drag in a still-alphabetical section anchors between its flanking siblings instead of jumping to the top", () => {
     const a = makeRoomSummary({ room_id: "a", manual_order: null });
     const b = makeRoomSummary({ room_id: "b", manual_order: null });
-    expect(computeManualOrder([a, b], 1)).toBe(0);
+    const c = makeRoomSummary({ room_id: "c", manual_order: null });
+    // Dropping between index 0 (a) and index 1 (b, c unaffected as "after")
+    // should land between their positions (0 and 1), not at a bare 0 that
+    // would sort ahead of every still-null sibling.
+    expect(computeManualOrder([a, b, c], 1)).toBe(0.5);
   });
 
-  it("ignores a null neighbour and anchors off the other side", () => {
+  it("falls back to array position for a null neighbour even next to a real order, rather than treating it as unconstrained", () => {
     const ordered = makeRoomSummary({ room_id: "a", manual_order: 10 });
     const unordered = makeRoomSummary({ room_id: "b", manual_order: null });
-    expect(computeManualOrder([ordered, unordered], 1)).toBe(11);
+    // `unordered` falls back to its own index (1), so the midpoint is
+    // between 10 and 1 — not simply "10 + 1" as if `unordered` had no
+    // position at all.
+    expect(computeManualOrder([ordered, unordered], 1)).toBe(5.5);
   });
 });

@@ -184,7 +184,10 @@ function DraggableRoomRow({
         transform: dragging ? `translateY(${dragOffset}px)` : undefined,
         position: dragging ? "relative" : undefined,
         zIndex: dragging ? 10 : undefined,
-        touchAction: "none",
+        // Only opt out of touch scrolling while a drag is actually in
+        // progress — applying this unconditionally would swallow a normal
+        // vertical scroll gesture that merely starts on a room row.
+        touchAction: dragging ? "none" : undefined,
       }}
     />
   );

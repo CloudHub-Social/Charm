@@ -51,17 +51,26 @@ export function groupRoomsIntoSections(rooms: RoomSummary[]): RoomSections {
  * Computes the `TagInfo.order` midpoint for a drag-reorder: given the
  * section's rooms *excluding* the dragged one, and the index it's being
  * dropped at, derive a fractional-index value between its new neighbours.
- * `manual_order: null` on a neighbour means "no order constraint on that
- * side yet" (untagged rooms sort alphabetically) — not an order of 0 — so
- * only a neighbour with a real value anchors that side.
+ *
+ * A neighbour with `manual_order: null` falls back to its position in this
+ * (already section/name-sorted) array rather than being treated as "no
+ * anchor" — otherwise the very first reorder in a still-alphabetical
+ * section would compute an order relative to nothing, and since any
+ * concrete `Some(order)` sorts ahead of every `null` in the Rust
+ * comparator, the dragged room would jump to the top of the section
+ * instead of landing at the drop position.
  */
 export function computeManualOrder(
   sectionRoomsExcludingDragged: RoomSummary[],
   targetIndex: number,
 ): number {
   const clampedIndex = Math.max(0, Math.min(targetIndex, sectionRoomsExcludingDragged.length));
-  const before = sectionRoomsExcludingDragged[clampedIndex - 1]?.manual_order ?? null;
-  const after = sectionRoomsExcludingDragged[clampedIndex]?.manual_order ?? null;
+  const effectiveOrder = (index: number) =>
+    sectionRoomsExcludingDragged[index]?.manual_order ?? index;
+
+  const before = clampedIndex > 0 ? effectiveOrder(clampedIndex - 1) : null;
+  const after =
+    clampedIndex < sectionRoomsExcludingDragged.length ? effectiveOrder(clampedIndex) : null;
 
   if (before !== null && after !== null) {
     return (before + after) / 2;

@@ -43,7 +43,7 @@ describe("RoomListItem", () => {
       />,
     );
     expect(screen.getByText("general")).toHaveClass("font-bold");
-    expect(screen.getByLabelText("Marked unread")).toBeInTheDocument();
+    expect(screen.getByText("Marked unread")).toBeInTheDocument();
   });
 
   it("shows a muted indicator when is_muted is true", () => {
