@@ -321,4 +321,67 @@ describe("ChatShell", () => {
 
     expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
   });
+
+  it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
+    // canRedact is only ever queried for *other* senders' messages — an own
+    // message must be immediately deletable, not flash hidden until this
+    // (never-resolving, here) promise settles.
+    canRedact.mockImplementation(() => new Promise(() => {}));
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$mine", sender: "@me:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    expect(await screen.findByText("Delete")).toBeInTheDocument();
+  });
+
+  it("stops showing a reply's quote preview once that reply message is itself redacted", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    const replyRef = { event_id: "$original", sender: "@me:localhost", preview: "the original" };
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$reply",
+            sender: "@alice:localhost",
+            body: "hi back",
+            in_reply_to: replyRef,
+            redacted: false,
+          }),
+        ],
+      });
+    });
+
+    // The quote block renders the replied-to sender's name.
+    expect(await screen.findByText("@me:localhost")).toBeInTheDocument();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$reply",
+            sender: "@alice:localhost",
+            body: "",
+            in_reply_to: replyRef,
+            redacted: true,
+          }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("Message deleted")).toBeInTheDocument();
+    expect(screen.queryByText("@me:localhost")).not.toBeInTheDocument();
+  });
 });

@@ -71,6 +71,14 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   // effect below only re-runs when a genuinely new sender shows up.
   const uniqueSenderKey = [...new Set(senders)].toSorted().join(",");
 
+  // Redact power levels are per-room, but this cache is keyed only by
+  // sender — so switching to a different room must clear it, or a sender
+  // who appeared in the previous room keeps that room's cached permission
+  // instead of being re-queried for the new one.
+  useEffect(() => {
+    setCanRedactBySender({});
+  }, [roomId]);
+
   useEffect(() => {
     const unresolved = uniqueSenderKey === "" ? [] : uniqueSenderKey.split(",");
 
@@ -110,6 +118,14 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   // Header presence dot is gated on DM detection, which doesn't exist yet —
   // no-ops here for the same reason RoomListItem's presence dot no-ops.
+
+  // `editingEventId` is a per-room atom, so it's already `null` in a freshly
+  // switched-to room — but `draft` isn't room-scoped, so without this a
+  // half-typed edit in room A would carry over as an ordinary draft in room
+  // B, and pressing Send there would post that edit text as a new message.
+  useEffect(() => {
+    setDraft("");
+  }, [roomId]);
 
   useEffect(() => {
     if (!room) {
@@ -345,7 +361,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const sameSenderAsNext = next?.sender === message.sender;
           const showAvatar = !own && !sameSenderAsPrev;
           const showMeta = !sameSenderAsNext;
-          const allowedToRedact = canRedactBySender[message.sender] ?? false;
+          // Own messages are always redactable — don't wait on the async
+          // `canRedactBySender` resolution (which only matters for other
+          // senders' power levels) or Delete flashes hidden-then-shown.
+          const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
           const isPending = message.send_state.state === "pending";
           const isError = message.send_state.state === "error";
           const readers = receiptsByEvent.get(message.event_id) ?? [];
@@ -379,7 +398,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                     {message.sender}
                   </span>
                 )}
-                {message.in_reply_to && (
+                {message.in_reply_to && !message.redacted && (
                   <ReplyPreview
                     reply={message.in_reply_to}
                     onClick={() => {
@@ -419,6 +438,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                       }
                       onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
                       onEdit={() => {
+                        setReplyTarget(null);
                         setEditingEventId(message.event_id);
                         setDraft(message.body);
                       }}

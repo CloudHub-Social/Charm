@@ -127,11 +127,17 @@ pub fn events_to_summaries(
     // pass 2 applies every relation now that all originals are known.
     let mut order: Vec<OwnedEventId> = Vec::new();
     let mut messages: BTreeMap<OwnedEventId, RoomMessageSummary> = BTreeMap::new();
-    // target event id -> (origin_server_ts, new body) of the newest-by-timestamp
-    // m.replace seen for it so far. Slices can arrive in either direction
-    // (newest-first on backward pagination, oldest-first on incremental sync),
-    // so "last-wins" has to mean "latest timestamp wins", not "last iterated".
-    let mut edits: BTreeMap<OwnedEventId, (u64, String)> = BTreeMap::new();
+    // target event id -> (origin_server_ts, new body, edit sender, edit event id)
+    // of the newest-by-timestamp m.replace seen for it so far. Slices can
+    // arrive in either direction (newest-first on backward pagination,
+    // oldest-first on incremental sync), so "last-wins" has to mean "latest
+    // timestamp wins", not "last iterated". The sender is kept so an edit can
+    // be rejected if it didn't come from the original message's own sender —
+    // Matrix edits are only valid from the original sender, but ruma doesn't
+    // enforce that when deserializing — and the edit event's own id is kept
+    // so a redacted edit (the user withdrew their own edit) can be dropped.
+    let mut edits: BTreeMap<OwnedEventId, (u64, String, OwnedUserId, OwnedEventId)> =
+        BTreeMap::new();
     // target event id -> reason a redaction targeted it (message or reaction)
     let mut redactions: std::collections::HashSet<OwnedEventId> = std::collections::HashSet::new();
     // reaction target event id -> (key, sender) pairs
@@ -187,15 +193,21 @@ pub fn events_to_summaries(
                 {
                     let ts: u64 = original.origin_server_ts.0.into();
                     let body = replacement.new_content.msgtype.body().to_string();
+                    let sender = original.sender.clone();
+                    let edit_event_id = original.event_id.clone();
                     edits
                         .entry(replacement.event_id.clone())
-                        .and_modify(|(existing_ts, existing_body)| {
-                            if ts >= *existing_ts {
-                                *existing_ts = ts;
-                                *existing_body = body.clone();
-                            }
-                        })
-                        .or_insert((ts, body));
+                        .and_modify(
+                            |(existing_ts, existing_body, existing_sender, existing_edit_id)| {
+                                if ts >= *existing_ts {
+                                    *existing_ts = ts;
+                                    *existing_body = body.clone();
+                                    *existing_sender = sender.clone();
+                                    *existing_edit_id = edit_event_id.clone();
+                                }
+                            },
+                        )
+                        .or_insert((ts, body, sender, edit_event_id));
                     continue;
                 }
 
@@ -262,11 +274,35 @@ pub fn events_to_summaries(
         }
     }
 
-    // Apply edits.
-    for (target, (_ts, new_body)) in edits {
+    // Apply edits — skipping any whose sender doesn't match the original
+    // message's sender (Matrix edits are only valid from the original
+    // sender) or whose edit event was itself redacted (the sender withdrew
+    // their own edit). If the newest edit for a target fails either check,
+    // this leaves the message as its original (or next-oldest-edit) body
+    // rather than falling back to the next-newest edit — a known, narrow
+    // limitation of only tracking the single newest edit per target.
+    for (target, (_ts, new_body, sender, edit_event_id)) in edits {
+        if redactions.contains(&edit_event_id) {
+            continue;
+        }
         if let Some(message) = messages.get_mut(&target) {
+            if message.sender != sender.as_str() {
+                continue;
+            }
             message.body = new_body;
             message.edited = true;
+        }
+    }
+
+    // Apply message-level redactions (distinct from reaction redactions
+    // below, which target a reaction event id rather than a message one) —
+    // *before* reply-refs and stripping reply fallbacks below, so a reply
+    // preview never briefly shows text that's about to be (or already was,
+    // in the same batch) redacted.
+    for target in &redactions {
+        if let Some(message) = messages.get_mut(target) {
+            message.redacted = true;
+            message.body = String::new();
         }
     }
 
@@ -278,10 +314,25 @@ pub fn events_to_summaries(
         let reply_ref = ReplyRef {
             event_id: target.event_id.clone(),
             sender: target.sender.clone(),
-            preview: target.body.clone(),
+            preview: if target.redacted {
+                String::new()
+            } else {
+                target.body.clone()
+            },
         };
         if let Some(reply_message) = messages.get_mut(&reply_event_id) {
             reply_message.in_reply_to = Some(reply_ref);
+            // The rich-reply fallback (a "> quoted original" block, spec-required
+            // for clients that don't understand `m.in_reply_to`) is part of
+            // `content.body()` verbatim. Now that `in_reply_to` carries a
+            // structured preview of its own, strip the fallback out of the
+            // rendered body so it isn't shown twice — once via `ReplyPreview`,
+            // once inline in the bubble. Per the rich-reply format, the
+            // fallback is every line up to (and including) the first blank
+            // line; the real reply body follows.
+            if let Some(idx) = reply_message.body.find("\n\n") {
+                reply_message.body = reply_message.body[idx + 2..].to_string();
+            }
         }
     }
 
@@ -292,8 +343,18 @@ pub fn events_to_summaries(
             continue;
         };
         let mut groups: BTreeMap<String, ReactionGroup> = BTreeMap::new();
+        // Dedupe by (sender, key): a sender can end up with more than one
+        // *active* `m.reaction` for the same emoji (e.g. a double-click
+        // racing the first one's local echo before `toggle_reaction` sees
+        // it), which should still only count once — not inflate the total
+        // or leave a stale extra reaction behind if just one copy is removed.
+        let mut seen: std::collections::HashSet<(OwnedUserId, String)> =
+            std::collections::HashSet::new();
         for (key, sender, reaction_event_id) in entries {
             if redactions.contains(&reaction_event_id) {
+                continue;
+            }
+            if !seen.insert((sender.clone(), key.clone())) {
                 continue;
             }
             let group = groups.entry(key.clone()).or_insert_with(|| ReactionGroup {
@@ -307,15 +368,6 @@ pub fn events_to_summaries(
             }
         }
         message.reactions = groups.into_values().filter(|g| g.count > 0).collect();
-    }
-
-    // Apply message-level redactions (distinct from reaction redactions
-    // above, which target a reaction event id rather than a message one).
-    for target in &redactions {
-        if let Some(message) = messages.get_mut(target) {
-            message.redacted = true;
-            message.body = String::new();
-        }
     }
 
     order
@@ -561,5 +613,140 @@ mod relation_folding_tests {
         assert_eq!(reply_ref.event_id, "$original");
         assert_eq!(reply_ref.sender, "@alice:example.org");
         assert_eq!(reply_ref.preview, "hello");
+        // The rich-reply fallback quote is stripped from the rendered body —
+        // `ReplyPreview` already shows the quoted original via `in_reply_to`.
+        assert_eq!(reply_summary.body, "hi back");
+    }
+
+    #[test]
+    fn edit_from_a_different_sender_than_the_original_is_rejected() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let malicious_edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@mallory:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* pwned",
+                "m.new_content": { "msgtype": "m.text", "body": "pwned" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, malicious_edit], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "hello");
+        assert!(!summaries[0].edited);
+    }
+
+    #[test]
+    fn a_redacted_edit_event_is_not_applied() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* withdrawn",
+                "m.new_content": { "msgtype": "m.text", "body": "withdrawn" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+        let redact_the_edit = event(json!({
+            "type": "m.room.redaction",
+            "event_id": "$redaction",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 3000,
+            "redacts": "$edit",
+            "content": { "redacts": "$edit" }
+        }));
+
+        let summaries = events_to_summaries(&[original, edit, redact_the_edit], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "hello");
+        assert!(!summaries[0].edited);
+    }
+
+    #[test]
+    fn duplicate_active_reactions_from_the_same_sender_count_once() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hi" }
+        }));
+        let reaction = |evt: &str| {
+            json!({
+                "type": "m.reaction",
+                "event_id": evt,
+                "sender": "@bob:example.org",
+                "origin_server_ts": 2000,
+                "content": {
+                    "m.relates_to": { "rel_type": "m.annotation", "event_id": "$original", "key": "👍" }
+                }
+            })
+        };
+
+        let summaries = events_to_summaries(
+            &[original, event(reaction("$r1")), event(reaction("$r2"))],
+            None,
+        );
+
+        assert_eq!(summaries[0].reactions.len(), 1);
+        assert_eq!(summaries[0].reactions[0].count, 1);
+    }
+
+    #[test]
+    fn reply_preview_is_empty_for_a_redacted_target() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "sensitive" }
+        }));
+        let redaction = event(json!({
+            "type": "m.room.redaction",
+            "event_id": "$redaction",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1500,
+            "redacts": "$original",
+            "content": { "redacts": "$original" }
+        }));
+        let reply = event(json!({
+            "type": "m.room.message",
+            "event_id": "$reply",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "> sensitive\n\nhi back",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$original" } }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, redaction, reply], None);
+
+        let reply_summary = summaries.iter().find(|m| m.event_id == "$reply").unwrap();
+        let reply_ref = reply_summary.in_reply_to.as_ref().expect("has a reply ref");
+        assert_eq!(reply_ref.preview, "");
     }
 }

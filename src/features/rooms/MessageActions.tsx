@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Copy, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
@@ -52,6 +52,17 @@ export function MessageActions({
 }: MessageActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // A touch-and-hold that outlives the item (e.g. the message list re-renders
+  // out from under it after a `timeline:update`) must not fire `setMenuOpen`
+  // on an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+      }
+    };
+  }, []);
 
   function startLongPress() {
     longPressTimer.current = setTimeout(() => setMenuOpen(true), LONG_PRESS_MS);
