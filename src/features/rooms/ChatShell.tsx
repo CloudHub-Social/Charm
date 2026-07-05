@@ -208,7 +208,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room]);
 
@@ -227,7 +227,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
 
@@ -242,7 +242,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       );
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room]);
 
@@ -263,7 +263,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room?.room_id, currentUserId]);
 

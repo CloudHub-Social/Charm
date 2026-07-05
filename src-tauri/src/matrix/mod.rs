@@ -678,13 +678,38 @@ pub async fn resolve_media(
     };
 
     let (resolved_source, kind) = if thumbnail {
-        (
-            thumbnail_source.unwrap_or(source),
-            media::MediaKind::Thumbnail {
-                width: 256,
-                height: 256,
-            },
-        )
+        match thumbnail_source {
+            Some(thumb_source) => (
+                thumb_source,
+                media::MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+            // No dedicated thumbnail: falling back to the full-size source
+            // is only valid to request as a server-side *thumbnail* when
+            // that source is `Plain` — homeservers cannot generate
+            // thumbnails of `Encrypted` content (they can't decrypt it), so
+            // a `MediaFormat::Thumbnail` request against an encrypted
+            // source always fails server-side. Fetch (and decrypt) the
+            // full file instead; the frontend renders it at the
+            // thumbnail's display size regardless of the underlying pixel
+            // dimensions.
+            None if matches!(
+                source,
+                matrix_sdk::ruma::events::room::MediaSource::Encrypted(_)
+            ) =>
+            {
+                (source, media::MediaKind::File)
+            }
+            None => (
+                source,
+                media::MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+        }
     } else {
         (source, media::MediaKind::File)
     };

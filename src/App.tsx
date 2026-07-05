@@ -21,7 +21,7 @@ function App() {
     // completes is applied once RoomsScreen mounts, not dropped.
     const unlisten = watchDeepLinks(setDeepLinkRoomId);
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
 

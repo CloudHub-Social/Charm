@@ -91,7 +91,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [onSignedIn]);
 

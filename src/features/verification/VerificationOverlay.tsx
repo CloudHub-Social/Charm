@@ -31,7 +31,7 @@ export function VerificationOverlay() {
       setPhase({ kind: "incoming" });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
 
@@ -59,7 +59,7 @@ export function VerificationOverlay() {
       }
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [request]);
 

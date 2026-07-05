@@ -29,7 +29,7 @@ export function RoomsScreen({
     listRooms().then(setRooms).catch(console.error);
     const unlisten = onRoomListUpdate(setRooms);
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
 
