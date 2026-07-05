@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useReducer } from "react";
+import { useEffect, useMemo } from "react";
+import { atom } from "jotai";
+import { atomFamily } from "jotai/utils";
+import { useAtomValue, useStore } from "jotai";
 import type { EventReceipt } from "@/lib/matrix";
 import { onReceiptsUpdate } from "@/lib/matrix";
 
@@ -22,12 +25,22 @@ function applyReceipts(
   return next;
 }
 
-type Action = { type: "reset" } | { type: "apply"; receipts: EventReceipt[] };
+/**
+ * One atom per room id, holding the latest receipt per user seen for that
+ * room. Deliberately cached at the atomFamily level rather than reset on
+ * every room switch: `m.receipt` updates are push-only deltas with no
+ * refetch/replay path, so wiping this on switch would blank out
+ * already-observed avatars every time the user revisits a room until a new
+ * receipt happened to arrive.
+ */
+const receiptsAtomFamily = atomFamily((roomId: string) => {
+  const roomReceiptsAtom = atom<Map<string, EventReceipt>>(new Map());
+  roomReceiptsAtom.debugLabel = `receipts:${roomId}`;
+  return roomReceiptsAtom;
+});
 
-function reducer(state: Map<string, EventReceipt>, action: Action): Map<string, EventReceipt> {
-  if (action.type === "reset") return new Map();
-  return applyReceipts(state, action.receipts);
-}
+/** Used as the atomFamily key when no room is active, so it's never written to. */
+const NO_ROOM = "__no_room__";
 
 /**
  * Tracks read receipts for a single room: the latest receipt per user
@@ -36,31 +49,25 @@ function reducer(state: Map<string, EventReceipt>, action: Action): Map<string, 
  * each user most recently read. Filters out `ownUserId` — a client never
  * shows its own read-receipt avatar back at itself.
  *
- * Keyed to a single `roomId`: receipt updates for other rooms are ignored,
- * so a component using this for room A doesn't re-render on room B's
- * traffic.
+ * The `onReceiptsUpdate` subscription is *not* gated to `roomId` — it applies
+ * every incoming update to that update's own room's atom, regardless of
+ * which room is currently active, so switching back to a previously-viewed
+ * room shows its cached receipts immediately rather than starting empty.
  */
 export function useReadReceipts(roomId: string | null, ownUserId: string) {
-  const [lastReadByUser, dispatch] = useReducer(reducer, new Map<string, EventReceipt>());
+  const store = useStore();
+  const lastReadByUser = useAtomValue(receiptsAtomFamily(roomId ?? NO_ROOM));
 
   useEffect(() => {
-    // Switching rooms starts from a clean slate — a receipt from the
-    // previous room shouldn't linger and appear attached to the new room's
-    // messages.
-    dispatch({ type: "reset" });
-  }, [roomId]);
-
-  useEffect(() => {
-    if (!roomId) return undefined;
     const unlisten = onReceiptsUpdate((update) => {
-      if (update.room_id !== roomId) return;
       const filtered = update.receipts.filter((r) => r.user_id !== ownUserId);
-      dispatch({ type: "apply", receipts: filtered });
+      if (filtered.length === 0) return;
+      store.set(receiptsAtomFamily(update.room_id), (prev) => applyReceipts(prev, filtered));
     });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [roomId, ownUserId]);
+  }, [store, ownUserId]);
 
   const receiptsByEvent = useMemo(() => {
     const byEvent: ReceiptsByEvent = new Map();

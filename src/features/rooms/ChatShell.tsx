@@ -137,12 +137,20 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     return () => observer.disconnect();
   }, [room, latestEventId]);
 
+  // Keyed to the room id, not the `room` object — RoomsScreen rebuilds
+  // `activeRoom` from every `room_list:update`, so a plain `[room]` dep would
+  // treat "same room, refreshed object" as a room change and send a spurious
+  // `sendTyping(false)` while the user is still actively typing there.
   useEffect(() => {
+    const roomId = room?.room_id;
+    // A room switch (or unmount) resets the throttle too — otherwise typing
+    // in room A within the last 4s can suppress the first `sendTyping(true)`
+    // in room B, since the throttle was keyed globally rather than per room.
+    lastTypingSentAt.current = 0;
     return () => {
-      if (room) sendTyping(room.room_id, false).catch(console.error);
+      if (roomId) sendTyping(roomId, false).catch(console.error);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [room]);
+  }, [room?.room_id]);
 
   function handleTypingInput(roomId: string) {
     const now = Date.now();
