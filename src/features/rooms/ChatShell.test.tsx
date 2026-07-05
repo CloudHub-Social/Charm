@@ -572,6 +572,21 @@ describe("ChatShell", () => {
     vi.restoreAllMocks();
   });
 
+  it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
+    sendAttachment.mockRejectedValue(new Error("network error"));
+    openFileDialog.mockResolvedValue("/Users/me/broken.mp4");
+
+    renderChatShell();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+
+    await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss failed upload broken.mp4" }));
+
+    await waitFor(() => expect(screen.queryByText("broken.mp4")).not.toBeInTheDocument());
+  });
+
   it("dispatches the same upload path on paste-image-into-composer", async () => {
     renderChatShell();
     const textarea = await screen.findByPlaceholderText("Message general");

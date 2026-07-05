@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
-import { Paperclip, Send } from "lucide-react";
+import { Paperclip, Send, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import {
@@ -660,7 +660,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             >
               <span className="truncate text-foreground">{upload.filename}</span>
               {upload.failed ? (
-                <span className="text-destructive-foreground">Upload failed</span>
+                <>
+                  <span className="text-destructive-foreground">Upload failed</span>
+                  <button
+                    type="button"
+                    aria-label={`Dismiss failed upload ${upload.filename}`}
+                    onClick={() =>
+                      setUploads((prev) => prev.filter((u) => u.txnId !== upload.txnId))
+                    }
+                    className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+                  >
+                    <X size={14} />
+                  </button>
+                </>
               ) : (
                 <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
                   <div
