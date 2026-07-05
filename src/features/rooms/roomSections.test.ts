@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeManualOrder, groupRoomsIntoSections } from "./roomSections";
+import { computeManualOrder, groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { makeRoomSummary } from "./testFixtures";
 
 describe("groupRoomsIntoSections", () => {
@@ -86,5 +86,33 @@ describe("computeManualOrder", () => {
     // between 10 and 1 — not simply "10 + 1" as if `unordered` had no
     // position at all.
     expect(computeManualOrder([ordered, unordered], 1)).toBe(5.5);
+  });
+});
+
+describe("planManualReorder", () => {
+  it("seeds sequential orders for the whole section when it's still fully alphabetical, so the dragged room lands at the drop position instead of jumping ahead of every null sibling", () => {
+    const a = makeRoomSummary({ room_id: "a", manual_order: null });
+    const b = makeRoomSummary({ room_id: "b", manual_order: null });
+    const c = makeRoomSummary({ room_id: "c", manual_order: null });
+    // Drag `a` to land between `b` and `c` (target index 1, excluding `a`).
+    const plan = planManualReorder([a, b, c], "a", 1);
+    expect(plan).toEqual([
+      { room_id: "b", order: 0 },
+      { room_id: "a", order: 1 },
+      { room_id: "c", order: 2 },
+    ]);
+  });
+
+  it("only updates the dragged room with a midpoint once the section already has a real manual order", () => {
+    const a = makeRoomSummary({ room_id: "a", manual_order: 1 });
+    const b = makeRoomSummary({ room_id: "b", manual_order: 3 });
+    const dragged = makeRoomSummary({ room_id: "c", manual_order: null });
+    const plan = planManualReorder([a, dragged, b], "c", 1);
+    expect(plan).toEqual([{ room_id: "c", order: 2 }]);
+  });
+
+  it("returns no updates when the dragged room isn't found in the section", () => {
+    const a = makeRoomSummary({ room_id: "a" });
+    expect(planManualReorder([a], "missing", 0)).toEqual([]);
   });
 });

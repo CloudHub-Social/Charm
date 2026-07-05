@@ -12,7 +12,7 @@ import {
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
 import { SpaceBrowser } from "./SpaceBrowser";
-import { computeManualOrder, groupRoomsIntoSections } from "./roomSections";
+import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { displayName } from "./roomDisplay";
 
 interface RoomListProps {
@@ -26,9 +26,10 @@ interface RoomListProps {
 const ROW_HEIGHT_PX = 46;
 
 function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex: number) {
-  const others = sectionRooms.filter((room) => room.room_id !== roomId);
-  const order = computeManualOrder(others, targetIndex);
-  setRoomManualOrder(roomId, order).catch(console.error);
+  const updates = planManualReorder(sectionRooms, roomId, targetIndex);
+  for (const { room_id, order } of updates) {
+    setRoomManualOrder(room_id, order).catch(console.error);
+  }
 }
 
 export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
