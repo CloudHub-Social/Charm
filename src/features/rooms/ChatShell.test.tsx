@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
@@ -13,9 +13,9 @@ import type {
 } from "@/lib/matrix";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
-// timeline:update / send_queue:update / receipts:update / typing:update
-// listeners, mark_room_read) — mock lib/matrix entirely so the test exercises
-// only the component, not a real Tauri backend.
+// timeline:update / send_queue:update / receipts:update / typing:update /
+// upload:progress listeners, mark_room_read) — mock lib/matrix entirely so
+// the test exercises only the component, not a real Tauri backend.
 const getTimelinePage = vi.fn();
 const sendMessage = vi.fn().mockResolvedValue("txn-1");
 const sendReply = vi.fn().mockResolvedValue("txn-1");
@@ -25,11 +25,20 @@ const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResul
 const canRedact = vi.fn().mockResolvedValue(true);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
+const sendAttachment = vi.fn().mockResolvedValue(undefined);
+const openFileDialog = vi.fn();
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let sendQueueUpdateCallback: ((update: SendQueueUpdateEvent) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
 let typingCallback: ((update: TypingUpdate) => void) | undefined;
+let uploadProgressCallback:
+  | ((progress: { txn_id: string; room_id: string; sent: number; total: number }) => void)
+  | undefined;
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => openFileDialog(...args),
+}));
 
 vi.mock("@/lib/matrix", () => ({
   getTimelinePage: (...args: unknown[]) => getTimelinePage(...args),
@@ -41,6 +50,7 @@ vi.mock("@/lib/matrix", () => ({
   canRedact: (...args: unknown[]) => canRedact(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
+  sendAttachment: (...args: unknown[]) => sendAttachment(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
     timelineUpdateCallback = callback;
     return Promise.resolve(() => {});
@@ -57,6 +67,10 @@ vi.mock("@/lib/matrix", () => ({
     typingCallback = callback;
     return Promise.resolve(() => {});
   }),
+  onUploadProgress: vi.fn((callback: typeof uploadProgressCallback) => {
+    uploadProgressCallback = callback;
+    return Promise.resolve(() => {});
+  }),
 }));
 
 const room: RoomSummary = {
@@ -66,7 +80,7 @@ const room: RoomSummary = {
 };
 
 /** Minimal-but-complete `RoomMessageSummary` for tests that don't care about
- * edit/reaction/reply/send-state fields — fills them with inert defaults. */
+ * edit/reaction/reply/send-state/media fields — fills them with inert defaults. */
 function summary(
   overrides: Partial<RoomMessageSummary> & Pick<RoomMessageSummary, "event_id" | "sender" | "body">,
 ): RoomMessageSummary {
@@ -79,6 +93,7 @@ function summary(
     in_reply_to: null,
     transaction_id: null,
     send_state: { state: "sent" },
+    media: null,
     ...overrides,
   };
 }
@@ -106,10 +121,13 @@ describe("ChatShell", () => {
     toggleReaction.mockReset();
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
+    sendAttachment.mockReset().mockResolvedValue(undefined);
+    openFileDialog.mockReset();
     timelineUpdateCallback = undefined;
     sendQueueUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
+    uploadProgressCallback = undefined;
   });
 
   it("prompts to select a room when none is active", () => {
@@ -490,5 +508,102 @@ describe("ChatShell", () => {
     // own call is still pending (never resolved in this test), so Delete
     // must not be shown yet.
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("enables the attach button and opens the file dialog on click", async () => {
+    openFileDialog.mockResolvedValue("/Users/me/cat.png");
+    renderChatShell();
+
+    const attachButton = await screen.findByRole("button", { name: "Attach" });
+    expect(attachButton).not.toBeDisabled();
+
+    fireEvent.click(attachButton);
+
+    await waitFor(() =>
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        "/Users/me/cat.png",
+        expect.any(String),
+      ),
+    );
+  });
+
+  it("shows an upload progress bar that reacts to upload:progress and clears on completion", async () => {
+    sendAttachment.mockImplementation(() => new Promise(() => {})); // never resolves during this test
+    openFileDialog.mockResolvedValue("/Users/me/video.mp4");
+
+    // ChatShell's txn id is `local-${Date.now()}-${Math.random()...}` —
+    // freeze both so the test can compute the exact id it generates and
+    // drive the mocked upload:progress callback with a matching txn_id.
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    vi.spyOn(Math, "random").mockReturnValue(0.123456789);
+
+    renderChatShell();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+
+    await waitFor(() => expect(screen.getByText("video.mp4")).toBeInTheDocument());
+
+    const expectedTxnId = `local-1700000000000-${(0.123456789).toString(36).slice(2)}`;
+
+    // Progress ticks in.
+    act(() => {
+      uploadProgressCallback?.({
+        txn_id: expectedTxnId,
+        room_id: room.room_id,
+        sent: 50,
+        total: 100,
+      });
+    });
+    const progressBar = document.querySelector(".bg-primary.transition-\\[width\\]");
+    await waitFor(() => expect(progressBar).toHaveStyle({ width: "50%" }));
+
+    // Completion clears the row.
+    act(() => {
+      uploadProgressCallback?.({
+        txn_id: expectedTxnId,
+        room_id: room.room_id,
+        sent: 100,
+        total: 100,
+      });
+    });
+    await waitFor(() => expect(screen.queryByText("video.mp4")).not.toBeInTheDocument());
+
+    vi.restoreAllMocks();
+  });
+
+  it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
+    sendAttachment.mockRejectedValue(new Error("network error"));
+    openFileDialog.mockResolvedValue("/Users/me/broken.mp4");
+
+    renderChatShell();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+
+    await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss failed upload broken.mp4" }));
+
+    await waitFor(() => expect(screen.queryByText("broken.mp4")).not.toBeInTheDocument());
+  });
+
+  it("dispatches the same upload path on paste-image-into-composer", async () => {
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+
+    const file = new File(["fake"], "pasted.png", { type: "image/png" });
+    Object.defineProperty(file, "path", { value: "/Users/me/pasted.png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [file] },
+    });
+
+    await waitFor(() =>
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        "/Users/me/pasted.png",
+        expect.any(String),
+      ),
+    );
   });
 });

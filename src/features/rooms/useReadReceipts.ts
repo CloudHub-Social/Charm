@@ -65,7 +65,7 @@ export function useReadReceipts(roomId: string | null, ownUserId: string) {
       store.set(receiptsAtomFamily(update.room_id), (prev) => applyReceipts(prev, filtered));
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [store, ownUserId]);
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
-import { Paperclip, Send } from "lucide-react";
+import { Paperclip, Send, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import {
@@ -11,7 +12,9 @@ import {
   onSendQueueUpdate,
   onTimelineUpdate,
   onTypingUpdate,
+  onUploadProgress,
   redactEvent,
+  sendAttachment,
   sendMessage,
   sendReply,
   sendTyping,
@@ -19,6 +22,7 @@ import {
   type RoomMessageSummary,
   type RoomSummary,
 } from "@/lib/matrix";
+import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, displayName, initials } from "./roomDisplay";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
@@ -36,6 +40,14 @@ const MAX_RECEIPT_AVATARS = 3;
 
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
+
+interface PendingUpload {
+  txnId: string;
+  filename: string;
+  sent: number;
+  total: number;
+  failed: boolean;
+}
 
 function formatTime(timestampMs: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
@@ -124,7 +136,9 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
+  const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
@@ -194,9 +208,28 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       });
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room]);
+
+  useEffect(() => {
+    const unlisten = onUploadProgress((progress) => {
+      setUploads((prev) => {
+        const existing = prev.find((u) => u.txnId === progress.txn_id);
+        if (!existing) return prev;
+        const done = progress.sent >= progress.total && progress.total > 0;
+        if (done) {
+          return prev.filter((u) => u.txnId !== progress.txn_id);
+        }
+        return prev.map((u) =>
+          u.txnId === progress.txn_id ? { ...u, sent: progress.sent, total: progress.total } : u,
+        );
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(console.error);
+    };
+  }, []);
 
   useEffect(() => {
     if (!room) return undefined;
@@ -209,7 +242,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       );
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room]);
 
@@ -230,7 +263,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [room?.room_id, currentUserId]);
 
@@ -350,6 +383,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         in_reply_to: replyingTo,
         transaction_id: transactionId,
         send_state: { state: "pending" },
+        media: null,
       };
       setMessages((prev) => {
         // The user may have switched away from `targetRoom` while this send
@@ -391,8 +425,55 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     }
   }
 
+  async function handleAttachFile(filePath: string) {
+    if (!room) return;
+    const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+    const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
+    try {
+      await sendAttachment(room.room_id, filePath, txnId);
+      setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
+    } catch (err) {
+      console.error(err);
+      setUploads((prev) => prev.map((u) => (u.txnId === txnId ? { ...u, failed: true } : u)));
+    }
+  }
+
+  async function handleAttachClick() {
+    const selected = await openFileDialog({ multiple: false });
+    if (typeof selected === "string") {
+      await handleAttachFile(selected);
+    }
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    // Tauri's webview exposes dropped files' real filesystem paths via
+    // `webkitGetAsEntry`-less File objects that still carry a `path` on
+    // desktop; browsers' plain `File` has no path, so this only actually
+    // triggers a send inside the Tauri webview, same as production runs in.
+    const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
+    const file = files[0];
+    if (file?.path) {
+      handleAttachFile(file.path);
+    }
+  }
+
+  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
+    const file = files.find((f) => f.type.startsWith("image/"));
+    if (file?.path) {
+      event.preventDefault();
+      handleAttachFile(file.path);
+    }
+  }
+
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div
+      className="flex min-w-0 flex-1 flex-col"
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={handleDrop}
+    >
       <div className="border-b border-border p-4 text-[15px] font-bold text-foreground">
         {displayName(room.room_id, room.name)}
       </div>
@@ -474,19 +555,28 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 )}
                 <div className="flex items-center gap-1">
                   {!own && <div className="w-11 shrink-0" />}
-                  <div
-                    className={cn(
-                      "w-fit rounded-md px-3 py-2 text-[15px]",
-                      message.redacted
-                        ? "italic text-muted-foreground bg-secondary/50"
-                        : own
-                          ? "bg-primary text-primary-foreground"
-                          : "bg-secondary text-foreground",
-                      isError && "border border-destructive",
-                    )}
-                  >
-                    {message.redacted ? "Message deleted" : message.body}
-                  </div>
+                  {message.redacted ? (
+                    <div className="w-fit rounded-md bg-secondary/50 px-3 py-2 text-[15px] italic text-muted-foreground">
+                      Message deleted
+                    </div>
+                  ) : message.media ? (
+                    <MediaMessage
+                      content={message.media}
+                      roomId={room.room_id}
+                      eventId={message.event_id}
+                      body={message.body}
+                    />
+                  ) : (
+                    <div
+                      className={cn(
+                        "w-fit rounded-md px-3 py-2 text-[15px]",
+                        own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
+                        isError && "border border-destructive",
+                      )}
+                    >
+                      {message.body}
+                    </div>
+                  )}
                   {!message.redacted && (
                     <MessageActions
                       ref={(el) => {
@@ -561,6 +651,46 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
       )}
 
+      {uploads.length > 0 && (
+        <div className="flex flex-col gap-1 px-4 pb-2">
+          {uploads.map((upload) => (
+            <div
+              key={upload.txnId}
+              className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-[13px]"
+            >
+              <span className="truncate text-foreground">{upload.filename}</span>
+              {upload.failed ? (
+                <>
+                  <span className="text-destructive-foreground">Upload failed</span>
+                  <button
+                    type="button"
+                    aria-label={`Dismiss failed upload ${upload.filename}`}
+                    onClick={() =>
+                      setUploads((prev) => prev.filter((u) => u.txnId !== upload.txnId))
+                    }
+                    className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+                  >
+                    <X size={14} />
+                  </button>
+                </>
+              ) : (
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
+                  <div
+                    className="h-full bg-primary transition-[width]"
+                    style={{
+                      width:
+                        upload.total > 0
+                          ? `${Math.min(100, (upload.sent / upload.total) * 100)}%`
+                          : "10%",
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {replyTarget && !editingEventId && (
         <div className="px-3 pb-1">
           <ReplyPreview
@@ -593,18 +723,20 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         <div className="flex items-end gap-2 rounded-lg border border-border bg-card p-2">
           <button
             aria-label="Attach"
-            disabled
-            className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground disabled:cursor-not-allowed"
+            onClick={handleAttachClick}
+            className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent disabled:cursor-not-allowed"
           >
             <Paperclip size={18} />
           </button>
           <textarea
+            ref={textareaRef}
             rows={1}
             value={draft}
             onChange={(e) => {
               setDraft(e.currentTarget.value);
               handleTypingInput(room.room_id);
             }}
+            onPaste={handlePaste}
             onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {

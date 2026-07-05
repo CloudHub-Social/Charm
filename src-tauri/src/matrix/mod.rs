@@ -1,5 +1,6 @@
 pub mod actions;
 pub mod ephemeral;
+pub mod media;
 pub mod persistence;
 pub mod presence;
 pub mod qr_login;
@@ -64,6 +65,12 @@ pub struct MatrixState {
     /// (no `.await` in between), or a `cancel_qr_login` racing in that gap
     /// could find nothing to abort yet.
     pub(crate) pending_qr_login_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Filesystem media cache (`<app_data>/media/`), built once at app
+    /// startup and shared across every login/restore — see
+    /// `media::MediaCache`. `OnceCell` rather than living inside the client
+    /// swap above: the cache directory doesn't depend on which account is
+    /// logged in, and outlives any single `Client`.
+    pub(crate) media_cache: tokio::sync::OnceCell<media::MediaCache>,
     /// The presence state the *next* `/sync` request should report, kept in
     /// sync with the last successful `set_presence` call. `spawn_sync_loop`
     /// reads this fresh on every iteration (rather than baking a single
@@ -81,6 +88,23 @@ impl MatrixState {
             .await
             .clone()
             .ok_or_else(|| "not logged in".to_string())
+    }
+
+    /// Lazily initializes (on first use) and returns the shared media cache,
+    /// rebuilding its in-memory index from a directory scan the first time
+    /// it's created.
+    pub(crate) async fn require_media_cache(
+        &self,
+        app: &AppHandle,
+    ) -> Result<&media::MediaCache, String> {
+        self.media_cache
+            .get_or_try_init(|| async {
+                let dir = media::media_dir(app)?;
+                let cache = media::MediaCache::new(dir);
+                cache.rebuild_index().await?;
+                Ok::<_, String>(cache)
+            })
+            .await
     }
 }
 
@@ -588,6 +612,110 @@ pub async fn resolve_alias(client: &Client, alias: &str) -> Result<String, Strin
         .await
         .map_err(|e| e.to_string())?;
     Ok(response.room_id.to_string())
+}
+
+/// Resolves the media attached to `event_id` (an image/video/audio/file
+/// `m.room.message`) to a local cache path, fetching and decrypting on a
+/// cache miss. `thumbnail` requests a 256x256 scaled thumbnail instead of the
+/// full file — callers pick based on where the media is being rendered
+/// (message-list thumbnail vs. lightbox full view).
+///
+/// No opaque handle crosses IPC: the frontend passes back the plain
+/// `(room_id, event_id)` it already has from `RoomMessageSummary`, and this
+/// command re-derives the real `MediaSource` — including, for encrypted
+/// media, the `EncryptedFile`'s AES key — by re-fetching the event
+/// server-side. The key never leaves this function.
+#[tauri::command]
+pub async fn resolve_media(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+    thumbnail: bool,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    let cache = state.require_media_cache(&app).await?;
+
+    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+
+    let event = room
+        .event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let raw = event.kind.raw();
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
+        raw.deserialize().map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return Err(format!("event {event_id} is not an m.room.message"));
+    };
+    let original = msg
+        .as_original()
+        .ok_or_else(|| format!("event {event_id} has been redacted"))?;
+
+    let (source, thumbnail_source) = match &original.content.msgtype {
+        matrix_sdk::ruma::events::room::message::MessageType::Image(image) => (
+            image.source.clone(),
+            image.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Video(video) => (
+            video.source.clone(),
+            video.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => {
+            (audio.source.clone(), None)
+        }
+        matrix_sdk::ruma::events::room::message::MessageType::File(file) => {
+            (file.source.clone(), None)
+        }
+        _ => return Err(format!("event {event_id} has no media")),
+    };
+
+    let (resolved_source, kind) = if thumbnail {
+        match thumbnail_source {
+            Some(thumb_source) => (
+                thumb_source,
+                media::MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+            // No dedicated thumbnail: falling back to the full-size source
+            // is only valid to request as a server-side *thumbnail* when
+            // that source is `Plain` — homeservers cannot generate
+            // thumbnails of `Encrypted` content (they can't decrypt it), so
+            // a `MediaFormat::Thumbnail` request against an encrypted
+            // source always fails server-side. Fetch (and decrypt) the
+            // full file instead; the frontend renders it at the
+            // thumbnail's display size regardless of the underlying pixel
+            // dimensions.
+            None if matches!(
+                source,
+                matrix_sdk::ruma::events::room::MediaSource::Encrypted(_)
+            ) =>
+            {
+                (source, media::MediaKind::File)
+            }
+            None => (
+                source,
+                media::MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+        }
+    } else {
+        (source, media::MediaKind::File)
+    };
+
+    let path = media::resolve(cache, &client, resolved_source, kind).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {

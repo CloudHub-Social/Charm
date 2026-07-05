@@ -6,6 +6,7 @@ import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
+import type { MediaContent } from "@bindings/MediaContent";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
@@ -24,6 +25,7 @@ import type { SendState } from "@bindings/SendState";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
+import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 
 /**
@@ -40,6 +42,7 @@ export type {
   EventReceipt,
   LoginRequest,
   LoginResponse,
+  MediaContent,
   PresenceStateDto,
   PresenceUpdate,
   QrLoginProgressEvent,
@@ -58,6 +61,7 @@ export type {
   SyncStateEvent,
   TimelinePage,
   TypingUpdate,
+  UploadProgress,
   VerificationRequestSummary,
 };
 
@@ -218,6 +222,39 @@ export function onSasUpdate(
   callback: (update: SasUpdateEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SasUpdateEvent>(`verification:sas_update:${flowId}`, (e) => callback(e.payload));
+}
+
+/**
+ * `txnId` is caller-supplied (not server-generated) so it can match the ID
+ * the frontend already used for its optimistic upload row before this call
+ * — `upload:progress` events for this upload carry the same ID back.
+ */
+export function sendAttachment(
+  roomId: string,
+  filePath: string,
+  txnId: string,
+  caption?: string,
+): Promise<void> {
+  return invoke("send_attachment", { roomId, filePath, txnId, caption });
+}
+
+/**
+ * Resolves the media attached to `eventId` in `roomId` to a local filesystem
+ * path — fetching, decrypting, and caching on a miss. No handle crosses IPC:
+ * the frontend just passes back the plain `(roomId, eventId)` pair it
+ * already has from `RoomMessageSummary`'s `media` field ({@link MediaContent}
+ * carries display metadata only). Load the returned path in an
+ * `<img>`/`<video>`/`<audio>` tag via `convertFileSrc` from
+ * `@tauri-apps/api/core`; never expected to be a remote URL.
+ */
+export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean): Promise<string> {
+  return invoke("resolve_media", { roomId, eventId, thumbnail });
+}
+
+export function onUploadProgress(
+  callback: (progress: UploadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<UploadProgress>("upload:progress", (e) => callback(e.payload));
 }
 
 export function sendReadReceipt(

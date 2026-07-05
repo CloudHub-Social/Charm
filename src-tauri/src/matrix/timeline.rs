@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
-use matrix_sdk::ruma::events::room::message::Relation as MessageRelation;
+use matrix_sdk::ruma::events::room::message::{MessageType, Relation as MessageRelation};
 use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
 use matrix_sdk::ruma::{OwnedEventId, OwnedUserId, RoomId};
@@ -11,6 +11,120 @@ use tauri::State;
 use ts_rs::TS;
 
 use super::MatrixState;
+
+/// Display metadata for a non-text `m.room.message` msgtype, additive
+/// alongside Spec 03's flat `RoomMessageSummary` fields — `None` for text
+/// messages. Carries no bytes, no `MediaSource`, no encryption key material:
+/// just enough to render a thumbnail/player/chip. The frontend resolves
+/// actual media bytes lazily via `resolve_media(room_id, event_id,
+/// thumbnail)`, which re-derives the real `MediaSource` server-side by
+/// looking the event back up — nothing decodable ever crosses IPC.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "type")]
+pub enum MediaContent {
+    Image {
+        mime: Option<String>,
+        #[ts(type = "number | null")]
+        size: Option<u64>,
+        #[ts(type = "number | null")]
+        width: Option<u32>,
+        #[ts(type = "number | null")]
+        height: Option<u32>,
+        has_thumbnail: bool,
+        blurhash: Option<String>,
+    },
+    Video {
+        mime: Option<String>,
+        #[ts(type = "number | null")]
+        size: Option<u64>,
+        #[ts(type = "number | null")]
+        width: Option<u32>,
+        #[ts(type = "number | null")]
+        height: Option<u32>,
+        #[ts(type = "number | null")]
+        duration_ms: Option<u64>,
+        has_thumbnail: bool,
+    },
+    Audio {
+        mime: Option<String>,
+        #[ts(type = "number | null")]
+        size: Option<u64>,
+        #[ts(type = "number | null")]
+        duration_ms: Option<u64>,
+    },
+    File {
+        filename: String,
+        mime: Option<String>,
+        #[ts(type = "number | null")]
+        size: Option<u64>,
+    },
+}
+
+/// Builds the `media` field for a `RoomMessageSummary` from a `MessageType` —
+/// pure and synchronous, no cache/network access, since it only reads fields
+/// already present on the deserialized event.
+fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
+    match msgtype {
+        MessageType::Image(image) => Some(MediaContent::Image {
+            mime: image.info.as_ref().and_then(|i| i.mimetype.clone()),
+            size: image.info.as_ref().and_then(|i| i.size).map(u64::from),
+            width: image
+                .info
+                .as_ref()
+                .and_then(|i| i.width)
+                .map(|w| u32::try_from(u64::from(w)).unwrap_or(u32::MAX)),
+            height: image
+                .info
+                .as_ref()
+                .and_then(|i| i.height)
+                .map(|h| u32::try_from(u64::from(h)).unwrap_or(u32::MAX)),
+            has_thumbnail: image
+                .info
+                .as_ref()
+                .is_some_and(|i| i.thumbnail_source.is_some()),
+            blurhash: None,
+        }),
+        MessageType::Video(video) => Some(MediaContent::Video {
+            mime: video.info.as_ref().and_then(|i| i.mimetype.clone()),
+            size: video.info.as_ref().and_then(|i| i.size).map(u64::from),
+            width: video
+                .info
+                .as_ref()
+                .and_then(|i| i.width)
+                .map(|w| u32::try_from(u64::from(w)).unwrap_or(u32::MAX)),
+            height: video
+                .info
+                .as_ref()
+                .and_then(|i| i.height)
+                .map(|h| u32::try_from(u64::from(h)).unwrap_or(u32::MAX)),
+            duration_ms: video
+                .info
+                .as_ref()
+                .and_then(|i| i.duration)
+                .map(|d| d.as_millis() as u64),
+            has_thumbnail: video
+                .info
+                .as_ref()
+                .is_some_and(|i| i.thumbnail_source.is_some()),
+        }),
+        MessageType::Audio(audio) => Some(MediaContent::Audio {
+            mime: audio.info.as_ref().and_then(|i| i.mimetype.clone()),
+            size: audio.info.as_ref().and_then(|i| i.size).map(u64::from),
+            duration_ms: audio
+                .info
+                .as_ref()
+                .and_then(|i| i.duration)
+                .map(|d| d.as_millis() as u64),
+        }),
+        MessageType::File(file) => Some(MediaContent::File {
+            filename: file.filename.clone().unwrap_or_else(|| file.body.clone()),
+            mime: file.info.as_ref().and_then(|i| i.mimetype.clone()),
+            size: file.info.as_ref().and_then(|i| i.size).map(u64::from),
+        }),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -49,6 +163,8 @@ pub enum SendState {
 pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
+    /// Text-preview/room-list use — kept for backwards compatibility
+    /// alongside `content`, which carries the full tagged-union payload.
     pub body: String,
     /// Reserved: always `None` until the formatted-body/rich-text composition spec lands.
     pub formatted_body: Option<String>,
@@ -62,6 +178,11 @@ pub struct RoomMessageSummary {
     pub in_reply_to: Option<ReplyRef>,
     pub transaction_id: Option<String>,
     pub send_state: SendState,
+    /// `None` for text/notice/emote messages; `Some` for image/video/audio/file
+    /// msgtypes. See [`MediaContent`] and `resolve_media` (in `mod.rs`) for
+    /// how the frontend turns this into an actual displayable/downloadable
+    /// local path.
+    pub media: Option<MediaContent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -85,7 +206,10 @@ pub struct RoomTimelineUpdate {
 /// Folds a flat slice of timeline events — original `m.room.message` events,
 /// `m.replace` edits, `m.reaction` annotations, and redactions — into
 /// per-message summaries with edits/reactions/redactions collapsed onto
-/// their target.
+/// their target. Non-text msgtypes (image/video/audio/file) additionally get
+/// a `media` metadata block (see [`MediaContent`]) — pure and synchronous,
+/// no cache/network access, since fold-time only needs already-present event
+/// fields, not media bytes.
 ///
 /// Deviation from the spec's "strongly prefer adopting the SDK's `Timeline`
 /// API" guidance: this crate only depends on plain `matrix-sdk`, not
@@ -179,6 +303,7 @@ pub fn events_to_summaries(
                                 in_reply_to: None,
                                 transaction_id: None,
                                 send_state: SendState::Sent,
+                                media: None,
                             },
                         );
                         order.push(event_id);
@@ -242,6 +367,7 @@ pub fn events_to_summaries(
                             .as_ref()
                             .map(ToString::to_string),
                         send_state: SendState::Sent,
+                        media: message_type_to_media(&original.content.msgtype),
                     },
                 );
                 order.push(event_id);
@@ -402,8 +528,7 @@ pub fn events_to_summaries(
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:
 /// each call walks backward from `cursor` (or the live end of the timeline if
-/// `cursor` is `None`). Text messages only for this first cut — images/other
-/// msgtypes are a later timeline-rendering pass.
+/// `cursor` is `None`).
 #[tauri::command]
 pub async fn get_timeline_page(
     state: State<'_, MatrixState>,
@@ -428,6 +553,191 @@ pub async fn get_timeline_page(
         messages: events_to_summaries(&response.chunk, own_user_id.as_deref()),
         next_cursor: response.end,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::deserialized_responses::TimelineEvent;
+    use matrix_sdk::ruma::serde::Raw;
+    use serde_json::json;
+
+    use super::*;
+
+    fn event(json: serde_json::Value) -> TimelineEvent {
+        TimelineEvent::from_plaintext(Raw::new(&json).unwrap().cast_unchecked())
+    }
+
+    #[test]
+    fn emits_no_media_for_a_text_message() {
+        let message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$text",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello there" }
+        }));
+
+        let summaries = events_to_summaries(&[message], None);
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].body, "hello there");
+        assert!(summaries[0].media.is_none());
+    }
+
+    #[test]
+    fn emits_image_media_metadata_for_an_image_message() {
+        let message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$image",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": {
+                "msgtype": "m.image",
+                "body": "cat.png",
+                "url": "mxc://example.org/abc123",
+                "info": {
+                    "mimetype": "image/png",
+                    "size": 1024,
+                    "w": 800,
+                    "h": 600,
+                    "thumbnail_url": "mxc://example.org/thumb123",
+                },
+            }
+        }));
+
+        let summaries = events_to_summaries(&[message], None);
+        assert_eq!(summaries.len(), 1);
+        match &summaries[0].media {
+            Some(MediaContent::Image {
+                mime,
+                size,
+                width,
+                height,
+                has_thumbnail,
+                ..
+            }) => {
+                assert_eq!(mime.as_deref(), Some("image/png"));
+                assert_eq!(*size, Some(1024));
+                assert_eq!(*width, Some(800));
+                assert_eq!(*height, Some(600));
+                assert!(*has_thumbnail);
+            }
+            other => panic!("expected Image media, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emits_file_media_metadata_for_a_file_message() {
+        let message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$file",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": {
+                "msgtype": "m.file",
+                "body": "report.pdf",
+                "filename": "report.pdf",
+                "url": "mxc://example.org/def456",
+                "info": {
+                    "mimetype": "application/pdf",
+                    "size": 4096,
+                },
+            }
+        }));
+
+        let summaries = events_to_summaries(&[message], None);
+        match &summaries[0].media {
+            Some(MediaContent::File {
+                filename,
+                mime,
+                size,
+            }) => {
+                assert_eq!(filename, "report.pdf");
+                assert_eq!(mime.as_deref(), Some("application/pdf"));
+                assert_eq!(*size, Some(4096));
+            }
+            other => panic!("expected File media, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emits_audio_media_metadata_with_duration() {
+        let message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$audio",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": {
+                "msgtype": "m.audio",
+                "body": "voice.ogg",
+                "url": "mxc://example.org/ghi789",
+                "info": {
+                    "mimetype": "audio/ogg",
+                    "size": 2048,
+                    "duration": 5000,
+                },
+            }
+        }));
+
+        let summaries = events_to_summaries(&[message], None);
+        match &summaries[0].media {
+            Some(MediaContent::Audio { duration_ms, .. }) => {
+                assert_eq!(*duration_ms, Some(5000))
+            }
+            other => panic!("expected Audio media, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn emits_video_media_metadata_with_dimensions_and_duration() {
+        let message = event(json!({
+            "type": "m.room.message",
+            "event_id": "$video",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": {
+                "msgtype": "m.video",
+                "body": "clip.mp4",
+                "url": "mxc://example.org/jkl012",
+                "info": {
+                    "mimetype": "video/mp4",
+                    "size": 8192,
+                    "w": 1920,
+                    "h": 1080,
+                    "duration": 12000,
+                },
+            }
+        }));
+
+        let summaries = events_to_summaries(&[message], None);
+        match &summaries[0].media {
+            Some(MediaContent::Video {
+                width,
+                height,
+                duration_ms,
+                ..
+            }) => {
+                assert_eq!(*width, Some(1920));
+                assert_eq!(*height, Some(1080));
+                assert_eq!(*duration_ms, Some(12000));
+            }
+            other => panic!("expected Video media, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ignores_events_that_are_not_room_messages() {
+        let member_event = event(json!({
+            "type": "m.room.member",
+            "event_id": "$member_event",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1_700_000_000_000u64,
+            "state_key": "@alice:example.org",
+            "content": { "membership": "join" }
+        }));
+
+        let summaries = events_to_summaries(&[member_event], None);
+        assert!(summaries.is_empty());
+    }
 }
 
 #[cfg(test)]

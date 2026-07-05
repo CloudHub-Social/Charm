@@ -18,7 +18,7 @@ export function usePresenceListener() {
       store.set(presenceAtomFamily(update.user_id), update);
     });
     return () => {
-      unlisten.then((fn) => fn());
+      unlisten.then((fn) => fn()).catch(console.error);
     };
   }, [store]);
 }
