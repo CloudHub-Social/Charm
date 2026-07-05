@@ -156,7 +156,7 @@ impl MatrixState {
         timeline::spawn_timeline_listener(
             app.clone(),
             room_id.to_owned(),
-            std::sync::Arc::clone(&timeline),
+            std::sync::Arc::downgrade(&timeline),
             client.user_id().map(ToOwned::to_owned),
         );
         timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));

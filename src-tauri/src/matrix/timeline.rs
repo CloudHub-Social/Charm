@@ -390,16 +390,36 @@ fn timeline_item_to_summary(
 /// immediately, then re-snapshots and emits again on every batch of diffs —
 /// `Timeline::subscribe` batches as many updates as are already available
 /// rather than emitting one `timeline:update` per individual diff.
+///
+/// Takes a `Weak<Timeline>`, not an `Arc<Timeline>` — holding a strong
+/// reference here would keep the `Timeline` (and this task) alive forever:
+/// `MatrixState::get_or_create_timeline` is the only other owner (via the
+/// LRU map), and `stream.next()` can block indefinitely on an idle room, so a
+/// task holding its own `Arc` would never observe eviction and would leak
+/// for the rest of the process's life. Instead, this periodically tries to
+/// upgrade the `Weak` and exits its loop the first time that fails — i.e.
+/// once the LRU has evicted this room's only other reference.
 pub(crate) fn spawn_timeline_listener(
     app: AppHandle,
     room_id: matrix_sdk::ruma::OwnedRoomId,
-    timeline: Arc<Timeline>,
+    timeline: std::sync::Weak<Timeline>,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
 ) {
     use futures_util::StreamExt;
 
+    /// How often to check whether this room's `Timeline` has been evicted
+    /// from the LRU map while the diff stream is otherwise idle (no activity
+    /// to wake `stream.next()` on its own).
+    const LIVENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
     tokio::spawn(async move {
-        let (initial_items, mut stream) = timeline.subscribe().await;
+        let Some(strong) = timeline.upgrade() else {
+            return;
+        };
+        let (initial_items, mut stream) = strong.subscribe().await;
+        // Don't hold this across the loop below — only the `Weak` should
+        // outlive this point, or eviction could never be observed.
+        drop(strong);
         let mut items = initial_items;
 
         let _ = app.emit(
@@ -410,7 +430,18 @@ pub(crate) fn spawn_timeline_listener(
             },
         );
 
-        while let Some(diffs) = stream.next().await {
+        let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
+        loop {
+            let diffs = tokio::select! {
+                diffs = stream.next() => diffs,
+                _ = liveness_check.tick() => {
+                    if timeline.upgrade().is_some() {
+                        continue;
+                    }
+                    break;
+                }
+            };
+            let Some(diffs) = diffs else { break };
             for diff in diffs {
                 diff.apply(&mut items);
             }
