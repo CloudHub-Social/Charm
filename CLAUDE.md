@@ -64,9 +64,10 @@ bindings drift from the Rust source.
 
 ## Code navigation (graphify)
 
-A graphify graph is committed at `graphify-out/graph.json` (built 2026-07-05). Prefer
-it over an open-ended `grep`/`Explore` sweep for architecture / "how does X work" /
-"what calls Y" / cross-file questions:
+Build a local graphify graph with `graphify update .` (it lands in `graphify-out/`,
+which is gitignored — not committed, since it goes stale on every change). Once built,
+prefer it over an open-ended `grep`/`Explore` sweep for architecture / "how does X
+work" / "what calls Y" / cross-file questions:
 
 - `graphify query "<question>"` — BFS traversal for broad context.
 - `graphify explain "<Symbol>"` — plain-language explanation of a node and its neighbors.
