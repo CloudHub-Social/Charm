@@ -6,7 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { completeSsoLogin, login, register, startSsoLogin, type LoginResponse } from "@/lib/matrix";
+import {
+  cancelSsoLogin,
+  completeSsoLogin,
+  login,
+  register,
+  startSsoLogin,
+  type LoginResponse,
+} from "@/lib/matrix";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 
 const SSO_CALLBACK_PREFIX = "charm://sso-callback";
@@ -97,6 +104,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     ssoInProgressRef.current = false;
     setSsoPending(false);
     setError(null);
+    // Releases the client start_sso_login left pending on the Rust side
+    // (its SQLite connection and HTTP pool) — best-effort, since the UI has
+    // already moved on regardless of whether this succeeds.
+    cancelSsoLogin().catch(console.error);
   }
 
   return (

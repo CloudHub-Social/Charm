@@ -58,6 +58,10 @@ export function completeSsoLogin(callbackUrl: string): Promise<LoginResponse> {
   return invoke("complete_sso_login", { callbackUrl });
 }
 
+export function cancelSsoLogin(): Promise<void> {
+  return invoke("cancel_sso_login");
+}
+
 export function tryRestoreSession(): Promise<LoginResponse | null> {
   return invoke("try_restore_session");
 }

@@ -41,6 +41,7 @@ pub fn run() {
             matrix::discover_homeserver,
             matrix::start_sso_login,
             matrix::complete_sso_login,
+            matrix::cancel_sso_login,
             matrix::try_restore_session,
             matrix::list_rooms,
             matrix::resolve_room_alias,

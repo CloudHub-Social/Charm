@@ -314,6 +314,17 @@ pub async fn start_sso_login(
     Ok(sso_url)
 }
 
+/// Discards a client left pending by [`start_sso_login`] if the user cancels
+/// (or abandons) the flow before a `charm://sso-callback` ever arrives —
+/// otherwise it just sits in [`MatrixState::pending_sso_client`], holding its
+/// SQLite connection and HTTP pool open, until either a new SSO attempt
+/// overwrites it or the app closes. A no-op if there's nothing pending.
+#[tauri::command]
+pub async fn cancel_sso_login(state: State<'_, MatrixState>) -> Result<(), String> {
+    *state.pending_sso_client.lock().await = None;
+    Ok(())
+}
+
 /// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
 /// `tests/`, same rationale as [`resolve_alias`].
 pub async fn get_sso_login_url(client: &Client) -> Result<String, String> {
