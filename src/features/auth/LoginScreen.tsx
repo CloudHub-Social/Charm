@@ -16,7 +16,9 @@ import {
 } from "@/lib/matrix";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 
-const SSO_CALLBACK_PREFIX = "charm://sso-callback";
+// Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
+// can't slip past a plain `startsWith` check.
+const SSO_CALLBACK_URL_PATTERN = /^charm:\/\/sso-callback(?:\?|$)/;
 
 interface LoginScreenProps {
   onSignedIn: (session: LoginResponse) => void;
@@ -51,7 +53,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
 
   useEffect(() => {
     const unlisten = onOpenUrl((urls) => {
-      const callbackUrl = urls.find((url) => url.startsWith(SSO_CALLBACK_PREFIX));
+      const callbackUrl = urls.find((url) => SSO_CALLBACK_URL_PATTERN.test(url));
       if (!callbackUrl || !ssoInProgressRef.current) return;
       ssoInProgressRef.current = false;
 
