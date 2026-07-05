@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod persistence;
 pub mod qr_login;
 pub mod send;
@@ -591,8 +592,61 @@ fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         .collect()
 }
 
+/// Bridges matrix-rust-sdk's global send-queue update channel to a
+/// `send_queue:update` Tauri event per room, so local echoes for
+/// edit/react/reply/send can flip pending -> sent -> error without a full
+/// timeline diff. Spawned once per login/session-restore alongside the sync
+/// loop, for the lifetime of the session.
+fn spawn_send_queue_listener(app: AppHandle, client: Client) {
+    use matrix_sdk::send_queue::RoomSendQueueUpdate;
+
+    let mut receiver = client.send_queue().subscribe();
+    tokio::spawn(async move {
+        while let Ok(update) = receiver.recv().await {
+            let room_id = update.room_id.to_string();
+            let send_state = match update.update {
+                RoomSendQueueUpdate::NewLocalEvent(echo) => Some((
+                    echo.transaction_id.to_string(),
+                    timeline::SendState::Pending,
+                )),
+                RoomSendQueueUpdate::SendError {
+                    transaction_id,
+                    error,
+                    ..
+                } => Some((
+                    transaction_id.to_string(),
+                    timeline::SendState::Error {
+                        message: error.to_string(),
+                    },
+                )),
+                RoomSendQueueUpdate::RetryEvent { transaction_id } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Pending))
+                }
+                RoomSendQueueUpdate::SentEvent { transaction_id, .. } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Sent))
+                }
+                RoomSendQueueUpdate::CancelledLocalEvent { .. }
+                | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+                | RoomSendQueueUpdate::MediaUpload { .. } => None,
+            };
+
+            if let Some((transaction_id, send_state)) = send_state {
+                let _ = app.emit(
+                    "send_queue:update",
+                    actions::SendQueueUpdateEvent {
+                        room_id: room_id.clone(),
+                        transaction_id,
+                        send_state,
+                    },
+                );
+            }
+        }
+    });
+}
+
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
+    spawn_send_queue_listener(app.clone(), client.clone());
 
     tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
@@ -617,8 +671,12 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
                 async move {
                     let _ = app.emit("room_list:update", snapshot_rooms(&client));
 
+                    let own_user_id = client.user_id().map(|id| id.to_owned());
                     for (room_id, update) in &response.rooms.joined {
-                        let messages = timeline::events_to_summaries(&update.timeline.events);
+                        let messages = timeline::events_to_summaries(
+                            &update.timeline.events,
+                            own_user_id.as_deref(),
+                        );
                         if !messages.is_empty() {
                             let _ = app.emit(
                                 "timeline:update",

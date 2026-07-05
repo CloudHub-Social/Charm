@@ -1,7 +1,11 @@
+use std::collections::BTreeMap;
+
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
+use matrix_sdk::ruma::events::room::message::Relation as MessageRelation;
+use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
-use matrix_sdk::ruma::RoomId;
+use matrix_sdk::ruma::{OwnedEventId, OwnedUserId, RoomId};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
@@ -10,14 +14,54 @@ use super::MatrixState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
+pub struct ReactionGroup {
+    pub key: String,
+    // Small counts (aggregated per room, per emoji) stay well within JS's safe-integer
+    // range; emit `number` rather than ts-rs's default `bigint`.
+    #[ts(type = "number")]
+    pub count: u32,
+    pub reacted_by_me: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct ReplyRef {
+    pub event_id: String,
+    pub sender: String,
+    pub preview: String,
+}
+
+/// Local send-queue state of a message, folded onto its `RoomMessageSummary`
+/// so the frontend can flip a bubble pending -> sent -> error without a full
+/// timeline diff. See `send_queue:update` in `actions.rs`, which carries the
+/// same shape for out-of-band updates between timeline diffs.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SendState {
+    Pending,
+    Sent,
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
 pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
     pub body: String,
+    /// Reserved: always `None` until the formatted-body/rich-text composition spec lands.
+    pub formatted_body: Option<String>,
     // Milliseconds since epoch stays well within JS's safe-integer range; emit `number`
     // rather than ts-rs's default `bigint` so the frontend can use it directly.
     #[ts(type = "number")]
     pub timestamp_ms: u64,
+    pub edited: bool,
+    pub redacted: bool,
+    pub reactions: Vec<ReactionGroup>,
+    pub in_reply_to: Option<ReplyRef>,
+    pub transaction_id: Option<String>,
+    pub send_state: SendState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -38,28 +82,210 @@ pub struct RoomTimelineUpdate {
     pub messages: Vec<RoomMessageSummary>,
 }
 
-/// Text `m.room.message` events only, oldest/newest order preserved from the
-/// input slice — other msgtypes (images, etc.) are a later timeline-rendering
-/// pass, same scope note as `get_timeline_page`.
-pub(crate) fn events_to_summaries(events: &[TimelineEvent]) -> Vec<RoomMessageSummary> {
-    events
-        .iter()
-        .filter_map(|event| {
-            let raw = event.kind.raw();
-            let deserialized: AnySyncTimelineEvent = raw.deserialize().ok()?;
-            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
-                deserialized
-            else {
-                return None;
-            };
-            let original = msg.as_original()?;
-            Some(RoomMessageSummary {
-                event_id: original.event_id.to_string(),
-                sender: original.sender.to_string(),
-                body: original.content.body().to_string(),
-                timestamp_ms: original.origin_server_ts.0.into(),
-            })
-        })
+/// Folds a flat slice of timeline events — original `m.room.message` events,
+/// `m.replace` edits, `m.reaction` annotations, and redactions — into
+/// per-message summaries with edits/reactions/redactions collapsed onto
+/// their target.
+///
+/// Deviation from the spec's "strongly prefer adopting the SDK's `Timeline`
+/// API" guidance: this crate only depends on plain `matrix-sdk`, not
+/// `matrix-sdk-ui` (which is where `Timeline`/`EventTimelineItem` actually
+/// live). Pulling in `matrix-sdk-ui` here would mean adopting a whole second
+/// timeline/pagination subsystem (its own cursor semantics, its own
+/// in-memory item cache, a different event-to-frontend bridging story) as a
+/// side effect of this spec, which is a much bigger structural change than
+/// "add message actions" — so this hand-rolls relation-folding directly over
+/// `room.messages()` output instead, per the spec's documented fallback.
+/// `get_timeline_page`'s cursor logic (`MessagesOptions::backward()`/`response.end`)
+/// is unchanged.
+/// `pub` (not `pub(crate)`) so the network-dependent integration test for
+/// this lives in `tests/message_actions.rs` rather than the `--lib` unit-test
+/// target CI runs without a local Synapse available — same rationale as
+/// `resolve_alias`/`discover` elsewhere in this crate.
+pub fn events_to_summaries(
+    events: &[TimelineEvent],
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+) -> Vec<RoomMessageSummary> {
+    // `events` isn't guaranteed to be in any particular chronological order
+    // relative to relations — `room.messages()` in particular returns
+    // newest-first (backward pagination), so an edit/reaction/redaction
+    // routinely appears *before* the original message it targets in the
+    // slice. So this is a genuine two-pass fold: pass 1 collects originals
+    // and relation events separately without assuming either is present yet,
+    // pass 2 applies every relation now that all originals are known.
+    let mut order: Vec<OwnedEventId> = Vec::new();
+    let mut messages: BTreeMap<OwnedEventId, RoomMessageSummary> = BTreeMap::new();
+    // target event id -> new body from the (last-wins) m.replace seen for it
+    let mut edits: BTreeMap<OwnedEventId, String> = BTreeMap::new();
+    // target event id -> reason a redaction targeted it (message or reaction)
+    let mut redactions: std::collections::HashSet<OwnedEventId> = std::collections::HashSet::new();
+    // reaction target event id -> (key, sender) pairs
+    let mut reactions: BTreeMap<OwnedEventId, Vec<(String, OwnedUserId, OwnedEventId)>> =
+        BTreeMap::new();
+    // reply event id -> target event id it replies to
+    let mut reply_targets: BTreeMap<OwnedEventId, OwnedEventId> = BTreeMap::new();
+
+    for event in events {
+        let raw = event.kind.raw();
+        let deserialized: Result<AnySyncTimelineEvent, _> = raw.deserialize();
+        let Ok(deserialized) = deserialized else {
+            continue;
+        };
+
+        match deserialized {
+            AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) => {
+                let Some(original) = msg.as_original() else {
+                    // Already redacted by the time we fetched it (its own
+                    // JSON content is server-stripped to `{}`) — still worth
+                    // a placeholder summary so the room shows a tombstone,
+                    // and so a *separate* `m.room.redaction` event elsewhere
+                    // in this same slice that targets it (order isn't
+                    // guaranteed either way) has something to mark redacted.
+                    if let matrix_sdk::ruma::events::SyncMessageLikeEvent::Redacted(redacted) = &msg
+                    {
+                        let event_id = redacted.event_id.clone();
+                        messages.insert(
+                            event_id.clone(),
+                            RoomMessageSummary {
+                                event_id: event_id.to_string(),
+                                sender: redacted.sender.to_string(),
+                                body: String::new(),
+                                formatted_body: None,
+                                timestamp_ms: redacted.origin_server_ts.0.into(),
+                                edited: false,
+                                redacted: true,
+                                reactions: Vec::new(),
+                                in_reply_to: None,
+                                transaction_id: None,
+                                send_state: SendState::Sent,
+                            },
+                        );
+                        order.push(event_id);
+                    }
+                    continue;
+                };
+
+                // An edit (m.replace) carries its new content in
+                // `m.new_content` and targets the original via `relates_to`.
+                if let Some(MessageRelation::Replacement(replacement)) =
+                    &original.content.relates_to
+                {
+                    edits
+                        .entry(replacement.event_id.clone())
+                        .or_insert_with(|| replacement.new_content.msgtype.body().to_string());
+                    continue;
+                }
+
+                let event_id = original.event_id.clone();
+                if let Some(MessageRelation::Reply(reply)) = &original.content.relates_to {
+                    reply_targets.insert(event_id.clone(), reply.in_reply_to.event_id.clone());
+                }
+
+                messages.insert(
+                    event_id.clone(),
+                    RoomMessageSummary {
+                        event_id: event_id.to_string(),
+                        sender: original.sender.to_string(),
+                        body: original.content.body().to_string(),
+                        formatted_body: None,
+                        timestamp_ms: original.origin_server_ts.0.into(),
+                        edited: false,
+                        redacted: false,
+                        reactions: Vec::new(),
+                        in_reply_to: None,
+                        transaction_id: None,
+                        send_state: SendState::Sent,
+                    },
+                );
+                order.push(event_id);
+            }
+            AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::Reaction(reaction)) => {
+                if let Some(original) = reaction.as_original() {
+                    let target = original.content.relates_to.event_id.clone();
+                    let key = original.content.relates_to.key.clone();
+                    reactions.entry(target).or_default().push((
+                        key,
+                        original.sender.clone(),
+                        original.event_id.clone(),
+                    ));
+                }
+            }
+            AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomRedaction(
+                redaction,
+            )) => {
+                let redacts = match &redaction {
+                    SyncRoomRedactionEvent::Original(r) => {
+                        r.content.redacts.clone().or_else(|| r.redacts.clone())
+                    }
+                    SyncRoomRedactionEvent::Redacted(r) => r.content.redacts.clone(),
+                };
+                if let Some(redacts) = redacts {
+                    redactions.insert(redacts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Apply edits.
+    for (target, new_body) in edits {
+        if let Some(message) = messages.get_mut(&target) {
+            message.body = new_body;
+            message.edited = true;
+        }
+    }
+
+    // Apply reply-refs, now that all originals (including targets) are known.
+    for (reply_event_id, target_event_id) in reply_targets {
+        let Some(target) = messages.get(&target_event_id) else {
+            continue;
+        };
+        let reply_ref = ReplyRef {
+            event_id: target.event_id.clone(),
+            sender: target.sender.clone(),
+            preview: target.body.clone(),
+        };
+        if let Some(reply_message) = messages.get_mut(&reply_event_id) {
+            reply_message.in_reply_to = Some(reply_ref);
+        }
+    }
+
+    // Apply reactions, dropping any individual reaction event that was
+    // itself redacted (e.g. via `toggle_reaction`'s "remove" path).
+    for (target, entries) in reactions {
+        let Some(message) = messages.get_mut(&target) else {
+            continue;
+        };
+        let mut groups: BTreeMap<String, ReactionGroup> = BTreeMap::new();
+        for (key, sender, reaction_event_id) in entries {
+            if redactions.contains(&reaction_event_id) {
+                continue;
+            }
+            let group = groups.entry(key.clone()).or_insert_with(|| ReactionGroup {
+                key: key.clone(),
+                count: 0,
+                reacted_by_me: false,
+            });
+            group.count += 1;
+            if own_user_id.is_some_and(|me| me == sender.as_ref() as &matrix_sdk::ruma::UserId) {
+                group.reacted_by_me = true;
+            }
+        }
+        message.reactions = groups.into_values().filter(|g| g.count > 0).collect();
+    }
+
+    // Apply message-level redactions (distinct from reaction redactions
+    // above, which target a reaction event id rather than a message one).
+    for target in &redactions {
+        if let Some(message) = messages.get_mut(target) {
+            message.redacted = true;
+            message.body = String::new();
+        }
+    }
+
+    order
+        .into_iter()
+        .filter_map(|id| messages.remove(&id))
         .collect()
 }
 
@@ -85,9 +311,147 @@ pub async fn get_timeline_page(
     options.limit = limit.unwrap_or(30).into();
 
     let response = room.messages(options).await.map_err(|e| e.to_string())?;
+    let own_user_id = client.user_id().map(|id| id.to_owned());
 
     Ok(TimelinePage {
-        messages: events_to_summaries(&response.chunk),
+        messages: events_to_summaries(&response.chunk, own_user_id.as_deref()),
         next_cursor: response.end,
     })
+}
+
+#[cfg(test)]
+mod relation_folding_tests {
+    use matrix_sdk::deserialized_responses::TimelineEvent;
+    use matrix_sdk::ruma::serde::Raw;
+    use serde_json::json;
+
+    use super::events_to_summaries;
+
+    fn event(json: serde_json::Value) -> TimelineEvent {
+        TimelineEvent::from_plaintext(Raw::new(&json).unwrap().cast_unchecked())
+    }
+
+    #[test]
+    fn edit_collapses_onto_target_with_edited_flag() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* hello world",
+                "m.new_content": { "msgtype": "m.text", "body": "hello world" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, edit], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].event_id, "$original");
+        assert_eq!(summaries[0].body, "hello world");
+        assert!(summaries[0].edited);
+    }
+
+    #[test]
+    fn redaction_clears_body_and_sets_redacted() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let redaction = event(json!({
+            "type": "m.room.redaction",
+            "event_id": "$redaction",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "redacts": "$original",
+            "content": { "redacts": "$original" }
+        }));
+
+        let summaries = events_to_summaries(&[original, redaction], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].redacted);
+        assert_eq!(summaries[0].body, "");
+    }
+
+    #[test]
+    fn two_reactions_aggregate_into_one_group_with_count_two() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let reaction_a = event(json!({
+            "type": "m.reaction",
+            "event_id": "$r1",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1500,
+            "content": {
+                "m.relates_to": { "rel_type": "m.annotation", "event_id": "$original", "key": "👍" }
+            }
+        }));
+        let reaction_b = event(json!({
+            "type": "m.reaction",
+            "event_id": "$r2",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 1600,
+            "content": {
+                "m.relates_to": { "rel_type": "m.annotation", "event_id": "$original", "key": "👍" }
+            }
+        }));
+
+        let alice = matrix_sdk::ruma::user_id!("@alice:example.org");
+        let summaries = events_to_summaries(&[original, reaction_a, reaction_b], Some(alice));
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].reactions.len(), 1);
+        assert_eq!(summaries[0].reactions[0].key, "👍");
+        assert_eq!(summaries[0].reactions[0].count, 2);
+        assert!(summaries[0].reactions[0].reacted_by_me);
+    }
+
+    #[test]
+    fn reply_carries_a_reply_ref_to_the_target() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let reply = event(json!({
+            "type": "m.room.message",
+            "event_id": "$reply",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "> hello\n\nhi back",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$original" } }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, reply], None);
+
+        assert_eq!(summaries.len(), 2);
+        let reply_summary = &summaries[1];
+        let reply_ref = reply_summary.in_reply_to.as_ref().expect("has a reply ref");
+        assert_eq!(reply_ref.event_id, "$original");
+        assert_eq!(reply_ref.sender, "@alice:example.org");
+        assert_eq!(reply_ref.preview, "hello");
+    }
 }
