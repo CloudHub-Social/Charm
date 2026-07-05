@@ -1,13 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomListItem } from "./RoomListItem";
-import type { RoomSummary } from "@/lib/matrix";
+import { makeRoomSummary } from "./testFixtures";
 
-const room: RoomSummary = {
-  room_id: "!abc123:localhost",
-  name: "general",
-  unread_count: 0,
-};
+const room = makeRoomSummary();
 
 describe("RoomListItem", () => {
   it("renders the room name", () => {
@@ -16,7 +12,13 @@ describe("RoomListItem", () => {
   });
 
   it("shows an unread badge when there are unread messages", () => {
-    render(<RoomListItem room={{ ...room, unread_count: 3 }} active={false} onSelect={() => {}} />);
+    render(
+      <RoomListItem
+        room={makeRoomSummary({ unread_count: 3, has_unread: true })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
     expect(screen.getByText("3")).toBeInTheDocument();
   });
 
@@ -30,5 +32,50 @@ describe("RoomListItem", () => {
     render(<RoomListItem room={room} active={false} onSelect={onSelect} />);
     fireEvent.click(screen.getByRole("button"));
     expect(onSelect).toHaveBeenCalledOnce();
+  });
+
+  it("renders bold text and a marked-unread dot when has_unread is true, even with a zero notification count", () => {
+    render(
+      <RoomListItem
+        room={makeRoomSummary({ has_unread: true, is_marked_unread: true })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText("general")).toHaveClass("font-bold");
+    expect(screen.getByLabelText("Marked unread")).toBeInTheDocument();
+  });
+
+  it("shows a muted indicator when is_muted is true", () => {
+    render(
+      <RoomListItem
+        room={makeRoomSummary({ is_muted: true })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Muted")).toBeInTheDocument();
+  });
+
+  it("does not render a context menu without any action handlers", () => {
+    render(<RoomListItem room={room} active={false} onSelect={() => {}} />);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("opens a context menu with favourite/mark actions when handlers are provided", async () => {
+    const onToggleFavourite = vi.fn();
+    render(
+      <RoomListItem
+        room={room}
+        active={false}
+        onSelect={() => {}}
+        onToggleFavourite={onToggleFavourite}
+        onMarkRead={() => {}}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByRole("button"));
+    const item = await screen.findByText("Add to Favourites");
+    fireEvent.click(item);
+    expect(onToggleFavourite).toHaveBeenCalledOnce();
   });
 });

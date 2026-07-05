@@ -1,0 +1,118 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { RoomList } from "./RoomList";
+import { makeRoomSummary } from "./testFixtures";
+
+// RoomList wires context-menu actions and drag-reorder straight to Tauri IPC
+// — mock lib/matrix so this test exercises sectioning/rendering only.
+const setRoomFavourite = vi.fn().mockResolvedValue(undefined);
+const setRoomLowPriority = vi.fn().mockResolvedValue(undefined);
+const setRoomMuted = vi.fn().mockResolvedValue(undefined);
+const setRoomMarkedUnread = vi.fn().mockResolvedValue(undefined);
+const setRoomManualOrder = vi.fn().mockResolvedValue(undefined);
+const markRoomRead = vi.fn().mockResolvedValue(undefined);
+const listSpaceChildren = vi.fn().mockResolvedValue([]);
+const joinRoom = vi.fn().mockResolvedValue(undefined);
+const knockRoom = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("@/lib/matrix", () => ({
+  setRoomFavourite: (...args: unknown[]) => setRoomFavourite(...args),
+  setRoomLowPriority: (...args: unknown[]) => setRoomLowPriority(...args),
+  setRoomMuted: (...args: unknown[]) => setRoomMuted(...args),
+  setRoomMarkedUnread: (...args: unknown[]) => setRoomMarkedUnread(...args),
+  setRoomManualOrder: (...args: unknown[]) => setRoomManualOrder(...args),
+  markRoomRead: (...args: unknown[]) => markRoomRead(...args),
+  listSpaceChildren: (...args: unknown[]) => listSpaceChildren(...args),
+  joinRoom: (...args: unknown[]) => joinRoom(...args),
+  knockRoom: (...args: unknown[]) => knockRoom(...args),
+}));
+
+// @use-gesture/react's useDrag attaches real pointer-event listeners; none of
+// these tests exercise the drag interaction itself (see roomSections.test.ts
+// for the reorder math), so bind() only needs to return an empty prop object.
+vi.mock("@use-gesture/react", () => ({
+  useDrag: () => () => ({}),
+}));
+
+describe("RoomList", () => {
+  it("shows the empty state when there are no rooms", () => {
+    render(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
+    expect(screen.getByText("No rooms yet")).toBeInTheDocument();
+  });
+
+  it("renders section headers with per-section counts", () => {
+    const fav = makeRoomSummary({
+      room_id: "!fav:localhost",
+      name: "Fav room",
+      is_favourite: true,
+    });
+    const plain = makeRoomSummary({ room_id: "!plain:localhost", name: "Plain room" });
+    render(<RoomList rooms={[fav, plain]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    expect(screen.getByText("Favourites")).toBeInTheDocument();
+    expect(screen.getByText("Fav room")).toBeInTheDocument();
+    expect(screen.getByText("Plain room")).toBeInTheDocument();
+    // "Low priority" section has zero rooms and should not render at all.
+    expect(screen.queryByText("Low priority")).not.toBeInTheDocument();
+  });
+
+  it("renders a clickable header for a space with grouped child rooms", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const child = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    render(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    expect(screen.getAllByText("Team").length).toBeGreaterThan(0);
+    expect(screen.getByText("Team chat")).toBeInTheDocument();
+  });
+
+  it("calls onSelectRoom when a room is clicked", () => {
+    const onSelectRoom = vi.fn();
+    const room = makeRoomSummary({ name: "general" });
+    render(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={onSelectRoom} />);
+    screen.getByText("general").click();
+    expect(onSelectRoom).toHaveBeenCalledWith(room.room_id);
+  });
+
+  it("wires the context menu's favourite/mute/mark actions to their IPC calls", async () => {
+    const room = makeRoomSummary({ name: "general" });
+    render(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+    fireEvent.click(await screen.findByText("Add to Favourites"));
+    expect(setRoomFavourite).toHaveBeenCalledWith(room.room_id, true);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+    fireEvent.click(await screen.findByText("Move to Low priority"));
+    expect(setRoomLowPriority).toHaveBeenCalledWith(room.room_id, true);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+    fireEvent.click(await screen.findByText("Mute"));
+    expect(setRoomMuted).toHaveBeenCalledWith(room.room_id, true);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+    fireEvent.click(await screen.findByText("Mark as read"));
+    expect(markRoomRead).toHaveBeenCalledWith(room.room_id);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+    fireEvent.click(await screen.findByText("Mark as unread"));
+    expect(setRoomMarkedUnread).toHaveBeenCalledWith(room.room_id, true);
+  });
+
+  it("opens the space browser when a space header is clicked", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const child = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    render(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Team" }));
+    expect(listSpaceChildren).toHaveBeenCalledWith("!space:localhost");
+    expect(await screen.findByText("Browse and join rooms in this space.")).toBeInTheDocument();
+  });
+});
