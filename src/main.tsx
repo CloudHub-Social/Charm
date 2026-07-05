@@ -8,6 +8,7 @@ import "@fontsource/manrope/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
+import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
 Sentry.init({
@@ -17,6 +18,8 @@ Sentry.init({
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <AppProviders>
+      <App />
+    </AppProviders>
   </React.StrictMode>,
 );

@@ -6,8 +6,6 @@
     "autoprefixer",
     "postcss",
     "tailwindcss",
-    "@tanstack/react-query",
-    "jotai",
     "@tauri-apps/plugin-opener",
     "@tauri-apps/plugin-process",
     "@tauri-apps/plugin-updater"

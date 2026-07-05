@@ -76,7 +76,12 @@ jobs:
 
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
+      # Rust IPC type changed without the generated bindings being regenerated and
+      # committed, the working tree now differs — fail so bindings never drift.
       - run: cargo test --lib
+      - name: ts-rs bindings are committed and up to date
+        run: git diff --exit-code src/bindings
 
   rust-integration:
     name: Rust (verification, alias-resolution, discovery/registration, SSO)

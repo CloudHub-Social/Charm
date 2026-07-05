@@ -14,6 +14,9 @@ pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
     pub body: String,
+    // Milliseconds since epoch stays well within JS's safe-integer range; emit `number`
+    // rather than ts-rs's default `bigint` so the frontend can use it directly.
+    #[ts(type = "number")]
     pub timestamp_ms: u64,
 }
 

@@ -37,3 +37,12 @@ dev/synapse/data-mas/
 
 # Storybook build output
 storybook-static/
+
+# Design-sync skill working directory (local only)
+.design-sync/
+
+# graphify code graph — commit the queryable artifact + report, ignore the rest
+graphify-out/*
+!graphify-out/graph.json
+!graphify-out/GRAPH_REPORT.md
+!graphify-out/manifest.json

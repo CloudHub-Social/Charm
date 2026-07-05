@@ -122,6 +122,9 @@ pub enum SyncStateEvent {
 pub struct RoomSummary {
     pub room_id: String,
     pub name: Option<String>,
+    // u64 serializes to a JS-safe integer here (notification counts are small); emit
+    // `number` rather than ts-rs's default `bigint` so the frontend can use it directly.
+    #[ts(type = "number")]
     pub unread_count: u64,
 }
 

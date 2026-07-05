@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "@bindings": path.resolve(__dirname, "./src-tauri/src/bindings"),
     },
   },
   test: {
@@ -22,6 +23,7 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/main.tsx",
+        "src/providers.tsx", // composition root (provider wiring) — like main.tsx
         "src/test/**",
         "src/**/*.test.{ts,tsx}",
         "src/**/*.spec.{ts,tsx}",

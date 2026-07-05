@@ -54,11 +54,19 @@ floor in the same PR — never lower it to make CI pass. The Rust side has its o
 gate (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`) — see the
 `rust` jobs in the same workflow.
 
+**IPC types** are generated from the Rust structs by ts-rs into
+`src-tauri/src/bindings/` (regenerated as a side effect of `cargo test --lib`) and
+re-exported through `src/lib/matrix.ts`; the frontend imports them via the
+`@bindings/*` alias. Don't hand-write or edit a binding file — change the Rust struct
+(add `#[ts(type = "number")]` on a `u64`/`i64` field that should be a JS `number`
+rather than the default `bigint`), regenerate, and commit. CI fails if the committed
+bindings drift from the Rust source.
+
 ## Code navigation (graphify)
 
-No graphify graph is built for this repo yet (it's a fresh rewrite). Once
-`graphify-out/graph.json` exists, prefer it over an open-ended `grep`/`Explore`
-sweep for architecture / "how does X work" / "what calls Y" / cross-file questions:
+A graphify graph is committed at `graphify-out/graph.json` (built 2026-07-05). Prefer
+it over an open-ended `grep`/`Explore` sweep for architecture / "how does X work" /
+"what calls Y" / cross-file questions:
 
 - `graphify query "<question>"` — BFS traversal for broad context.
 - `graphify explain "<Symbol>"` — plain-language explanation of a node and its neighbors.
