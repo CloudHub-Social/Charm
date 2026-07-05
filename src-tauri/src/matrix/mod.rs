@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod ephemeral;
 pub mod persistence;
 pub mod presence;
@@ -601,14 +602,77 @@ fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         .collect()
 }
 
+/// Bridges matrix-rust-sdk's global send-queue update channel to a
+/// `send_queue:update` Tauri event per room, so local echoes for
+/// edit/react/reply/send can flip pending -> sent -> error without a full
+/// timeline diff. Spawned once per login/session-restore alongside the sync
+/// loop, for the lifetime of the session.
+fn spawn_send_queue_listener(app: AppHandle, client: Client) {
+    use matrix_sdk::send_queue::RoomSendQueueUpdate;
+
+    let mut receiver = client.send_queue().subscribe();
+    tokio::spawn(async move {
+        loop {
+            let update = match receiver.recv().await {
+                Ok(update) => update,
+                // A burst of local send-queue activity can outrun this
+                // receiver and drop some updates — that's not the channel
+                // closing, just lag, so keep listening for whatever comes
+                // next rather than silently stopping `send_queue:update`
+                // for the rest of the session.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
+            let room_id = update.room_id.to_string();
+            let send_state = match update.update {
+                RoomSendQueueUpdate::NewLocalEvent(echo) => Some((
+                    echo.transaction_id.to_string(),
+                    timeline::SendState::Pending,
+                )),
+                RoomSendQueueUpdate::SendError {
+                    transaction_id,
+                    error,
+                    ..
+                } => Some((
+                    transaction_id.to_string(),
+                    timeline::SendState::Error {
+                        message: error.to_string(),
+                    },
+                )),
+                RoomSendQueueUpdate::RetryEvent { transaction_id } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Pending))
+                }
+                RoomSendQueueUpdate::SentEvent { transaction_id, .. } => {
+                    Some((transaction_id.to_string(), timeline::SendState::Sent))
+                }
+                RoomSendQueueUpdate::CancelledLocalEvent { .. }
+                | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
+                | RoomSendQueueUpdate::MediaUpload { .. } => None,
+            };
+
+            if let Some((transaction_id, send_state)) = send_state {
+                let _ = app.emit(
+                    "send_queue:update",
+                    actions::SendQueueUpdateEvent {
+                        room_id: room_id.clone(),
+                        transaction_id,
+                        send_state,
+                    },
+                );
+            }
+        }
+    });
+}
+
 /// Emits `timeline:update`/`receipts:update`/`typing:update` for every joined
 /// room in one sync response. Shared by the initial `sync_once` (whose
 /// response can already carry ephemeral events — e.g. receipts left over from
 /// a prior session — and would otherwise be silently dropped) and every
 /// iteration of the long-running `sync_with_callback` loop.
 fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sync::SyncResponse) {
+    let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
-        let messages = timeline::events_to_summaries(&update.timeline.events);
+        let messages = timeline::events_to_summaries(&update.timeline.events, own_user_id);
         if !messages.is_empty() {
             let _ = app.emit(
                 "timeline:update",
@@ -619,7 +683,6 @@ fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sy
             );
         }
 
-        let own_user_id = client.user_id();
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
             let Ok(event) = raw_event.deserialize() else {
@@ -659,6 +722,7 @@ fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sy
 
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
+    spawn_send_queue_listener(app.clone(), client.clone());
     presence::register_presence_handler(app.clone(), &client);
 
     // Best-effort: some homeservers disable presence entirely, and a failure

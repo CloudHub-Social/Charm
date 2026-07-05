@@ -38,6 +38,10 @@ dev/synapse/data-mas/
 # Storybook build output
 storybook-static/
 
+# Playwright e2e output
+/playwright-report/
+/test-results/
+
 # claude.ai/design sync — commit the durable config/notes/overrides under
 # .design-sync/, ignore only the build output + verification working state.
 ds-bundle/

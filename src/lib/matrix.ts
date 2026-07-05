@@ -9,13 +9,18 @@ import type { LoginResponse } from "@bindings/LoginResponse";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
+import type { ReactionGroup } from "@bindings/ReactionGroup";
+import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
+import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
+import type { SendQueueUpdateEvent } from "@bindings/SendQueueUpdateEvent";
+import type { SendState } from "@bindings/SendState";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
@@ -38,13 +43,18 @@ export type {
   PresenceStateDto,
   PresenceUpdate,
   QrLoginProgressEvent,
+  ReactionGroup,
+  ReactionToggleResult,
   ReceiptTypeDto,
   ReceiptUpdate,
   RegisterRequest,
+  ReplyRef,
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
+  SendQueueUpdateEvent,
+  SendState,
   SyncStateEvent,
   TimelinePage,
   TypingUpdate,
@@ -121,7 +131,14 @@ export function getTimelinePage(
   return invoke("get_timeline_page", { roomId, cursor, limit });
 }
 
-export function sendMessage(roomId: string, body: string): Promise<void> {
+/**
+ * Queues a message and returns the SDK-generated send-queue transaction id
+ * for it — key the optimistic local echo on this (not a client-generated
+ * placeholder), since it's the same id the synced event's `transaction_id`
+ * and `send_queue:update` events will carry, and reconciliation between the
+ * three depends on all of them agreeing.
+ */
+export function sendMessage(roomId: string, body: string): Promise<string> {
   return invoke("send_message", { roomId, body });
 }
 
@@ -129,6 +146,41 @@ export function onTimelineUpdate(
   callback: (update: RoomTimelineUpdate) => void,
 ): Promise<UnlistenFn> {
   return listen<RoomTimelineUpdate>("timeline:update", (e) => callback(e.payload));
+}
+
+export function editMessage(roomId: string, eventId: string, newBody: string): Promise<void> {
+  return invoke("edit_message", { roomId, eventId, newBody });
+}
+
+export function redactEvent(
+  roomId: string,
+  eventId: string,
+  reason?: string | null,
+): Promise<void> {
+  return invoke("redact_event", { roomId, eventId, reason: reason ?? null });
+}
+
+export function canRedact(roomId: string, targetSender: string): Promise<boolean> {
+  return invoke("can_redact", { roomId, targetSender });
+}
+
+export function toggleReaction(
+  roomId: string,
+  targetEventId: string,
+  key: string,
+): Promise<ReactionToggleResult> {
+  return invoke("toggle_reaction", { roomId, targetEventId, key });
+}
+
+/** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
+export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
+  return invoke("send_reply", { roomId, inReplyToEventId, body });
+}
+
+export function onSendQueueUpdate(
+  callback: (update: SendQueueUpdateEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<SendQueueUpdateEvent>("send_queue:update", (e) => callback(e.payload));
 }
 
 export function bootstrapCrossSigning(password?: string): Promise<void> {

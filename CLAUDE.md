@@ -48,6 +48,15 @@ see the comment in `.storybook/preview.tsx`); re-enable it there when the tokens
 fixed. Component stories live at `src/components/ui/*.stories.tsx`; `pnpm storybook`
 opens them locally.
 
+A separate `e2e` CI job runs Playwright end-to-end tests (`e2e/*.spec.ts`) against
+the plain Vite dev server — not the native Tauri app, and not a real homeserver.
+`e2e/support/mockTauri.ts` fakes the `@tauri-apps/api` IPC layer in-browser
+(`window.__TAURI_INTERNALS__`) against an in-memory fake backend, so these exercise
+real React code paths (e.g. `ChatShell`'s send/reconcile logic, `MessageActions`,
+`ReplyPreview`) without `tauri-driver` or Synapse. Run locally with `pnpm test:e2e`
+(`pnpm test:e2e:ui` for the interactive runner); `playwright.config.ts` starts
+`pnpm dev` for you.
+
 Coverage thresholds are an enforced **ratchet** in `vitest.config.ts` (set just
 under current actual coverage): when you add tests and coverage rises, raise the
 floor in the same PR — never lower it to make CI pass. The Rust side has its own
