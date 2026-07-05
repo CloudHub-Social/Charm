@@ -54,7 +54,7 @@ jobs:
       - run: cargo test --lib
 
   rust-integration:
-    name: Rust (verification + alias-resolution integration tests)
+    name: Rust (verification, alias-resolution, discovery/registration, SSO)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -86,6 +86,24 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Create Docker network
+        # A bare `docker run` puts containers on the default bridge network,
+        # where container-name DNS resolution doesn't work — unlike
+        # docker-compose's local dev setup, which creates a user-defined
+        # network automatically. Synapse's oidc_providers config below
+        # reaches Dex via the "dex" hostname, so both containers need to be
+        # on the same user-defined network here too.
+        run: docker network create charm-ci
+
+      - name: Start Dex
+        # Local-only OIDC test provider for tests/sso_login.rs — same config
+        # as dev/synapse/dex-config.yaml, checked into the repo so there's
+        # one source of truth for local dev and CI.
+        run: |
+          docker run -d --name dex --network charm-ci -p 5556:5556 \
+            -v "$GITHUB_WORKSPACE/dev/synapse/dex-config.yaml:/etc/dex/config.yaml:ro" \
+            dexidp/dex:latest dex serve /etc/dex/config.yaml
+
       - name: Generate Synapse config
         # The synapse image no longer generates its config from env vars at
         # container start — it must be generated once into a volume first
@@ -99,38 +117,20 @@ jobs:
             matrixdotorg/synapse:latest generate
 
       - name: Configure Synapse for testing
-        # Open registration (off by default) is needed by
-        # tests/discovery_and_registration.rs; generous rate limits avoid
-        # flakiness from the handful of logins/registrations the full suite
-        # makes in one run. Local-dev/CI-only — never appropriate for a real
-        # homeserver.
+        # Same overrides as dev/synapse/configure-homeserver.sh: open
+        # registration + generous rate limits for
+        # tests/discovery_and_registration.rs, plus the Dex OIDC provider for
+        # tests/sso_login.rs. Local-dev/CI-only — never appropriate for a
+        # real homeserver.
         run: |
-          cat > /tmp/synapse-test-overrides.yaml <<'EOF'
-
-          enable_registration: true
-          enable_registration_without_verification: true
-          rc_login:
-            address:
-              per_second: 1000
-              burst_count: 1000
-            account:
-              per_second: 1000
-              burst_count: 1000
-            failed_attempts:
-              per_second: 1000
-              burst_count: 1000
-          rc_message:
-            per_second: 1000
-            burst_count: 1000
-          EOF
           docker run --rm \
             -v synapse-data:/data \
-            -v /tmp/synapse-test-overrides.yaml:/tmp/overrides.yaml \
-            alpine sh -c "cat /tmp/overrides.yaml >> /data/homeserver.yaml"
+            -v "$GITHUB_WORKSPACE/dev/synapse/configure-homeserver.sh:/tmp/configure-homeserver.sh:ro" \
+            alpine sh /tmp/configure-homeserver.sh /data/homeserver.yaml
 
       - name: Start Synapse
         run: |
-          docker run -d --name synapse -p 8008:8008 \
+          docker run -d --name synapse --network charm-ci -p 8008:8008 \
             -v synapse-data:/data \
             matrixdotorg/synapse:latest
 
@@ -153,8 +153,8 @@ jobs:
           CONTAINER_NAME: synapse
         run: ./register-test-user.sh
 
-      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration
+      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login
 
-      - name: Stop Synapse
+      - name: Stop Synapse and Dex
         if: always()
-        run: docker rm -f synapse
+        run: docker rm -f synapse dex

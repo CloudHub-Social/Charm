@@ -7,17 +7,44 @@ use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::api::client::account::register;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
 use matrix_sdk::store::RoomLoadSettings;
+use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::{Client, LoopCtrl};
+use rand::distr::Alphanumeric;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 use ts_rs::TS;
+
+/// The `charm://` deep-link the homeserver's SSO flow redirects back to with
+/// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
+/// deep-link listener in `LoginScreen.tsx` (separate from the
+/// room-link-handling one in `src/lib/deepLink.ts`). Each attempt appends
+/// its own `state` param (see [`PendingSso`]) so a callback can't be
+/// completed against the wrong attempt.
+const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
+
+/// A client with an SSO login URL in flight but not yet completed, plus the
+/// random per-attempt token embedded in that URL's `state` param —
+/// `complete_sso_login` checks the callback's `state` against this before
+/// exchanging its `loginToken`, so a `charm://sso-callback` deep link
+/// belonging to a different (possibly forged, possibly just stale) attempt
+/// can't be completed against this one.
+struct PendingSso {
+    client: Client,
+    state: String,
+}
 
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing is a Phase 1 concern.
 #[derive(Default)]
 pub struct MatrixState {
     client: Mutex<Option<Client>>,
+    /// Set by `start_sso_login`, consumed by `complete_sso_login`. Built
+    /// once and carried across the two calls (rather than rebuilt in
+    /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
+    /// result and homeserver connection `start_sso_login` already resolved.
+    pending_sso: Mutex<Option<PendingSso>>,
 }
 
 impl MatrixState {
@@ -278,6 +305,163 @@ pub async fn register_with_dummy_auth(
             .await
             .map_err(|e| e.to_string())?;
     }
+
+    Ok(())
+}
+
+/// Starts an SSO login: builds a client against `homeserver_url` and returns
+/// the URL to open in the system browser. The client and a fresh random
+/// `state` token are held in [`MatrixState::pending_sso`] until
+/// [`complete_sso_login`] finishes the flow with the `loginToken` (and
+/// matching `state`) the homeserver redirects back with.
+#[tauri::command]
+pub async fn start_sso_login(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    homeserver_url: String,
+) -> Result<String, String> {
+    let client = build_client(&app, &homeserver_url).await?;
+    let attempt_state = generate_sso_state();
+    let sso_url = get_sso_login_url(&client, &attempt_state).await?;
+
+    *state.pending_sso.lock().await = Some(PendingSso {
+        client,
+        state: attempt_state,
+    });
+
+    Ok(sso_url)
+}
+
+fn generate_sso_state() -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect()
+}
+
+/// Discards a client left pending by [`start_sso_login`] if the user cancels
+/// (or abandons) the flow before a `charm://sso-callback` ever arrives —
+/// otherwise it just sits in [`MatrixState::pending_sso`], holding its
+/// SQLite connection and HTTP pool open, until either a new SSO attempt
+/// overwrites it or the app closes. A no-op if there's nothing pending.
+#[tauri::command]
+pub async fn cancel_sso_login(state: State<'_, MatrixState>) -> Result<(), String> {
+    *state.pending_sso.lock().await = None;
+    Ok(())
+}
+
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn get_sso_login_url(client: &Client, attempt_state: &str) -> Result<String, String> {
+    let redirect_url = format!("{SSO_REDIRECT_BASE_URL}?state={attempt_state}");
+    client
+        .matrix_auth()
+        .get_sso_login_url(&redirect_url, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pulls the `state` query param out of a `charm://sso-callback?...` URL, so
+/// [`complete_sso_login`] can check it against the attempt [`start_sso_login`]
+/// recorded. Pure and Tauri-context-free by design — see the tests below —
+/// unlike most of this module, which needs a real homeserver to test
+/// meaningfully.
+fn extract_sso_callback_state(callback_url: &str) -> Option<String> {
+    let url = url::Url::parse(callback_url).ok()?;
+    url.query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+}
+
+#[cfg(test)]
+mod sso_state_tests {
+    use super::extract_sso_callback_state;
+
+    #[test]
+    fn extracts_the_state_param() {
+        assert_eq!(
+            extract_sso_callback_state("charm://sso-callback?state=abc123&loginToken=xyz"),
+            Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_state_is_missing() {
+        assert_eq!(
+            extract_sso_callback_state("charm://sso-callback?loginToken=xyz"),
+            None
+        );
+    }
+
+    #[test]
+    fn returns_none_for_a_malformed_url() {
+        assert_eq!(extract_sso_callback_state("not a url at all"), None);
+    }
+}
+
+/// Completes an SSO login started by [`start_sso_login`], given the full
+/// `charm://sso-callback?state=...&loginToken=...` URL the homeserver
+/// redirected the system browser to. Rejects (without consuming the pending
+/// client — a genuine callback may still be on its way) if `state` doesn't
+/// match the attempt [`start_sso_login`] recorded, so a forged or stale
+/// deep link can't complete a real attempt.
+#[tauri::command]
+pub async fn complete_sso_login(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    callback_url: String,
+) -> Result<LoginResponse, String> {
+    let callback_state = extract_sso_callback_state(&callback_url)
+        .ok_or_else(|| "SSO callback is missing its state parameter".to_string())?;
+
+    let mut pending_sso = state.pending_sso.lock().await;
+    let matches_pending = pending_sso
+        .as_ref()
+        .is_some_and(|pending| pending.state == callback_state);
+    if !matches_pending {
+        return Err("SSO callback does not match the pending login attempt".to_string());
+    }
+    let client = pending_sso.take().expect("checked Some above").client;
+    drop(pending_sso);
+
+    complete_sso_login_with_callback(&client, &callback_url).await?;
+
+    let session = client
+        .matrix_auth()
+        .session()
+        .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
+
+    persistence::save_session(client.homeserver().as_ref(), &session)?;
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
+
+    *state.client.lock().await = Some(client.clone());
+    spawn_sync_loop(app, client);
+
+    Ok(response)
+}
+
+/// Exchanges the `loginToken` in `callback_url` for a real session on
+/// `client`, leaving it set on the client (same effect as a successful
+/// login).
+///
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn complete_sso_login_with_callback(
+    client: &Client,
+    callback_url: &str,
+) -> Result<(), String> {
+    let url = url::Url::parse(callback_url).map_err(|e| e.to_string())?;
+    client
+        .matrix_auth()
+        .login_with_sso_callback(UrlOrQuery::Url(url))
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }

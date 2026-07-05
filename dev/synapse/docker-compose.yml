@@ -10,3 +10,18 @@ services:
     environment:
       SYNAPSE_SERVER_NAME: localhost
       SYNAPSE_REPORT_STATS: "no"
+
+  # Local-only OIDC identity provider for testing SSO login (src-tauri's
+  # start_sso_login/complete_sso_login). Uses Dex's "staticPasswords"
+  # connector — a hardcoded username/password with no real upstream IdP —
+  # so the whole flow (including CI) can complete without a human clicking
+  # through a real provider's consent screen.
+  dex:
+    image: dexidp/dex:latest
+    container_name: charm-dev-dex
+    restart: unless-stopped
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./dex-config.yaml:/etc/dex/config.yaml:ro
+    command: dex serve /etc/dex/config.yaml

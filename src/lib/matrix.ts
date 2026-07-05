@@ -50,6 +50,18 @@ export function discoverHomeserver(input: string): Promise<DiscoverHomeserverRes
   return invoke("discover_homeserver", { input });
 }
 
+export function startSsoLogin(homeserverUrl: string): Promise<string> {
+  return invoke("start_sso_login", { homeserverUrl });
+}
+
+export function completeSsoLogin(callbackUrl: string): Promise<LoginResponse> {
+  return invoke("complete_sso_login", { callbackUrl });
+}
+
+export function cancelSsoLogin(): Promise<void> {
+  return invoke("cancel_sso_login");
+}
+
 export function tryRestoreSession(): Promise<LoginResponse | null> {
   return invoke("try_restore_session");
 }
