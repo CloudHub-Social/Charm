@@ -1,0 +1,29 @@
+# Local-only OIDC test provider for SSO login (see docker-compose.yml).
+# `issuer` must match what the browser (running on the host) can reach, since
+# it's embedded in every URL/token Dex issues and validated by Synapse against
+# its configured `issuer`. Synapse's own backend-to-Dex calls (token,
+# userinfo, jwks) instead target the `dex` container-network hostname —
+# configured on the Synapse side in homeserver.yaml, not here.
+issuer: http://localhost:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+staticClients:
+  - id: charm-synapse
+    secret: charm-dev-only-secret
+    redirectURIs:
+      - http://localhost:8008/_synapse/client/oidc/callback
+    name: "Charm Dev Synapse"
+
+# Username: sso-test, password: testpass123 — hash generated with
+# `python3 -c "import bcrypt; print(bcrypt.hashpw(b'testpass123', bcrypt.gensalt(rounds=10)).decode())"`.
+enablePasswordDB: true
+staticPasswords:
+  - email: "sso-test@localhost"
+    hash: "$2b$10$6XYaANiDnxp4TgV9cgYlz..X9KVrplUq7l8iQHE8ygViYppRr9HFS"
+    username: "sso-test"
+    userID: "08a8684b-db88-4b73-90a9-3cd1661f5466"

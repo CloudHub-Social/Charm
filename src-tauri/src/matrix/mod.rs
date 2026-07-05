@@ -7,17 +7,30 @@ use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::api::client::account::register;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
 use matrix_sdk::store::RoomLoadSettings;
+use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::{Client, LoopCtrl};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
+/// The `charm://` deep-link the homeserver's SSO flow redirects back to with
+/// a `loginToken` query param, picked up by the frontend's existing
+/// `onOpenUrl` deep-link listener (see `src/lib/deepLink.ts`).
+const SSO_REDIRECT_URL: &str = "charm://sso-callback";
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing is a Phase 1 concern.
 #[derive(Default)]
 pub struct MatrixState {
     client: Mutex<Option<Client>>,
+    /// A client that has an SSO login URL in flight but hasn't completed
+    /// login yet — set by `start_sso_login`, consumed by
+    /// `complete_sso_login`. Built once and carried across the two calls
+    /// (rather than rebuilt in `complete_sso_login`) so it keeps whatever
+    /// `.well-known` discovery result and homeserver connection
+    /// `start_sso_login` already resolved.
+    pending_sso_client: Mutex<Option<Client>>,
 }
 
 impl MatrixState {
@@ -278,6 +291,91 @@ pub async fn register_with_dummy_auth(
             .await
             .map_err(|e| e.to_string())?;
     }
+
+    Ok(())
+}
+
+/// Starts an SSO login: builds a client against `homeserver_url` and returns
+/// the URL to open in the system browser. The client is held in
+/// [`MatrixState::pending_sso_client`] until [`complete_sso_login`] finishes
+/// the flow with the `loginToken` the homeserver redirects back with.
+#[tauri::command]
+pub async fn start_sso_login(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    homeserver_url: String,
+) -> Result<String, String> {
+    let client = build_client(&app, &homeserver_url).await?;
+    let sso_url = get_sso_login_url(&client).await?;
+
+    *state.pending_sso_client.lock().await = Some(client);
+
+    Ok(sso_url)
+}
+
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn get_sso_login_url(client: &Client) -> Result<String, String> {
+    client
+        .matrix_auth()
+        .get_sso_login_url(SSO_REDIRECT_URL, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Completes an SSO login started by [`start_sso_login`], given the full
+/// `charm://sso-callback?loginToken=...` URL the homeserver redirected the
+/// system browser to.
+#[tauri::command]
+pub async fn complete_sso_login(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    callback_url: String,
+) -> Result<LoginResponse, String> {
+    let client = state
+        .pending_sso_client
+        .lock()
+        .await
+        .take()
+        .ok_or_else(|| "no SSO login is in progress".to_string())?;
+
+    complete_sso_login_with_callback(&client, &callback_url).await?;
+
+    let session = client
+        .matrix_auth()
+        .session()
+        .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
+
+    persistence::save_session(client.homeserver().as_ref(), &session)?;
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
+
+    *state.client.lock().await = Some(client.clone());
+    spawn_sync_loop(app, client);
+
+    Ok(response)
+}
+
+/// Exchanges the `loginToken` in `callback_url` for a real session on
+/// `client`, leaving it set on the client (same effect as a successful
+/// login).
+///
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn complete_sso_login_with_callback(
+    client: &Client,
+    callback_url: &str,
+) -> Result<(), String> {
+    let url = url::Url::parse(callback_url).map_err(|e| e.to_string())?;
+    client
+        .matrix_auth()
+        .login_with_sso_callback(UrlOrQuery::Url(url))
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok(())
 }
