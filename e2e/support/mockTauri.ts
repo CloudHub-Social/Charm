@@ -96,12 +96,20 @@ export function installMockTauri(seed: {
     send_typing: () => undefined,
     can_redact: () => true,
 
+    // Models the real `Timeline`'s two-phase local echo (Spec 14): a
+    // `timeline:update` carrying the item with `send_state: "pending"` and
+    // its (temporary) transaction-id `event_id` fires first — synchronously,
+    // like the real `Timeline` reacting to the send queue's `NewLocalEvent`
+    // — then a second `timeline:update` replaces it in place with the real
+    // `$...` event id and `send_state: "sent"`, mirroring the homeserver's
+    // remote echo arriving. `message-actions.spec.ts`'s "shows exactly one
+    // bubble" test asserts against exactly this sequence.
     send_message: (args) => {
       const roomId = args.roomId as string;
       const transactionId = `txn-${nextTxnId++}`;
       const eventId = `\$${nextEventId++}`;
-      const message = {
-        event_id: eventId,
+      const pending = {
+        event_id: transactionId,
         sender: seed.userId,
         body: args.body,
         formatted_body: null,
@@ -111,12 +119,17 @@ export function installMockTauri(seed: {
         reactions: [],
         in_reply_to: null,
         transaction_id: transactionId,
-        send_state: { state: "sent" },
+        send_state: { state: "pending" },
       };
-      messagesByRoom.get(roomId)?.push(message);
-      // Real backend behavior: the transaction id is returned immediately
-      // (queued), and the synced event arrives asynchronously afterwards.
-      queueMicrotask(() => pushTimelineUpdate(roomId, [message]));
+      messagesByRoom.get(roomId)?.push(pending);
+      pushTimelineUpdate(roomId, [pending]);
+      const sent = { ...pending, event_id: eventId, send_state: { state: "sent" } };
+      setTimeout(() => {
+        const messages = messagesByRoom.get(roomId);
+        const index = messages?.indexOf(pending) ?? -1;
+        if (messages && index !== -1) messages[index] = sent;
+        pushTimelineUpdate(roomId, [sent]);
+      }, 300);
       return transactionId;
     },
 
@@ -125,8 +138,11 @@ export function installMockTauri(seed: {
       const target = findMessage(roomId, args.inReplyToEventId as string);
       const transactionId = `txn-${nextTxnId++}`;
       const eventId = `\$${nextEventId++}`;
-      const message = {
-        event_id: eventId,
+      const inReplyTo = target
+        ? { event_id: target.event_id, sender: target.sender, preview: target.body }
+        : null;
+      const pending = {
+        event_id: transactionId,
         sender: seed.userId,
         body: args.body,
         formatted_body: null,
@@ -134,14 +150,19 @@ export function installMockTauri(seed: {
         edited: false,
         redacted: false,
         reactions: [],
-        in_reply_to: target
-          ? { event_id: target.event_id, sender: target.sender, preview: target.body }
-          : null,
+        in_reply_to: inReplyTo,
         transaction_id: transactionId,
-        send_state: { state: "sent" },
+        send_state: { state: "pending" },
       };
-      messagesByRoom.get(roomId)?.push(message);
-      queueMicrotask(() => pushTimelineUpdate(roomId, [message]));
+      messagesByRoom.get(roomId)?.push(pending);
+      pushTimelineUpdate(roomId, [pending]);
+      const sent = { ...pending, event_id: eventId, send_state: { state: "sent" } };
+      setTimeout(() => {
+        const messages = messagesByRoom.get(roomId);
+        const index = messages?.indexOf(pending) ?? -1;
+        if (messages && index !== -1) messages[index] = sent;
+        pushTimelineUpdate(roomId, [sent]);
+      }, 300);
       return transactionId;
     },
 
