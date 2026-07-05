@@ -698,23 +698,41 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
         // long-poll. `SyncToken::ReusePrevious` (the default) means each
         // `sync_once` still picks up from the client's stored sync token, so
         // this preserves the exact continuation behavior `sync_with_callback`
-        // provided.
+        // provided — including, for parity, that it does *not* retry a
+        // `sync_once` failure at the application level either (it has no
+        // callback path for errors; see `Client::sync_with_result_callback`,
+        // which just propagates the first `Err` and stops). But relying on
+        // that parity alone means a single transient network blip kills sync
+        // for the rest of the session, so this loop adds its own bounded
+        // retry with backoff on top: consecutive failures back off up to 30s
+        // and only give up (matching the old terminal behavior) after
+        // `MAX_CONSECUTIVE_SYNC_FAILURES` in a row.
+        const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
+        let mut consecutive_failures: u32 = 0;
         loop {
             let presence = *app.state::<MatrixState>().sync_presence.lock().unwrap();
             let settings = SyncSettings::default().set_presence(presence.into());
             match client.sync_once(settings).await {
                 Ok(response) => {
+                    consecutive_failures = 0;
                     let _ = app.emit("room_list:update", snapshot_rooms(&client));
                     emit_room_updates(&app, &client, &response);
                 }
                 Err(e) => {
-                    let _ = app.emit(
-                        "sync:state",
-                        SyncStateEvent::Error {
-                            message: e.to_string(),
-                        },
-                    );
-                    break;
+                    consecutive_failures += 1;
+                    if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
+                        let _ = app.emit(
+                            "sync:state",
+                            SyncStateEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        break;
+                    }
+                    // Exponential backoff (1s, 2s, 4s, ... capped at 30s) before
+                    // retrying, rather than hammering a struggling homeserver.
+                    let backoff_secs = 1u64 << (consecutive_failures - 1).min(4);
+                    tokio::time::sleep(std::time::Duration::from_secs(backoff_secs.min(30))).await;
                 }
             }
         }
