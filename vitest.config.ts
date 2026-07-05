@@ -33,10 +33,10 @@ export default defineConfig({
         // Set to roughly current actual coverage (pure logic + one presentational
         // component are tested; screens wired to Tauri IPC aren't yet) — ratchet
         // up as more of the app gets covered, don't lower to make CI pass.
-        lines: 9,
-        statements: 8,
-        functions: 7,
-        branches: 9,
+        lines: 16,
+        statements: 14,
+        functions: 12,
+        branches: 11,
       },
     },
   },

@@ -4,6 +4,8 @@ pub mod timeline;
 pub mod verification;
 
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::ruma::api::client::account::register;
+use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::{Client, LoopCtrl};
 use serde::{Deserialize, Serialize};
@@ -31,9 +33,26 @@ impl MatrixState {
 #[derive(Debug, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct LoginRequest {
+    /// A server name (e.g. `matrix.org`) or a full homeserver URL — resolved
+    /// via `.well-known/matrix/client` discovery in [`build_client`].
     pub homeserver_url: String,
     pub username: String,
     pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct RegisterRequest {
+    /// Same flexible server-name-or-URL input as [`LoginRequest::homeserver_url`].
+    pub homeserver_url: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct DiscoverHomeserverResponse {
+    pub homeserver_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -89,7 +108,9 @@ pub async fn login(
         .session()
         .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
 
-    persistence::save_session(&request.homeserver_url, &session)?;
+    // Persist the *resolved* URL (not the raw server-name-or-URL input) so
+    // `try_restore_session` doesn't need to re-run discovery on every launch.
+    persistence::save_session(client.homeserver().as_ref(), &session)?;
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -140,16 +161,125 @@ pub async fn try_restore_session(
     Ok(Some(response))
 }
 
+/// Accepts either a bare server name (`matrix.org`) or a full homeserver URL —
+/// `server_name_or_homeserver_url` runs `.well-known/matrix/client` discovery
+/// for the former and falls back to treating the input as a URL otherwise.
 async fn build_client(app: &AppHandle, homeserver_url: &str) -> Result<Client, String> {
     let store_path = persistence::store_path(app)?;
     let passphrase = persistence::get_or_create_passphrase()?;
 
     Client::builder()
-        .homeserver_url(homeserver_url)
+        .server_name_or_homeserver_url(homeserver_url)
         .sqlite_store(&store_path, Some(&passphrase))
         .build()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Resolves a server name or homeserver URL for live feedback on the
+/// login/registration screen, before the user submits. matrix-sdk has no
+/// discovery-only API that isn't tied to building a real `Client`, so this
+/// builds a throwaway in-memory one (no local store) purely to run discovery.
+#[tauri::command]
+pub async fn discover_homeserver(input: String) -> Result<DiscoverHomeserverResponse, String> {
+    Ok(DiscoverHomeserverResponse {
+        homeserver_url: discover(&input).await?,
+    })
+}
+
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn discover(input: &str) -> Result<String, String> {
+    let client = Client::builder()
+        .server_name_or_homeserver_url(input)
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(client.homeserver().to_string())
+}
+
+/// Registers a new account and logs it in, mirroring [`login`]'s
+/// session-persistence and sync-loop startup.
+#[tauri::command]
+pub async fn register(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    request: RegisterRequest,
+) -> Result<LoginResponse, String> {
+    let client = build_client(&app, &request.homeserver_url).await?;
+    register_with_dummy_auth(&client, &request.username, &request.password).await?;
+
+    let session = client
+        .matrix_auth()
+        .session()
+        .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
+
+    persistence::save_session(client.homeserver().as_ref(), &session)?;
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
+
+    *state.client.lock().await = Some(client.clone());
+    spawn_sync_loop(app, client);
+
+    Ok(response)
+}
+
+/// Registers `username`/`password` on `client`'s homeserver, leaving the
+/// resulting session set on the client (same effect as a successful login).
+///
+/// Only the `m.login.dummy` User-Interactive Auth stage is supported — this
+/// covers Synapse's default open-registration config (including our local dev
+/// homeserver). Homeservers that require CAPTCHA, email verification, terms
+/// acceptance, or a registration token return a clear error instead of
+/// silently failing; supporting those is follow-up work, not a Phase 1
+/// blocker.
+///
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`].
+pub async fn register_with_dummy_auth(
+    client: &Client,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    let mut register_request = register::v3::Request::new();
+    register_request.username = Some(username.to_owned());
+    register_request.password = Some(password.to_owned());
+
+    if let Err(e) = client
+        .matrix_auth()
+        .register(register_request.clone())
+        .await
+    {
+        let uiaa = e.as_uiaa_response().ok_or_else(|| e.to_string())?.clone();
+
+        let supports_dummy_only = uiaa
+            .flows
+            .iter()
+            .any(|flow| flow.stages == [AuthType::Dummy]);
+        if !supports_dummy_only {
+            return Err(
+                "this homeserver requires additional registration steps (CAPTCHA, email \
+                 verification, terms acceptance, or a registration token) that Charm doesn't \
+                 support yet"
+                    .to_string(),
+            );
+        }
+
+        let mut dummy = Dummy::new();
+        dummy.session = uiaa.session;
+        register_request.auth = Some(AuthData::Dummy(dummy));
+        client
+            .matrix_auth()
+            .register(register_request)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 /// Reads the current room list out of the client's in-memory store —

@@ -98,6 +98,36 @@ jobs:
             -v synapse-data:/data \
             matrixdotorg/synapse:latest generate
 
+      - name: Configure Synapse for testing
+        # Open registration (off by default) is needed by
+        # tests/discovery_and_registration.rs; generous rate limits avoid
+        # flakiness from the handful of logins/registrations the full suite
+        # makes in one run. Local-dev/CI-only — never appropriate for a real
+        # homeserver.
+        run: |
+          cat > /tmp/synapse-test-overrides.yaml <<'EOF'
+
+          enable_registration: true
+          enable_registration_without_verification: true
+          rc_login:
+            address:
+              per_second: 1000
+              burst_count: 1000
+            account:
+              per_second: 1000
+              burst_count: 1000
+            failed_attempts:
+              per_second: 1000
+              burst_count: 1000
+          rc_message:
+            per_second: 1000
+            burst_count: 1000
+          EOF
+          docker run --rm \
+            -v synapse-data:/data \
+            -v /tmp/synapse-test-overrides.yaml:/tmp/overrides.yaml \
+            alpine sh -c "cat /tmp/overrides.yaml >> /data/homeserver.yaml"
+
       - name: Start Synapse
         run: |
           docker run -d --name synapse -p 8008:8008 \
@@ -123,7 +153,7 @@ jobs:
           CONTAINER_NAME: synapse
         run: ./register-test-user.sh
 
-      - run: cargo test --test verification_flow --test alias_resolution
+      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration
 
       - name: Stop Synapse
         if: always()
