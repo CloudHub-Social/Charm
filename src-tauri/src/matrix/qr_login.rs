@@ -157,6 +157,24 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     return;
                 };
                 let account_key = persistence::account_key(session.user.meta.user_id.as_str());
+                let homeserver_url = client.homeserver().to_string();
+                // Mirrors mod.rs's `relocate_or_reuse_matrix_auth_store`: if
+                // this account already had a store (a re-login), relocating
+                // discards the temp one and reuses the existing store —
+                // `client` (still backed by the now-deleted temp directory)
+                // can no longer be used, so rebuild against the existing
+                // store and restore this session onto that instead.
+                let account_already_existed =
+                    match persistence::account_store_exists(&app, &account_key) {
+                        Ok(existed) => existed,
+                        Err(e) => {
+                            let _ = app.emit(
+                                "qr_login:progress",
+                                QrLoginProgressEvent::Error { message: e },
+                            );
+                            return;
+                        }
+                    };
                 if let Err(e) = persistence::relocate_store(&app, &temp_key, &account_key) {
                     let _ = app.emit(
                         "qr_login:progress",
@@ -164,6 +182,38 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     );
                     return;
                 }
+                let client = if account_already_existed {
+                    let existing_client =
+                        match super::build_client(&app, &homeserver_url, &account_key).await {
+                            Ok(client) => client,
+                            Err(e) => {
+                                let _ = app.emit(
+                                    "qr_login:progress",
+                                    QrLoginProgressEvent::Error { message: e },
+                                );
+                                return;
+                            }
+                        };
+                    if let Err(e) = existing_client
+                        .oauth()
+                        .restore_session(
+                            session.clone(),
+                            matrix_sdk::store::RoomLoadSettings::default(),
+                        )
+                        .await
+                    {
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        return;
+                    }
+                    existing_client
+                } else {
+                    client
+                };
                 if let Err(e) = persistence::save_oauth_session(
                     &account_key,
                     client.homeserver().as_ref(),
@@ -176,10 +226,12 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     return;
                 }
                 // Enforces the single-account invariant `try_restore_session`'s
-                // doc comment assumes: only one session kind should ever be
-                // present in the keychain at a time. Best-effort — a failure
-                // here doesn't roll back the OAuth session that already
-                // succeeded and was just saved above.
+                // doc comment assumes: for *this* account_key, only one
+                // session kind should ever be present in the keychain at a
+                // time (other accounts' entries are untouched — each is
+                // keyed separately). Best-effort — a failure here doesn't
+                // roll back the OAuth session that already succeeded and
+                // was just saved above.
                 let _ = persistence::clear_session(&account_key);
 
                 let response = LoginResponse {

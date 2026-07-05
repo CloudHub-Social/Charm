@@ -41,7 +41,12 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// without a separate lookup table.
 pub fn account_key(mxid: &str) -> String {
     let digest = Sha256::digest(mxid.as_bytes());
-    hex_encode(&digest[..8])
+    // 16 bytes (128 bits) of a cryptographic digest — a collision here would
+    // silently merge two accounts' stores/keychain entries, reintroducing
+    // the exact cross-account collision this module exists to prevent, so
+    // this errs well past "practically impossible" rather than minimizing
+    // path length.
+    hex_encode(&digest[..16])
 }
 
 /// A fresh, one-off key for a login attempt that doesn't know its account's
@@ -108,7 +113,25 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
             keys.push(name);
         }
     }
+    // `read_dir` order is filesystem-dependent (varies by OS/filesystem and
+    // isn't creation order) — sort so callers that iterate multiple known
+    // accounts (e.g. `try_restore_session`) get a stable, reproducible
+    // choice across launches/platforms rather than whichever the
+    // filesystem happens to hand back first.
+    keys.sort();
     Ok(keys)
+}
+
+/// Whether `account_key` already has a store on disk — i.e. this would be a
+/// re-login rather than a first login. Callers that relocate a temp store
+/// (see [`relocate_store`]) need to know this *before* relocating: if the
+/// account already has a store, relocating just discards the temp one and
+/// reuses the existing store, which means the temp-backed `Client` the
+/// caller already built can no longer be used (its backing files are gone)
+/// — the caller must rebuild against the existing store and restore the
+/// session onto that instead.
+pub fn account_store_exists(app: &AppHandle, account_key: &str) -> Result<bool, String> {
+    Ok(matrix_store_root(app)?.join(account_key).is_dir())
 }
 
 /// Best-effort cleanup of every in-flight temp store under `matrix_store/`

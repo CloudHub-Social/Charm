@@ -207,11 +207,20 @@ pub async fn login(
         .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
-    persistence::relocate_store(&app, &temp_key, &account_key)?;
-
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
-    persistence::save_session(&account_key, client.homeserver().as_ref(), &session)?;
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
+
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -349,6 +358,47 @@ async fn build_client(
         .map_err(|e| e.to_string())
 }
 
+/// Relocates a temp-backed login's store to its per-account path, and — if
+/// that account already had a store (a re-login) — swaps `client` out for a
+/// fresh one built against the *existing* store with `session` restored
+/// onto it.
+///
+/// This distinction matters: [`persistence::relocate_store`] discards the
+/// temp directory outright when the account already has a store (reusing
+/// the existing one rather than overwriting it — matrix-rust-sdk binds a
+/// store to whichever account first opened it, so relocating on top of a
+/// differently-bound existing store would reintroduce the very collision
+/// this module fixes). But `client` was already built against that
+/// now-deleted temp directory; continuing to use it would mean every write
+/// this session makes (sync state, crypto/device data) goes to files that
+/// no longer exist on disk once their handles close, silently lost. So this
+/// checks *before* relocating whether the account store already existed,
+/// and if so, hands back a client freshly opened on the real store with the
+/// already-obtained session restored onto it instead.
+async fn relocate_or_reuse_matrix_auth_store(
+    app: &AppHandle,
+    client: Client,
+    temp_key: &str,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &matrix_sdk::authentication::matrix::MatrixSession,
+) -> Result<Client, String> {
+    let account_already_existed = persistence::account_store_exists(app, account_key)?;
+    persistence::relocate_store(app, temp_key, account_key)?;
+
+    if !account_already_existed {
+        return Ok(client);
+    }
+
+    let existing_client = build_client(app, homeserver_url, account_key).await?;
+    existing_client
+        .matrix_auth()
+        .restore_session(session.clone(), RoomLoadSettings::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(existing_client)
+}
+
 /// Resolves a server name or homeserver URL for live feedback on the
 /// login/registration screen, before the user submits. matrix-sdk has no
 /// discovery-only API that isn't tied to building a real `Client`, so this
@@ -392,9 +442,18 @@ pub async fn register(
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
-    persistence::relocate_store(&app, &temp_key, &account_key)?;
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
 
-    persistence::save_session(&account_key, client.homeserver().as_ref(), &session)?;
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -484,11 +543,19 @@ pub async fn start_sso_login(
     let attempt_state = generate_sso_state();
     let sso_url = get_sso_login_url(&client, &attempt_state).await?;
 
-    *state.pending_sso.lock().await = Some(PendingSso {
+    let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
         state: attempt_state,
         store_key,
     });
+    // A double-start (e.g. a double click) would otherwise overwrite the
+    // previous attempt's `PendingSso` without ever discarding its temp
+    // store/passphrase — same leak `cancel_sso_login` guards against, just
+    // via a different trigger (a new attempt instead of an explicit
+    // cancel).
+    if let Some(previous) = previous {
+        let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+    }
 
     Ok(sso_url)
 }
@@ -597,9 +664,18 @@ pub async fn complete_sso_login(
         .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
-    persistence::relocate_store(&app, &pending.store_key, &account_key)?;
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &pending.store_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
 
-    persistence::save_session(&account_key, client.homeserver().as_ref(), &session)?;
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
