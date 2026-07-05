@@ -5,6 +5,7 @@ import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverRes
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
+import type { MessageContent } from "@bindings/MessageContent";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
@@ -13,6 +14,7 @@ import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
+import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 
 /**
@@ -28,6 +30,7 @@ export type {
   EmojiPair,
   LoginRequest,
   LoginResponse,
+  MessageContent,
   QrLoginProgressEvent,
   RegisterRequest,
   RoomMessageSummary,
@@ -36,6 +39,7 @@ export type {
   SasUpdateEvent,
   SyncStateEvent,
   TimelinePage,
+  UploadProgress,
   VerificationRequestSummary,
 };
 
@@ -154,4 +158,25 @@ export function onSasUpdate(
   callback: (update: SasUpdateEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SasUpdateEvent>(`verification:sas_update:${flowId}`, (e) => callback(e.payload));
+}
+
+export function sendAttachment(roomId: string, filePath: string, caption?: string): Promise<void> {
+  return invoke("send_attachment", { roomId, filePath, caption });
+}
+
+/**
+ * Resolves a `MediaHandle` (opaque, carried on a `MessageContent` media
+ * variant) to a local filesystem path — fetching, decrypting, and caching on
+ * a miss. Load the returned path in an `<img>`/`<video>`/`<audio>` tag via
+ * `convertFileSrc` from `@tauri-apps/api/core`; never expected to be a
+ * remote URL.
+ */
+export function resolveMedia(handle: string, thumbnail: boolean): Promise<string> {
+  return invoke("resolve_media", { handle, thumbnail });
+}
+
+export function onUploadProgress(
+  callback: (progress: UploadProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<UploadProgress>("upload:progress", (e) => callback(e.payload));
 }

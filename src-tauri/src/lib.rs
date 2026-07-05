@@ -33,6 +33,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(matrix::MatrixState::default())
         .invoke_handler(tauri::generate_handler![
             greet,
@@ -47,6 +48,8 @@ pub fn run() {
             matrix::resolve_room_alias,
             matrix::timeline::get_timeline_page,
             matrix::send::send_message,
+            matrix::send::send_attachment,
+            matrix::resolve_media,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
             matrix::verification::accept_verification_request,

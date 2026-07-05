@@ -1,3 +1,4 @@
+pub mod media;
 pub mod persistence;
 pub mod qr_login;
 pub mod send;
@@ -61,6 +62,12 @@ pub struct MatrixState {
     /// (no `.await` in between), or a `cancel_qr_login` racing in that gap
     /// could find nothing to abort yet.
     pub(crate) pending_qr_login_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Filesystem media cache (`<app_data>/media/`), built once at app
+    /// startup and shared across every login/restore — see
+    /// `media::MediaCache`. `OnceCell` rather than living inside the client
+    /// swap above: the cache directory doesn't depend on which account is
+    /// logged in, and outlives any single `Client`.
+    pub(crate) media_cache: tokio::sync::OnceCell<media::MediaCache>,
 }
 
 impl MatrixState {
@@ -70,6 +77,23 @@ impl MatrixState {
             .await
             .clone()
             .ok_or_else(|| "not logged in".to_string())
+    }
+
+    /// Lazily initializes (on first use) and returns the shared media cache,
+    /// rebuilding its in-memory index from a directory scan the first time
+    /// it's created.
+    pub(crate) async fn require_media_cache(
+        &self,
+        app: &AppHandle,
+    ) -> Result<&media::MediaCache, String> {
+        self.media_cache
+            .get_or_try_init(|| async {
+                let dir = media::media_dir(app)?;
+                let cache = media::MediaCache::new(dir);
+                cache.rebuild_index().await?;
+                Ok::<_, String>(cache)
+            })
+            .await
     }
 }
 
@@ -577,6 +601,35 @@ pub async fn resolve_alias(client: &Client, alias: &str) -> Result<String, Strin
         .await
         .map_err(|e| e.to_string())?;
     Ok(response.room_id.to_string())
+}
+
+/// Resolves a [`media::MediaHandle`] (opaque, produced by
+/// `timeline::events_to_summaries`) to a local cache path, fetching and
+/// decrypting on a cache miss. `thumbnail` requests a 256x256 scaled
+/// thumbnail instead of the full file — callers pick based on where the
+/// media is being rendered (message-list thumbnail vs. lightbox full view).
+#[tauri::command]
+pub async fn resolve_media(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    handle: String,
+    thumbnail: bool,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    let cache = state.require_media_cache(&app).await?;
+    let source = media::handle_to_media_source(&handle)?;
+
+    let kind = if thumbnail {
+        media::MediaKind::Thumbnail {
+            width: 256,
+            height: 256,
+        }
+    } else {
+        media::MediaKind::File
+    };
+
+    let path = media::resolve(cache, &client, source, kind).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
