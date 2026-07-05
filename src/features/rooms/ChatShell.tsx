@@ -167,16 +167,27 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }, [roomId]);
 
   useEffect(() => {
-    if (!room) {
+    // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
+    // this a fresh `room` reference on every `room_list:update`, and
+    // `Timeline::paginate_backwards`'s pagination is now stateful per-room
+    // (Spec 14), so re-running this on every such refresh would silently
+    // walk further back into history each time instead of just loading the
+    // room once.
+    const timelineRoomId = room?.room_id;
+    if (!timelineRoomId) {
       setMessages([]);
       return;
     }
     setLoading(true);
-    getTimelinePage(room.room_id)
-      .then((page) => setMessages(page.messages.toReversed()))
+    // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
+    // which holds items in their natural oldest-to-newest order — unlike the
+    // old `room.messages()` backward-pagination page, which was newest-first
+    // and needed reversing.
+    getTimelinePage(timelineRoomId)
+      .then((page) => setMessages(page.messages))
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [room]);
+  }, [room?.room_id]);
 
   useEffect(() => {
     if (!room) return undefined;
