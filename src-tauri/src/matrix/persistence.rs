@@ -122,18 +122,6 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
-/// Whether `account_key` already has a store on disk — i.e. this would be a
-/// re-login rather than a first login. Callers that relocate a temp store
-/// (see [`relocate_store`]) need to know this *before* relocating: if the
-/// account already has a store, relocating just discards the temp one and
-/// reuses the existing store, which means the temp-backed `Client` the
-/// caller already built can no longer be used (its backing files are gone)
-/// — the caller must rebuild against the existing store and restore the
-/// session onto that instead.
-pub fn account_store_exists(app: &AppHandle, account_key: &str) -> Result<bool, String> {
-    Ok(matrix_store_root(app)?.join(account_key).is_dir())
-}
-
 /// Best-effort cleanup of every in-flight temp store under `matrix_store/`
 /// (i.e. every [`temp_store_key`] directory), run at app startup so a login
 /// attempt abandoned by a hard crash (rather than a clean
@@ -294,6 +282,39 @@ pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
     }
 }
 
+/// What [`relocate_store`] actually did — callers that were using a
+/// temp-backed `Client` need this to decide whether that client is still
+/// usable ([`Relocated`](RelocateOutcome::Relocated), the common case: the
+/// temp directory just got renamed in place, same inode, same open file
+/// handles) or not ([`Reused`](RelocateOutcome::Reused): the temp directory
+/// was deleted out from under it, so the client must be rebuilt against the
+/// existing store and have its session restored onto that instead).
+///
+/// Deliberately the *only* source of truth for this — a caller checking
+/// whether the account store exists itself beforehand and separately
+/// calling [`relocate_store`] would race: a concurrent login for the same
+/// account could create the account store in between those two checks, so
+/// the caller's stale pre-check result wouldn't match what this function
+/// actually did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelocateOutcome {
+    /// The temp store was renamed to `account_key`'s path — the `Client`
+    /// that was already using it is still valid.
+    Relocated(PathBuf),
+    /// `account_key` already had a store; the temp one was discarded and
+    /// this is the existing store's path — any `Client` built against the
+    /// temp store must be rebuilt against this path instead.
+    Reused(PathBuf),
+}
+
+impl RelocateOutcome {
+    pub fn path(&self) -> &Path {
+        match self {
+            RelocateOutcome::Relocated(path) | RelocateOutcome::Reused(path) => path,
+        }
+    }
+}
+
 /// Atomically relocates a completed SSO/QR login's temp store to its real
 /// per-account path, once the flow has yielded a `user_id` and its
 /// `account_key` can finally be computed. If a store for that account
@@ -314,7 +335,7 @@ pub fn relocate_store(
     app: &AppHandle,
     temp_key: &str,
     account_key: &str,
-) -> Result<PathBuf, String> {
+) -> Result<RelocateOutcome, String> {
     relocate_store_at(&matrix_store_root(app)?, temp_key, account_key)
 }
 
@@ -323,13 +344,13 @@ pub fn relocate_store_at(
     root: &Path,
     temp_key: &str,
     account_key: &str,
-) -> Result<PathBuf, String> {
+) -> Result<RelocateOutcome, String> {
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
 
     if account_path.exists() {
         discard_temp_store(&temp_path, temp_key);
-        return Ok(account_path);
+        return Ok(RelocateOutcome::Reused(account_path));
     }
 
     let passphrase = get_or_create_passphrase(temp_key)?;
@@ -339,13 +360,18 @@ pub fn relocate_store_at(
         .set_password(&passphrase)
         .map_err(|e| e.to_string())?;
 
+    // `fs::rename` on the same volume (both under `matrix_store/`) is
+    // atomic and, on POSIX, fails with `ENOTEMPTY`/`EEXIST` rather than
+    // silently merging if `account_path` was created concurrently between
+    // the `exists()` check above and here — surfacing as an `Err` rather
+    // than silently losing data either way.
     std::fs::rename(&temp_path, &account_path).map_err(|e| e.to_string())?;
 
     if let Ok(temp_entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
         let _ = temp_entry.delete_credential();
     }
 
-    Ok(account_path)
+    Ok(RelocateOutcome::Relocated(account_path))
 }
 
 pub fn save_session(
@@ -586,8 +612,11 @@ mod tests {
         std::fs::write(temp_path.join("marker.txt"), b"hello").unwrap();
         let temp_passphrase = get_or_create_passphrase(&temp_key).unwrap();
 
-        let relocated = relocate_store_at(&root.0, &temp_key, &account_key).unwrap();
+        let outcome = relocate_store_at(&root.0, &temp_key, &account_key).unwrap();
 
+        let RelocateOutcome::Relocated(relocated) = outcome else {
+            panic!("expected Relocated, got {outcome:?}");
+        };
         assert_eq!(relocated, root.0.join(&account_key));
         assert!(relocated.join("marker.txt").exists());
         assert!(!temp_path.exists());
@@ -624,8 +653,11 @@ mod tests {
         std::fs::write(temp_path.join("marker.txt"), b"temp").unwrap();
         let _ = get_or_create_passphrase(&temp_key).unwrap();
 
-        let relocated = relocate_store_at(&root.0, &temp_key, &account_key).unwrap();
+        let outcome = relocate_store_at(&root.0, &temp_key, &account_key).unwrap();
 
+        let RelocateOutcome::Reused(relocated) = outcome else {
+            panic!("expected Reused, got {outcome:?}");
+        };
         assert_eq!(relocated, existing_path);
         assert!(relocated.join("existing.txt").exists());
         assert!(!relocated.join("marker.txt").exists());

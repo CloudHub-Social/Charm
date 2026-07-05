@@ -177,26 +177,23 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // discards the temp one and reuses the existing store —
                 // `client` (still backed by the now-deleted temp directory)
                 // can no longer be used, so rebuild against the existing
-                // store and restore this session onto that instead.
-                let account_already_existed =
-                    match persistence::account_store_exists(&app, &account_key) {
-                        Ok(existed) => existed,
-                        Err(e) => {
-                            let _ = app.emit(
-                                "qr_login:progress",
-                                QrLoginProgressEvent::Error { message: e },
-                            );
-                            return;
-                        }
-                    };
-                if let Err(e) = persistence::relocate_store(&app, &temp_key, &account_key) {
-                    let _ = app.emit(
-                        "qr_login:progress",
-                        QrLoginProgressEvent::Error { message: e },
-                    );
-                    return;
-                }
-                let client = if account_already_existed {
+                // store and restore this session onto that instead. Branches
+                // on `relocate_store`'s return value, not a separate
+                // pre-check of whether the account store exists — a
+                // pre-check-then-relocate pair would race against a
+                // concurrent login for the same account creating the store
+                // in between.
+                let outcome = match persistence::relocate_store(&app, &temp_key, &account_key) {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error { message: e },
+                        );
+                        return;
+                    }
+                };
+                let client = if matches!(outcome, persistence::RelocateOutcome::Reused(_)) {
                     let existing_client =
                         match super::build_client(&app, &homeserver_url, &account_key).await {
                             Ok(client) => client,

@@ -359,22 +359,26 @@ async fn build_client(
 }
 
 /// Relocates a temp-backed login's store to its per-account path, and — if
-/// that account already had a store (a re-login) — swaps `client` out for a
-/// fresh one built against the *existing* store with `session` restored
-/// onto it.
+/// [`persistence::relocate_store`] reports that account already had a store
+/// (a re-login) — swaps `client` out for a fresh one built against the
+/// *existing* store with `session` restored onto it.
 ///
-/// This distinction matters: [`persistence::relocate_store`] discards the
-/// temp directory outright when the account already has a store (reusing
-/// the existing one rather than overwriting it — matrix-rust-sdk binds a
-/// store to whichever account first opened it, so relocating on top of a
-/// differently-bound existing store would reintroduce the very collision
-/// this module fixes). But `client` was already built against that
-/// now-deleted temp directory; continuing to use it would mean every write
-/// this session makes (sync state, crypto/device data) goes to files that
-/// no longer exist on disk once their handles close, silently lost. So this
-/// checks *before* relocating whether the account store already existed,
-/// and if so, hands back a client freshly opened on the real store with the
-/// already-obtained session restored onto it instead.
+/// This distinction matters: `relocate_store` discards the temp directory
+/// outright when the account already has a store (reusing the existing one
+/// rather than overwriting it — matrix-rust-sdk binds a store to whichever
+/// account first opened it, so relocating on top of a differently-bound
+/// existing store would reintroduce the very collision this module fixes).
+/// But `client` was already built against that now-deleted temp directory;
+/// continuing to use it would mean every write this session makes (sync
+/// state, crypto/device data) goes to files that no longer exist on disk
+/// once their handles close, silently lost.
+///
+/// Deliberately branches on `relocate_store`'s *return value*, not a
+/// separate pre-check of whether the account store exists: checking that
+/// beforehand and then calling `relocate_store` separately would race — a
+/// concurrent login for the same account could create the account store in
+/// the gap between those two calls, so the pre-check result wouldn't
+/// necessarily match what `relocate_store` actually did.
 async fn relocate_or_reuse_matrix_auth_store(
     app: &AppHandle,
     client: Client,
@@ -383,12 +387,10 @@ async fn relocate_or_reuse_matrix_auth_store(
     homeserver_url: &str,
     session: &matrix_sdk::authentication::matrix::MatrixSession,
 ) -> Result<Client, String> {
-    let account_already_existed = persistence::account_store_exists(app, account_key)?;
-    persistence::relocate_store(app, temp_key, account_key)?;
-
-    if !account_already_existed {
+    let outcome = persistence::relocate_store(app, temp_key, account_key)?;
+    let persistence::RelocateOutcome::Reused(_) = outcome else {
         return Ok(client);
-    }
+    };
 
     let existing_client = build_client(app, homeserver_url, account_key).await?;
     existing_client
