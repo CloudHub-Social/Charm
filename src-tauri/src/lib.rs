@@ -35,6 +35,26 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(matrix::MatrixState::default())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            // One-time dev wipe of the pre-Spec-15 single-account store
+            // layout (see its doc comment) — debug-build-only. A release
+            // build reaching a real user's machine with the legacy layout
+            // still on disk should never silently delete their crypto
+            // store; that migration path is dev-only by design (Charm 2.0
+            // is pre-release, so every debug build is a dev/test install).
+            if cfg!(debug_assertions) {
+                if let Err(e) = matrix::persistence::migrate_legacy_single_account_store(&handle) {
+                    eprintln!("legacy single-account store migration failed: {e}");
+                }
+            }
+            // Best-effort sweep of any per-account temp stores stranded by a
+            // crash mid-login (a clean cancel already cleans up its own).
+            if let Err(e) = matrix::persistence::sweep_orphan_temp_stores(&handle) {
+                eprintln!("orphan temp-store sweep failed: {e}");
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             matrix::login,

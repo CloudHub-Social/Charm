@@ -68,9 +68,12 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     // Guards against a double-start (e.g. a double click) leaving two login
     // tasks running concurrently, one of which would hold a stale
     // pending_qr_check_code no longer reachable from the frontend.
-    cancel_qr_login(app.state::<MatrixState>()).await?;
+    cancel_qr_login(app.clone(), app.state::<MatrixState>()).await?;
 
-    let client = super::build_client(&app, &homeserver_url).await?;
+    // The account isn't known until the OAuth device-code dance completes —
+    // open a temp store now and relocate it once the MXID is known.
+    let temp_key = persistence::temp_store_key();
+    let client = super::build_client(&app, &homeserver_url, &temp_key).await?;
 
     // Device-code grant only — this client only ever needs to be the "new
     // device" side of QR login, never a full browser-based OAuth login.
@@ -82,8 +85,24 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     let metadata: Raw<ClientMetadata> = Raw::new(&metadata).map_err(|e| e.to_string())?;
     let registration_data = ClientRegistrationData::new(metadata);
 
+    // Stored *before* spawning (not after, alongside the task handle below):
+    // the spawned task's own error path compares against this key to decide
+    // whether to clear it, and on a multi-threaded runtime the task can
+    // start running — and hit that error path — before this function gets
+    // back around to storing anything post-spawn. Storing it first means
+    // the task always finds its own key already present to compare against,
+    // rather than racing to write a key the task's cleanup already ran (and
+    // skipped) against a not-yet-set `None`.
     let app_for_state = app.clone();
+    *app_for_state
+        .state::<MatrixState>()
+        .pending_qr_temp_store_key
+        .lock()
+        .unwrap() = Some(temp_key.clone());
+
+    let temp_key_for_task = temp_key.clone();
     let task = tokio::spawn(async move {
+        let temp_key = temp_key_for_task;
         let oauth = client.oauth();
         let login = oauth
             .login_with_qr_code(Some(&registration_data))
@@ -151,9 +170,66 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     );
                     return;
                 };
-                if let Err(e) =
-                    persistence::save_oauth_session(client.homeserver().as_ref(), &session)
-                {
+                let account_key = persistence::account_key(session.user.meta.user_id.as_str());
+                let homeserver_url = client.homeserver().to_string();
+                // Mirrors mod.rs's `relocate_or_reuse_matrix_auth_store`: if
+                // this account already had a store (a re-login), relocating
+                // discards the temp one and reuses the existing store —
+                // `client` (still backed by the now-deleted temp directory)
+                // can no longer be used, so rebuild against the existing
+                // store and restore this session onto that instead. Branches
+                // on `relocate_store`'s return value, not a separate
+                // pre-check of whether the account store exists — a
+                // pre-check-then-relocate pair would race against a
+                // concurrent login for the same account creating the store
+                // in between.
+                let outcome = match persistence::relocate_store(&app, &temp_key, &account_key) {
+                    Ok(outcome) => outcome,
+                    Err(e) => {
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error { message: e },
+                        );
+                        return;
+                    }
+                };
+                let client = if matches!(outcome, persistence::RelocateOutcome::Reused(_)) {
+                    let existing_client =
+                        match super::build_client(&app, &homeserver_url, &account_key).await {
+                            Ok(client) => client,
+                            Err(e) => {
+                                let _ = app.emit(
+                                    "qr_login:progress",
+                                    QrLoginProgressEvent::Error { message: e },
+                                );
+                                return;
+                            }
+                        };
+                    if let Err(e) = existing_client
+                        .oauth()
+                        .restore_session(
+                            session.clone(),
+                            matrix_sdk::store::RoomLoadSettings::default(),
+                        )
+                        .await
+                    {
+                        let _ = app.emit(
+                            "qr_login:progress",
+                            QrLoginProgressEvent::Error {
+                                message: e.to_string(),
+                            },
+                        );
+                        return;
+                    }
+                    existing_client
+                } else {
+                    client
+                };
+                if let Err(e) = persistence::save_oauth_session(
+                    &account_key,
+                    client.homeserver().as_ref(),
+                    &session,
+                ) {
                     let _ = app.emit(
                         "qr_login:progress",
                         QrLoginProgressEvent::Error { message: e },
@@ -161,11 +237,13 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     return;
                 }
                 // Enforces the single-account invariant `try_restore_session`'s
-                // doc comment assumes: only one session kind should ever be
-                // present in the keychain at a time. Best-effort — a failure
-                // here doesn't roll back the OAuth session that already
-                // succeeded and was just saved above.
-                let _ = persistence::clear_session();
+                // doc comment assumes: for *this* account_key, only one
+                // session kind should ever be present in the keychain at a
+                // time (other accounts' entries are untouched — each is
+                // keyed separately). Best-effort — a failure here doesn't
+                // roll back the OAuth session that already succeeded and
+                // was just saved above.
+                let _ = persistence::clear_session(&account_key);
 
                 let response = LoginResponse {
                     user_id: session.user.meta.user_id.to_string(),
@@ -174,6 +252,19 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 
                 let state = app.state::<MatrixState>();
                 *state.client.lock().await = Some(client.clone());
+                // Compare-and-clear, not an unconditional `= None` — same
+                // rationale as the error path below: a new `start_qr_login`
+                // could already have overwritten this slot with a newer
+                // attempt's key by the time this success path runs (e.g. if
+                // this task raced past its last `.await` before a
+                // `cancel_qr_login`/restart aborted it), and clobbering that
+                // would leave the new attempt's own cleanup with nothing to
+                // find.
+                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                if pending_key.as_deref() == Some(temp_key.as_str()) {
+                    *pending_key = None;
+                }
+                drop(pending_key);
                 spawn_sync_loop(app.clone(), client);
 
                 // The app-level completion event, emitted only now that the
@@ -185,6 +276,26 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 );
             }
             Err(e) => {
+                // The device-code dance itself failed (not cancelled) — no
+                // account was ever learned, so clean up the temp store here
+                // rather than leaving it for a future cancel/start to find.
+                // Uses the `temp_key` this task already captured, not a
+                // fresh read of `pending_qr_temp_store_key` — a concurrent
+                // `cancel_qr_login`/new `start_qr_login` could have already
+                // taken (and be relying on) that shared slot by the time
+                // this arm runs.
+                let _ = persistence::discard_temp_login_store(&app, &temp_key);
+                // Compare-and-clear, not an unconditional `= None`: a
+                // concurrent `start_qr_login` could already have overwritten
+                // this slot with a newer attempt's key by the time this
+                // arm runs, and clobbering that would leave the new
+                // attempt's own cleanup with nothing to find.
+                let state = app.state::<MatrixState>();
+                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                if pending_key.as_deref() == Some(temp_key.as_str()) {
+                    *pending_key = None;
+                }
+                drop(pending_key);
                 let _ = app.emit(
                     "qr_login:progress",
                     QrLoginProgressEvent::Error {
@@ -197,7 +308,8 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 
     // Synchronous: no `.await` between `tokio::spawn` returning and this
     // store, so a concurrent `cancel_qr_login` can never observe a moment
-    // where this attempt has started but has no stored handle to abort.
+    // where this attempt has started but has no stored handle to abort
+    // (`pending_qr_temp_store_key` is already set above, before the spawn).
     *app_for_state
         .state::<MatrixState>()
         .pending_qr_login_task
@@ -212,12 +324,18 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 /// background to abort — it just waits on a deep-link callback) and clears
 /// any pending check-code sender so a stale one can't be used later.
 #[tauri::command]
-pub async fn cancel_qr_login(state: State<'_, MatrixState>) -> Result<(), String> {
+pub async fn cancel_qr_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     let task = state.pending_qr_login_task.lock().unwrap().take();
     if let Some(task) = task {
         task.abort();
     }
     *state.pending_qr_check_code.lock().await = None;
+
+    let temp_key = state.pending_qr_temp_store_key.lock().unwrap().take();
+    if let Some(temp_key) = temp_key {
+        let _ = persistence::discard_temp_login_store(&app, &temp_key);
+    }
+
     Ok(())
 }
 

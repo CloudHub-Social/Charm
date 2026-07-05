@@ -39,6 +39,17 @@ Homeserver is then reachable at `http://localhost:8008` — matches the default
 ./register-test-user.sh
 ```
 
+`tests/persistence_isolation.rs` and `tests/ephemeral.rs` also need a second,
+distinct account (`TEST_MATRIX_USERNAME_2`/`TEST_MATRIX_PASSWORD_2`, defaults
+`evie2`/`testpass123`) — register it directly (it doesn't need the
+`#alias-test-room` side effect, so skip the full script):
+
+```bash
+docker exec charm-dev-synapse register_new_matrix_user \
+  -u evie2 -p testpass123 --no-admin \
+  -c /data/homeserver.yaml http://localhost:8008
+```
+
 ## Stop
 
 ```bash
