@@ -91,15 +91,21 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // directly from room A (mid "X is typing…") to room B keeps A's typing
     // row rendered under B until B happens to get its own typing update.
     setTypingUserIds([]);
-    if (!room) return undefined;
+    const roomId = room?.room_id;
+    if (!roomId) return undefined;
+    // Keyed to the room id, not the `room` object — a `room_list:update`
+    // refresh gives the active room a fresh object with the same id, which
+    // would otherwise re-subscribe (and briefly double-listen, since the old
+    // listener's teardown is async) on every refresh instead of only on an
+    // actual room change.
     const unlisten = onTypingUpdate((update) => {
-      if (update.room_id !== room.room_id) return;
+      if (update.room_id !== roomId) return;
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
     });
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [room, currentUserId]);
+  }, [room?.room_id, currentUserId]);
 
   const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
 
