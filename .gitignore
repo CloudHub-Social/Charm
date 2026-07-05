@@ -38,8 +38,15 @@ dev/synapse/data-mas/
 # Storybook build output
 storybook-static/
 
-# Design-sync skill working directory (local only)
-.design-sync/
+# claude.ai/design sync — commit the durable config/notes/overrides under
+# .design-sync/, ignore only the build output + verification working state.
+ds-bundle/
+.ds-sync/
+.design-sync/sb-reference/
+.design-sync/types/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
 
 # graphify code graph — built locally with `graphify update .`, not committed:
 # it goes stale on every code change and oxfmt would fight the generated JSON.
