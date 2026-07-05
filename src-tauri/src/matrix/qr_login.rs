@@ -85,7 +85,21 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     let metadata: Raw<ClientMetadata> = Raw::new(&metadata).map_err(|e| e.to_string())?;
     let registration_data = ClientRegistrationData::new(metadata);
 
+    // Stored *before* spawning (not after, alongside the task handle below):
+    // the spawned task's own error path compares against this key to decide
+    // whether to clear it, and on a multi-threaded runtime the task can
+    // start running — and hit that error path — before this function gets
+    // back around to storing anything post-spawn. Storing it first means
+    // the task always finds its own key already present to compare against,
+    // rather than racing to write a key the task's cleanup already ran (and
+    // skipped) against a not-yet-set `None`.
     let app_for_state = app.clone();
+    *app_for_state
+        .state::<MatrixState>()
+        .pending_qr_temp_store_key
+        .lock()
+        .unwrap() = Some(temp_key.clone());
+
     let temp_key_for_task = temp_key.clone();
     let task = tokio::spawn(async move {
         let temp_key = temp_key_for_task;
@@ -283,13 +297,15 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         }
     });
 
-    // Synchronous: no `.await` between `tokio::spawn` returning and these
-    // stores, so a concurrent `cancel_qr_login` can never observe a moment
-    // where this attempt has started but has no stored handle/key to clean
-    // up.
-    let matrix_state = app_for_state.state::<MatrixState>();
-    *matrix_state.pending_qr_login_task.lock().unwrap() = Some(task);
-    *matrix_state.pending_qr_temp_store_key.lock().unwrap() = Some(temp_key);
+    // Synchronous: no `.await` between `tokio::spawn` returning and this
+    // store, so a concurrent `cancel_qr_login` can never observe a moment
+    // where this attempt has started but has no stored handle to abort
+    // (`pending_qr_temp_store_key` is already set above, before the spawn).
+    *app_for_state
+        .state::<MatrixState>()
+        .pending_qr_login_task
+        .lock()
+        .unwrap() = Some(task);
 
     Ok(())
 }
