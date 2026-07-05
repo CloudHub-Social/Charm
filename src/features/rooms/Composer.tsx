@@ -1,4 +1,5 @@
 import { Extension } from "@tiptap/core";
+import Placeholder from "@tiptap/extension-placeholder";
 import { PluginKey } from "@tiptap/pm/state";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -225,6 +226,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           leading: raw.emoji,
         })),
       }),
+      Placeholder.configure({ placeholder }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -237,7 +239,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     content: mode === "edit" ? (initialHtml ?? "") : draft.getDraft(),
     editorProps: {
       attributes: {
+        // axe's `aria-prohibited-attr` rule requires an explicit role
+        // before it'll credit a `contenteditable` div with `aria-label` —
+        // a plain `<div contenteditable>` has an implicit textbox role in
+        // real browsers, but not one axe's static analysis infers on its
+        // own, so it's spelled out here rather than relied on implicitly.
+        role: "textbox",
+        "aria-multiline": "true",
         "aria-label": placeholder,
+        // Not a native HTML placeholder (contenteditable has none) — kept
+        // as a plain attribute so `page.getByPlaceholder(...)` locators
+        // written against the old `<textarea>` composer keep working.
+        // Placeholder extension (below) drives the actual visible text.
+        placeholder,
         class:
           "max-h-30 min-h-6 flex-1 resize-none bg-transparent px-1 py-2 text-[15px] text-foreground outline-none",
       },

@@ -147,3 +147,14 @@ body {
   color: var(--color-text-primary);
   font-family: var(--font-sans);
 }
+
+/* Composer's TipTap Placeholder extension marks the empty paragraph with
+   this class and stashes the placeholder text in `data-placeholder` — it
+   ships no CSS of its own, so this is the one rule that makes it visible. */
+.tiptap.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--color-text-muted);
+}

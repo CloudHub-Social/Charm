@@ -32,6 +32,7 @@ export function installMockTauri(seed: {
   userId: string;
   deviceId: string;
   room: { room_id: string; name: string | null; unread_count: number };
+  members?: { user_id: string; display_name: string | null }[];
 }) {
   type Listener = (payload: unknown) => void;
 
@@ -77,6 +78,8 @@ export function installMockTauri(seed: {
     mark_room_read: () => undefined,
     send_typing: () => undefined,
     can_redact: () => true,
+    get_room_members: () => seed.members ?? [],
+    run_command: () => ({ status: "success" }),
 
     send_message: (args) => {
       const roomId = args.roomId as string;
@@ -86,7 +89,7 @@ export function installMockTauri(seed: {
         event_id: eventId,
         sender: seed.userId,
         body: args.body,
-        formatted_body: null,
+        formatted_body: args.formattedBody ?? null,
         timestamp_ms: Date.now(),
         edited: false,
         redacted: false,
