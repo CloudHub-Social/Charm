@@ -185,14 +185,22 @@ pub fn discard_temp_login_store(app: &AppHandle, temp_key: &str) -> Result<(), S
 /// users, so rather than attempt to recover which account that legacy store
 /// belonged to, this just wipes it — the account can freely log back in and
 /// gets a fresh, correctly-isolated per-account store. Detected by the
-/// presence of any *file* directly under `matrix_store/` (a per-account
-/// layout only ever has subdirectories there).
+/// presence of one of matrix-rust-sdk's own SQLite store files (e.g.
+/// `matrix-sdk-state.sqlite3`) directly under `matrix_store/` — not just
+/// "any file", which would also match a stray `.DS_Store` or similar and
+/// wipe an otherwise-healthy per-account layout for no reason.
 pub fn migrate_legacy_single_account_store(app: &AppHandle) -> Result<(), String> {
     let root = matrix_store_root(app)?;
     let has_legacy_files = std::fs::read_dir(&root)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
-        .any(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false));
+        .any(|entry| {
+            entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("matrix-sdk-") && name.contains("sqlite"))
+        });
 
     if !has_legacy_files {
         return Ok(());
