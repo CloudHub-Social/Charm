@@ -73,5 +73,6 @@
     "vite": "^7.0.4",
     "vitest": "^4.1.9",
     "wait-on": "^9.0.10"
-  }
+  },
+  "types": ".design-sync/types/ds-entry.d.ts"
 }
