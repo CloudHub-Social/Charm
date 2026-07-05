@@ -45,7 +45,16 @@ export function useHomeserverDiscovery(input: string): DiscoveryStatus {
         });
     }, DEBOUNCE_MS);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      // Invalidate this request so a response that arrives after cleanup
+      // (input changed, or the component unmounted) is ignored — guards an
+      // in-flight `discoverHomeserver` call that already started, not just
+      // ones still waiting out the debounce.
+      if (requestIdRef.current === requestId) {
+        requestIdRef.current += 1;
+      }
+    };
   }, [input]);
 
   return status;
