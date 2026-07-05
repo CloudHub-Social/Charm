@@ -8,10 +8,12 @@ import "@fontsource/jetbrains-mono/500.css";
 import "../src/styles/tokens.css";
 
 // Charm is dark-first: the design tokens set the canvas background/foreground on
-// `body`, and `[data-theme="light"]` overrides them. The toolbar switch below drives
-// the same `data-theme` attribute the app uses, so stories render under real themes.
+// `body`, and `src/styles/tokens.css` keys its light-theme override off
+// `[data-theme="light"]`. This toolbar switch drives that same attribute so each story
+// can be previewed under either theme. (Runtime theme switching inside the app itself
+// isn't wired yet — that's Charm 2.0 Spec 09.)
 const withTheme: Decorator = (Story, context) => {
-  const theme = context.globals.theme as string;
+  const theme = typeof context.globals.theme === "string" ? context.globals.theme : "dark";
   if (typeof document !== "undefined") {
     document.documentElement.dataset.theme = theme;
   }
