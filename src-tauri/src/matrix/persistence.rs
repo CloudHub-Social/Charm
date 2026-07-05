@@ -339,12 +339,31 @@ pub fn relocate_store(
     relocate_store_at(&matrix_store_root(app)?, temp_key, account_key)
 }
 
+/// Serializes [`relocate_store_at`] process-wide. Without this, two
+/// concurrent *first-time* relocations for the same `account_key` (e.g. a
+/// double-submitted password login) could both pass the `account_path`
+/// existence check before either has renamed its temp directory into
+/// place, and both then write the account's keychain passphrase entry —
+/// whichever writes last wins, leaving the *other* one's now-relocated (or
+/// about-to-be-relocated) store encrypted with a passphrase that's no
+/// longer what's saved in the keychain. Relocation isn't a hot path (it
+/// happens once per login), so a single global lock — rather than a
+/// per-account one — is the simplest correct fix.
+static RELOCATE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
 /// Pure, `AppHandle`-free variant of [`relocate_store`].
 pub fn relocate_store_at(
     root: &Path,
     temp_key: &str,
     account_key: &str,
 ) -> Result<RelocateOutcome, String> {
+    // Poison recovery, not `.unwrap()`: the critical section below is plain
+    // filesystem/keychain I/O with no partially-mutated shared state to
+    // distrust if some *other* call panicked mid-lock, so a poisoned lock
+    // shouldn't permanently wedge every future relocation.
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
 
@@ -457,6 +476,19 @@ mod tests {
 
     const TEST_MXID_A: &str = "@charm-persistence-test-a:localhost";
     const TEST_MXID_B: &str = "@charm-persistence-test-b:localhost";
+    // Every keychain-touching test below gets its own dedicated MXID pair
+    // (rather than reusing TEST_MXID_A/B) — `cargo test --lib` runs tests in
+    // parallel, and two tests racing to save/clear/read the *same* keychain
+    // entry (e.g. one clearing what another just set) is a real source of
+    // flakiness, not just a theoretical one. TEST_MXID_A/B stay reserved for
+    // the two pure tests just below that never touch the keychain at all.
+    const TEST_MXID_SESSION_A: &str = "@charm-persistence-test-session-a:localhost";
+    const TEST_MXID_SESSION_B: &str = "@charm-persistence-test-session-b:localhost";
+    const TEST_MXID_OAUTH: &str = "@charm-persistence-test-oauth:localhost";
+    const TEST_MXID_PASSPHRASE_A: &str = "@charm-persistence-test-passphrase-a:localhost";
+    const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
+    const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
+    const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
 
     /// A scratch `matrix_store/`-equivalent directory for tests that need a
     /// real filesystem root, cleaned up on drop so parallel `cargo test`
@@ -522,13 +554,13 @@ mod tests {
     /// in plaintext), so a test that doesn't hit it wouldn't prove much.
     #[test]
     fn session_round_trips_through_keychain_per_account() {
-        let key_a = account_key(TEST_MXID_A);
-        let key_b = account_key(TEST_MXID_B);
+        let key_a = account_key(TEST_MXID_SESSION_A);
+        let key_b = account_key(TEST_MXID_SESSION_B);
         clear_session(&key_a).unwrap();
         clear_session(&key_b).unwrap();
         assert!(load_session(&key_a).unwrap().is_none());
 
-        let session_a = dummy_session(TEST_MXID_A);
+        let session_a = dummy_session(TEST_MXID_SESSION_A);
         save_session(&key_a, "https://example.invalid", &session_a).unwrap();
 
         // A different account's session entry is untouched.
@@ -566,11 +598,11 @@ mod tests {
 
     #[test]
     fn oauth_session_round_trips_through_keychain_per_account() {
-        let key_a = account_key(TEST_MXID_A);
+        let key_a = account_key(TEST_MXID_OAUTH);
         clear_oauth_session(&key_a).unwrap();
         assert!(load_oauth_session(&key_a).unwrap().is_none());
 
-        let session = dummy_oauth_session(TEST_MXID_A);
+        let session = dummy_oauth_session(TEST_MXID_OAUTH);
         save_oauth_session(&key_a, "https://example.invalid", &session).unwrap();
 
         let loaded = load_oauth_session(&key_a)
@@ -590,8 +622,8 @@ mod tests {
 
     #[test]
     fn passphrase_is_stable_across_calls_and_isolated_per_key() {
-        let key_a = account_key(TEST_MXID_A);
-        let key_b = account_key(TEST_MXID_B);
+        let key_a = account_key(TEST_MXID_PASSPHRASE_A);
+        let key_b = account_key(TEST_MXID_PASSPHRASE_B);
 
         let first = get_or_create_passphrase(&key_a).unwrap();
         let second = get_or_create_passphrase(&key_a).unwrap();
@@ -606,7 +638,7 @@ mod tests {
     fn relocate_store_moves_dir_and_passphrase_in_lockstep() {
         let root = ScratchRoot::new("relocate");
         let temp_key = temp_store_key();
-        let account_key = account_key(TEST_MXID_A);
+        let account_key = account_key(TEST_MXID_RELOCATE);
 
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         std::fs::write(temp_path.join("marker.txt"), b"hello").unwrap();
@@ -641,7 +673,7 @@ mod tests {
     #[test]
     fn relocate_store_reuses_existing_account_store_and_discards_temp() {
         let root = ScratchRoot::new("relocate-reuse");
-        let account_key = account_key(TEST_MXID_B);
+        let account_key = account_key(TEST_MXID_RELOCATE_REUSE);
 
         // Simulate an account that already has a store from a prior login.
         let existing_path = store_path_at(&root.0, &account_key).unwrap();

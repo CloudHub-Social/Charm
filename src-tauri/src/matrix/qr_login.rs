@@ -252,7 +252,19 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 
                 let state = app.state::<MatrixState>();
                 *state.client.lock().await = Some(client.clone());
-                *state.pending_qr_temp_store_key.lock().unwrap() = None;
+                // Compare-and-clear, not an unconditional `= None` — same
+                // rationale as the error path below: a new `start_qr_login`
+                // could already have overwritten this slot with a newer
+                // attempt's key by the time this success path runs (e.g. if
+                // this task raced past its last `.await` before a
+                // `cancel_qr_login`/restart aborted it), and clobbering that
+                // would leave the new attempt's own cleanup with nothing to
+                // find.
+                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                if pending_key.as_deref() == Some(temp_key.as_str()) {
+                    *pending_key = None;
+                }
+                drop(pending_key);
                 spawn_sync_loop(app.clone(), client);
 
                 // The app-level completion event, emitted only now that the
