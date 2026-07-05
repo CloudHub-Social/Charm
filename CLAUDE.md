@@ -28,15 +28,31 @@ store-visible.
 
 ## Quality gate
 
-Run before committing and fix all failures:
+Run before committing and fix all failures. These mirror the `frontend` job in
+`.github/workflows/quality-checks.yml`:
 
 ```
-pnpm build   # tsc && vite build — must succeed with no errors
+pnpm lint             # oxlint
+pnpm fmt:check        # oxfmt --check
+pnpm typecheck        # tsc --noEmit
+pnpm test:coverage    # vitest run --coverage — enforces the coverage floor
+pnpm knip             # dead-code / unused-dependency check
+pnpm build            # tsc && vite build — must succeed with no errors
 ```
 
-Lint / format / unit-test / dead-code gates are not wired up yet. As oxlint, oxfmt,
-vitest, etc. are added (mirroring 1.0's setup), extend this section and the
-`lint-on-edit` hook activates automatically (see below).
+A separate `storybook-a11y` CI job builds Storybook and runs every story through
+axe in a real browser (Playwright); **any accessibility violation fails the build.**
+To reproduce locally: `pnpm build-storybook && pnpm test-storybook:ci`. The one rule
+scoped out is `color-contrast` (a design-token issue owned by Charm 2.0 Spec 09 —
+see the comment in `.storybook/preview.tsx`); re-enable it there when the tokens are
+fixed. Component stories live at `src/components/ui/*.stories.tsx`; `pnpm storybook`
+opens them locally.
+
+Coverage thresholds are an enforced **ratchet** in `vitest.config.ts` (set just
+under current actual coverage): when you add tests and coverage rises, raise the
+floor in the same PR — never lower it to make CI pass. The Rust side has its own
+gate (`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`) — see the
+`rust` jobs in the same workflow.
 
 ## Code navigation (graphify)
 

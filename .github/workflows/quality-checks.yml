@@ -28,6 +28,31 @@ jobs:
       - run: pnpm knip
       - run: pnpm build
 
+  storybook-a11y:
+    name: Storybook (build + axe a11y)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Browser + its Linux system libs for the Storybook test-runner (Playwright).
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # Builds the static Storybook (also fails on any story that doesn't compile),
+      # then runs every story through axe in a real browser. Blocking: any a11y
+      # violation fails the job. color-contrast is the one rule scoped out for now
+      # (design-token work — see .storybook/preview.tsx and Charm 2.0 Spec 09).
+      - run: pnpm build-storybook --quiet
+      - run: pnpm test-storybook:ci
+
   rust:
     name: Rust (fmt, clippy, lib test)
     # macos-latest so the keychain-backed persistence tests exercise the real
