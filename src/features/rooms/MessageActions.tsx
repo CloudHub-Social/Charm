@@ -21,6 +21,14 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   className?: string;
+  /**
+   * Set while the message is still a local echo (`send_state.state ===
+   * "pending"`) — its event id is a temporary transaction id, not a real
+   * server event id, so relation-based actions (reply/react/edit/delete)
+   * would fail if attempted against it. Copy stays available since it only
+   * needs the body text.
+   */
+  disableRelationActions?: boolean;
 }
 
 /**
@@ -40,6 +48,7 @@ export function MessageActions({
   onDelete,
   onCopy,
   className,
+  disableRelationActions = false,
 }: MessageActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,7 +76,8 @@ export function MessageActions({
         <button
           type="button"
           aria-label="React"
-          className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
+          disabled={disableRelationActions}
+          className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
         >
           <SmilePlus size={16} />
         </button>
@@ -84,12 +94,12 @@ export function MessageActions({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={onReply}>
+          <DropdownMenuItem onSelect={onReply} disabled={disableRelationActions}>
             <Reply />
             Reply
           </DropdownMenuItem>
           {isOwn && (
-            <DropdownMenuItem onSelect={onEdit}>
+            <DropdownMenuItem onSelect={onEdit} disabled={disableRelationActions}>
               <Pencil />
               Edit
             </DropdownMenuItem>
@@ -99,7 +109,11 @@ export function MessageActions({
             Copy
           </DropdownMenuItem>
           {canRedact && (
-            <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={onDelete}
+              disabled={disableRelationActions}
+            >
               <Trash2 />
               Delete
             </DropdownMenuItem>

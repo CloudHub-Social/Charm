@@ -115,8 +115,11 @@ pub fn events_to_summaries(
     // pass 2 applies every relation now that all originals are known.
     let mut order: Vec<OwnedEventId> = Vec::new();
     let mut messages: BTreeMap<OwnedEventId, RoomMessageSummary> = BTreeMap::new();
-    // target event id -> new body from the (last-wins) m.replace seen for it
-    let mut edits: BTreeMap<OwnedEventId, String> = BTreeMap::new();
+    // target event id -> (origin_server_ts, new body) of the newest-by-timestamp
+    // m.replace seen for it so far. Slices can arrive in either direction
+    // (newest-first on backward pagination, oldest-first on incremental sync),
+    // so "last-wins" has to mean "latest timestamp wins", not "last iterated".
+    let mut edits: BTreeMap<OwnedEventId, (u64, String)> = BTreeMap::new();
     // target event id -> reason a redaction targeted it (message or reaction)
     let mut redactions: std::collections::HashSet<OwnedEventId> = std::collections::HashSet::new();
     // reaction target event id -> (key, sender) pairs
@@ -170,9 +173,17 @@ pub fn events_to_summaries(
                 if let Some(MessageRelation::Replacement(replacement)) =
                     &original.content.relates_to
                 {
+                    let ts: u64 = original.origin_server_ts.0.into();
+                    let body = replacement.new_content.msgtype.body().to_string();
                     edits
                         .entry(replacement.event_id.clone())
-                        .or_insert_with(|| replacement.new_content.msgtype.body().to_string());
+                        .and_modify(|(existing_ts, existing_body)| {
+                            if ts >= *existing_ts {
+                                *existing_ts = ts;
+                                *existing_body = body.clone();
+                            }
+                        })
+                        .or_insert((ts, body));
                     continue;
                 }
 
@@ -228,7 +239,7 @@ pub fn events_to_summaries(
     }
 
     // Apply edits.
-    for (target, new_body) in edits {
+    for (target, (_ts, new_body)) in edits {
         if let Some(message) = messages.get_mut(&target) {
             message.body = new_body;
             message.edited = true;
@@ -359,6 +370,56 @@ mod relation_folding_tests {
         assert_eq!(summaries[0].event_id, "$original");
         assert_eq!(summaries[0].body, "hello world");
         assert!(summaries[0].edited);
+    }
+
+    /// Regression test: incremental sync delivers events oldest-first (unlike
+    /// backward pagination's newest-first), so two edits to the same message
+    /// arriving in the same sync batch must resolve to the *chronologically*
+    /// latest one — not whichever happens to be seen first while folding.
+    #[test]
+    fn newest_edit_wins_regardless_of_slice_order() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let older_edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit1",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* first edit",
+                "m.new_content": { "msgtype": "m.text", "body": "first edit" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+        let newer_edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit2",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 3000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* second edit",
+                "m.new_content": { "msgtype": "m.text", "body": "second edit" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+
+        // Oldest-first order, as incremental sync delivers it.
+        let summaries = events_to_summaries(
+            &[original.clone(), older_edit.clone(), newer_edit.clone()],
+            None,
+        );
+        assert_eq!(summaries[0].body, "second edit");
+
+        // Newest-first order, as backward pagination delivers it — same result.
+        let summaries = events_to_summaries(&[newer_edit, older_edit, original], None);
+        assert_eq!(summaries[0].body, "second edit");
     }
 
     #[test]

@@ -91,4 +91,22 @@ describe("MessageActions", () => {
     expect(moreButton.className).toContain("size-11");
     expect(reactButton.className).toContain("size-11");
   });
+
+  it("disables relation actions (Reply/React/Edit/Delete) for a still-pending message", async () => {
+    renderActions({ isOwn: true, canRedact: true, disableRelationActions: true });
+    openMenu();
+
+    expect(screen.getByRole("button", { name: "React" })).toBeDisabled();
+    const reply = (await screen.findByText("Reply")).closest('[role="menuitem"]');
+    const edit = screen.getByText("Edit").closest('[role="menuitem"]');
+    const del = screen.getByText("Delete").closest('[role="menuitem"]');
+    const copy = screen.getByText("Copy").closest('[role="menuitem"]');
+
+    expect(reply).toHaveAttribute("data-disabled");
+    expect(edit).toHaveAttribute("data-disabled");
+    expect(del).toHaveAttribute("data-disabled");
+    // Copy only needs the already-known body text, so it stays enabled even
+    // on a pending message.
+    expect(copy).not.toHaveAttribute("data-disabled");
+  });
 });

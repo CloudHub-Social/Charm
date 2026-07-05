@@ -6,6 +6,12 @@ import { EmojiPicker } from "./EmojiPicker";
 interface ReactionBarProps {
   reactions: ReactionGroup[];
   onToggle: (key: string) => void;
+  /**
+   * Set while the message is still a local echo — its event id is a
+   * temporary transaction id, so an `m.reaction` targeting it would fail
+   * server-side. Disables both the toggle chips and the "add reaction" picker.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -13,7 +19,7 @@ interface ReactionBarProps {
  * `+` chip that opens a minimal emoji picker to add a new reaction. Own
  * reactions get an accent highlight; clicking any chip toggles it.
  */
-export function ReactionBar({ reactions, onToggle }: ReactionBarProps) {
+export function ReactionBar({ reactions, onToggle, disabled = false }: ReactionBarProps) {
   if (reactions.length === 0) {
     return (
       <div className="mt-0.5">
@@ -21,7 +27,8 @@ export function ReactionBar({ reactions, onToggle }: ReactionBarProps) {
           <button
             type="button"
             aria-label="Add reaction"
-            className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary"
+            disabled={disabled}
+            className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
           >
             <Plus size={12} />
           </button>
@@ -37,9 +44,10 @@ export function ReactionBar({ reactions, onToggle }: ReactionBarProps) {
           key={reaction.key}
           type="button"
           onClick={() => onToggle(reaction.key)}
+          disabled={disabled}
           aria-pressed={reaction.reacted_by_me}
           className={cn(
-            "flex h-6 min-w-11 items-center justify-center gap-1 rounded-full border px-2 text-xs",
+            "flex h-6 min-w-11 items-center justify-center gap-1 rounded-full border px-2 text-xs disabled:pointer-events-none disabled:opacity-40",
             reaction.reacted_by_me
               ? "border-primary bg-primary/10 text-primary"
               : "border-border bg-secondary text-secondary-foreground",
@@ -53,7 +61,8 @@ export function ReactionBar({ reactions, onToggle }: ReactionBarProps) {
         <button
           type="button"
           aria-label="Add reaction"
-          className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary"
+          disabled={disabled}
+          className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
         >
           <Plus size={12} />
         </button>

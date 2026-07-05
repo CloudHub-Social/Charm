@@ -299,6 +299,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                     <MessageActions
                       isOwn={own}
                       canRedact={allowedToRedact}
+                      disableRelationActions={isPending}
                       className="opacity-0 transition-opacity group-hover:opacity-100"
                       onReply={() =>
                         setReplyTarget({
@@ -321,6 +322,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                   <ReactionBar
                     reactions={message.reactions}
                     onToggle={(key) => handleToggleReaction(message.event_id, key)}
+                    disabled={isPending}
                   />
                 )}
                 {showMeta && (

@@ -39,4 +39,12 @@ describe("ReactionBar", () => {
 
     expect(screen.getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
   });
+
+  it("disables chips and the add-reaction picker for a still-pending message", () => {
+    const reactions: ReactionGroup[] = [{ key: "👍", count: 1, reacted_by_me: false }];
+    render(<ReactionBar reactions={reactions} onToggle={vi.fn()} disabled />);
+
+    expect(screen.getByRole("button", { name: /👍/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add reaction" })).toBeDisabled();
+  });
 });
