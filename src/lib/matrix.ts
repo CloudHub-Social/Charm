@@ -28,8 +28,26 @@ export interface RoomSummary {
   unread_count: number;
 }
 
+export interface RegisterRequest {
+  homeserver_url: string;
+  username: string;
+  password: string;
+}
+
+export interface DiscoverHomeserverResponse {
+  homeserver_url: string;
+}
+
 export function login(request: LoginRequest): Promise<LoginResponse> {
   return invoke("login", { request });
+}
+
+export function register(request: RegisterRequest): Promise<LoginResponse> {
+  return invoke("register", { request });
+}
+
+export function discoverHomeserver(input: string): Promise<DiscoverHomeserverResponse> {
+  return invoke("discover_homeserver", { input });
 }
 
 export function tryRestoreSession(): Promise<LoginResponse | null> {
