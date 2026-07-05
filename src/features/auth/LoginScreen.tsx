@@ -1,4 +1,4 @@
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
@@ -52,15 +52,37 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const ssoInProgressRef = useRef(false);
 
   useEffect(() => {
-    const unlisten = onOpenUrl((urls) => {
-      const callbackUrl = urls.find((url) => SSO_CALLBACK_URL_PATTERN.test(url));
-      if (!callbackUrl || !ssoInProgressRef.current) return;
+    // Shared by both the cold-launch check and the warm onOpenUrl listener
+    // below. On a cold launch (app was fully closed during the browser step,
+    // then relaunched by the OS via the redirect), there's no in-memory
+    // ssoInProgressRef/pending_sso to resume — this process is brand new —
+    // so completeSsoLogin will fail with "no SSO login is in progress"
+    // rather than silently doing nothing, which at least tells the user to
+    // retry instead of leaving them stuck on a login screen with no signal.
+    function tryCompleteSsoCallback(callbackUrl: string) {
       ssoInProgressRef.current = false;
-
+      setSsoPending(true);
       completeSsoLogin(callbackUrl)
         .then(onSignedIn)
         .catch((err: unknown) => setError(String(err)))
         .finally(() => setSsoPending(false));
+    }
+
+    // Cold launch: the deep link that started this process, if any — only
+    // relevant if the app was closed and relaunched by the OS mid-flow
+    // (see tryCompleteSsoCallback), since the normal case (app stayed open
+    // through the whole SSO round trip) is handled by onOpenUrl below.
+    getCurrent()
+      .then((urls) => urls?.find((url) => SSO_CALLBACK_URL_PATTERN.test(url)))
+      .then((callbackUrl) => {
+        if (callbackUrl) tryCompleteSsoCallback(callbackUrl);
+      })
+      .catch(() => {});
+
+    const unlisten = onOpenUrl((urls) => {
+      const callbackUrl = urls.find((url) => SSO_CALLBACK_URL_PATTERN.test(url));
+      if (!callbackUrl || !ssoInProgressRef.current) return;
+      tryCompleteSsoCallback(callbackUrl);
     });
 
     return () => {
