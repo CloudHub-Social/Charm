@@ -53,25 +53,38 @@ pub async fn send_and_capture_transaction_id(
         .await
         .map_err(|e| e.to_string())?;
 
-    loop {
-        match updates.recv().await {
-            Ok(update) if update.room_id == target_room_id => {
-                if let RoomSendQueueUpdate::NewLocalEvent(echo) = update.update {
-                    return Ok(echo.transaction_id.to_string());
+    // Bounded, not an unconditional `loop`: this runs under `SEND_CAPTURE_LOCK`,
+    // so if the specific `NewLocalEvent` we're waiting for was itself one of
+    // the updates a `Lagged` skipped over (possible, if unlikely — we only
+    // just subscribed), waiting forever would hold that lock and deadlock
+    // every subsequent send/reply/edit/reaction for the rest of the session.
+    // 5s is generous for what's normally a same-process, no-network signal.
+    let wait_for_echo = async {
+        loop {
+            match updates.recv().await {
+                Ok(update) if update.room_id == target_room_id => {
+                    if let RoomSendQueueUpdate::NewLocalEvent(echo) = update.update {
+                        return Ok(echo.transaction_id.to_string());
+                    }
+                }
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => {
+                    return Err(
+                        "send queue closed before the local echo could be observed".to_string()
+                    )
                 }
             }
-            Ok(_) => continue,
-            // The broadcast channel dropped some updates because this
-            // receiver fell behind — not that the queue closed. The
-            // `NewLocalEvent` we're waiting for might be one of the skipped
-            // ones (rare, since we only just subscribed) or might still be
-            // coming; either way, `Closed` (not `Lagged`) is the only signal
-            // that nothing more will ever arrive.
-            Err(RecvError::Lagged(_)) => continue,
-            Err(RecvError::Closed) => {
-                return Err("send queue closed before the local echo could be observed".to_string())
-            }
         }
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(5), wait_for_echo).await {
+        Ok(result) => result,
+        Err(_) => Err(
+            "timed out waiting for the local echo — the send was queued, but its transaction id \
+             couldn't be observed"
+                .to_string(),
+        ),
     }
 }
 

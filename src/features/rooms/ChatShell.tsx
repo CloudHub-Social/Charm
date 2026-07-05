@@ -70,6 +70,15 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   // Stable across renders that don't actually change the sender set, so the
   // effect below only re-runs when a genuinely new sender shows up.
   const uniqueSenderKey = [...new Set(senders)].toSorted().join(",");
+  // Tracks the room a `canRedact` call was actually issued for, so its
+  // resolution can be checked against whatever room is current by the time
+  // it lands — without this, a slow response for a room the user has since
+  // navigated away from can overwrite a *different*, already-current room's
+  // permission result for the same sender (redact power levels are
+  // per-room, so a shared sender across two rooms would otherwise get one
+  // room's answer applied to the other).
+  const requestedRoomIdRef = useRef(roomId);
+  requestedRoomIdRef.current = roomId;
 
   // Redact power levels are per-room, but this cache is keyed only by
   // sender — so switching to a different room must clear it, or a sender
@@ -81,6 +90,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 
   useEffect(() => {
     const unresolved = uniqueSenderKey === "" ? [] : uniqueSenderKey.split(",");
+    const requestedForRoomId = roomId;
 
     for (const sender of unresolved) {
       if (sender === currentUserId) {
@@ -90,7 +100,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
       setCanRedactBySender((prev) => {
         if (sender in prev) return prev;
         canRedact(roomId, sender)
-          .then((allowed) => setCanRedactBySender((current) => ({ ...current, [sender]: allowed })))
+          .then((allowed) => {
+            if (requestedRoomIdRef.current !== requestedForRoomId) return;
+            setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
+          })
           .catch(console.error);
         return prev;
       });

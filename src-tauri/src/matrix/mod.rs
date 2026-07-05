@@ -612,7 +612,17 @@ fn spawn_send_queue_listener(app: AppHandle, client: Client) {
 
     let mut receiver = client.send_queue().subscribe();
     tokio::spawn(async move {
-        while let Ok(update) = receiver.recv().await {
+        loop {
+            let update = match receiver.recv().await {
+                Ok(update) => update,
+                // A burst of local send-queue activity can outrun this
+                // receiver and drop some updates — that's not the channel
+                // closing, just lag, so keep listening for whatever comes
+                // next rather than silently stopping `send_queue:update`
+                // for the rest of the session.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            };
             let room_id = update.room_id.to_string();
             let send_state = match update.update {
                 RoomSendQueueUpdate::NewLocalEvent(echo) => Some((

@@ -286,6 +286,32 @@ pub fn events_to_summaries(
         }
     }
 
+    // Strip each reply message's *own* rich-reply fallback from its body —
+    // as its own pass, before any reply-ref is built from anyone's body.
+    // This has to happen up front rather than inline while building a given
+    // reply's ref: `reply_targets` folds in arbitrary (BTreeMap-by-event-id)
+    // order, so a reply-to-a-reply (C -> B -> A) could otherwise read B's
+    // body as its preview before B's own fallback (which can itself quote
+    // A) has been stripped, leaking A's raw (possibly-redacted) text into
+    // C's preview. Normalizing every reply's body first, independent of
+    // resolution order, avoids that entirely.
+    //
+    // Only strip when the body actually starts with a quote line (`> `) —
+    // the rich-reply fallback's own format — rather than unconditionally
+    // splitting on the first blank line: a client that doesn't generate
+    // fallbacks could send a genuine multi-paragraph reply, and blindly
+    // truncating at its first blank line would eat real content that just
+    // happens to have the same shape.
+    for reply_event_id in reply_targets.keys() {
+        if let Some(reply_message) = messages.get_mut(reply_event_id) {
+            if reply_message.body.starts_with("> ") {
+                if let Some(idx) = reply_message.body.find("\n\n") {
+                    reply_message.body = reply_message.body[idx + 2..].to_string();
+                }
+            }
+        }
+    }
+
     // Apply reply-refs *before* edits below, so a reply's quoted preview
     // reflects the message as it read when the reply was sent, not
     // whatever it happens to read after an edit that arrived in the same
@@ -306,33 +332,27 @@ pub fn events_to_summaries(
         };
         if let Some(reply_message) = messages.get_mut(&reply_event_id) {
             reply_message.in_reply_to = Some(reply_ref);
-            // The rich-reply fallback (a "> quoted original" block, spec-required
-            // for clients that don't understand `m.in_reply_to`) is part of
-            // `content.body()` verbatim. Now that `in_reply_to` carries a
-            // structured preview of its own, strip the fallback out of the
-            // rendered body so it isn't shown twice — once via `ReplyPreview`,
-            // once inline in the bubble. Per the rich-reply format, the
-            // fallback is every line up to (and including) the first blank
-            // line; the real reply body follows.
-            if let Some(idx) = reply_message.body.find("\n\n") {
-                reply_message.body = reply_message.body[idx + 2..].to_string();
-            }
         }
     }
 
     // Apply edits — skipping any whose sender doesn't match the original
     // message's sender (Matrix edits are only valid from the original
-    // sender) or whose edit event was itself redacted (the sender withdrew
-    // their own edit). If the newest edit for a target fails either check,
-    // this leaves the message as its original (or next-oldest-edit) body
-    // rather than falling back to the next-newest edit — a known, narrow
-    // limitation of only tracking the single newest edit per target.
+    // sender), whose edit event was itself redacted (the sender withdrew
+    // their own edit), or whose target is already redacted (a redaction
+    // withdrawing the message entirely takes precedence over any edit still
+    // arriving for it — otherwise the edit's text would land back in the
+    // application state a redaction was meant to remove, even though the
+    // bubble itself still tombstones on `redacted`). If the newest edit for
+    // a target fails any of these checks, this leaves the message as its
+    // original (or next-oldest-edit) body rather than falling back to the
+    // next-newest edit — a known, narrow limitation of only tracking the
+    // single newest edit per target.
     for (target, (_ts, new_body, sender, edit_event_id)) in edits {
         if redactions.contains(&edit_event_id) {
             continue;
         }
         if let Some(message) = messages.get_mut(&target) {
-            if message.sender != sender.as_str() {
+            if message.sender != sender.as_str() || message.redacted {
                 continue;
             }
             message.body = new_body;
@@ -799,5 +819,124 @@ mod relation_folding_tests {
         let reply_summary = summaries.iter().find(|m| m.event_id == "$reply").unwrap();
         let reply_ref = reply_summary.in_reply_to.as_ref().expect("has a reply ref");
         assert_eq!(reply_ref.preview, "original text");
+    }
+
+    #[test]
+    fn does_not_truncate_a_genuine_multi_paragraph_reply_without_a_fallback() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        // A reply from a client that doesn't generate rich-reply fallbacks —
+        // the body is a genuine two-paragraph message, not a quote + reply.
+        let reply = event(json!({
+            "type": "m.room.message",
+            "event_id": "$reply",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "first paragraph\n\nsecond paragraph",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$original" } }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, reply], None);
+
+        let reply_summary = summaries.iter().find(|m| m.event_id == "$reply").unwrap();
+        assert_eq!(reply_summary.body, "first paragraph\n\nsecond paragraph");
+    }
+
+    #[test]
+    fn reply_to_a_reply_does_not_leak_a_redacted_grandparents_text() {
+        // A (redacted) <- B (reply to A, itself has a raw un-stripped
+        // fallback quoting A) <- C (reply to B). If B's own fallback isn't
+        // stripped before C reads B's body as its preview, C's preview would
+        // leak A's now-redacted text — regardless of reply_targets' fold
+        // order, which is why the fallback-stripping pass has to run before
+        // any reply-ref is built, not interleaved with building them.
+        let a = event(json!({
+            "type": "m.room.message",
+            "event_id": "$a",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "sensitive original" }
+        }));
+        let redact_a = event(json!({
+            "type": "m.room.redaction",
+            "event_id": "$redact_a",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1100,
+            "redacts": "$a",
+            "content": { "redacts": "$a" }
+        }));
+        let b = event(json!({
+            "type": "m.room.message",
+            "event_id": "$b",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 1200,
+            "content": {
+                "msgtype": "m.text",
+                "body": "> sensitive original\n\nreply to a",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$a" } }
+            }
+        }));
+        let c = event(json!({
+            "type": "m.room.message",
+            "event_id": "$c",
+            "sender": "@carol:example.org",
+            "origin_server_ts": 1300,
+            "content": {
+                "msgtype": "m.text",
+                "body": "> reply to a\n\nreply to b",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$b" } }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[a, redact_a, b, c], None);
+
+        let c_summary = summaries.iter().find(|m| m.event_id == "$c").unwrap();
+        let c_reply_ref = c_summary.in_reply_to.as_ref().expect("has a reply ref");
+        assert_eq!(c_reply_ref.preview, "reply to a");
+    }
+
+    #[test]
+    fn skips_an_edit_targeting_an_already_redacted_message() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let redaction = event(json!({
+            "type": "m.room.redaction",
+            "event_id": "$redaction",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1500,
+            "redacts": "$original",
+            "content": { "redacts": "$original" }
+        }));
+        let edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* resurrected",
+                "m.new_content": { "msgtype": "m.text", "body": "resurrected" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, redaction, edit], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].redacted);
+        assert_eq!(summaries[0].body, "");
     }
 }

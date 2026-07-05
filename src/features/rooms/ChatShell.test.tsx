@@ -430,4 +430,65 @@ describe("ChatShell", () => {
 
     expect(await screen.findByText("Reply")).toBeInTheDocument();
   });
+
+  it("ignores a stale can_redact response for a room the user has since navigated away from", async () => {
+    const roomB: RoomSummary = { room_id: "!roomB:localhost", name: "Room B", unread_count: 0 };
+    let resolveRoomACheck: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedact.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          // Only capture the *first* call's resolver (room A's) — room B's
+          // own call should be left permanently pending in this test so its
+          // Delete affordance can only appear if (incorrectly) fed by room
+          // A's late response.
+          if (calls === 0) resolveRoomACheck = resolve;
+          calls += 1;
+        }),
+    );
+    getTimelinePage
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "in room A" })],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "in room B" })],
+        next_cursor: null,
+      });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room A");
+    await vi.waitFor(() =>
+      expect(canRedact).toHaveBeenCalledWith(room.room_id, "@alice:localhost"),
+    );
+
+    // Navigate to room B before room A's canRedact call resolves.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room B");
+
+    // Room A's (stale) response arrives late, saying @alice can be
+    // redacted there — it must not leak into room B's state for the same
+    // sender.
+    resolveRoomACheck?.(true);
+    await Promise.resolve();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    // canRedact was only ever mocked to resolve for room A's call; room B's
+    // own call is still pending (never resolved in this test), so Delete
+    // must not be shown yet.
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
 });

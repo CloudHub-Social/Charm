@@ -77,8 +77,13 @@ pub async fn edit_message_impl(
     let room = get_room(client, room_id)?;
 
     let parsed_event_id = EventId::parse(event_id).map_err(|e| e.to_string())?;
+    // Cache-first: editing almost always targets a message already rendered
+    // in the timeline (and so already cached), matching send_reply_impl's
+    // same reasoning — this keeps editing a visible message queueable while
+    // offline instead of failing on the fetch before the edit ever reaches
+    // the send queue.
     let original = room
-        .event(&parsed_event_id, None)
+        .load_or_fetch_event(&parsed_event_id, None)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -107,10 +112,19 @@ pub async fn edit_message_impl(
     let metadata = ReplacementMetadata::from(original_message);
     let content = RoomMessageEventContent::text_plain(new_body).make_replacement(metadata);
 
-    room.send_queue()
-        .send(AnyMessageLikeEventContent::RoomMessage(content))
-        .await
-        .map_err(|e| e.to_string())?;
+    // Routed through the same capture helper as send_message/send_reply
+    // (discarding the transaction id — edits don't need frontend
+    // reconciliation the way new messages do) so this send is covered by
+    // the same global serialization: without it, an edit's own
+    // `NewLocalEvent` broadcast could be the one a concurrent
+    // send_message/send_reply call reads off the shared subscription,
+    // handing that message's optimistic echo the wrong transaction id.
+    super::send::send_and_capture_transaction_id(
+        client,
+        &room,
+        AnyMessageLikeEventContent::RoomMessage(content),
+    )
+    .await?;
 
     Ok(())
 }
@@ -292,10 +306,16 @@ pub async fn toggle_reaction_impl(
         Ok(ReactionToggleResult::Removed)
     } else {
         let content = ReactionEventContent::new(Annotation::new(parsed_target, key));
-        room.send_queue()
-            .send(AnyMessageLikeEventContent::Reaction(content))
-            .await
-            .map_err(|e| e.to_string())?;
+        // Same reasoning as edit_message_impl above: routed through the
+        // shared capture helper purely for its global serialization, not
+        // for the transaction id (reactions don't need frontend
+        // reconciliation against a local echo).
+        super::send::send_and_capture_transaction_id(
+            client,
+            &room,
+            AnyMessageLikeEventContent::Reaction(content),
+        )
+        .await?;
         Ok(ReactionToggleResult::Added)
     }
 }
