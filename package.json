@@ -21,6 +21,8 @@
     "build-storybook": "storybook build",
     "test-storybook": "test-storybook",
     "test-storybook:ci": "concurrently -k -s command-test -n server,test \"http-server storybook-static -p 6006 --silent\" \"wait-on tcp:127.0.0.1:6006 && test-storybook --url http://127.0.0.1:6006\"",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "knip": "knip"
   },
   "dependencies": {
@@ -44,6 +46,7 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@storybook/addon-a11y": "^9.1.20",
     "@storybook/react-vite": "^9.1.20",
     "@storybook/test-runner": "^0.24.4",

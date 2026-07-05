@@ -53,6 +53,39 @@ jobs:
       - run: pnpm build-storybook --quiet
       - run: pnpm test-storybook:ci
 
+  e2e:
+    name: E2E (message actions, against the dev server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # Runs against the plain Vite dev server (`pnpm dev`, started by
+      # playwright.config.ts's webServer) — not the native Tauri app, and not
+      # a real homeserver. e2e/support/mockTauri.ts fakes the
+      # @tauri-apps/api IPC layer in-browser against an in-memory fake
+      # backend, so this exercises the real React code paths (ChatShell's
+      # reconciliation, MessageActions, ReplyPreview, etc.) without needing
+      # tauri-driver or Synapse.
+      - run: pnpm test:e2e
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
   rust:
     name: Rust (fmt, clippy, lib test)
     # macos-latest so the keychain-backed persistence tests exercise the real

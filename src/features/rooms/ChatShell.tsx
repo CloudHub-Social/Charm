@@ -116,6 +116,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // on the row open that message's action menu.
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
+  // Tracks the *currently viewed* room id across renders, for handleSend's
+  // async continuation below to check against — the `room` it captured when
+  // the send started may no longer be the active one by the time the send
+  // resolves (the user switched rooms mid-send), and appending that room's
+  // echo into whatever's now showing would misattribute it.
+  const currentRoomIdRef = useRef(roomId);
+  currentRoomIdRef.current = roomId;
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
@@ -324,7 +331,23 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         transaction_id: transactionId,
         send_state: { state: "pending" },
       };
-      setMessages((prev) => [...prev, optimistic]);
+      setMessages((prev) => {
+        // The user may have switched away from `targetRoom` while this send
+        // was in flight — don't misattribute its echo to whatever room is
+        // showing now.
+        if (currentRoomIdRef.current !== targetRoom.room_id) return prev;
+        // A `timeline:update` carrying the real, already-synced event can
+        // race ahead of this continuation (the send-queue's local echo and
+        // the eventual sync response are two independent async paths) and
+        // get reconciled in first. If something with this transaction id
+        // already made it into state, adding the echo now would just be a
+        // duplicate of what's already there.
+        const alreadyReconciled = prev.some(
+          (m) => m.transaction_id === transactionId || m.event_id === transactionId,
+        );
+        if (alreadyReconciled) return prev;
+        return [...prev, optimistic];
+      });
     } catch (err) {
       console.error(err);
     }
