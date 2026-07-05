@@ -45,6 +45,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
+  const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -99,18 +100,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     };
   }, [room, currentUserId]);
 
-  // Mark the room read as soon as it becomes active, and again whenever the
-  // last rendered message scrolls into view — debounced to the newest
-  // event id so we never fire a receipt per scroll tick (see Spec 05's
-  // warning about receipt spam).
+  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
+
+  // Mark the room read as soon as it becomes active — deduped on room id
+  // (not event id) so this still fires the first time even before any
+  // messages have loaded.
   useEffect(() => {
     if (!room) return;
-    if (lastMarkedReadEventId.current === room.room_id) return;
-    lastMarkedReadEventId.current = room.room_id;
+    if (lastMarkedReadRoomId.current === room.room_id) return;
+    lastMarkedReadRoomId.current = room.room_id;
     markRoomRead(room.room_id).catch(console.error);
   }, [room]);
-
-  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
 
   useEffect(() => {
     if (!room || !latestEventId) return undefined;
