@@ -22,6 +22,8 @@ import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SendQueueUpdateEvent } from "@bindings/SendQueueUpdateEvent";
 import type { SendState } from "@bindings/SendState";
+import type { SpaceChild } from "@bindings/SpaceChild";
+import type { SpaceJoinRule } from "@bindings/SpaceJoinRule";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
@@ -58,6 +60,8 @@ export type {
   SasUpdateEvent,
   SendQueueUpdateEvent,
   SendState,
+  SpaceChild,
+  SpaceJoinRule,
   SyncStateEvent,
   TimelinePage,
   TypingUpdate,
@@ -291,4 +295,37 @@ export function getPresence(userId: string): Promise<PresenceUpdate | null> {
 
 export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
   return listen<PresenceUpdate>("presence:update", (e) => callback(e.payload));
+}
+
+export function setRoomFavourite(roomId: string, favourite: boolean): Promise<void> {
+  return invoke("set_room_favourite", { roomId, favourite });
+}
+
+export function setRoomLowPriority(roomId: string, lowPriority: boolean): Promise<void> {
+  return invoke("set_room_low_priority", { roomId, lowPriority });
+}
+
+export function setRoomMuted(roomId: string, muted: boolean): Promise<void> {
+  return invoke("set_room_muted", { roomId, muted });
+}
+
+export function setRoomMarkedUnread(roomId: string, unread: boolean): Promise<void> {
+  return invoke("set_room_marked_unread", { roomId, unread });
+}
+
+/** `order` is the fractional-index midpoint the caller computes between the room's two new neighbours in its section — see `RoomList.tsx`'s drag-reorder handler. */
+export function setRoomManualOrder(roomId: string, order: number): Promise<void> {
+  return invoke("set_room_manual_order", { roomId, order });
+}
+
+export function listSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
+  return invoke("list_space_children", { spaceId });
+}
+
+export function joinRoom(roomIdOrAlias: string): Promise<void> {
+  return invoke("join_room", { roomIdOrAlias });
+}
+
+export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
+  return invoke("knock_room", { roomIdOrAlias, reason });
 }

@@ -4,5 +4,59 @@
  * Flat room summary for the room list. No message preview yet — that needs
  * the timeline/event-cache API, which is Phase 1 timeline-rendering scope,
  * not this first sync-wiring cut.
+ *
+ * `has_unread` is the single authoritative "needs attention" signal (see
+ * [`rooms::has_unread`]) — computed once here, in [`snapshot_rooms`]; every
+ * UI unread indicator reads this field rather than re-deriving it from
+ * `unread_count`/`unread_messages`/`is_marked_unread` itself.
+ *
+ * `list_rooms`/`room_list:update` pre-sort by (section, `manual_order`,
+ * name) in [`snapshot_rooms`] — the frontend performs no sorting.
  */
-export type RoomSummary = { room_id: string, name: string | null, unread_count: number, };
+export type RoomSummary = { room_id: string, name: string | null, unread_count: number, 
+/**
+ * `room.num_unread_messages()` — ambient unread, distinct from
+ * `unread_count` (notifications/mentions).
+ */
+unread_messages: number, 
+/**
+ * The MSC2867 `m.marked_unread` flag (`room.is_marked_unread()`).
+ */
+is_marked_unread: boolean, 
+/**
+ * True when the user-defined-or-default notification mode for this
+ * room is `Mute`.
+ */
+is_muted: boolean, 
+/**
+ * `m.favourite` tag present.
+ */
+is_favourite: boolean, 
+/**
+ * `m.lowpriority` tag present.
+ */
+is_low_priority: boolean, 
+/**
+ * `TagInfo.order` for whichever tag currently governs this room's
+ * section — see `rooms::order_tag_name`. `None` sorts last within its
+ * section.
+ */
+manual_order: number | null, 
+/**
+ * `room.room_type() == Some(RoomType::Space)`.
+ */
+is_space: boolean, 
+/**
+ * Space room ids whose `m.space.child` state references this room.
+ */
+parent_space_ids: Array<string>, 
+/**
+ * `room.is_direct()` (DM grouping).
+ */
+is_direct: boolean, 
+/**
+ * The single "does this room need attention" signal — see
+ * [`rooms::has_unread`]. Every unread indicator in the UI reads this,
+ * not the raw counts above.
+ */
+has_unread: boolean, };

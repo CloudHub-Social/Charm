@@ -88,7 +88,15 @@ pub fn run() {
             matrix::ephemeral::send_typing,
             matrix::ephemeral::mark_room_read,
             matrix::presence::set_presence,
-            matrix::presence::get_presence
+            matrix::presence::get_presence,
+            matrix::rooms::set_room_favourite,
+            matrix::rooms::set_room_low_priority,
+            matrix::rooms::set_room_muted,
+            matrix::rooms::set_room_marked_unread,
+            matrix::rooms::set_room_manual_order,
+            matrix::spaces::list_space_children,
+            matrix::spaces::join_room,
+            matrix::spaces::knock_room
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
