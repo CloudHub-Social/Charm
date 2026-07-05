@@ -274,26 +274,6 @@ pub fn events_to_summaries(
         }
     }
 
-    // Apply edits — skipping any whose sender doesn't match the original
-    // message's sender (Matrix edits are only valid from the original
-    // sender) or whose edit event was itself redacted (the sender withdrew
-    // their own edit). If the newest edit for a target fails either check,
-    // this leaves the message as its original (or next-oldest-edit) body
-    // rather than falling back to the next-newest edit — a known, narrow
-    // limitation of only tracking the single newest edit per target.
-    for (target, (_ts, new_body, sender, edit_event_id)) in edits {
-        if redactions.contains(&edit_event_id) {
-            continue;
-        }
-        if let Some(message) = messages.get_mut(&target) {
-            if message.sender != sender.as_str() {
-                continue;
-            }
-            message.body = new_body;
-            message.edited = true;
-        }
-    }
-
     // Apply message-level redactions (distinct from reaction redactions
     // below, which target a reaction event id rather than a message one) —
     // *before* reply-refs and stripping reply fallbacks below, so a reply
@@ -306,7 +286,11 @@ pub fn events_to_summaries(
         }
     }
 
-    // Apply reply-refs, now that all originals (including targets) are known.
+    // Apply reply-refs *before* edits below, so a reply's quoted preview
+    // reflects the message as it read when the reply was sent, not
+    // whatever it happens to read after an edit that arrived in the same
+    // batch — otherwise the preview would depend on batch-internal
+    // ordering rather than showing consistent, edit-independent content.
     for (reply_event_id, target_event_id) in reply_targets {
         let Some(target) = messages.get(&target_event_id) else {
             continue;
@@ -333,6 +317,26 @@ pub fn events_to_summaries(
             if let Some(idx) = reply_message.body.find("\n\n") {
                 reply_message.body = reply_message.body[idx + 2..].to_string();
             }
+        }
+    }
+
+    // Apply edits — skipping any whose sender doesn't match the original
+    // message's sender (Matrix edits are only valid from the original
+    // sender) or whose edit event was itself redacted (the sender withdrew
+    // their own edit). If the newest edit for a target fails either check,
+    // this leaves the message as its original (or next-oldest-edit) body
+    // rather than falling back to the next-newest edit — a known, narrow
+    // limitation of only tracking the single newest edit per target.
+    for (target, (_ts, new_body, sender, edit_event_id)) in edits {
+        if redactions.contains(&edit_event_id) {
+            continue;
+        }
+        if let Some(message) = messages.get_mut(&target) {
+            if message.sender != sender.as_str() {
+                continue;
+            }
+            message.body = new_body;
+            message.edited = true;
         }
     }
 
@@ -748,5 +752,52 @@ mod relation_folding_tests {
         let reply_summary = summaries.iter().find(|m| m.event_id == "$reply").unwrap();
         let reply_ref = reply_summary.in_reply_to.as_ref().expect("has a reply ref");
         assert_eq!(reply_ref.preview, "");
+    }
+
+    #[test]
+    fn reply_preview_shows_the_original_body_not_a_same_batch_edit() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "original text" }
+        }));
+        let edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1500,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* edited text",
+                "m.new_content": { "msgtype": "m.text", "body": "edited text" },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+        let reply = event(json!({
+            "type": "m.room.message",
+            "event_id": "$reply",
+            "sender": "@bob:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "> original text\n\nhi back",
+                "m.relates_to": { "m.in_reply_to": { "event_id": "$original" } }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, edit, reply], None);
+
+        let original_summary = summaries
+            .iter()
+            .find(|m| m.event_id == "$original")
+            .unwrap();
+        assert_eq!(original_summary.body, "edited text");
+        assert!(original_summary.edited);
+
+        let reply_summary = summaries.iter().find(|m| m.event_id == "$reply").unwrap();
+        let reply_ref = reply_summary.in_reply_to.as_ref().expect("has a reply ref");
+        assert_eq!(reply_ref.preview, "original text");
     }
 }

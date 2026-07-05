@@ -20,7 +20,7 @@ import {
   type RoomSummary,
 } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
-import { MessageActions } from "./MessageActions";
+import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
@@ -109,6 +109,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  // On touch, `MessageActions`' own trigger buttons are hover-only and thus
+  // invisible/undiscoverable — a long-press on the bubble itself is what
+  // users actually try. Forwarding the row's touch events to each
+  // `MessageActions` instance via this ref map lets a long-press anywhere
+  // on the row open that message's action menu.
+  const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
@@ -367,17 +373,32 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
           const isPending = message.send_state.state === "pending";
           const isError = message.send_state.state === "error";
+          // `send_state` flips to "sent" as soon as the homeserver acks the
+          // event, but `event_id` only becomes the real Matrix event id once
+          // a later `timeline:update` replaces the echo — until then it's
+          // still the send-queue transaction id (or, on a failed send,
+          // stays that way permanently). Real Matrix event ids always start
+          // with "$", so this is a reliable way to tell the two apart
+          // without depending on send_state timing.
+          const hasRealEventId = message.event_id.startsWith("$");
+          const disableRelationActions = isPending || !hasRealEventId;
           const readers = receiptsByEvent.get(message.event_id) ?? [];
+
+          const rowKey = itemKey(message);
 
           return (
             <div
-              key={itemKey(message)}
+              key={rowKey}
               id={`message-${message.event_id}`}
               className={cn(
                 "group flex max-w-120 gap-2",
                 sameSenderAsPrev ? "mt-0.5" : "mt-3",
                 own && "ml-auto flex-row-reverse",
               )}
+              onTouchStart={() => actionsRefs.current.get(rowKey)?.startLongPress()}
+              onTouchEnd={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
+              onTouchCancel={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
+              onTouchMove={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
             >
               {!own &&
                 (showAvatar ? (
@@ -425,9 +446,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                   </div>
                   {!message.redacted && (
                     <MessageActions
+                      ref={(el) => {
+                        if (el) actionsRefs.current.set(rowKey, el);
+                        else actionsRefs.current.delete(rowKey);
+                      }}
                       isOwn={own}
                       canRedact={allowedToRedact}
-                      disableRelationActions={isPending}
+                      disableRelationActions={disableRelationActions}
                       className="opacity-0 transition-opacity group-hover:opacity-100"
                       onReply={() =>
                         setReplyTarget({
@@ -451,7 +476,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                   <ReactionBar
                     reactions={message.reactions}
                     onToggle={(key) => handleToggleReaction(message.event_id, key)}
-                    disabled={isPending}
+                    disabled={disableRelationActions}
                   />
                 )}
                 {showMeta && (

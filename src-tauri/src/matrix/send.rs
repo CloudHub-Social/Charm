@@ -1,11 +1,27 @@
+use std::sync::LazyLock;
+
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk::send_queue::RoomSendQueueUpdate;
 use matrix_sdk::{Client, Room};
 use tauri::State;
+use tokio::sync::broadcast::error::RecvError;
 
 use super::MatrixState;
+
+/// Serializes the whole subscribe -> send -> observe-echo sequence in
+/// [`send_and_capture_transaction_id`] across every room and every caller.
+/// Without this, two overlapping calls (e.g. a message and a reply sent in
+/// quick succession, even to different rooms) could both end up reading the
+/// *first* `NewLocalEvent` off the shared broadcast stream and return the
+/// same transaction id — reconciling the second optimistic echo against the
+/// wrong event and leaving it without its own `send_queue:update`. A single
+/// global lock (rather than per-room) is a deliberately blunt fix: this path
+/// isn't hot enough (interactive, human-paced sends) for cross-room
+/// serialization to matter, and it avoids maintaining a per-room lock map.
+static SEND_CAPTURE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 /// Queues `content` on `room`'s send queue and returns the SDK-generated
 /// transaction id for the resulting local echo.
@@ -22,17 +38,13 @@ use super::MatrixState;
 /// (`send_queue:update`) both key back to the same local echo the frontend
 /// created — without it, none of the three ever agree, so the echo never
 /// reconciles with the real event and never leaves "pending".
-///
-/// Subscribing right before `send()` and taking the first matching
-/// `NewLocalEvent` is safe for the common case (one composer, one send at a
-/// time) but isn't airtight against a genuinely concurrent send to the same
-/// room racing in between — a known, low-probability limitation of working
-/// around the missing getter rather than a fundamental design issue.
 pub async fn send_and_capture_transaction_id(
     client: &Client,
     room: &Room,
     content: AnyMessageLikeEventContent,
 ) -> Result<String, String> {
+    let _guard = SEND_CAPTURE_LOCK.lock().await;
+
     let mut updates = client.send_queue().subscribe();
     let target_room_id = room.room_id().to_owned();
 
@@ -49,7 +61,14 @@ pub async fn send_and_capture_transaction_id(
                 }
             }
             Ok(_) => continue,
-            Err(_) => {
+            // The broadcast channel dropped some updates because this
+            // receiver fell behind — not that the queue closed. The
+            // `NewLocalEvent` we're waiting for might be one of the skipped
+            // ones (rare, since we only just subscribed) or might still be
+            // coming; either way, `Closed` (not `Lagged`) is the only signal
+            // that nothing more will ever arrive.
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => {
                 return Err("send queue closed before the local echo could be observed".to_string())
             }
         }

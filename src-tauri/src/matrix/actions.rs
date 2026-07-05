@@ -327,8 +327,14 @@ pub async fn send_reply_impl(
     let room = get_room(client, room_id)?;
 
     let parsed_target = EventId::parse(in_reply_to_event_id).map_err(|e| e.to_string())?;
+    // Replying almost always targets a message already rendered in the
+    // timeline (and so already in the local event cache) — `load_or_fetch`
+    // serves that case with no network round trip, only falling back to a
+    // `/rooms/.../event` request if it's genuinely not cached. This keeps
+    // "reply to a visible message" working offline, matching the send
+    // queue's own offline behavior for the resulting reply event.
     let target_event = room
-        .event(&parsed_target, None)
+        .load_or_fetch_event(&parsed_target, None)
         .await
         .map_err(|e| e.to_string())?;
 

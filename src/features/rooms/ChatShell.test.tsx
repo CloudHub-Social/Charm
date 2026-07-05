@@ -384,4 +384,50 @@ describe("ChatShell", () => {
     expect(await screen.findByText("Message deleted")).toBeInTheDocument();
     expect(screen.queryByText("@me:localhost")).not.toBeInTheDocument();
   });
+
+  it("keeps relation actions disabled for a sent message that still has a transaction-id echo", async () => {
+    // send_state can flip to "sent" before the corresponding timeline:update
+    // replaces the echo's transaction-id event_id with the real one — the
+    // action menu must key off having a real ($-prefixed) event id, not
+    // just off send_state.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-1",
+          sender: "@me:localhost",
+          body: "hi",
+          transaction_id: "txn-1",
+          send_state: { state: "sent" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    const reply = (await screen.findByText("Reply")).closest('[role="menuitem"]');
+    expect(reply).toHaveAttribute("data-disabled");
+  });
+
+  it("opens the action menu on a long-press anywhere on the message row, not just its trigger buttons", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$msg", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    const row = (await screen.findByText("hi")).closest(".group");
+    expect(row).toBeTruthy();
+
+    vi.useFakeTimers();
+    fireEvent.touchStart(row!);
+    vi.advanceTimersByTime(500);
+    vi.useRealTimers();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+  });
 });
