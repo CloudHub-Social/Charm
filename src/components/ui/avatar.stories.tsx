@@ -67,3 +67,33 @@ export const Group: Story = {
     </AvatarGroup>
   ),
 };
+
+/**
+ * The read-receipt avatar stack Spec 05's `ChatShell` renders under a
+ * message: one small avatar per user whose most recent read receipt points
+ * at that message, capped and overflowing into a "+N" count — same
+ * `AvatarGroup`/`AvatarGroupCount` primitives as {@link Group}, just at the
+ * `sm` size `ChatShell` actually uses.
+ */
+export const ReadReceiptStack: Story = {
+  render: () => (
+    <AvatarGroup className="justify-end">
+      <Avatar size="sm">
+        <AvatarFallback style={{ background: "var(--color-danger)" }} className="text-white">
+          AL
+        </AvatarFallback>
+      </Avatar>
+      <Avatar size="sm">
+        <AvatarFallback style={{ background: "var(--color-success)" }} className="text-white">
+          BO
+        </AvatarFallback>
+      </Avatar>
+      <Avatar size="sm">
+        <AvatarFallback style={{ background: "var(--color-warning)" }} className="text-white">
+          CA
+        </AvatarFallback>
+      </Avatar>
+      <AvatarGroupCount>+2</AvatarGroupCount>
+    </AvatarGroup>
+  ),
+};

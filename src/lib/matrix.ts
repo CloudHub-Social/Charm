@@ -3,9 +3,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
 import type { EmojiPair } from "@bindings/EmojiPair";
+import type { EventReceipt } from "@bindings/EventReceipt";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
+import type { PresenceStateDto } from "@bindings/PresenceStateDto";
+import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
+import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
+import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
@@ -13,6 +18,7 @@ import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
+import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 
 /**
@@ -26,9 +32,14 @@ export type {
   CrossSigningStatusSummary,
   DiscoverHomeserverResponse,
   EmojiPair,
+  EventReceipt,
   LoginRequest,
   LoginResponse,
+  PresenceStateDto,
+  PresenceUpdate,
   QrLoginProgressEvent,
+  ReceiptTypeDto,
+  ReceiptUpdate,
   RegisterRequest,
   RoomMessageSummary,
   RoomSummary,
@@ -36,6 +47,7 @@ export type {
   SasUpdateEvent,
   SyncStateEvent,
   TimelinePage,
+  TypingUpdate,
   VerificationRequestSummary,
 };
 
@@ -154,4 +166,40 @@ export function onSasUpdate(
   callback: (update: SasUpdateEvent) => void,
 ): Promise<UnlistenFn> {
   return listen<SasUpdateEvent>(`verification:sas_update:${flowId}`, (e) => callback(e.payload));
+}
+
+export function sendReadReceipt(
+  roomId: string,
+  eventId: string,
+  isPrivate: boolean,
+): Promise<void> {
+  return invoke("send_read_receipt", { roomId, eventId, private: isPrivate });
+}
+
+export function sendTyping(roomId: string, typing: boolean): Promise<void> {
+  return invoke("send_typing", { roomId, typing });
+}
+
+export function markRoomRead(roomId: string): Promise<void> {
+  return invoke("mark_room_read", { roomId });
+}
+
+export function onReceiptsUpdate(callback: (update: ReceiptUpdate) => void): Promise<UnlistenFn> {
+  return listen<ReceiptUpdate>("receipts:update", (e) => callback(e.payload));
+}
+
+export function onTypingUpdate(callback: (update: TypingUpdate) => void): Promise<UnlistenFn> {
+  return listen<TypingUpdate>("typing:update", (e) => callback(e.payload));
+}
+
+export function setPresence(presence: PresenceStateDto, statusMsg?: string): Promise<void> {
+  return invoke("set_presence", { presence, statusMsg });
+}
+
+export function getPresence(userId: string): Promise<PresenceUpdate | null> {
+  return invoke("get_presence", { userId });
+}
+
+export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
+  return listen<PresenceUpdate>("presence:update", (e) => callback(e.payload));
 }

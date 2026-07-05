@@ -27,19 +27,22 @@ export default defineConfig({
         "src/test/**",
         "src/**/*.test.{ts,tsx}",
         "src/**/*.spec.{ts,tsx}",
+        "src/**/*.stories.tsx",
         "src/components/ui/**",
         "src/bindings/**",
       ],
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-05: lines 21.1 / statements 19.6 / functions 15.5 / branches 20.5),
-        // so any regression fails CI. When you add tests and coverage rises, raise
-        // these to the new floor in the same PR — never lower them to make CI pass.
-        lines: 21,
-        statements: 19,
-        functions: 15,
-        branches: 20,
+        // 2026-07-05, after fixing the useReadReceipts ts_ms recency-gate bug —
+        // which removed a branch, legitimately lowering the branch % —
+        // lines 38.9 / statements 37.6 / functions 29.7 / branches 41.0), so any
+        // regression fails CI. When you add tests and coverage rises, raise these
+        // to the new floor in the same PR — never lower them to make CI pass.
+        lines: 38,
+        statements: 37,
+        functions: 29,
+        branches: 40,
       },
     },
   },
