@@ -1,4 +1,13 @@
+import { BellOff } from "lucide-react";
+import type { CSSProperties } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 import type { RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials } from "./roomDisplay";
@@ -7,18 +16,39 @@ interface RoomListItemProps {
   room: RoomSummary;
   active: boolean;
   onSelect: () => void;
+  onToggleFavourite?: () => void;
+  onToggleLowPriority?: () => void;
+  onToggleMuted?: () => void;
+  onMarkRead?: () => void;
+  onMarkUnread?: () => void;
+  /** Spread onto the root element by the drag-reorder gesture in `RoomList.tsx`. */
+  dragHandleProps?: Record<string, unknown>;
+  style?: CSSProperties;
 }
 
-export function RoomListItem({ room, active, onSelect }: RoomListItemProps) {
-  const unread = room.unread_count > 0;
+export function RoomListItem({
+  room,
+  active,
+  onSelect,
+  onToggleFavourite,
+  onToggleLowPriority,
+  onToggleMuted,
+  onMarkRead,
+  onMarkUnread,
+  dragHandleProps,
+  style,
+}: RoomListItemProps) {
+  const unread = room.has_unread;
 
-  return (
+  const button = (
     <button
       onClick={onSelect}
+      style={style}
       className={cn(
         "flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left transition-colors",
         active ? "bg-accent" : "hover:bg-accent/50",
       )}
+      {...dragHandleProps}
     >
       <Avatar>
         <AvatarFallback
@@ -29,20 +59,63 @@ export function RoomListItem({ room, active, onSelect }: RoomListItemProps) {
         </AvatarFallback>
       </Avatar>
       <div className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
-        <span
-          className={cn(
-            "truncate text-sm",
-            unread ? "font-bold text-foreground" : "font-medium text-secondary-foreground",
+        <span className="flex min-w-0 items-center gap-1.5">
+          {room.is_marked_unread && (
+            <span className="flex shrink-0 items-center">
+              <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
+              <span className="sr-only">Marked unread</span>
+            </span>
           )}
-        >
-          {displayName(room.room_id, room.name)}
+          <span
+            className={cn(
+              "truncate text-sm",
+              unread ? "font-bold text-foreground" : "font-medium text-secondary-foreground",
+            )}
+          >
+            {displayName(room.room_id, room.name)}
+          </span>
+          {room.is_muted && (
+            <BellOff aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
         </span>
-        {unread && (
+        {room.unread_count > 0 && (
           <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold text-primary-foreground">
             {room.unread_count}
           </span>
         )}
       </div>
     </button>
+  );
+
+  const hasMenuActions =
+    onToggleFavourite || onToggleLowPriority || onToggleMuted || onMarkRead || onMarkUnread;
+  if (!hasMenuActions) {
+    return button;
+  }
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{button}</ContextMenuTrigger>
+      <ContextMenuContent>
+        {onToggleFavourite && (
+          <ContextMenuItem onSelect={onToggleFavourite}>
+            {room.is_favourite ? "Remove from Favourites" : "Add to Favourites"}
+          </ContextMenuItem>
+        )}
+        {onToggleLowPriority && (
+          <ContextMenuItem onSelect={onToggleLowPriority}>
+            {room.is_low_priority ? "Remove from Low priority" : "Move to Low priority"}
+          </ContextMenuItem>
+        )}
+        {onToggleMuted && (
+          <ContextMenuItem onSelect={onToggleMuted}>
+            {room.is_muted ? "Unmute" : "Mute"}
+          </ContextMenuItem>
+        )}
+        {(onMarkRead || onMarkUnread) && <ContextMenuSeparator />}
+        {onMarkRead && <ContextMenuItem onSelect={onMarkRead}>Mark as read</ContextMenuItem>}
+        {onMarkUnread && <ContextMenuItem onSelect={onMarkUnread}>Mark as unread</ContextMenuItem>}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
