@@ -324,13 +324,22 @@ impl RelocateOutcome {
 /// existing store would just recreate the very collision this feature
 /// fixes.
 ///
-/// Sequenced for crash safety per the passphrase-then-dir-then-cleanup order
-/// in the spec: the new passphrase entry is written *before* the directory
-/// is renamed, and the temp passphrase entry is only deleted *after* the
-/// rename succeeds. A crash between those steps leaves either two valid
-/// passphrase entries pointing at the (still temp-located) store, or a
-/// relocated store with a leftover unused temp passphrase entry — never an
-/// undecryptable store.
+/// Sequenced for crash safety: the new account passphrase entry (a copy of
+/// the temp one's value) is written first, the temp passphrase entry is
+/// deleted next, and the directory rename comes *last*. A crash after
+/// writing the account entry but before deleting the temp one leaves two
+/// valid entries pointing at the same (still temp-located) store — never an
+/// undecryptable one. A crash after deleting the temp entry but before the
+/// rename leaves the temp directory in place with no keychain entry
+/// pointing at it; [`sweep_orphan_temp_stores`] finds and discards that
+/// directory on the next startup (its `discard_temp_store` no-ops on the
+/// already-gone keychain entry), so nothing is orphaned in the keychain.
+/// Deliberately *not* the reverse order (rename, then delete the temp
+/// entry): a crash in that gap left the *directory* gone but the temp
+/// keychain entry still present with nothing left to associate it with —
+/// `sweep_orphan_temp_stores` only scans directories by name, so that entry
+/// would accumulate in the keychain forever instead of ever being cleaned
+/// up.
 pub fn relocate_store(
     app: &AppHandle,
     temp_key: &str,
@@ -379,16 +388,16 @@ pub fn relocate_store_at(
         .set_password(&passphrase)
         .map_err(|e| e.to_string())?;
 
+    if let Ok(temp_entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
+        let _ = temp_entry.delete_credential();
+    }
+
     // `fs::rename` on the same volume (both under `matrix_store/`) is
     // atomic and, on POSIX, fails with `ENOTEMPTY`/`EEXIST` rather than
     // silently merging if `account_path` was created concurrently between
     // the `exists()` check above and here — surfacing as an `Err` rather
     // than silently losing data either way.
     std::fs::rename(&temp_path, &account_path).map_err(|e| e.to_string())?;
-
-    if let Ok(temp_entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
-        let _ = temp_entry.delete_credential();
-    }
 
     Ok(RelocateOutcome::Relocated(account_path))
 }
