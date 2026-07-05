@@ -27,13 +27,19 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // Separate from `pending`: true from the moment the browser is opened
+  // until the charm://sso-callback deep link arrives (or the user cancels).
+  // Distinct because there's no way to know if/when the user will finish in
+  // the browser, so — unlike `pending` for the password form, which always
+  // resolves on its own — this state needs a manual way out.
+  const [ssoPending, setSsoPending] = useState(false);
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
   // Guards against acting on the same charm://sso-callback URL twice (the
   // deep-link plugin can, in principle, deliver it more than once) and
   // against completing a callback that doesn't belong to an SSO attempt this
-  // screen actually started.
+  // screen actually started (e.g. one the user already cancelled).
   const ssoInProgressRef = useRef(false);
 
   useEffect(() => {
@@ -45,7 +51,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       completeSsoLogin(callbackUrl)
         .then(onSignedIn)
         .catch((err: unknown) => setError(String(err)))
-        .finally(() => setPending(false));
+        .finally(() => setSsoPending(false));
     });
 
     return () => {
@@ -71,18 +77,26 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   async function handleSsoLogin() {
-    setPending(true);
+    setSsoPending(true);
     setError(null);
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl);
       ssoInProgressRef.current = true;
       await openUrl(ssoUrl);
       // Left pending: resolved by the onOpenUrl listener above once the
-      // system browser redirects back with charm://sso-callback.
+      // system browser redirects back with charm://sso-callback, or by
+      // handleCancelSso if the user gives up and comes back without it.
     } catch (err) {
+      ssoInProgressRef.current = false;
       setError(String(err));
-      setPending(false);
+      setSsoPending(false);
     }
+  }
+
+  function handleCancelSso() {
+    ssoInProgressRef.current = false;
+    setSsoPending(false);
+    setError(null);
   }
 
   return (
@@ -114,7 +128,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   value={homeserverUrl}
                   onChange={(e) => setHomeserverUrl(e.currentTarget.value)}
                   placeholder="matrix.org"
-                  disabled={pending}
+                  disabled={pending || ssoPending}
                 />
                 <p className="text-xs text-muted-foreground">
                   {discovery.state === "resolving" && "Looking up server…"}
@@ -132,7 +146,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   onChange={(e) => setUsername(e.currentTarget.value)}
                   placeholder="Username"
                   aria-invalid={Boolean(error)}
-                  disabled={pending}
+                  disabled={pending || ssoPending}
                 />
               </div>
 
@@ -145,12 +159,12 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                   onChange={(e) => setPassword(e.currentTarget.value)}
                   placeholder="Password"
                   aria-invalid={Boolean(error)}
-                  disabled={pending}
+                  disabled={pending || ssoPending}
                 />
                 {error && <p className="text-xs text-destructive">{error}</p>}
               </div>
 
-              <Button type="submit" disabled={pending} className="w-full">
+              <Button type="submit" disabled={pending || ssoPending} className="w-full">
                 {pending && <Loader2 className="animate-spin" />}
                 {pending
                   ? mode === "sign-in"
@@ -168,15 +182,31 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                     or
                     <div className="h-px flex-1 bg-border" />
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={pending}
-                    onClick={handleSsoLogin}
-                    className="w-full"
-                  >
-                    Continue with SSO
-                  </Button>
+                  {ssoPending ? (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-center text-xs text-muted-foreground">
+                        Waiting for you to finish in the browser…
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleCancelSso}
+                        className="w-full"
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={pending}
+                      onClick={handleSsoLogin}
+                      className="w-full"
+                    >
+                      Continue with SSO
+                    </Button>
+                  )}
                 </>
               )}
             </form>

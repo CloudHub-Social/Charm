@@ -15,8 +15,9 @@ use tokio::sync::Mutex;
 use ts_rs::TS;
 
 /// The `charm://` deep-link the homeserver's SSO flow redirects back to with
-/// a `loginToken` query param, picked up by the frontend's existing
-/// `onOpenUrl` deep-link listener (see `src/lib/deepLink.ts`).
+/// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
+/// deep-link listener in `LoginScreen.tsx` (separate from the
+/// room-link-handling one in `src/lib/deepLink.ts`).
 const SSO_REDIRECT_URL: &str = "charm://sso-callback";
 
 /// Holds the active matrix-rust-sdk client for the running session.
