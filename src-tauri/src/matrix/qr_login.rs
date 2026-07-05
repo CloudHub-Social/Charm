@@ -204,10 +204,23 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // The device-code dance itself failed (not cancelled) — no
                 // account was ever learned, so clean up the temp store here
                 // rather than leaving it for a future cancel/start to find.
+                // Uses the `temp_key` this task already captured, not a
+                // fresh read of `pending_qr_temp_store_key` — a concurrent
+                // `cancel_qr_login`/new `start_qr_login` could have already
+                // taken (and be relying on) that shared slot by the time
+                // this arm runs.
+                let _ = persistence::discard_temp_login_store(&app, &temp_key);
+                // Compare-and-clear, not an unconditional `= None`: a
+                // concurrent `start_qr_login` could already have overwritten
+                // this slot with a newer attempt's key by the time this
+                // arm runs, and clobbering that would leave the new
+                // attempt's own cleanup with nothing to find.
                 let state = app.state::<MatrixState>();
-                if let Some(temp_key) = state.pending_qr_temp_store_key.lock().unwrap().take() {
-                    let _ = persistence::discard_temp_login_store(&app, &temp_key);
+                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                if pending_key.as_deref() == Some(temp_key.as_str()) {
+                    *pending_key = None;
                 }
+                drop(pending_key);
                 let _ = app.emit(
                     "qr_login:progress",
                     QrLoginProgressEvent::Error {
