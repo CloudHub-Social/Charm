@@ -125,6 +125,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
           onValueChange={(value) => {
             setMode(value as Mode);
             setError(null);
+            if (ssoPending) handleCancelSso();
           }}
         >
           <TabsList className="w-full">
