@@ -34,6 +34,24 @@ export function installMockTauri(seed: {
   room: { room_id: string; name: string | null; unread_count: number };
   members?: { user_id: string; display_name: string | null }[];
 }) {
+  // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
+  // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
+  // reads them unconditionally (e.g. `parent_space_ids.includes(...)`), so a
+  // partial seed room would throw rather than just rendering unfavourited/
+  // unmuted defaults.
+  const room = {
+    unread_messages: seed.room.unread_count,
+    is_marked_unread: false,
+    is_muted: false,
+    is_favourite: false,
+    is_low_priority: false,
+    manual_order: null,
+    is_space: false,
+    parent_space_ids: [],
+    is_direct: false,
+    has_unread: seed.room.unread_count > 0,
+    ...seed.room,
+  };
   type Listener = (payload: unknown) => void;
 
   const listenersByEvent = new Map<string, Set<number>>();
@@ -57,7 +75,7 @@ export function installMockTauri(seed: {
   let nextTxnId = 1;
   let nextEventId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
-  messagesByRoom.set(seed.room.room_id, []);
+  messagesByRoom.set(room.room_id, []);
 
   function findMessage(roomId: string, eventId: string) {
     return messagesByRoom.get(roomId)?.find((m) => m.event_id === eventId);
@@ -69,8 +87,8 @@ export function installMockTauri(seed: {
 
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
-    list_rooms: () => [seed.room],
-    resolve_room_alias: () => seed.room.room_id,
+    list_rooms: () => [room],
+    resolve_room_alias: () => room.room_id,
     get_timeline_page: (args) => ({
       messages: messagesByRoom.get(args.roomId as string) ?? [],
       next_cursor: null,

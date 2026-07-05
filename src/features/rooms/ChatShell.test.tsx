@@ -12,6 +12,7 @@ import type {
   SendQueueUpdateEvent,
   TypingUpdate,
 } from "@/lib/matrix";
+import { makeRoomSummary } from "./testFixtures";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / send_queue:update / receipts:update / typing:update /
@@ -129,11 +130,7 @@ vi.mock("./Composer", () => ({
   }),
 }));
 
-const room: RoomSummary = {
-  room_id: "!abc123:localhost",
-  name: "general",
-  unread_count: 0,
-};
+const room: RoomSummary = makeRoomSummary();
 
 /** Minimal-but-complete `RoomMessageSummary` for tests that don't care about
  * edit/reaction/reply/send-state/media fields — fills them with inert defaults. */
@@ -506,7 +503,7 @@ describe("ChatShell", () => {
   });
 
   it("ignores a stale can_redact response for a room the user has since navigated away from", async () => {
-    const roomB: RoomSummary = { room_id: "!roomB:localhost", name: "Room B", unread_count: 0 };
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
     let resolveRoomACheck: ((allowed: boolean) => void) | undefined;
     let calls = 0;
     canRedact.mockImplementation(
