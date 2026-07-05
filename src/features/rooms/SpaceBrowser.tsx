@@ -28,13 +28,26 @@ export function SpaceBrowser({ space, onOpenChange }: SpaceBrowserProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!space) return;
+    if (!space) return undefined;
+    // Guards against a stale fetch for a previous space resolving after the
+    // user has since switched — without this, a failed fetch for space A
+    // could set an error that displays alongside space B's successful results.
+    let stale = false;
     setLoading(true);
     setError(null);
     listSpaceChildren(space.room_id)
-      .then(setChildren)
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
+      .then((result) => {
+        if (!stale) setChildren(result);
+      })
+      .catch((err) => {
+        if (!stale) setError(String(err));
+      })
+      .finally(() => {
+        if (!stale) setLoading(false);
+      });
+    return () => {
+      stale = true;
+    };
   }, [space]);
 
   async function handleJoin(child: SpaceChild) {
