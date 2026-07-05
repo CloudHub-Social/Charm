@@ -81,7 +81,15 @@ jobs:
       # committed, the working tree now differs — fail so bindings never drift.
       - run: cargo test --lib
       - name: ts-rs bindings are committed and up to date
-        run: git diff --exit-code src/bindings
+        # --porcelain catches both modified tracked bindings and brand-new untracked
+        # ones (a `git diff` alone would miss a newly generated, uncommitted file).
+        run: |
+          if [ -n "$(git status --porcelain -- src/bindings)" ]; then
+            echo "::error::ts-rs bindings are stale or uncommitted — run 'cargo test --lib' and commit src/bindings/"
+            git status --porcelain -- src/bindings
+            git diff -- src/bindings
+            exit 1
+          fi
 
   rust-integration:
     name: Rust (verification, alias-resolution, discovery/registration, SSO)

@@ -55,8 +55,8 @@
     "semantic_hash": ""
   },
   "knip.json": {
-    "mtime": 1783254183.5336905,
-    "ast_hash": "eb5da0cd4c49548e56ed5612d2790366",
+    "mtime": 1783258475.6615236,
+    "ast_hash": "a7dff36cb876334844252b719bef3753",
     "semantic_hash": ""
   },
   "oxfmt.config.ts": {
@@ -165,72 +165,72 @@
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/CrossSigningStatusSummary.ts": {
-    "mtime": 1783255052.6247895,
+    "mtime": 1783258237.822738,
     "ast_hash": "7cd35129f648ba889b20f9f1b862b6e2",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/DiscoverHomeserverResponse.ts": {
-    "mtime": 1783255052.5966733,
+    "mtime": 1783258237.773921,
     "ast_hash": "cccf3553723a46ff49c1cfef84bdc818",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/EmojiPair.ts": {
-    "mtime": 1783255052.6295383,
+    "mtime": 1783258237.8244212,
     "ast_hash": "d5024bd8b094bd27c6b85056bea8efac",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/LoginRequest.ts": {
-    "mtime": 1783255052.5608897,
+    "mtime": 1783258237.8007088,
     "ast_hash": "1bf88790fa74a60c732bec05a434faae",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/LoginResponse.ts": {
-    "mtime": 1783255052.60681,
+    "mtime": 1783258237.7933216,
     "ast_hash": "ad1253bca25ce49c8f78e7330cde7cc2",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/QrLoginProgressEvent.ts": {
-    "mtime": 1783257883.1724725,
+    "mtime": 1783258237.811566,
     "ast_hash": "c87ac4c6533bb2b482fac6119616829d",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/RegisterRequest.ts": {
-    "mtime": 1783255052.5746124,
+    "mtime": 1783258237.8048522,
     "ast_hash": "f564d218b00306acb092c228dc90f7b0",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/RoomMessageSummary.ts": {
-    "mtime": 1783255052.5678525,
-    "ast_hash": "205da86a820aa8e5090c1947aadbc463",
+    "mtime": 1783258237.8154473,
+    "ast_hash": "0af35337e4fb3bcdaa9a03ade74f2bdd",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/RoomSummary.ts": {
-    "mtime": 1783255052.5870821,
-    "ast_hash": "a34684b689c39ba7e4e5592e3deb8c98",
+    "mtime": 1783258237.8082082,
+    "ast_hash": "4bfc239eba46230cb115df4b7ff6f5e9",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/RoomTimelineUpdate.ts": {
-    "mtime": 1783255052.612278,
+    "mtime": 1783258237.8182075,
     "ast_hash": "c303e1d46c68e5562f0273d806fde6f6",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/SasUpdateEvent.ts": {
-    "mtime": 1783255052.6348033,
+    "mtime": 1783258237.8276575,
     "ast_hash": "5f6296f1cb8d1a3d7b9438ece6c51317",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/SyncStateEvent.ts": {
-    "mtime": 1783255052.5921648,
+    "mtime": 1783258237.7976563,
     "ast_hash": "48bdf059757678170a4309e7c8fba370",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/TimelinePage.ts": {
-    "mtime": 1783255052.6187024,
+    "mtime": 1783258237.8211792,
     "ast_hash": "9745c1dcf4b9de8e0c0d74dc0c9e2c06",
     "semantic_hash": ""
   },
   "src-tauri/src/bindings/VerificationRequestSummary.ts": {
-    "mtime": 1783255052.6405046,
+    "mtime": 1783258237.8314123,
     "ast_hash": "152ff3998a35d54b014b680e244bedab",
     "semantic_hash": ""
   },
@@ -245,8 +245,8 @@
     "semantic_hash": ""
   },
   "src-tauri/src/matrix/mod.rs": {
-    "mtime": 1783257883.1731927,
-    "ast_hash": "7f365bd7817667221cee5d1952ee84b0",
+    "mtime": 1783258206.493532,
+    "ast_hash": "5d6481f5345db2adb369b2780507e838",
     "semantic_hash": ""
   },
   "src-tauri/src/matrix/persistence.rs": {
@@ -265,8 +265,8 @@
     "semantic_hash": ""
   },
   "src-tauri/src/matrix/timeline.rs": {
-    "mtime": 1783209727.3586204,
-    "ast_hash": "5ce1f836d0a1e144c2066f8d242502bd",
+    "mtime": 1783258216.289458,
+    "ast_hash": "fded1657a2394137966013784daaa36d",
     "semantic_hash": ""
   },
   "src-tauri/src/matrix/verification.rs": {
@@ -460,8 +460,8 @@
     "semantic_hash": ""
   },
   "src/lib/matrix.ts": {
-    "mtime": 1783257883.1770444,
-    "ast_hash": "056f62f7729f7ea5cc19f1da018a7844",
+    "mtime": 1783258310.9263623,
+    "ast_hash": "88dc95249ec490417c29a7c2da4a702c",
     "semantic_hash": ""
   },
   "src/lib/utils.ts": {
@@ -470,8 +470,8 @@
     "semantic_hash": ""
   },
   "src/main.tsx": {
-    "mtime": 1783209727.3625348,
-    "ast_hash": "1b84d7d34dc0d7ec949291c9c670972e",
+    "mtime": 1783258446.1259305,
+    "ast_hash": "6a6f66bf64de85da548210c6590350cb",
     "semantic_hash": ""
   },
   "src/test/setup.ts": {
@@ -485,8 +485,8 @@
     "semantic_hash": ""
   },
   "tsconfig.json": {
-    "mtime": 1783257883.1772692,
-    "ast_hash": "b09848d6a6710e2476ad139e9d08cad3",
+    "mtime": 1783258326.9535878,
+    "ast_hash": "a3fbfd741aa82c70961b8cc1c2558120",
     "semantic_hash": ""
   },
   "tsconfig.node.json": {
@@ -495,18 +495,18 @@
     "semantic_hash": ""
   },
   "vite.config.ts": {
-    "mtime": 1783209727.3631046,
-    "ast_hash": "c35c80d173400c761f2c115d9130db24",
+    "mtime": 1783258328.4405298,
+    "ast_hash": "82269cae57ba90386b3b4b9e9c927387",
     "semantic_hash": ""
   },
   "vitest.config.ts": {
-    "mtime": 1783257883.1774528,
-    "ast_hash": "9fce3a51703cffbeb8c2c618690e451f",
+    "mtime": 1783258568.3868723,
+    "ast_hash": "38335e57e0cf5b037b96b63cf78d2ed9",
     "semantic_hash": ""
   },
   ".github/workflows/quality-checks.yml": {
-    "mtime": 1783257883.1623707,
-    "ast_hash": "e987a019ceb76c5742f328582b551f3f",
+    "mtime": 1783259184.9171944,
+    "ast_hash": "926d2db04a4c3b07800abaccc69ff209",
     "semantic_hash": ""
   },
   ".github/workflows/require-main-base.yml": {
@@ -520,8 +520,8 @@
     "semantic_hash": ""
   },
   "CLAUDE.md": {
-    "mtime": 1783257883.1649158,
-    "ast_hash": "6ea1f86983495908354ad60e5c9e96d6",
+    "mtime": 1783258615.1581836,
+    "ast_hash": "ddf297058147c33027a9d81ccc5f6217",
     "semantic_hash": ""
   },
   "README.md": {
@@ -812,6 +812,11 @@
   "src/assets/react.svg": {
     "mtime": 1783165572.1816034,
     "ast_hash": "f0402b67b6ce880f65666bb49e841696",
+    "semantic_hash": ""
+  },
+  "src/providers.tsx": {
+    "mtime": 1783259177.6941211,
+    "ast_hash": "49897aad2b5750647a8118370c1495dc",
     "semantic_hash": ""
   }
 }
