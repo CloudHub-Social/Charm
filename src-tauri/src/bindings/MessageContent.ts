@@ -6,8 +6,9 @@
  * [`RoomMessageSummary`] for text-preview/room-list use, additively) so the
  * timeline can render non-text msgtypes.
  *
- * Media variants carry a [`MediaHandle`] (opaque, serialized
- * `MediaSource`), never the raw `EncryptedFile` — that would leak the AES
- * key across IPC. `resolve_media` turns a handle into a local file path.
+ * Media variants carry a [`MediaHandle`] — an opaque lookup key into the
+ * shared [`MediaCache`]'s server-side source registry, never the raw
+ * `MediaSource`/`EncryptedFile`, which would leak the AES key across IPC.
+ * `resolve_media` turns a handle into a local file path.
  */
 export type MessageContent = { "type": "Text", body: string, } | { "type": "Image", body: string, source: string, mime: string | null, size: number | null, width: number | null, height: number | null, thumbnail: string | null, blurhash: string | null, } | { "type": "Video", body: string, source: string, mime: string | null, size: number | null, width: number | null, height: number | null, duration_ms: number | null, thumbnail: string | null, } | { "type": "Audio", body: string, source: string, mime: string | null, size: number | null, duration_ms: number | null, } | { "type": "File", body: string, source: string, mime: string | null, size: number | null, };

@@ -66,7 +66,11 @@ describe("ChatShell", () => {
     fireEvent.click(attachButton);
 
     await waitFor(() =>
-      expect(sendAttachment).toHaveBeenCalledWith(room.room_id, "/Users/me/cat.png"),
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        "/Users/me/cat.png",
+        expect.any(String),
+      ),
     );
   });
 
@@ -126,7 +130,11 @@ describe("ChatShell", () => {
     });
 
     await waitFor(() =>
-      expect(sendAttachment).toHaveBeenCalledWith(room.room_id, "/Users/me/pasted.png"),
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        "/Users/me/pasted.png",
+        expect.any(String),
+      ),
     );
   });
 });

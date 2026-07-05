@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
 
-use super::media::{self, MediaHandle};
+use super::media::{MediaCache, MediaHandle};
 use super::MatrixState;
 
 /// Tagged union carrying msgtype + media metadata for a message event —
@@ -15,9 +15,10 @@ use super::MatrixState;
 /// [`RoomMessageSummary`] for text-preview/room-list use, additively) so the
 /// timeline can render non-text msgtypes.
 ///
-/// Media variants carry a [`MediaHandle`] (opaque, serialized
-/// `MediaSource`), never the raw `EncryptedFile` — that would leak the AES
-/// key across IPC. `resolve_media` turns a handle into a local file path.
+/// Media variants carry a [`MediaHandle`] — an opaque lookup key into the
+/// shared [`MediaCache`]'s server-side source registry, never the raw
+/// `MediaSource`/`EncryptedFile`, which would leak the AES key across IPC.
+/// `resolve_media` turns a handle into a local file path.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(tag = "type")]
@@ -122,87 +123,109 @@ pub struct RoomTimelineUpdate {
 /// `m.file`, `m.notice`, `m.emote`, ...) is carried through as a
 /// [`MessageContent`] variant; unrecognized/exotic msgtypes fall back to a
 /// `Text` variant using Ruma's own `.body()` so nothing is silently dropped.
-pub(crate) fn events_to_summaries(events: &[TimelineEvent]) -> Vec<RoomMessageSummary> {
-    events
-        .iter()
-        .filter_map(|event| {
-            let raw = event.kind.raw();
-            let deserialized: AnySyncTimelineEvent = raw.deserialize().ok()?;
-            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
-                deserialized
-            else {
-                return None;
-            };
-            let original = msg.as_original()?;
-            let content = message_type_to_content(&original.content.msgtype);
-            Some(RoomMessageSummary {
-                event_id: original.event_id.to_string(),
-                sender: original.sender.to_string(),
-                body: content.preview_body().to_string(),
-                content,
-                timestamp_ms: original.origin_server_ts.0.into(),
-            })
-        })
-        .collect()
+/// Media sources are registered into `cache`'s server-side handle registry
+/// as they're encountered — no bytes are fetched here, only the (opaque)
+/// handle is produced synchronously.
+pub(crate) async fn events_to_summaries(
+    events: &[TimelineEvent],
+    cache: &MediaCache,
+) -> Vec<RoomMessageSummary> {
+    let mut summaries = Vec::new();
+    for event in events {
+        let raw = event.kind.raw();
+        let Ok(deserialized): Result<AnySyncTimelineEvent, _> = raw.deserialize() else {
+            continue;
+        };
+        let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
+            deserialized
+        else {
+            continue;
+        };
+        let Some(original) = msg.as_original() else {
+            continue;
+        };
+        let content = message_type_to_content(&original.content.msgtype, cache).await;
+        summaries.push(RoomMessageSummary {
+            event_id: original.event_id.to_string(),
+            sender: original.sender.to_string(),
+            body: content.preview_body().to_string(),
+            content,
+            timestamp_ms: original.origin_server_ts.0.into(),
+        });
+    }
+    summaries
 }
 
 /// Converts Ruma's `MessageType` into our own [`MessageContent`], the shape
-/// exposed to the frontend over IPC. Media variants serialize their
-/// `MediaSource` into an opaque [`MediaHandle`] — never the raw
-/// `EncryptedFile`, which carries the AES key.
-fn message_type_to_content(msgtype: &MessageType) -> MessageContent {
+/// exposed to the frontend over IPC. Media variants register their
+/// `MediaSource` into `cache` and carry only the resulting opaque
+/// [`MediaHandle`] — never the raw `EncryptedFile`, which carries the AES
+/// key.
+async fn message_type_to_content(msgtype: &MessageType, cache: &MediaCache) -> MessageContent {
     match msgtype {
-        MessageType::Image(image) => MessageContent::Image {
-            body: image.body.clone(),
-            source: media::media_source_to_handle(&image.source).unwrap_or_default(),
-            mime: image.info.as_ref().and_then(|i| i.mimetype.clone()),
-            size: image.info.as_ref().and_then(|i| i.size).map(u64::from),
-            width: image
-                .info
-                .as_ref()
-                .and_then(|i| i.width)
-                .map(|w| u64::from(w) as u32),
-            height: image
-                .info
-                .as_ref()
-                .and_then(|i| i.height)
-                .map(|h| u64::from(h) as u32),
-            thumbnail: image
+        MessageType::Image(image) => {
+            let thumbnail = match image
                 .info
                 .as_ref()
                 .and_then(|i| i.thumbnail_source.as_ref())
-                .and_then(|s| media::media_source_to_handle(s).ok()),
-            blurhash: None,
-        },
-        MessageType::Video(video) => MessageContent::Video {
-            body: video.body.clone(),
-            source: media::media_source_to_handle(&video.source).unwrap_or_default(),
-            mime: video.info.as_ref().and_then(|i| i.mimetype.clone()),
-            size: video.info.as_ref().and_then(|i| i.size).map(u64::from),
-            width: video
-                .info
-                .as_ref()
-                .and_then(|i| i.width)
-                .map(|w| u64::from(w) as u32),
-            height: video
-                .info
-                .as_ref()
-                .and_then(|i| i.height)
-                .map(|h| u64::from(h) as u32),
-            duration_ms: video
-                .info
-                .as_ref()
-                .and_then(|i| i.duration)
-                .map(|d| d.as_millis() as u64),
-            thumbnail: video
+            {
+                Some(s) => Some(cache.register_source(s.clone()).await),
+                None => None,
+            };
+            MessageContent::Image {
+                body: image.body.clone(),
+                source: cache.register_source(image.source.clone()).await,
+                mime: image.info.as_ref().and_then(|i| i.mimetype.clone()),
+                size: image.info.as_ref().and_then(|i| i.size).map(u64::from),
+                width: image
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.width)
+                    .map(|w| u64::from(w) as u32),
+                height: image
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.height)
+                    .map(|h| u64::from(h) as u32),
+                thumbnail,
+                blurhash: None,
+            }
+        }
+        MessageType::Video(video) => {
+            let thumbnail = match video
                 .info
                 .as_ref()
                 .and_then(|i| i.thumbnail_source.as_ref())
-                .and_then(|s| media::media_source_to_handle(s).ok()),
-        },
+            {
+                Some(s) => Some(cache.register_source(s.clone()).await),
+                None => None,
+            };
+            MessageContent::Video {
+                body: video.body.clone(),
+                source: cache.register_source(video.source.clone()).await,
+                mime: video.info.as_ref().and_then(|i| i.mimetype.clone()),
+                size: video.info.as_ref().and_then(|i| i.size).map(u64::from),
+                width: video
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.width)
+                    .map(|w| u64::from(w) as u32),
+                height: video
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.height)
+                    .map(|h| u64::from(h) as u32),
+                duration_ms: video
+                    .info
+                    .as_ref()
+                    .and_then(|i| i.duration)
+                    .map(|d| d.as_millis() as u64),
+                thumbnail,
+            }
+        }
         MessageType::Audio(audio) => MessageContent::Audio {
             body: audio.body.clone(),
-            source: media::media_source_to_handle(&audio.source).unwrap_or_default(),
+            source: cache.register_source(audio.source.clone()).await,
             mime: audio.info.as_ref().and_then(|i| i.mimetype.clone()),
             size: audio.info.as_ref().and_then(|i| i.size).map(u64::from),
             duration_ms: audio
@@ -213,7 +236,7 @@ fn message_type_to_content(msgtype: &MessageType) -> MessageContent {
         },
         MessageType::File(file) => MessageContent::File {
             body: file.body.clone(),
-            source: media::media_source_to_handle(&file.source).unwrap_or_default(),
+            source: cache.register_source(file.source.clone()).await,
             mime: file.info.as_ref().and_then(|i| i.mimetype.clone()),
             size: file.info.as_ref().and_then(|i| i.size).map(u64::from),
         },
@@ -231,12 +254,14 @@ fn message_type_to_content(msgtype: &MessageType) -> MessageContent {
 /// `cursor` is `None`).
 #[tauri::command]
 pub async fn get_timeline_page(
+    app: tauri::AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     cursor: Option<String>,
     limit: Option<u32>,
 ) -> Result<TimelinePage, String> {
     let client = state.require_client().await?;
+    let cache = state.require_media_cache(&app).await?;
 
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let room = client
@@ -249,7 +274,7 @@ pub async fn get_timeline_page(
     let response = room.messages(options).await.map_err(|e| e.to_string())?;
 
     Ok(TimelinePage {
-        messages: events_to_summaries(&response.chunk),
+        messages: events_to_summaries(&response.chunk, cache).await,
         next_cursor: response.end,
     })
 }
@@ -261,6 +286,15 @@ mod tests {
     use matrix_sdk::ruma::serde::Raw;
     use matrix_sdk::ruma::{event_id, room_id, user_id};
     use serde_json::json;
+
+    /// A `MediaCache` for tests that only need the in-process handle
+    /// registry, not the filesystem cache — its directory is never written
+    /// to by `events_to_summaries` (which only registers sources, never
+    /// fetches/stores bytes), so a fresh `MediaCache` with no
+    /// `rebuild_index` call is sufficient.
+    fn test_cache() -> MediaCache {
+        MediaCache::new(std::env::temp_dir())
+    }
 
     /// Builds a synthetic `m.room.message` `TimelineEvent` from a raw JSON
     /// body, the same shape a real sync response would carry.
@@ -278,14 +312,15 @@ mod tests {
         TimelineEvent::from_plaintext(raw)
     }
 
-    #[test]
-    fn emits_text_variant_for_a_text_message() {
+    #[tokio::test]
+    async fn emits_text_variant_for_a_text_message() {
         let event = make_event(json!({
             "msgtype": "m.text",
             "body": "hello there",
         }));
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         assert_eq!(summaries.len(), 1);
         let summary = &summaries[0];
         assert_eq!(summary.body, "hello there");
@@ -295,8 +330,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn emits_image_variant_for_an_image_message() {
+    #[tokio::test]
+    async fn emits_image_variant_for_an_image_message() {
         let event = make_event(json!({
             "msgtype": "m.image",
             "body": "cat.png",
@@ -309,7 +344,8 @@ mod tests {
             },
         }));
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         assert_eq!(summaries.len(), 1);
         match &summaries[0].content {
             MessageContent::Image {
@@ -330,8 +366,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn emits_file_variant_for_a_file_message() {
+    #[tokio::test]
+    async fn emits_file_variant_for_a_file_message() {
         let event = make_event(json!({
             "msgtype": "m.file",
             "body": "report.pdf",
@@ -342,7 +378,8 @@ mod tests {
             },
         }));
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         assert_eq!(summaries.len(), 1);
         match &summaries[0].content {
             MessageContent::File {
@@ -356,8 +393,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn emits_audio_variant_with_duration_for_an_audio_message() {
+    #[tokio::test]
+    async fn emits_audio_variant_with_duration_for_an_audio_message() {
         let event = make_event(json!({
             "msgtype": "m.audio",
             "body": "voice.ogg",
@@ -369,15 +406,16 @@ mod tests {
             },
         }));
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         match &summaries[0].content {
             MessageContent::Audio { duration_ms, .. } => assert_eq!(*duration_ms, Some(5000)),
             other => panic!("expected Audio, got {other:?}"),
         }
     }
 
-    #[test]
-    fn emits_video_variant_for_a_video_message() {
+    #[tokio::test]
+    async fn emits_video_variant_for_a_video_message() {
         let event = make_event(json!({
             "msgtype": "m.video",
             "body": "clip.mp4",
@@ -391,7 +429,8 @@ mod tests {
             },
         }));
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         match &summaries[0].content {
             MessageContent::Video {
                 width,
@@ -407,8 +446,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ignores_events_that_are_not_room_messages() {
+    #[tokio::test]
+    async fn ignores_events_that_are_not_room_messages() {
         let raw_event = json!({
             "type": "m.room.member",
             "event_id": event_id!("$member_event").to_string(),
@@ -422,7 +461,8 @@ mod tests {
         let raw: Raw<AnySyncTimelineEvent> = Raw::from_json(raw_json);
         let event = TimelineEvent::from_plaintext(raw);
 
-        let summaries = events_to_summaries(std::slice::from_ref(&event));
+        let cache = test_cache();
+        let summaries = events_to_summaries(std::slice::from_ref(&event), &cache).await;
         assert!(summaries.is_empty());
     }
 }

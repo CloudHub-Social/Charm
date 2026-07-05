@@ -5,21 +5,32 @@
 //! - Frontend never sees raw media bytes, encryption keys, or ciphertext. It
 //!   only ever gets a local filesystem path (loaded via Tauri's asset
 //!   protocol / `convertFileSrc`), or an opaque [`MediaHandle`] string it can
-//!   hand back to [`resolve`]/[`resolve_avatar_thumbnail`].
-//! - `MediaHandle` is a base64-encoded JSON serialization of a
-//!   `matrix_sdk::ruma::events::room::MediaSource`, which is either
-//!   `Plain(mxc_uri)` or `Encrypted(Box<EncryptedFile>)` (the latter carries
-//!   the AES key — hence the handle is opaque; nothing this crate exports
-//!   ever hands the raw `EncryptedFile` to the frontend as structured JSON
-//!   fields the frontend could introspect).
+//!   hand back to [`MediaCache::resolve_handle`] / [`resolve`] /
+//!   [`resolve_avatar_thumbnail`].
+//! - `MediaHandle` is a SHA-256 hash (hex) of the serialized `MediaSource`,
+//!   used purely as a lookup key into an in-process [`MediaCache`] registry
+//!   that holds the real `MediaSource` (`Plain(mxc_uri)` or
+//!   `Encrypted(Box<EncryptedFile>)`) server-side. Earlier revisions of this
+//!   module base64-encoded the serialized `MediaSource` itself as the
+//!   handle — for `Encrypted` sources that meant the AES key inside
+//!   `EncryptedFile` was trivially recoverable by decoding the handle
+//!   client-side, defeating the "keys never cross IPC" goal. A one-way hash
+//!   used only as a map key, with the actual source resolved server-side in
+//!   `resolve_handle`, closes that hole: nothing decodable ever reaches the
+//!   frontend.
 //! - Cache is a flat directory of files named by a hash of `(mxc, format)`,
 //!   indexed by an in-memory `BTreeMap` rebuilt from a directory scan at
 //!   startup (simplest option, per the spec's own open question — no
 //!   separate on-disk index to keep in sync).
 //! - LRU policy: evict when total size exceeds 500MB, or entries are older
 //!   than 7 days (by mtime); when over budget, evict the oldest ~10% first.
+//!   Both checks run at startup (right after the index rebuild) as well as
+//!   after every `store`, so a cache that's already over budget or stale
+//!   when the app launches doesn't sit unenforced until the next write.
+//!   mtime is refreshed on cache hits (not just writes) so the policy is a
+//!   true LRU (least-recently-*used*) rather than least-recently-*written*.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -40,75 +51,16 @@ pub const MAX_ENTRY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// oldest-mtime-first.
 const EVICT_FRACTION: f64 = 0.10;
 
-/// Opaque, serialized [`MediaSource`] — the frontend only ever passes this
-/// string back to `resolve_media`, never inspects it. This deliberately does
-/// NOT expose `EncryptedFile`'s key material as structured fields; the whole
-/// point of the handle is to keep it opaque.
+/// Opaque lookup key into [`MediaCache`]'s in-process source registry —
+/// never decodable back into a `MediaSource` by the frontend; see the
+/// module doc comment.
 pub type MediaHandle = String;
 
-pub fn media_source_to_handle(source: &MediaSource) -> Result<MediaHandle, String> {
+fn hash_media_source(source: &MediaSource) -> Result<MediaHandle, String> {
     let json = serde_json::to_vec(source).map_err(|e| e.to_string())?;
-    Ok(base64_lite::encode(&json))
-}
-
-pub fn handle_to_media_source(handle: &str) -> Result<MediaSource, String> {
-    let json = base64_lite::decode(handle)?;
-    serde_json::from_slice(&json).map_err(|e| e.to_string())
-}
-
-/// Tiny dependency-free base64 (standard alphabet, with padding) so we don't
-/// need to pull in the `base64` crate just for this one opaque-handle use.
-mod base64_lite {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    pub fn encode(data: &[u8]) -> String {
-        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-        for chunk in data.chunks(3) {
-            let b0 = chunk[0];
-            let b1 = chunk.get(1).copied();
-            let b2 = chunk.get(2).copied();
-
-            out.push(ALPHABET[(b0 >> 2) as usize] as char);
-            out.push(ALPHABET[(((b0 & 0x03) << 4) | (b1.unwrap_or(0) >> 4)) as usize] as char);
-            if let Some(b1) = b1 {
-                out.push(ALPHABET[(((b1 & 0x0f) << 2) | (b2.unwrap_or(0) >> 6)) as usize] as char);
-            } else {
-                out.push('=');
-            }
-            if let Some(b2) = b2 {
-                out.push(ALPHABET[(b2 & 0x3f) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-        out
-    }
-
-    fn decode_char(c: u8) -> Option<u8> {
-        ALPHABET.iter().position(|&a| a == c).map(|p| p as u8)
-    }
-
-    pub fn decode(data: &str) -> Result<Vec<u8>, String> {
-        let bytes = data.as_bytes();
-        if !bytes.len().is_multiple_of(4) {
-            return Err("invalid base64 length".to_string());
-        }
-        let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-        for chunk in bytes.chunks(4) {
-            let c0 = decode_char(chunk[0]).ok_or("invalid base64 char")?;
-            let c1 = decode_char(chunk[1]).ok_or("invalid base64 char")?;
-            out.push((c0 << 2) | (c1 >> 4));
-            if chunk[2] != b'=' {
-                let c2 = decode_char(chunk[2]).ok_or("invalid base64 char")?;
-                out.push((c1 << 4) | (c2 >> 2));
-                if chunk[3] != b'=' {
-                    let c3 = decode_char(chunk[3]).ok_or("invalid base64 char")?;
-                    out.push((c2 << 6) | c3);
-                }
-            }
-        }
-        Ok(out)
-    }
+    let mut hasher = Sha256::new();
+    hasher.update(&json);
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 /// Which flavor of media to resolve — full file, or a thumbnail at a given
@@ -150,6 +102,13 @@ struct CacheEntry {
 pub struct MediaCache {
     dir: PathBuf,
     index: Mutex<BTreeMap<String, CacheEntry>>,
+    /// Server-side registry backing [`MediaHandle`]s: handle (a one-way hash)
+    /// → the real `MediaSource` it stands for, including any `EncryptedFile`
+    /// key material. Never serialized to the frontend as a whole — only
+    /// individual handles (the map keys) cross IPC. See the module doc
+    /// comment for why this replaced encoding the source directly into the
+    /// handle.
+    sources: Mutex<HashMap<MediaHandle, MediaSource>>,
 }
 
 impl MediaCache {
@@ -157,6 +116,7 @@ impl MediaCache {
         Self {
             dir,
             index: Mutex::new(BTreeMap::new()),
+            sources: Mutex::new(HashMap::new()),
         }
     }
 
@@ -164,8 +124,36 @@ impl MediaCache {
         &self.dir
     }
 
-    /// Scans `dir` and rebuilds the in-memory index. Cheap and safe to call
-    /// more than once; used at startup.
+    /// Registers `source` and returns its (deterministic) [`MediaHandle`].
+    /// Safe to call repeatedly for the same source — it's idempotent, not
+    /// append-only.
+    pub async fn register_source(&self, source: MediaSource) -> MediaHandle {
+        let handle = hash_media_source(&source).unwrap_or_default();
+        self.sources
+            .lock()
+            .await
+            .entry(handle.clone())
+            .or_insert(source);
+        handle
+    }
+
+    /// Resolves a previously registered [`MediaHandle`] back to its
+    /// `MediaSource`. Unknown handles (stale, forged, or from a different
+    /// process run) fail closed rather than guessing.
+    pub async fn resolve_handle(&self, handle: &str) -> Result<MediaSource, String> {
+        self.sources
+            .lock()
+            .await
+            .get(handle)
+            .cloned()
+            .ok_or_else(|| "unknown media handle".to_string())
+    }
+
+    /// Scans `dir` and rebuilds the in-memory index, then immediately runs
+    /// the eviction policy — so a cache directory that's already over
+    /// budget or holding stale entries from a previous run doesn't sit
+    /// unenforced until the next `store`. Cheap and safe to call more than
+    /// once; used at startup.
     pub async fn rebuild_index(&self) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let mut index = BTreeMap::new();
@@ -189,7 +177,7 @@ impl MediaCache {
             );
         }
         *self.index.lock().await = index;
-        Ok(())
+        self.enforce_policy().await
     }
 
     fn cache_filename(source: &MediaSource, kind: MediaKind) -> String {
@@ -201,11 +189,20 @@ impl MediaCache {
     }
 
     /// Returns the cached path for `(source, kind)` if present, without
-    /// touching the network.
+    /// touching the network. Touches the entry's mtime (in the index and on
+    /// disk) so the eviction policy in `enforce_policy` is a true LRU —
+    /// least-recently-*used*, not least-recently-*written*.
     pub async fn cached_path(&self, source: &MediaSource, kind: MediaKind) -> Option<PathBuf> {
         let filename = Self::cache_filename(source, kind);
-        let index = self.index.lock().await;
-        index.get(&filename).map(|entry| entry.path.clone())
+        let mut index = self.index.lock().await;
+        let entry = index.get_mut(&filename)?;
+        let now = SystemTime::now();
+        entry.modified = now;
+        let path = entry.path.clone();
+        if let Ok(file) = std::fs::File::open(&path) {
+            let _ = file.set_modified(now);
+        }
+        Some(path)
     }
 
     /// Writes `data` into the cache for `(source, kind)`, updates the
@@ -372,24 +369,43 @@ mod tests {
         MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from(mxc))
     }
 
-    #[test]
-    fn handle_round_trips_a_plain_source() {
+    #[tokio::test]
+    async fn handle_round_trips_a_plain_source_through_the_registry() {
+        let cache = MediaCache::new(tempfile_dir());
         let source = plain_source("mxc://example.org/abc123");
-        let handle = media_source_to_handle(&source).unwrap();
-        let decoded = handle_to_media_source(&handle).unwrap();
+        let handle = cache.register_source(source.clone()).await;
+        let resolved = cache.resolve_handle(&handle).await.unwrap();
         assert_eq!(
-            decoded.unique_key_for_cache(),
+            resolved.unique_key_for_cache(),
             source.unique_key_for_cache()
         );
     }
 
-    #[test]
-    fn base64_round_trips_arbitrary_bytes() {
-        for input in [b"".as_slice(), b"a", b"ab", b"abc", b"hello, world! 123"] {
-            let encoded = base64_lite::encode(input);
-            let decoded = base64_lite::decode(&encoded).unwrap();
-            assert_eq!(decoded, input);
-        }
+    #[tokio::test]
+    async fn unknown_handle_fails_to_resolve() {
+        let cache = MediaCache::new(tempfile_dir());
+        assert!(cache.resolve_handle("not-a-real-handle").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn handle_is_a_hash_not_a_decodable_encoding_of_the_source() {
+        // Regression guard for the vulnerability this replaced: an earlier
+        // revision base64-encoded the serialized `MediaSource` (including,
+        // for `Encrypted` sources, the AES key) directly into the handle, so
+        // decoding the handle client-side recovered it. A handle produced
+        // now must be a fixed-length SHA-256 hex digest — structurally
+        // incapable of being decoded back into anything — regardless of how
+        // long or distinctive the underlying source's URI is.
+        let cache = MediaCache::new(tempfile_dir());
+        let source = plain_source(
+            "mxc://example.org/a-distinctively-long-and-recognizable-media-identifier",
+        );
+        let handle = cache.register_source(source).await;
+
+        assert_eq!(handle.len(), 64);
+        assert!(handle.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!handle.contains("example.org"));
+        assert!(!handle.contains("distinctively"));
     }
 
     #[tokio::test]

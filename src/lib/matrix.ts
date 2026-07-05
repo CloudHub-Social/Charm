@@ -160,8 +160,18 @@ export function onSasUpdate(
   return listen<SasUpdateEvent>(`verification:sas_update:${flowId}`, (e) => callback(e.payload));
 }
 
-export function sendAttachment(roomId: string, filePath: string, caption?: string): Promise<void> {
-  return invoke("send_attachment", { roomId, filePath, caption });
+/**
+ * `txnId` is caller-supplied (not server-generated) so it can match the ID
+ * the frontend already used for its optimistic upload row before this call
+ * — `upload:progress` events for this upload carry the same ID back.
+ */
+export function sendAttachment(
+  roomId: string,
+  filePath: string,
+  txnId: string,
+  caption?: string,
+): Promise<void> {
+  return invoke("send_attachment", { roomId, filePath, txnId, caption });
 }
 
 /**

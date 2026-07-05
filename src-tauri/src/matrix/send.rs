@@ -61,10 +61,11 @@ pub async fn send_message(
 /// attachment (msgtype chosen from the sniffed MIME type), with an optional
 /// caption. Auto-encrypts in E2EE rooms (matrix-rust-sdk handles this
 /// transparently inside `send_attachment`, same as `send_queue` does for
-/// plain-text messages). Generates a thumbnail for images using the `image`
-/// crate; video/audio/file attachments skip client-side thumbnail generation
-/// — the spec explicitly allows relying on the homeserver's
-/// `MediaFormat::Thumbnail` endpoint instead for Day-1.
+/// plain-text messages). Derives real dimensions for images via the `image`
+/// crate (no client-side thumbnail image is generated/uploaded); video/audio
+/// attachments get size-only info. All kinds rely on the homeserver's
+/// `MediaFormat::Thumbnail` endpoint for thumbnails rather than a
+/// client-generated one — the spec explicitly allows this for Day-1.
 ///
 /// Deviation from the spec sketch: this calls `room.send_attachment()`
 /// directly rather than routing through `room.send_queue()`, because
@@ -85,6 +86,7 @@ pub async fn send_attachment(
     room_id: String,
     file_path: String,
     caption: Option<String>,
+    txn_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
 
@@ -104,12 +106,17 @@ pub async fn send_attachment(
     let total_bytes = data.len() as u64;
     let mime = mime_guess::from_path(path).first_or_octet_stream();
 
-    let txn_id = matrix_sdk::ruma::TransactionId::new();
-    let txn_id_string = txn_id.to_string();
+    // Caller-supplied, not server-generated: the frontend creates its
+    // optimistic upload row (keyed on a locally generated ID) before
+    // invoking this command, so this command must reuse that same ID for
+    // its `upload:progress` events rather than minting its own — otherwise
+    // the two sides can never correlate and the progress bar never updates.
+    let txn_id_string = txn_id.clone();
+    let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = txn_id.into();
 
     let info = attachment_info_for(&mime, &data, total_bytes);
 
-    let mut config = AttachmentConfig::new().txn_id(txn_id).info(info);
+    let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
     if let Some(caption) = caption {
         config = config.caption(Some(
             matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain(caption),
@@ -117,7 +124,7 @@ pub async fn send_attachment(
     }
 
     let progress = SharedObservable::<TransmissionProgress>::new(TransmissionProgress::default());
-    spawn_progress_forwarder(
+    let forwarder = spawn_progress_forwarder(
         app.clone(),
         progress.clone(),
         txn_id_string.clone(),
@@ -130,37 +137,47 @@ pub async fn send_attachment(
         .with_send_progress_observable(progress.clone());
 
     let result = send.await;
+    // The forwarder task holds its own clone of `progress`'s subscriber, so
+    // dropping the local `progress` binding here doesn't close its stream —
+    // abort it explicitly (same pattern as `qr_login.rs`) rather than
+    // leaking a task per upload.
+    forwarder.abort();
 
-    // Always emit a terminal progress event so the frontend's progress bar
-    // can clear deterministically, whether or not the observable delivered
-    // a final tick before completion (its update cadence isn't guaranteed to
-    // land exactly on 100%).
-    let _ = app.emit(
-        "upload:progress",
-        UploadProgress {
-            txn_id: txn_id_string,
-            room_id: room_id.clone(),
-            sent: total_bytes,
-            total: total_bytes,
-        },
-    );
+    if result.is_ok() {
+        // Emit a terminal progress event so the frontend's progress bar can
+        // clear deterministically, whether or not the observable delivered a
+        // final tick before completion (its update cadence isn't guaranteed
+        // to land exactly on 100%). Only emitted on success — emitting this
+        // on failure would read as 100%-complete to the frontend and mask
+        // the error.
+        let _ = app.emit(
+            "upload:progress",
+            UploadProgress {
+                txn_id: txn_id_string,
+                room_id: room_id.clone(),
+                sent: total_bytes,
+                total: total_bytes,
+            },
+        );
+    }
 
     result.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`
 /// Tauri event, for as long as the upload is in flight. Runs in its own task
-/// so it doesn't block the upload future; naturally stops when `progress`'s
-/// last `SharedObservable` clone is dropped (i.e. when `send_attachment`
-/// returns and the local `progress` binding there goes out of scope) closes
-/// the subscriber stream.
+/// so it doesn't block the upload future. The caller owns the returned
+/// `JoinHandle` and must `.abort()` it once the upload settles — the
+/// subscriber stream does not close on its own because this task holds its
+/// own clone of `progress`, so relying on drop of the caller's clone alone
+/// would leak the task.
 fn spawn_progress_forwarder(
     app: AppHandle,
     progress: SharedObservable<TransmissionProgress>,
     txn_id: String,
     room_id: String,
     total_bytes: u64,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut subscriber = progress.subscribe();
         while let Some(update) = subscriber.next().await {
@@ -178,7 +195,7 @@ fn spawn_progress_forwarder(
                 },
             );
         }
-    });
+    })
 }
 
 /// Builds an [`AttachmentInfo`] from the sniffed MIME type and file bytes.

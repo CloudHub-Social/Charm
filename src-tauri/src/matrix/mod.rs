@@ -14,7 +14,7 @@ use matrix_sdk::{Client, LoopCtrl};
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
@@ -617,7 +617,7 @@ pub async fn resolve_media(
 ) -> Result<String, String> {
     let client = state.require_client().await?;
     let cache = state.require_media_cache(&app).await?;
-    let source = media::handle_to_media_source(&handle)?;
+    let source = cache.resolve_handle(&handle).await?;
 
     let kind = if thumbnail {
         media::MediaKind::Thumbnail {
@@ -670,16 +670,21 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
                 async move {
                     let _ = app.emit("room_list:update", snapshot_rooms(&client));
 
-                    for (room_id, update) in &response.rooms.joined {
-                        let messages = timeline::events_to_summaries(&update.timeline.events);
-                        if !messages.is_empty() {
-                            let _ = app.emit(
-                                "timeline:update",
-                                timeline::RoomTimelineUpdate {
-                                    room_id: room_id.to_string(),
-                                    messages,
-                                },
-                            );
+                    let matrix_state = app.state::<MatrixState>();
+                    let cache = matrix_state.require_media_cache(&app).await;
+                    if let Ok(cache) = cache {
+                        for (room_id, update) in &response.rooms.joined {
+                            let messages =
+                                timeline::events_to_summaries(&update.timeline.events, cache).await;
+                            if !messages.is_empty() {
+                                let _ = app.emit(
+                                    "timeline:update",
+                                    timeline::RoomTimelineUpdate {
+                                        room_id: room_id.to_string(),
+                                        messages,
+                                    },
+                                );
+                            }
                         }
                     }
 

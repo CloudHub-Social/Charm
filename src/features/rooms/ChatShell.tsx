@@ -129,7 +129,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
     try {
-      await sendAttachment(room.room_id, filePath);
+      await sendAttachment(room.room_id, filePath, txnId);
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
     } catch (err) {
       console.error(err);

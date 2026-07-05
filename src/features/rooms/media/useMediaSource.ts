@@ -27,7 +27,13 @@ export function useMediaSource(
       return convertFileSrc(path);
     },
     enabled: Boolean(handle),
-    staleTime: Infinity,
-    gcTime: Infinity,
+    // Not Infinity: the Rust-side filesystem cache this resolves to enforces
+    // its own 7-day/500MB LRU eviction, so a path resolved long ago can go
+    // stale. A bounded staleTime/gcTime lets a long-lived session eventually
+    // re-resolve, and lets React Query actually garbage-collect entries for
+    // handles no longer on screen, instead of holding every resolved path
+    // for the lifetime of the app.
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
   });
 }
