@@ -8,15 +8,17 @@ import type {
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
-  SendQueueUpdateEvent,
   TypingUpdate,
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
-// timeline:update / send_queue:update / receipts:update / typing:update /
-// upload:progress listeners, mark_room_read) — mock lib/matrix entirely so
-// the test exercises only the component, not a real Tauri backend.
+// timeline:update / receipts:update / typing:update / upload:progress
+// listeners, mark_room_read) — mock lib/matrix entirely so the test
+// exercises only the component, not a real Tauri backend. Local-echo
+// pending/sent/error transitions now arrive purely via `timeline:update`
+// (the room's live `Timeline`, not a client-side echo) — see the tests
+// below that drive `timelineUpdateCallback` directly for that.
 const getTimelinePage = vi.fn();
 const sendMessage = vi.fn().mockResolvedValue("txn-1");
 const sendReply = vi.fn().mockResolvedValue("txn-1");
@@ -30,7 +32,6 @@ const sendAttachment = vi.fn().mockResolvedValue(undefined);
 const openFileDialog = vi.fn();
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
-let sendQueueUpdateCallback: ((update: SendQueueUpdateEvent) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
 let typingCallback: ((update: TypingUpdate) => void) | undefined;
 let uploadProgressCallback:
@@ -54,10 +55,6 @@ vi.mock("@/lib/matrix", () => ({
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
     timelineUpdateCallback = callback;
-    return Promise.resolve(() => {});
-  }),
-  onSendQueueUpdate: vi.fn((callback: (update: SendQueueUpdateEvent) => void) => {
-    sendQueueUpdateCallback = callback;
     return Promise.resolve(() => {});
   }),
   onReceiptsUpdate: vi.fn((callback: (update: ReceiptUpdate) => void) => {
@@ -121,7 +118,6 @@ describe("ChatShell", () => {
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
     timelineUpdateCallback = undefined;
-    sendQueueUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
     uploadProgressCallback = undefined;
@@ -137,58 +133,120 @@ describe("ChatShell", () => {
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
-  it("flips a bubble from pending to sent when a send_queue:update arrives", async () => {
-    // Resolves with the SDK's transaction id (not a client placeholder) —
-    // that's the id the optimistic echo is keyed on and what a real
-    // `send_queue:update` would carry.
-    sendMessage.mockResolvedValue("txn-1");
+  it("flips a bubble from pending to sent as the Timeline's own timeline:update local echo transitions", async () => {
+    // The room's live Timeline (not ChatShell) creates the local echo and
+    // pushes it via `timeline:update`, keyed on the SDK's send-queue
+    // transaction id — ChatShell just renders whatever it's sent.
     renderChatShell();
     await screen.findByText("No messages yet");
 
     sendDraft("hello");
+    expect(sendMessage).toHaveBeenCalledWith(room.room_id, "hello");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-1",
+            send_state: { state: "pending" },
+          }),
+        ],
+      });
+    });
 
     expect(await screen.findByText(/sending…/)).toBeInTheDocument();
     expect(document.getElementById("message-txn-1")).toBeInTheDocument();
 
-    sendQueueUpdateCallback?.({
-      room_id: room.room_id,
-      transaction_id: "txn-1",
-      send_state: { state: "sent" },
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-1",
+            send_state: { state: "sent" },
+          }),
+        ],
+      });
     });
 
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(screen.queryByText(/sending…/)).not.toBeInTheDocument();
   });
 
-  it("flips a bubble from pending to error when a send_queue:update reports an error", async () => {
-    sendMessage.mockResolvedValue("txn-1");
+  it("flips a bubble from pending to error as a timeline:update reports a send failure", async () => {
     renderChatShell();
     await screen.findByText("No messages yet");
 
     sendDraft("hello");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-1",
+            send_state: { state: "pending" },
+          }),
+        ],
+      });
+    });
     await screen.findByText(/sending…/);
 
-    sendQueueUpdateCallback?.({
-      room_id: room.room_id,
-      transaction_id: "txn-1",
-      send_state: { state: "error", message: "network down" },
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-1",
+            send_state: { state: "error", message: "network down" },
+          }),
+        ],
+      });
     });
 
     expect(await screen.findByText(/failed to send/)).toBeInTheDocument();
   });
 
-  it("reconciles a local echo with the real event once the synced event carries the same transaction id", async () => {
-    // Reproduces the real-world mismatch: the optimistic echo only knows the
+  it("reconciles the Timeline's local echo with the real event once it carries the same transaction id", async () => {
+    // Reproduces the real-world mismatch: the local echo only knows the
     // SDK's transaction id ("txn-1", not a real event id yet), and the
     // synced event that eventually arrives has an entirely different real
     // `event_id` — the two only correlate via the matching
     // `transaction_id` (mirroring `unsigned.transaction_id` on the real
     // event). If the ids didn't agree, this would render two "hello"
     // bubbles and the echo would be stuck on "sending…" forever.
-    sendMessage.mockResolvedValue("txn-1");
     renderChatShell();
+    await screen.findByText("No messages yet");
 
     sendDraft("hello");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-1",
+            send_state: { state: "pending" },
+          }),
+        ],
+      });
+    });
     await screen.findByText(/sending…/);
     expect(document.getElementById("message-txn-1")).toBeInTheDocument();
 
@@ -200,7 +258,9 @@ describe("ChatShell", () => {
       transaction_id: "txn-1",
       send_state: { state: "sent" },
     });
-    timelineUpdateCallback?.({ room_id: room.room_id, messages: [realMessage] });
+    act(() => {
+      timelineUpdateCallback?.({ room_id: room.room_id, messages: [realMessage] });
+    });
 
     // Exactly one "hello" bubble remains — the real event replaced the echo
     // in place rather than being appended alongside it — and it reflects

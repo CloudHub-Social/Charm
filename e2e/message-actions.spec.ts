@@ -23,6 +23,35 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByText("No messages yet")).toBeVisible();
 });
 
+test("sending a message shows exactly one bubble that goes pending -> sent, never duplicated", async ({
+  page,
+}) => {
+  // Spec 14 regression coverage: the pre-Spec-14 client-side optimistic echo
+  // (keyed on a client-invented id) and the real synced event used to be two
+  // separate items the frontend had to reconcile — see
+  // `support/mockTauri.ts`'s `send_message` handler, which now models the
+  // real `Timeline`'s two-phase local echo (`timeline:update` carrying
+  // `send_state: "pending"` first, then a second `timeline:update` replacing
+  // it in place with `send_state: "sent"`) instead of resolving straight to
+  // "sent". ChatShell no longer creates its own echo at all — it just
+  // renders whatever `timeline:update` sends, so this exercises exactly the
+  // duplicate/stuck-pending bug this spec fixes.
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+
+  await composer.fill("exactly one bubble please");
+  await composer.press("Enter");
+
+  const bubble = page.getByText("exactly one bubble please", { exact: true });
+  await expect(bubble).toBeVisible();
+  await expect(bubble).toHaveCount(1);
+  await expect(page.getByText(/sending…/)).toBeVisible();
+
+  // Once the mocked "remote echo" lands, the same single bubble reflects
+  // sent, not stuck on "sending…" and not duplicated.
+  await expect(page.getByText(/sending…/)).toHaveCount(0);
+  await expect(bubble).toHaveCount(1);
+});
+
 test("send, react, edit, reply, and delete a message", async ({ page }) => {
   const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
 

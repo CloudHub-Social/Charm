@@ -2,8 +2,13 @@
 import type { RoomMessageSummary } from "./RoomMessageSummary";
 
 /**
- * Pushed to the frontend whenever a sync response brings new timeline events
- * for a room the client is joined to — so a room's message list can update
- * live without the frontend re-fetching a `TimelinePage` after every sync.
+ * Pushed to the frontend whenever a room's live `Timeline` changes — new
+ * events, edits, reactions, redactions, or a local echo's `send_state`
+ * flipping — so a room's message list can update live without the frontend
+ * re-fetching a `TimelinePage`. Sourced from a per-room `Timeline`'s diff
+ * stream (see `spawn_timeline_listener`), not from raw sync batches, so a
+ * relation targeting an already-loaded-but-out-of-batch message updates that
+ * message in place instead of being silently dropped (the bug `events_to_summaries`
+ * had prior to Spec 14).
  */
 export type RoomTimelineUpdate = { room_id: string, messages: Array<RoomMessageSummary>, };
