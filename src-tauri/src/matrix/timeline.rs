@@ -73,12 +73,12 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
                 .info
                 .as_ref()
                 .and_then(|i| i.width)
-                .map(|w| u64::from(w) as u32),
+                .map(|w| u32::try_from(u64::from(w)).unwrap_or(u32::MAX)),
             height: image
                 .info
                 .as_ref()
                 .and_then(|i| i.height)
-                .map(|h| u64::from(h) as u32),
+                .map(|h| u32::try_from(u64::from(h)).unwrap_or(u32::MAX)),
             has_thumbnail: image
                 .info
                 .as_ref()
@@ -92,12 +92,12 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
                 .info
                 .as_ref()
                 .and_then(|i| i.width)
-                .map(|w| u64::from(w) as u32),
+                .map(|w| u32::try_from(u64::from(w)).unwrap_or(u32::MAX)),
             height: video
                 .info
                 .as_ref()
                 .and_then(|i| i.height)
-                .map(|h| u64::from(h) as u32),
+                .map(|h| u32::try_from(u64::from(h)).unwrap_or(u32::MAX)),
             duration_ms: video
                 .info
                 .as_ref()
