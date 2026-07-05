@@ -104,9 +104,14 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
   // Mark the room read as soon as it becomes active — deduped on room id
   // (not event id) so this still fires the first time even before any
-  // messages have loaded.
+  // messages have loaded. Reset the dedup key when navigating away so
+  // returning to the same room later (e.g. with newly-arrived unread
+  // messages) fires mark-read again instead of silently no-oping.
   useEffect(() => {
-    if (!room) return;
+    if (!room) {
+      lastMarkedReadRoomId.current = null;
+      return;
+    }
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
     markRoomRead(room.room_id).catch(console.error);
@@ -198,7 +203,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const showAvatar = !own && !sameSenderAsPrev;
           const showMeta = !sameSenderAsNext;
           const readers = receiptsByEvent.get(message.event_id) ?? [];
-          const isLast = i === messages.length - 1;
 
           return (
             <div
@@ -259,10 +263,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                   </AvatarGroup>
                 )}
               </div>
-              {isLast && <div ref={bottomSentinelRef} className="h-px w-full" />}
             </div>
           );
         })}
+        {/* Block-level sibling of the flex message rows above (not a flex
+            item within one) so it always keeps its own non-zero box and the
+            `threshold: 1` IntersectionObserver can reliably fire. */}
+        <div ref={bottomSentinelRef} className="h-px w-full shrink-0" />
       </div>
 
       {typingText && (
