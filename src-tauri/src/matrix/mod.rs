@@ -1,4 +1,5 @@
 pub mod persistence;
+pub mod qr_login;
 pub mod send;
 pub mod timeline;
 pub mod verification;
@@ -45,6 +46,21 @@ pub struct MatrixState {
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
     /// result and homeserver connection `start_sso_login` already resolved.
     pending_sso: Mutex<Option<PendingSso>>,
+    /// Set while a QR login is in the `QrScanned` stage (waiting for the
+    /// user to type in the check code shown on the other device) — see
+    /// `qr_login::submit_qr_check_code`.
+    pub(crate) pending_qr_check_code:
+        Mutex<Option<matrix_sdk::authentication::oauth::qrcode::CheckCodeSender>>,
+    /// The task driving the current QR login attempt (spawned by
+    /// `qr_login::start_qr_login`). Unlike SSO login, which just waits on a
+    /// deep-link callback with nothing running in the background, QR login
+    /// actively drives `login_with_qr_code` to completion in a spawned task —
+    /// so cancelling it requires aborting this handle, not just clearing
+    /// state. A plain `std::sync::Mutex`, not `tokio::sync::Mutex`: storing
+    /// the handle right after `tokio::spawn` returns must be synchronous
+    /// (no `.await` in between), or a `cancel_qr_login` racing in that gap
+    /// could find nothing to abort yet.
+    pub(crate) pending_qr_login_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl MatrixState {
@@ -138,6 +154,10 @@ pub async fn login(
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
     persistence::save_session(client.homeserver().as_ref(), &session)?;
+    // Enforces the single-account invariant: only one session kind
+    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
+    // present at a time.
+    let _ = persistence::clear_oauth_session();
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -161,6 +181,15 @@ pub async fn try_restore_session(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Option<LoginResponse>, String> {
+    // Password/SSO login (matrix_auth()) and QR login (oauth()) are
+    // unrelated session kinds in matrix-sdk, persisted under separate
+    // keychain entries — see persistence::SavedOAuthSession. Only one should
+    // ever be present at a time for this single-account app, but check both
+    // rather than assuming which.
+    if let Some(saved) = persistence::load_oauth_session()? {
+        return restore_oauth_session(app, state, saved).await;
+    }
+
     let Some(saved) = persistence::load_session()? else {
         return Ok(None);
     };
@@ -181,6 +210,47 @@ pub async fn try_restore_session(
         user_id: saved.session.meta.user_id.to_string(),
         device_id: saved.session.meta.device_id.to_string(),
     };
+
+    *state.client.lock().await = Some(client.clone());
+    spawn_sync_loop(app, client);
+
+    Ok(Some(response))
+}
+
+async fn restore_oauth_session(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    saved: persistence::SavedOAuthSession,
+) -> Result<Option<LoginResponse>, String> {
+    let homeserver_url = saved.homeserver_url.clone();
+    let client = build_client(&app, &homeserver_url).await?;
+    let session = saved.into_oauth_session();
+
+    if client
+        .oauth()
+        .restore_session(session, RoomLoadSettings::default())
+        .await
+        .is_err()
+    {
+        let _ = persistence::clear_oauth_session();
+        return Ok(None);
+    }
+
+    let Some(session_meta) = client.session_meta().cloned() else {
+        let _ = persistence::clear_oauth_session();
+        return Ok(None);
+    };
+
+    let response = LoginResponse {
+        user_id: session_meta.user_id.to_string(),
+        device_id: session_meta.device_id.to_string(),
+    };
+
+    // Enforces the single-account invariant this function's caller documents:
+    // only one session kind should be present at a time. Guards against
+    // stale data from before this was enforced at save time (see
+    // qr_login::start_qr_login).
+    let _ = persistence::clear_session();
 
     *state.client.lock().await = Some(client.clone());
     spawn_sync_loop(app, client);
@@ -243,6 +313,10 @@ pub async fn register(
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
 
     persistence::save_session(client.homeserver().as_ref(), &session)?;
+    // Enforces the single-account invariant: only one session kind
+    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
+    // present at a time.
+    let _ = persistence::clear_oauth_session();
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -433,6 +507,10 @@ pub async fn complete_sso_login(
         .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
 
     persistence::save_session(client.homeserver().as_ref(), &session)?;
+    // Enforces the single-account invariant: only one session kind
+    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
+    // present at a time.
+    let _ = persistence::clear_oauth_session();
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),

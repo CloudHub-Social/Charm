@@ -25,3 +25,52 @@ services:
     volumes:
       - ./dex-config.yaml:/etc/dex/config.yaml:ro
     command: dex serve /etc/dex/config.yaml
+
+  # A second, separate Synapse instance (own port, own data dir) purely for
+  # testing QR login (src-tauri's tests/qr_login.rs), which requires a
+  # homeserver with auth delegated to Matrix Authentication Service (MAS).
+  # Kept fully separate from the `synapse` service above rather than adding
+  # MAS to it: enabling MAS delegation replaces a homeserver's native
+  # password/registration auth entirely, which would break the
+  # discovery_and_registration/sso_login tests that run against `synapse`.
+  synapse-mas:
+    image: matrixdotorg/synapse:latest
+    container_name: charm-dev-synapse-mas
+    restart: unless-stopped
+    ports:
+      - "8010:8008"
+    volumes:
+      - ./data-mas:/data
+    environment:
+      SYNAPSE_SERVER_NAME: localhost
+      SYNAPSE_REPORT_STATS: "no"
+
+  mas-db:
+    image: postgres:16
+    container_name: charm-dev-mas-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mas
+      POSTGRES_PASSWORD: mas_password
+      POSTGRES_DB: mas
+    volumes:
+      - mas_db_data:/var/lib/postgresql/data
+
+  mas:
+    image: ghcr.io/element-hq/matrix-authentication-service:1.10.0
+    container_name: charm-dev-mas
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mounted at /base-config.yaml, not /config.yaml: configure-mas.sh
+      # appends generated secrets to this and writes the result to
+      # /config.yaml (a plain in-container file, not a bind mount) — a `docker
+      # cp` can't overwrite a read-only bind-mounted path.
+      - ./mas-config.yaml:/base-config.yaml:ro
+    command: server --config /config.yaml
+    depends_on:
+      - mas-db
+
+volumes:
+  mas_db_data:
