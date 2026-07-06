@@ -34,16 +34,15 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-06, after adding the LoginScreen SSO-callback regression tests
-        // and splitting ChatShell.tsx into MessageRow/UploadTray from the
-        // tech-review pass: lines 69.12 / statements 67.21 / functions 61.12 /
-        // branches 68.11), so any regression fails CI. When you add tests and
-        // coverage rises, raise these to the new floor in the same PR — never
-        // lower them just to make CI pass.
-        lines: 69,
-        statements: 67,
-        functions: 61,
-        branches: 68,
+        // 2026-07-06, after addressing Spec 07 PR review feedback (per-target
+        // power-level gating, stale-state fixes): lines 70.62 / statements 68.9 /
+        // functions 62.14 / branches 69.87), so any regression fails CI. When
+        // you add tests and coverage rises, raise these to the new floor in
+        // the same PR — never lower them just to make CI pass.
+        lines: 70,
+        statements: 68,
+        functions: 62,
+        branches: 69,
       },
     },
   },
