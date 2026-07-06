@@ -1,5 +1,6 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getProfile, removeAvatar, setAvatar, setDisplayName } from "@/lib/matrix";
+import { getProfile, removeAvatar, resolveAvatar, setAvatar, setDisplayName } from "@/lib/matrix";
 
 const PROFILE_QUERY_KEY = ["profile"] as const;
 
@@ -8,6 +9,26 @@ export function useProfile() {
     queryKey: PROFILE_QUERY_KEY,
     queryFn: getProfile,
   });
+}
+
+/**
+ * Resolves a profile's `avatar_url` (a bare `mxc://` URI) to a
+ * webview-loadable source, same pattern as `rooms/media/useMediaSource`.
+ * `undefined` while resolving or when there's no avatar to resolve.
+ */
+export function useResolvedAvatarSrc(mxcUrl: string | null | undefined) {
+  const { data } = useQuery({
+    queryKey: ["avatar", mxcUrl],
+    queryFn: async () => {
+      if (!mxcUrl) return null;
+      const path = await resolveAvatar(mxcUrl);
+      return path ? convertFileSrc(path) : null;
+    },
+    enabled: Boolean(mxcUrl),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+  });
+  return data ?? undefined;
 }
 
 export function useUpdateProfile() {

@@ -3,6 +3,7 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { RoomsScreen } from "@/features/rooms/RoomsScreen";
 import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
+import { queryClient } from "@/providers";
 
 function App() {
   const [session, setSession] = useState<LoginResponse | null>(null);
@@ -38,7 +39,14 @@ function App() {
       currentUserId={session.user_id}
       deepLinkRoomId={deepLinkRoomId}
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
-      onLoggedOut={() => setSession(null)}
+      onLoggedOut={() => {
+        // Clears every account-scoped cache entry (profile, devices,
+        // notification settings, room list, ...) so a subsequent sign-in as
+        // a *different* account in the same app session never shows stale
+        // data from this one before its own queries have refetched.
+        queryClient.clear();
+        setSession(null);
+      }}
     />
   );
 }

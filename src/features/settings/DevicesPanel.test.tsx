@@ -99,6 +99,38 @@ describe("DevicesPanel", () => {
     await waitFor(() => expect(bootstrapCrossSigning).toHaveBeenCalled());
   });
 
+  it("still offers Set up when only some cross-signing keys are present", async () => {
+    crossSigningStatus.mockResolvedValue({
+      has_master_key: true,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    });
+    renderWithProviders(<DevicesPanel />);
+
+    expect(await screen.findByRole("button", { name: "Set up" })).toBeInTheDocument();
+  });
+
+  it("prompts for the account password on a UIA challenge, then succeeds and refreshes the status", async () => {
+    crossSigningStatus.mockResolvedValueOnce({
+      has_master_key: false,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    });
+    bootstrapCrossSigning.mockRejectedValueOnce(new Error("uia")).mockResolvedValueOnce(undefined);
+    renderWithProviders(<DevicesPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
+
+    const passwordInput = await screen.findByLabelText("Account password");
+    fireEvent.change(passwordInput, { target: { value: "current-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(bootstrapCrossSigning).toHaveBeenLastCalledWith("current-password"));
+    // Cross-signing status must be refetched so `isBootstrapped` picks up
+    // the change instead of continuing to show "Set up".
+    await waitFor(() => expect(crossSigningStatus).toHaveBeenCalledTimes(2));
+  });
+
   it("shows a Reset link when the homeserver offers an account-management URL", async () => {
     getCrossSigningResetUrl.mockResolvedValue("https://example.org/account");
     renderWithProviders(<DevicesPanel />);

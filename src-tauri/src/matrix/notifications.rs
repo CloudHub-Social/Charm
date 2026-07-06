@@ -129,6 +129,16 @@ async fn apply_default_mode(
     Ok(())
 }
 
+/// Serializes the load-mutate-save cycle across every command below that
+/// touches `LocalNotificationPrefs` — without this, two concurrent commands
+/// (e.g. toggling global mute and the sound preference in quick succession)
+/// could each load a stale copy and the last write clobbers the other's
+/// change. Not a hot path, so a single process-wide lock (rather than
+/// per-account) is the simplest correct fix — same rationale/shape as
+/// `persistence::RELOCATE_LOCK`.
+static PREFS_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 #[tauri::command]
 pub async fn get_notification_settings(
     app: AppHandle,
@@ -164,13 +174,33 @@ pub async fn get_notification_settings(
     })
 }
 
+/// While global mute is active, this only updates *what to restore* when the
+/// user unmutes — it deliberately leaves the live push rules at `Mute`
+/// rather than silently unmuting every room out from under an active "Mute
+/// all rooms" toggle (see Spec 08 review: changing the default while muted
+/// used to desync the `global_mute` flag from the actual server state).
 #[tauri::command]
 pub async fn set_default_notification_mode(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     mode: RoomNotificationModeKind,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    apply_default_mode(&client.notification_settings().await, mode.into()).await
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let account_key = persistence::account_key(user_id.as_str());
+    let _guard = PREFS_LOCK.lock().await;
+    let mut prefs = load_prefs(&app, &account_key)?;
+
+    if prefs.muted_from_mode.is_some() {
+        prefs.muted_from_mode = Some(mode);
+    } else {
+        apply_default_mode(&client.notification_settings().await, mode.into()).await?;
+    }
+
+    save_prefs(&app, &account_key, &prefs)
 }
 
 #[tauri::command]
@@ -234,19 +264,29 @@ pub async fn set_global_mute(
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
     let account_key = persistence::account_key(user_id.as_str());
+    let _guard = PREFS_LOCK.lock().await;
     let mut prefs = load_prefs(&app, &account_key)?;
     let settings = client.notification_settings().await;
 
+    // `prefs` is only mutated *after* the fallible push-rule call below
+    // succeeds — mutating first (the old code did `.take()` up front) would
+    // leave the in-memory copy showing "restored"/"remembered" even though
+    // the server-side change that was supposed to match it never landed.
     if muted {
-        if prefs.muted_from_mode.is_none() {
-            let current = settings
-                .get_default_room_notification_mode(false.into(), false.into())
-                .await;
-            prefs.muted_from_mode = Some(current.into());
-        }
+        let restore_mode = match prefs.muted_from_mode {
+            Some(mode) => mode,
+            None => {
+                let current = settings
+                    .get_default_room_notification_mode(false.into(), false.into())
+                    .await;
+                current.into()
+            }
+        };
         apply_default_mode(&settings, RoomNotificationMode::Mute).await?;
-    } else if let Some(restore_mode) = prefs.muted_from_mode.take() {
+        prefs.muted_from_mode = Some(restore_mode);
+    } else if let Some(restore_mode) = prefs.muted_from_mode {
         apply_default_mode(&settings, restore_mode.into()).await?;
+        prefs.muted_from_mode = None;
     }
 
     save_prefs(&app, &account_key, &prefs)
@@ -266,6 +306,7 @@ pub async fn set_sound_enabled(
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
     let account_key = persistence::account_key(user_id.as_str());
+    let _guard = PREFS_LOCK.lock().await;
     let mut prefs = load_prefs(&app, &account_key)?;
     prefs.sound_enabled = enabled;
     save_prefs(&app, &account_key, &prefs)

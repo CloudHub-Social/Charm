@@ -10,12 +10,18 @@
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
+use matrix_sdk::ruma::UserId;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
+use super::media;
 use super::persistence;
 use super::MatrixState;
+
+/// Square thumbnail size (px) requested when resolving a profile avatar's
+/// `mxc://` URI to a local file for [`resolve_avatar`].
+const AVATAR_THUMBNAIL_SIZE: u32 = 96;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -25,19 +31,44 @@ pub struct ProfileSummary {
     pub avatar_url: Option<String>,
 }
 
-/// Builds the UIA password stage's auth data, or `None` on a first attempt —
-/// the frontend should treat any error from a UIA-gated command as "prompt
-/// for the account password and retry", mirroring
-/// `verification::bootstrap_cross_signing`'s established convention (no UIA
-/// session id threading; matches that command's tested behavior against
-/// Synapse).
-fn password_auth_data(user_id: &str, password: Option<String>) -> Option<AuthData> {
-    password.map(|password| {
-        AuthData::Password(Password::new(
-            UserIdentifier::Matrix(MatrixUserIdentifier::new(user_id.to_string())),
-            password,
-        ))
-    })
+/// Runs a UIA-gated `call` (`change_password`/`deactivate`/`delete_devices`),
+/// threading a real session id through the retry when `password` is given.
+///
+/// The frontend contract stays a plain two-call retry ("call with no
+/// password" -> show a prompt on error -> "call again with the password"),
+/// but a `Password` built with `session: None` risks being treated as a
+/// fresh, unauthenticated UIA attempt on a homeserver that enforces session
+/// continuity across stages (Synapse tolerates it; the spec doesn't
+/// guarantee every server will). So when `password` is present, this probes
+/// with an auth-less call first to obtain the session id tied to *this*
+/// attempt, then retries with that session attached — one extra round trip,
+/// hidden from the frontend, in exchange for spec-correct UIA behavior.
+pub(crate) async fn retry_uia_with_session<T, F, Fut>(
+    user_id: &UserId,
+    password: Option<String>,
+    mut call: F,
+) -> Result<T, String>
+where
+    F: FnMut(Option<AuthData>) -> Fut,
+    Fut: std::future::Future<Output = matrix_sdk::Result<T>>,
+{
+    let Some(password) = password else {
+        return call(None).await.map_err(|e| e.to_string());
+    };
+
+    let session = match call(None).await {
+        Ok(value) => return Ok(value),
+        Err(e) => e.as_uiaa_response().and_then(|info| info.session.clone()),
+    };
+
+    let mut auth = Password::new(
+        UserIdentifier::Matrix(MatrixUserIdentifier::new(user_id.to_string())),
+        password,
+    );
+    auth.session = session;
+    call(Some(AuthData::Password(auth)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Tears down the local session identically for `logout` and
@@ -53,6 +84,15 @@ async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> R
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
     *state.client.lock().await = None;
+
+    // The background sync loop (`mod::spawn_sync_loop`) holds its own clone
+    // of the `Client`, independent of the one just cleared above — without
+    // this, it keeps syncing (and emitting `room_list:update`/`sync:state`)
+    // for the now-signed-out account until it happens to fail on its own.
+    if let Some(handle) = state.sync_loop_task.lock().unwrap().take() {
+        handle.abort();
+    }
+
     Ok(())
 }
 
@@ -103,6 +143,28 @@ pub async fn get_profile(state: State<'_, MatrixState>) -> Result<ProfileSummary
     })
 }
 
+/// Resolves `ProfileSummary.avatar_url` (a bare `mxc://` URI — never
+/// webview-loadable directly) to a local, `convertFileSrc`-able filesystem
+/// path, same convention as `mod::resolve_media`. `None` on any resolution
+/// failure (e.g. no media cache available), so the frontend can fall back to
+/// the initials placeholder rather than showing a broken image.
+#[tauri::command]
+pub async fn resolve_avatar(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    mxc_url: String,
+) -> Result<Option<String>, String> {
+    let client = state.require_client().await?;
+    let Ok(cache) = state.require_media_cache(&app).await else {
+        return Ok(None);
+    };
+    Ok(
+        media::resolve_avatar_thumbnail(cache, &client, &mxc_url, AVATAR_THUMBNAIL_SIZE)
+            .await
+            .map(|path| path.to_string_lossy().into_owned()),
+    )
+}
+
 #[tauri::command]
 pub async fn set_display_name(
     state: State<'_, MatrixState>,
@@ -146,7 +208,7 @@ pub async fn remove_avatar(state: State<'_, MatrixState>) -> Result<(), String> 
 }
 
 /// UIA-gated: the first call (no `password`) always fails with a UIA
-/// challenge — see [`password_auth_data`].
+/// challenge — see [`retry_uia_with_session`].
 #[tauri::command]
 pub async fn change_password(
     state: State<'_, MatrixState>,
@@ -158,13 +220,12 @@ pub async fn change_password(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-    let auth_data = password_auth_data(user_id.as_str(), password);
+    let account = client.account();
 
-    client
-        .account()
-        .change_password(&new_password, auth_data)
-        .await
-        .map_err(|e| e.to_string())?;
+    retry_uia_with_session(&user_id, password, |auth| {
+        account.change_password(&new_password, auth)
+    })
+    .await?;
     Ok(())
 }
 
@@ -183,13 +244,12 @@ pub async fn deactivate_account(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-    let auth_data = password_auth_data(user_id.as_str(), password);
+    let account = client.account();
 
-    client
-        .account()
-        .deactivate(None, auth_data, false)
-        .await
-        .map_err(|e| e.to_string())?;
+    retry_uia_with_session(&user_id, password, |auth| {
+        account.deactivate(None, auth, false)
+    })
+    .await?;
 
     clear_local_session(&state, user_id.as_str()).await
 }
@@ -245,11 +305,9 @@ mod tests {
         mock_uia_dance_with_body(&server, "/_matrix/client/v3/account/password", json!({})).await;
 
         let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
 
-        let first_attempt = client
-            .account()
-            .change_password("new-password", password_auth_data(user_id.as_str(), None))
-            .await;
+        let first_attempt = account.change_password("new-password", None).await;
         assert!(
             first_attempt
                 .as_ref()
@@ -258,12 +316,10 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
-        let retry = client
-            .account()
-            .change_password(
-                "new-password",
-                password_auth_data(user_id.as_str(), Some("current-password".to_string())),
-            )
+        let retry =
+            retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
+                account.change_password("new-password", auth)
+            })
             .await;
         assert!(
             retry.is_ok(),
@@ -283,11 +339,9 @@ mod tests {
         .await;
 
         let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
 
-        let first_attempt = client
-            .account()
-            .deactivate(None, password_auth_data(user_id.as_str(), None), false)
-            .await;
+        let first_attempt = account.deactivate(None, None, false).await;
         assert!(
             first_attempt
                 .as_ref()
@@ -296,17 +350,57 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
-        let retry = client
-            .account()
-            .deactivate(
-                None,
-                password_auth_data(user_id.as_str(), Some("current-password".to_string())),
-                false,
-            )
+        let retry =
+            retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
+                account.deactivate(None, auth, false)
+            })
             .await;
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// The gap a reviewer caught: a `Password` built with `session: None`
+    /// (the old behavior) looks like a brand new UIA attempt to a strict
+    /// homeserver. This homeserver only accepts the retry when its body
+    /// echoes back the *exact* session id from the 401 challenge — a naive
+    /// retry (any `"auth"` blob) would fail here even though it passed the
+    /// looser `mock_uia_dance_with_body` check above.
+    #[tokio::test]
+    async fn retry_uia_with_session_threads_the_real_session_id_through() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
+
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .and(body_string_contains("\"session\":\"exact-session-id\""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .with_priority(1)
+            .mount(server.server())
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/_matrix/client/v3/account/password"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "errcode": "M_FORBIDDEN",
+                "flows": [{ "stages": ["m.login.password"] }],
+                "params": {},
+                "session": "exact-session-id"
+            })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
+                account.change_password("new-password", auth)
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "expected the session id from the 401 challenge to be echoed back on retry: {result:?}"
         );
     }
 }

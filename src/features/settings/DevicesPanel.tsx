@@ -1,6 +1,8 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
 import { DeviceRow } from "./DeviceRow";
 import {
@@ -22,20 +24,34 @@ export function DevicesPanel() {
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
-  const { revoke, verify } = useDeviceActions();
+  const { revoke, verify, invalidateCrossSigning } = useDeviceActions();
   const [bootstrapping, setBootstrapping] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState("");
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
-  const isBootstrapped = status?.has_master_key ?? false;
+  // All three keys, not just the master key — an interrupted/reset bootstrap
+  // can leave a master key in place without the self-signing/user-signing
+  // keys, and this "Set up" action is the only thing that can repair that.
+  const isBootstrapped = Boolean(
+    status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key,
+  );
   const groups = groupDevices(devices ?? []);
 
   async function handleBootstrap() {
     setBootstrapping(true);
     setBootstrapError(null);
     try {
-      await bootstrapCrossSigning();
+      await bootstrapCrossSigning(needsPassword ? password : undefined);
+      setNeedsPassword(false);
+      setPassword("");
+      invalidateCrossSigning();
     } catch (err) {
-      setBootstrapError(String(err));
+      if (!needsPassword) {
+        setNeedsPassword(true);
+      } else {
+        setBootstrapError(String(err));
+      }
     } finally {
       setBootstrapping(false);
     }
@@ -48,12 +64,29 @@ export function DevicesPanel() {
         <p className="mb-3 text-sm text-muted-foreground">
           {isBootstrapped
             ? "Set up. Verifying another session compares this account's trusted identity."
-            : "Not set up yet. Set it up to be able to verify your other sessions."}
+            : needsPassword
+              ? "Re-enter your account password to finish setting up cross-signing."
+              : "Not set up yet. Set it up to be able to verify your other sessions."}
         </p>
+        {needsPassword && !isBootstrapped && (
+          <div className="mb-3 max-w-xs">
+            <Label htmlFor="cross-signing-password">Account password</Label>
+            <Input
+              id="cross-signing-password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </div>
+        )}
         <div className="flex gap-2">
           {!isBootstrapped && (
-            <Button size="sm" onClick={handleBootstrap} disabled={bootstrapping}>
-              {bootstrapping ? "Setting up…" : "Set up"}
+            <Button
+              size="sm"
+              onClick={handleBootstrap}
+              disabled={bootstrapping || (needsPassword && password === "")}
+            >
+              {bootstrapping ? "Setting up…" : needsPassword ? "Confirm" : "Set up"}
             </Button>
           )}
           {resetUrl && (

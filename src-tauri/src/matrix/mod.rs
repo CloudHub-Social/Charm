@@ -111,6 +111,15 @@ pub struct MatrixState {
     timelines: Mutex<
         lru::LruCache<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<matrix_sdk_ui::Timeline>>,
     >,
+    /// The task driving the current background sync loop (`spawn_sync_loop`),
+    /// which holds its own clone of the `Client` independent of the one in
+    /// `client` above. Aborted on logout/deactivate (see
+    /// `account::clear_local_session`) — otherwise clearing `client` alone
+    /// leaves this loop running against the old, revoked-or-not session,
+    /// still emitting `room_list:update`/`sync:state` for an account the
+    /// user believes they've signed out of. Same `std::sync::Mutex`
+    /// synchronous-with-spawn rationale as `pending_qr_login_task`.
+    pub(crate) sync_loop_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for MatrixState {
@@ -127,6 +136,7 @@ impl Default for MatrixState {
                 std::num::NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            sync_loop_task: std::sync::Mutex::default(),
         }
     }
 }
@@ -1188,7 +1198,8 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
         });
     }
 
-    tokio::spawn(async move {
+    let app_for_state = app.clone();
+    let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
 
         // Establish initial sync state before entering the long-running loop below.
@@ -1255,4 +1266,17 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
             }
         }
     });
+
+    // Replacing rather than assuming empty: aborts any handle a previous
+    // session's loop left behind (shouldn't happen once logout aborts its
+    // own, but don't leak either way) before this one takes its place.
+    let previous = app_for_state
+        .state::<MatrixState>()
+        .sync_loop_task
+        .lock()
+        .unwrap()
+        .replace(handle);
+    if let Some(previous) = previous {
+        previous.abort();
+    }
 }

@@ -96,12 +96,13 @@ describe("NotificationsPanel", () => {
     await waitFor(() => expect(addNotificationKeyword).toHaveBeenCalledWith("on-call"));
   });
 
-  it("changes a per-room notification mode override", async () => {
+  it("changes a per-room notification mode override and refetches the room list to reflect it", async () => {
     listRooms.mockResolvedValue([
       makeRoomSummary({ room_id: "!general:localhost", name: "General", is_muted: false }),
     ]);
     setRoomNotificationMode.mockResolvedValue(undefined);
     renderWithProviders(<NotificationsPanel />);
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(1));
 
     const roomModeButtons = await screen.findAllByRole("button", { name: "All messages" });
     fireEvent.pointerDown(roomModeButtons[roomModeButtons.length - 1], {
@@ -114,5 +115,8 @@ describe("NotificationsPanel", () => {
     await waitFor(() =>
       expect(setRoomNotificationMode).toHaveBeenCalledWith("!general:localhost", "mute"),
     );
+    // The mutation's success invalidates the rooms query — without that,
+    // this row would keep showing "All messages" until an unrelated remount.
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
   });
 });

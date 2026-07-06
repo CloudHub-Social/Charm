@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
-import { useProfile, useUpdateProfile } from "./useProfile";
+import { useProfile, useResolvedAvatarSrc, useUpdateProfile } from "./useProfile";
 
 interface AccountPanelProps {
   onLoggedOut: () => void;
@@ -22,6 +22,7 @@ interface AccountPanelProps {
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
+  const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
 
   const [displayNameDraft, setDisplayNameDraft] = useState<string | null>(null);
   const displayName = displayNameDraft ?? profile?.display_name ?? "";
@@ -76,7 +77,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         <h2 className="mb-4 text-lg font-bold text-foreground">Profile</h2>
         <div className="mb-4 flex items-center gap-4">
           <Avatar size="lg">
-            {profile?.avatar_url && <AvatarImage src={profile.avatar_url} alt="" />}
+            {avatarSrc && <AvatarImage src={avatarSrc} alt="" />}
             <AvatarFallback>
               {(profile?.display_name ?? profile?.user_id ?? "?").slice(0, 1).toUpperCase()}
             </AvatarFallback>

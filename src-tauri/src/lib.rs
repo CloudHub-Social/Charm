@@ -101,6 +101,7 @@ pub fn run() {
             matrix::spaces::knock_room,
             matrix::account::logout,
             matrix::account::get_profile,
+            matrix::account::resolve_avatar,
             matrix::account::set_display_name,
             matrix::account::set_avatar,
             matrix::account::remove_avatar,

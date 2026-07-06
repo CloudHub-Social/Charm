@@ -367,6 +367,16 @@ export function getProfile(): Promise<ProfileSummary> {
   return invoke("get_profile");
 }
 
+/**
+ * Resolves `ProfileSummary.avatar_url` (a bare `mxc://` URI, not
+ * webview-loadable directly) to a local filesystem path — `null` on any
+ * resolution failure. Load the returned path via `convertFileSrc` from
+ * `@tauri-apps/api/core`, same convention as {@link resolveMedia}.
+ */
+export function resolveAvatar(mxcUrl: string): Promise<string | null> {
+  return invoke("resolve_avatar", { mxcUrl });
+}
+
 export function setDisplayName(displayName: string | null): Promise<void> {
   return invoke("set_display_name", { displayName });
 }

@@ -34,15 +34,15 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-06, after Spec 08's settings/devices/notifications panels:
-        // lines 62.33 / statements 60.96 / functions 56.27 / branches 62.54),
-        // so any regression fails CI. When you add tests and coverage rises,
-        // raise these to the new floor in the same PR — never lower them just
-        // to make CI pass.
-        lines: 62,
-        statements: 60,
-        functions: 56,
-        branches: 62,
+        // 2026-07-06, after the Spec 08 review-fix pass: lines 64.2 /
+        // statements 62.61 / functions 57.9 / branches 63.58), so any
+        // regression fails CI. When you add tests and coverage rises, raise
+        // these to the new floor in the same PR — never lower them just to
+        // make CI pass.
+        lines: 64,
+        statements: 62,
+        functions: 57,
+        branches: 63,
       },
     },
   },

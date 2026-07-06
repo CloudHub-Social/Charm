@@ -5,14 +5,12 @@
 use futures_util::StreamExt;
 use matrix_sdk::encryption::verification::VerificationRequestState;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
-use matrix_sdk::ruma::api::client::uiaa::{
-    AuthData, MatrixUserIdentifier, Password, UserIdentifier,
-};
 use matrix_sdk::ruma::{DeviceId, OwnedDeviceId};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
+use super::account::retry_uia_with_session;
 use super::verification::VerificationRequestSummary;
 use super::MatrixState;
 
@@ -97,17 +95,13 @@ pub async fn delete_device(
         return Err("cannot revoke the current device this way — use logout instead".to_string());
     }
 
-    let auth_data = password.map(|password| {
-        AuthData::Password(Password::new(
-            UserIdentifier::Matrix(MatrixUserIdentifier::new(user_id.to_string())),
-            password,
-        ))
-    });
-
-    client
-        .delete_devices(&[device_id], auth_data)
-        .await
-        .map_err(|e| e.to_string())?;
+    retry_uia_with_session(&user_id, password, |auth| async {
+        client
+            .delete_devices(std::slice::from_ref(&device_id), auth)
+            .await
+            .map_err(matrix_sdk::Error::from)
+    })
+    .await?;
     Ok(())
 }
 
@@ -244,17 +238,9 @@ mod tests {
 
         let user_id = client.user_id().unwrap().to_owned();
         let target = owned_device_id!("OTHERDEVICE");
-        let auth = |password: Option<&str>| {
-            password.map(|password| {
-                AuthData::Password(Password::new(
-                    UserIdentifier::Matrix(MatrixUserIdentifier::new(user_id.to_string())),
-                    password.to_string(),
-                ))
-            })
-        };
 
         let first_attempt = client
-            .delete_devices(std::slice::from_ref(&target), auth(None))
+            .delete_devices(std::slice::from_ref(&target), None)
             .await;
         assert!(
             first_attempt
@@ -264,12 +250,17 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
-        let retry = client
-            .delete_devices(
-                std::slice::from_ref(&target),
-                auth(Some("current-password")),
-            )
-            .await;
+        let retry = retry_uia_with_session(
+            &user_id,
+            Some("current-password".to_string()),
+            |auth| async {
+                client
+                    .delete_devices(std::slice::from_ref(&target), auth)
+                    .await
+                    .map_err(matrix_sdk::Error::from)
+            },
+        )
+        .await;
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"

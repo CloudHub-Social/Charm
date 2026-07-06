@@ -9,6 +9,7 @@ const logout = vi.fn();
 const setDisplayName = vi.fn();
 const setAvatar = vi.fn();
 const removeAvatar = vi.fn();
+const resolveAvatar = vi.fn();
 const changePassword = vi.fn();
 const deactivateAccount = vi.fn();
 
@@ -18,8 +19,13 @@ vi.mock("@/lib/matrix", () => ({
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
   setAvatar: (...args: unknown[]) => setAvatar(...args),
   removeAvatar: (...args: unknown[]) => removeAvatar(...args),
+  resolveAvatar: (...args: unknown[]) => resolveAvatar(...args),
   changePassword: (...args: unknown[]) => changePassword(...args),
   deactivateAccount: (...args: unknown[]) => deactivateAccount(...args),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${path}`,
 }));
 
 const openFileDialog = vi.fn();
@@ -107,6 +113,22 @@ describe("AccountPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Change avatar" }));
 
     await waitFor(() => expect(setAvatar).toHaveBeenCalledWith("/tmp/avatar.png"));
+  });
+
+  it("resolves the profile's mxc:// avatar url rather than rendering it raw", async () => {
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: "mxc://example.org/abc123",
+    });
+    resolveAvatar.mockResolvedValue("/cache/avatar-thumb.png");
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    // `AvatarImage` (Radix) only mounts an `<img>` once the browser reports
+    // the image loaded, which jsdom never does — so this asserts on the
+    // resolution call itself (see `useProfile.test.ts` for the hook-level
+    // proof that the resolved path is actually what gets passed as `src`).
+    await waitFor(() => expect(resolveAvatar).toHaveBeenCalledWith("mxc://example.org/abc123"));
   });
 
   it("change password prompts for the account password on the first UIA challenge, then succeeds", async () => {
