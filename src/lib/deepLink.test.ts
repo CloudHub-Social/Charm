@@ -29,4 +29,16 @@ describe("parseRoomTarget", () => {
   it("returns null for a charm:// URL that isn't a room link", () => {
     expect(parseRoomTarget("charm://something-else")).toBeNull();
   });
+
+  it("does not treat a matrix.to fragment embedded in an unrelated charm:// URL as a room link", () => {
+    expect(
+      parseRoomTarget("charm://anything?x=https://matrix.to/#/!some-room:evil.com"),
+    ).toBeNull();
+  });
+
+  it("does not treat a matrix.to fragment embedded in an unrelated https URL as a room link", () => {
+    expect(
+      parseRoomTarget("https://evil.example/?x=https://matrix.to/#/!some-room:evil.com"),
+    ).toBeNull();
+  });
 });

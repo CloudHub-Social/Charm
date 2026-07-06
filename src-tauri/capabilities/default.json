@@ -5,10 +5,10 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
+    "opener:allow-default-urls",
     "updater:default",
     "process:default",
     "deep-link:default",
-    "dialog:default"
+    "dialog:allow-open"
   ]
 }

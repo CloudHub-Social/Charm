@@ -15,7 +15,7 @@
 
 mod common;
 
-use charm_lib::matrix::{complete_sso_login_with_callback, get_sso_login_url};
+use charm_lib::matrix::auth::{complete_sso_login_with_callback, get_sso_login_url};
 use common::HOMESERVER;
 use matrix_sdk::Client;
 

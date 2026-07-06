@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
-use super::{persistence, spawn_sync_loop, LoginResponse, MatrixState};
+use super::auth::LoginResponse;
+use super::sync::spawn_sync_loop;
+use super::{persistence, MatrixState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -73,7 +75,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     // The account isn't known until the OAuth device-code dance completes —
     // open a temp store now and relocate it once the MXID is known.
     let temp_key = persistence::temp_store_key();
-    let client = super::build_client(&app, &homeserver_url, &temp_key).await?;
+    let client = super::auth::build_client(&app, &homeserver_url, &temp_key).await?;
 
     // Device-code grant only — this client only ever needs to be the "new
     // device" side of QR login, never a full browser-based OAuth login.
@@ -98,7 +100,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         .state::<MatrixState>()
         .pending_qr_temp_store_key
         .lock()
-        .unwrap() = Some(temp_key.clone());
+        .unwrap_or_else(|e| e.into_inner()) = Some(temp_key.clone());
 
     let temp_key_for_task = temp_key.clone();
     let task = tokio::spawn(async move {
@@ -193,38 +195,41 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                         return;
                     }
                 };
-                let client = if matches!(outcome, persistence::RelocateOutcome::Reused(_)) {
-                    let existing_client =
-                        match super::build_client(&app, &homeserver_url, &account_key).await {
-                            Ok(client) => client,
-                            Err(e) => {
-                                let _ = app.emit(
-                                    "qr_login:progress",
-                                    QrLoginProgressEvent::Error { message: e },
-                                );
-                                return;
-                            }
-                        };
-                    if let Err(e) = existing_client
-                        .oauth()
-                        .restore_session(
-                            session.clone(),
-                            matrix_sdk::store::RoomLoadSettings::default(),
-                        )
-                        .await
-                    {
-                        let _ = app.emit(
-                            "qr_login:progress",
-                            QrLoginProgressEvent::Error {
-                                message: e.to_string(),
-                            },
-                        );
-                        return;
-                    }
-                    existing_client
-                } else {
-                    client
-                };
+                let client =
+                    if matches!(outcome, persistence::RelocateOutcome::Reused(_)) {
+                        let existing_client =
+                            match super::auth::build_client(&app, &homeserver_url, &account_key)
+                                .await
+                            {
+                                Ok(client) => client,
+                                Err(e) => {
+                                    let _ = app.emit(
+                                        "qr_login:progress",
+                                        QrLoginProgressEvent::Error { message: e },
+                                    );
+                                    return;
+                                }
+                            };
+                        if let Err(e) = existing_client
+                            .oauth()
+                            .restore_session(
+                                session.clone(),
+                                matrix_sdk::store::RoomLoadSettings::default(),
+                            )
+                            .await
+                        {
+                            let _ = app.emit(
+                                "qr_login:progress",
+                                QrLoginProgressEvent::Error {
+                                    message: e.to_string(),
+                                },
+                            );
+                            return;
+                        }
+                        existing_client
+                    } else {
+                        client
+                    };
                 if let Err(e) = persistence::save_oauth_session(
                     &account_key,
                     client.homeserver().as_ref(),
@@ -260,7 +265,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // `cancel_qr_login`/restart aborted it), and clobbering that
                 // would leave the new attempt's own cleanup with nothing to
                 // find.
-                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                let mut pending_key = state
+                    .pending_qr_temp_store_key
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if pending_key.as_deref() == Some(temp_key.as_str()) {
                     *pending_key = None;
                 }
@@ -291,7 +299,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // arm runs, and clobbering that would leave the new
                 // attempt's own cleanup with nothing to find.
                 let state = app.state::<MatrixState>();
-                let mut pending_key = state.pending_qr_temp_store_key.lock().unwrap();
+                let mut pending_key = state
+                    .pending_qr_temp_store_key
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if pending_key.as_deref() == Some(temp_key.as_str()) {
                     *pending_key = None;
                 }
@@ -314,7 +325,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         .state::<MatrixState>()
         .pending_qr_login_task
         .lock()
-        .unwrap() = Some(task);
+        .unwrap_or_else(|e| e.into_inner()) = Some(task);
 
     Ok(())
 }
@@ -325,13 +336,21 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 /// any pending check-code sender so a stale one can't be used later.
 #[tauri::command]
 pub async fn cancel_qr_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
-    let task = state.pending_qr_login_task.lock().unwrap().take();
+    let task = state
+        .pending_qr_login_task
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     if let Some(task) = task {
         task.abort();
     }
     *state.pending_qr_check_code.lock().await = None;
 
-    let temp_key = state.pending_qr_temp_store_key.lock().unwrap().take();
+    let temp_key = state
+        .pending_qr_temp_store_key
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     if let Some(temp_key) = temp_key {
         let _ = persistence::discard_temp_login_store(&app, &temp_key);
     }

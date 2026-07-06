@@ -7,7 +7,7 @@
 
 mod common;
 
-use charm_lib::matrix::resolve_alias;
+use charm_lib::matrix::rooms::resolve_alias;
 use common::logged_in_client;
 
 #[tokio::test]

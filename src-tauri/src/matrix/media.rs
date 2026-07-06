@@ -44,6 +44,18 @@ pub const MAX_ENTRY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// oldest-mtime-first.
 const EVICT_FRACTION: f64 = 0.10;
 
+/// Ceiling on a full (non-thumbnail) media file's *declared* (sender-supplied
+/// `info.size`) byte count before `resolve` will auto-download it.
+/// `matrix-sdk`'s `get_media_content` has no streaming/early-abort API — it
+/// always buffers the whole response before returning — so this can't catch
+/// a sender that under-declares `info.size` and then actually serves a huge
+/// file; it only stops the common case (an honestly-declared oversized
+/// attachment, e.g. a multi-GB video) from being downloaded and held in
+/// memory in full merely because a message referencing it was rendered.
+/// Thumbnails aren't capped: their pixel dimensions are server-scaled and
+/// requested at a fixed small size (see `resolve_media` in `mod.rs`).
+pub const MAX_AUTO_DOWNLOAD_BYTES: u64 = 100 * 1024 * 1024;
+
 /// Which flavor of media to resolve — full file, or a thumbnail at a given
 /// size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,10 +277,21 @@ pub async fn resolve(
     client: &Client,
     source: MediaSource,
     kind: MediaKind,
+    declared_size: Option<u64>,
 ) -> Result<PathBuf, String> {
     if let Some(path) = cache.cached_path(&source, kind).await {
         if path.exists() {
             return Ok(path);
+        }
+    }
+
+    if kind == MediaKind::File {
+        if let Some(size) = declared_size {
+            if size > MAX_AUTO_DOWNLOAD_BYTES {
+                return Err(format!(
+                    "media is {size} bytes, over the {MAX_AUTO_DOWNLOAD_BYTES}-byte auto-download limit"
+                ));
+            }
         }
     }
 
@@ -304,9 +327,125 @@ pub async fn resolve_avatar_thumbnail(
             width: size,
             height: size,
         },
+        None,
     )
     .await
     .ok()
+}
+
+/// Resolves the media attached to `event_id` (an image/video/audio/file
+/// `m.room.message`) to a local cache path, fetching and decrypting on a
+/// cache miss. `thumbnail` requests a 256x256 scaled thumbnail instead of the
+/// full file — callers pick based on where the media is being rendered
+/// (message-list thumbnail vs. lightbox full view).
+///
+/// No opaque handle crosses IPC: the frontend passes back the plain
+/// `(room_id, event_id)` it already has from `RoomMessageSummary`, and this
+/// command re-derives the real `MediaSource` — including, for encrypted
+/// media, the `EncryptedFile`'s AES key — by re-fetching the event
+/// server-side. The key never leaves this function.
+#[tauri::command]
+pub async fn resolve_media(
+    app: AppHandle,
+    state: tauri::State<'_, super::MatrixState>,
+    room_id: String,
+    event_id: String,
+    thumbnail: bool,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    let cache = state.require_media_cache(&app).await?;
+    resolve_media_impl(&client, cache, &room_id, &event_id, thumbnail).await
+}
+
+/// Core logic behind [`resolve_media`], taking a plain `&Client`/`&MediaCache`
+/// so it's callable without a Tauri `State` to construct.
+pub async fn resolve_media_impl(
+    client: &Client,
+    cache: &MediaCache,
+    room_id: &str,
+    event_id: &str,
+    thumbnail: bool,
+) -> Result<String, String> {
+    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let room = client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
+
+    let event = room
+        .event(&parsed_event_id, None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let raw = event.kind.raw();
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
+        raw.deserialize().map_err(|e| e.to_string())?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return Err(format!("event {event_id} is not an m.room.message"));
+    };
+    let original = msg
+        .as_original()
+        .ok_or_else(|| format!("event {event_id} has been redacted"))?;
+
+    let (source, thumbnail_source, declared_size) = match &original.content.msgtype {
+        matrix_sdk::ruma::events::room::message::MessageType::Image(image) => (
+            image.source.clone(),
+            image.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+            image.info.as_ref().and_then(|i| i.size).map(u64::from),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Video(video) => (
+            video.source.clone(),
+            video.info.as_ref().and_then(|i| i.thumbnail_source.clone()),
+            video.info.as_ref().and_then(|i| i.size).map(u64::from),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::Audio(audio) => (
+            audio.source.clone(),
+            None,
+            audio.info.as_ref().and_then(|i| i.size).map(u64::from),
+        ),
+        matrix_sdk::ruma::events::room::message::MessageType::File(file) => (
+            file.source.clone(),
+            None,
+            file.info.as_ref().and_then(|i| i.size).map(u64::from),
+        ),
+        _ => return Err(format!("event {event_id} has no media")),
+    };
+
+    let (resolved_source, kind) = if thumbnail {
+        match thumbnail_source {
+            Some(thumb_source) => (
+                thumb_source,
+                MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+            // No dedicated thumbnail: falling back to the full-size source
+            // is only valid to request as a server-side *thumbnail* when
+            // that source is `Plain` — homeservers cannot generate
+            // thumbnails of `Encrypted` content (they can't decrypt it), so
+            // a `MediaFormat::Thumbnail` request against an encrypted
+            // source always fails server-side. Fetch (and decrypt) the
+            // full file instead; the frontend renders it at the
+            // thumbnail's display size regardless of the underlying pixel
+            // dimensions.
+            None if matches!(source, MediaSource::Encrypted(_)) => (source, MediaKind::File),
+            None => (
+                source,
+                MediaKind::Thumbnail {
+                    width: 256,
+                    height: 256,
+                },
+            ),
+        }
+    } else {
+        (source, MediaKind::File)
+    };
+
+    let path = resolve(cache, client, resolved_source, kind, declared_size).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -315,6 +454,80 @@ mod tests {
 
     fn plain_source(mxc: &str) -> MediaSource {
         MediaSource::Plain(matrix_sdk::ruma::OwnedMxcUri::from(mxc))
+    }
+
+    /// `resolve` itself (the fetch-and-cache path `resolve_media`/
+    /// `resolve_avatar_thumbnail` call) had no test — only the cache's own
+    /// store/evict internals did. Exercises it against a mocked homeserver
+    /// (no live Synapse needed), same pattern as `timeline::mapping_tests`.
+    #[tokio::test]
+    async fn resolve_fetches_and_caches_media_on_a_cold_cache() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let tmp = tempfile_dir();
+        let cache = MediaCache::new(tmp.clone());
+        cache.rebuild_index().await.unwrap();
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        // The mock client's default cached server version (v1.12) supports
+        // authenticated media, so `get_media_content` uses that endpoint
+        // rather than the legacy unauthenticated one.
+        server
+            .mock_authed_media_download()
+            .ok_plain_text()
+            .mount()
+            .await;
+
+        let source = plain_source("mxc://example.org/resolve-test");
+        let path = resolve(&cache, &client, source.clone(), MediaKind::File, None)
+            .await
+            .expect("resolve should fetch and cache successfully");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Hello, World!");
+        // A second lookup should hit the cache `resolve` just populated,
+        // not require another network round trip.
+        let cached_path = cache.cached_path(&source, MediaKind::File).await;
+        assert_eq!(cached_path, Some(path));
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The declared-size cap (see `MAX_AUTO_DOWNLOAD_BYTES`) should reject a
+    /// full-file resolve before ever touching the network, but must not
+    /// apply to thumbnail requests (server-scaled, bounded by the requested
+    /// dimensions regardless of the full file's size).
+    #[tokio::test]
+    async fn resolve_rejects_an_oversized_declared_file_without_fetching() {
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+        let tmp = tempfile_dir();
+        let cache = MediaCache::new(tmp.clone());
+        cache.rebuild_index().await.unwrap();
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        // Deliberately NOT mounting a download mock — a request reaching the
+        // network here (a 404 from wiremock) would itself surface as an
+        // error, but a *different* one than the size-cap rejection this test
+        // checks for, so asserting the exact error message also guards
+        // against that false-pass.
+        let source = plain_source("mxc://example.org/huge-file");
+
+        let result = resolve(
+            &cache,
+            &client,
+            source,
+            MediaKind::File,
+            Some(MAX_AUTO_DOWNLOAD_BYTES + 1),
+        )
+        .await;
+
+        let err = result.expect_err("an oversized declared file should be rejected");
+        assert!(
+            err.contains("auto-download limit"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

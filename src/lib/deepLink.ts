@@ -14,9 +14,18 @@ export function parseRoomTarget(url: string): string | null {
       return decodeURIComponent(charmMatch[1]);
     }
 
-    const matrixToMatch = url.match(/matrix\.to\/#\/([^?]+)/);
-    if (matrixToMatch) {
-      return decodeURIComponent(matrixToMatch[1]);
+    // Parsed and scheme/host-checked (rather than a substring search over the
+    // raw string) so this only ever matches a URL that's genuinely
+    // `https://matrix.to/...` — not, say, a `charm://` URL that merely
+    // contains that text somewhere in its query string, which a raw
+    // `url.match(/matrix\.to\/#\//)` would previously have matched too.
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:" && parsed.hostname.toLowerCase() === "matrix.to") {
+      const fragment = parsed.hash.replace(/^#/, "");
+      const matrixToMatch = fragment.match(/^\/([^?]+)/);
+      if (matrixToMatch) {
+        return decodeURIComponent(matrixToMatch[1]);
+      }
     }
   } catch {
     return null;

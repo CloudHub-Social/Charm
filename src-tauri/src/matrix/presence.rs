@@ -114,7 +114,10 @@ pub async fn set_presence(
 ) -> Result<(), String> {
     let client = state.require_client().await?;
     set_presence_on(&client, presence, status_msg).await?;
-    *state.sync_presence.lock().unwrap() = presence;
+    *state
+        .sync_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = presence;
     Ok(())
 }
 
