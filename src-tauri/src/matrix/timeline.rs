@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use matrix_sdk::deserialized_responses::TimelineEvent;
 use matrix_sdk::room::MessagesOptions;
-use matrix_sdk::ruma::events::room::message::{MessageType, Relation as MessageRelation};
+use matrix_sdk::ruma::events::room::message::{
+    MessageFormat, MessageType, Relation as MessageRelation,
+};
 use matrix_sdk::ruma::events::room::redaction::SyncRoomRedactionEvent;
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
 use matrix_sdk::ruma::{OwnedEventId, OwnedUserId, RoomId};
@@ -166,7 +168,11 @@ pub struct RoomMessageSummary {
     /// Text-preview/room-list use — kept for backwards compatibility
     /// alongside `content`, which carries the full tagged-union payload.
     pub body: String,
-    /// Reserved: always `None` until the formatted-body/rich-text composition spec lands.
+    /// `org.matrix.custom.html` formatted body, when the message (or its
+    /// latest edit) has one — see `formatted_html_body` in this module.
+    /// `None` for plain-text messages. Rendered only after re-sanitizing
+    /// against the Matrix-permitted allowlist (`composerSanitize.ts`); never
+    /// trust this as pre-sanitized just because it came from the SDK.
     pub formatted_body: Option<String>,
     // Milliseconds since epoch stays well within JS's safe-integer range; emit `number`
     // rather than ts-rs's default `bigint` so the frontend can use it directly.
@@ -238,6 +244,23 @@ pub struct RoomTimelineUpdate {
 /// the current batch, plus a frontend merge that replaces in place by
 /// timestamp rather than appending. Tracked as a fast-follow rather than
 /// blocking this PR on it — see the Spec 03 planning doc.
+/// Extracts a message's `org.matrix.custom.html` formatted body, if it has
+/// one — `None` for plain-text messages/emotes/notices or ones formatted
+/// with anything other than HTML (the only format Matrix currently defines).
+/// Trusted only as raw content here: rendering it is the frontend's job, and
+/// the frontend re-sanitizes against the Matrix-permitted allowlist before
+/// ever putting it in the DOM (see `composerSanitize.ts`) rather than
+/// trusting that this event's sender did.
+fn formatted_html_body(msgtype: &MessageType) -> Option<String> {
+    let formatted = match msgtype {
+        MessageType::Text(content) => content.formatted.as_ref(),
+        MessageType::Emote(content) => content.formatted.as_ref(),
+        MessageType::Notice(content) => content.formatted.as_ref(),
+        _ => None,
+    }?;
+    (formatted.format == MessageFormat::Html).then(|| formatted.body.clone())
+}
+
 pub fn events_to_summaries(
     events: &[TimelineEvent],
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
@@ -260,8 +283,10 @@ pub fn events_to_summaries(
     // Matrix edits are only valid from the original sender, but ruma doesn't
     // enforce that when deserializing — and the edit event's own id is kept
     // so a redacted edit (the user withdrew their own edit) can be dropped.
-    let mut edits: BTreeMap<OwnedEventId, (u64, String, OwnedUserId, OwnedEventId)> =
-        BTreeMap::new();
+    let mut edits: BTreeMap<
+        OwnedEventId,
+        (u64, String, Option<String>, OwnedUserId, OwnedEventId),
+    > = BTreeMap::new();
     // target event id -> reason a redaction targeted it (message or reaction)
     let mut redactions: std::collections::HashSet<OwnedEventId> = std::collections::HashSet::new();
     // reaction target event id -> (key, sender) pairs
@@ -318,21 +343,29 @@ pub fn events_to_summaries(
                 {
                     let ts: u64 = original.origin_server_ts.0.into();
                     let body = replacement.new_content.msgtype.body().to_string();
+                    let formatted_body = formatted_html_body(&replacement.new_content.msgtype);
                     let sender = original.sender.clone();
                     let edit_event_id = original.event_id.clone();
                     edits
                         .entry(replacement.event_id.clone())
                         .and_modify(
-                            |(existing_ts, existing_body, existing_sender, existing_edit_id)| {
+                            |(
+                                existing_ts,
+                                existing_body,
+                                existing_formatted,
+                                existing_sender,
+                                existing_edit_id,
+                            )| {
                                 if ts >= *existing_ts {
                                     *existing_ts = ts;
                                     *existing_body = body.clone();
+                                    *existing_formatted = formatted_body.clone();
                                     *existing_sender = sender.clone();
                                     *existing_edit_id = edit_event_id.clone();
                                 }
                             },
                         )
-                        .or_insert((ts, body, sender, edit_event_id));
+                        .or_insert((ts, body, formatted_body, sender, edit_event_id));
                     continue;
                 }
 
@@ -347,7 +380,7 @@ pub fn events_to_summaries(
                         event_id: event_id.to_string(),
                         sender: original.sender.to_string(),
                         body: original.content.body().to_string(),
-                        formatted_body: None,
+                        formatted_body: formatted_html_body(&original.content.msgtype),
                         timestamp_ms: original.origin_server_ts.0.into(),
                         edited: false,
                         redacted: false,
@@ -473,7 +506,7 @@ pub fn events_to_summaries(
     // original (or next-oldest-edit) body rather than falling back to the
     // next-newest edit — a known, narrow limitation of only tracking the
     // single newest edit per target.
-    for (target, (_ts, new_body, sender, edit_event_id)) in edits {
+    for (target, (_ts, new_body, new_formatted_body, sender, edit_event_id)) in edits {
         if redactions.contains(&edit_event_id) {
             continue;
         }
@@ -482,6 +515,7 @@ pub fn events_to_summaries(
                 continue;
             }
             message.body = new_body;
+            message.formatted_body = new_formatted_body;
             message.edited = true;
         }
     }
@@ -803,6 +837,89 @@ mod relation_folding_tests {
         assert_eq!(summaries[0].event_id, "$original");
         assert_eq!(summaries[0].body, "hello world");
         assert!(summaries[0].edited);
+    }
+
+    /// Regression test: a synced `m.text` event with an HTML `formatted_body`
+    /// must carry it into the summary — previously hardcoded to `None`, which
+    /// meant a formatted send briefly rendered formatted (from its local
+    /// echo) and then lost all formatting the moment the real synced event
+    /// replaced it.
+    #[test]
+    fn original_message_carries_its_html_formatted_body() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "hello",
+                "format": "org.matrix.custom.html",
+                "formatted_body": "<strong>hello</strong>"
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original], None);
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].formatted_body.as_deref(),
+            Some("<strong>hello</strong>")
+        );
+    }
+
+    /// A plain-text message must not fabricate a `formatted_body`.
+    #[test]
+    fn plain_text_message_has_no_formatted_body() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+
+        let summaries = events_to_summaries(&[original], None);
+
+        assert_eq!(summaries[0].formatted_body, None);
+    }
+
+    /// An edit's `m.new_content` can itself carry an HTML `formatted_body` —
+    /// this must land on the summary the same way the original message's
+    /// does, not just the plain-text fallback body.
+    #[test]
+    fn edit_carries_its_new_html_formatted_body() {
+        let original = event(json!({
+            "type": "m.room.message",
+            "event_id": "$original",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 1000,
+            "content": { "msgtype": "m.text", "body": "hello" }
+        }));
+        let edit = event(json!({
+            "type": "m.room.message",
+            "event_id": "$edit",
+            "sender": "@alice:example.org",
+            "origin_server_ts": 2000,
+            "content": {
+                "msgtype": "m.text",
+                "body": "* hello world",
+                "m.new_content": {
+                    "msgtype": "m.text",
+                    "body": "hello world",
+                    "format": "org.matrix.custom.html",
+                    "formatted_body": "<em>hello world</em>"
+                },
+                "m.relates_to": { "rel_type": "m.replace", "event_id": "$original" }
+            }
+        }));
+
+        let summaries = events_to_summaries(&[original, edit], None);
+
+        assert_eq!(
+            summaries[0].formatted_body.as_deref(),
+            Some("<em>hello world</em>")
+        );
     }
 
     /// Regression test: incremental sync delivers events oldest-first (unlike

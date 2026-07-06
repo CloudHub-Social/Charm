@@ -31,7 +31,7 @@ import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
-import { sanitizeMatrixHtml } from "./composerSanitize";
+import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
 import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
@@ -165,6 +165,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
+
+  // Room-scoped, not persistent: a bad-args/permission-denied banner from
+  // room A shouldn't still be showing once the user has switched to room B.
+  useEffect(() => {
+    setCommandFeedback(null);
+  }, [roomId]);
 
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   // Header presence dot is gated on DM detection, which doesn't exist yet —
@@ -416,11 +422,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
   async function handleSlashCommand(parsed: ParsedSlashCommand) {
     if (!room) return;
+    const targetRoomId = room.room_id;
     try {
-      const result = await runCommand(room.room_id, parsed.command, parsed.args);
-      if (result.status !== "success") {
-        setCommandFeedback(result.message);
-      }
+      const result = await runCommand(targetRoomId, parsed.command, parsed.args);
+      // The user may have switched rooms while this command was in flight —
+      // don't show room A's feedback under room B, and don't leave a stale
+      // failure banner up once a later command (in the still-active room)
+      // succeeds.
+      if (currentRoomIdRef.current !== targetRoomId) return;
+      setCommandFeedback(result.status === "success" ? null : result.message);
     } catch (err) {
       console.error(err);
     }
@@ -594,7 +604,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                     // render path independently.
                     <div
                       className={cn(
-                        "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1",
+                        "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
                         own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
                         isError && "border border-destructive",
                       )}
@@ -785,7 +795,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             ref={composerRef}
             roomId={room.room_id}
             mode={composerMode}
-            initialHtml={editingMessage?.formatted_body ?? editingMessage?.body}
+            initialHtml={
+              editingMessage
+                ? editingMessage.formatted_body
+                  ? sanitizeMatrixHtml(editingMessage.formatted_body)
+                  : escapeHtmlText(editingMessage.body)
+                : undefined
+            }
             placeholder={`Message ${displayName(room.room_id, room.name)}`}
             onSubmit={handleComposerSubmit}
             onSlashCommand={handleSlashCommand}
@@ -794,11 +810,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               else if (replyTarget) setReplyTarget(null);
             }}
             onTypingInput={() => handleTypingInput(room.room_id)}
+            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
           />
           <button
             aria-label="Send"
             onClick={() => composerRef.current?.submit()}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground"
+            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
           >
             <Send size={16} />
           </button>

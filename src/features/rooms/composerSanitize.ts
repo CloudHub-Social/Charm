@@ -31,6 +31,7 @@ const ALLOWED_TAGS = [
   "strong",
   "em",
   "strike",
+  "s",
   "code",
   "hr",
   "br",
@@ -61,8 +62,24 @@ const ALLOWED_ATTR = [
   "data-mx-bg-color",
   "data-mx-spoiler",
   "data-mx-pill",
-  "class",
 ];
+
+// `<img>` is otherwise-allowed spec HTML, but per the Matrix spec its `src`
+// must be an `mxc://` URI, not an arbitrary URL — this app has no `mxc://`
+// resolver wired into the render path yet (that's `resolve_media`'s job,
+// gated on the event/room context this sanitizer doesn't have), so any
+// `https://...` src would otherwise have the WebView fetch it directly,
+// leaking the viewer's IP/activity to whatever URL a remote sender chose
+// (and rendering non-Matrix content that isn't actually a Matrix image).
+// Registered once at module load — DOMPurify hooks are global to the
+// imported instance, and this is the only place in the app that uses it.
+DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+  if (node.nodeName.toLowerCase() === "img" && data.attrName === "src") {
+    if (!data.attrValue.startsWith("mxc://")) {
+      data.keepAttr = false;
+    }
+  }
+});
 
 /**
  * Sanitizes untrusted HTML (either the composer's own `getHTML()` output
@@ -71,12 +88,36 @@ const ALLOWED_ATTR = [
  * including `<script>`, event-handler attributes (`onerror`, etc.), and
  * `javascript:`/`data:` URLs in `href`/`src` (DOMPurify's default URL
  * sanitization already blocks these; the allowlist above is the extra,
- * Matrix-specific restriction).
+ * Matrix-specific restriction). `class` is deliberately not allowlisted:
+ * the Matrix formatted-body subset has no notion of arbitrary CSS classes,
+ * and allowing it would let a remote `formatted_body` apply this app's own
+ * Tailwind utilities (e.g. `fixed inset-0 z-50`) inside the bubble.
  */
 export function sanitizeMatrixHtml(dirtyHtml: string): string {
   return DOMPurify.sanitize(dirtyHtml, {
     ALLOWED_TAGS,
     ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
+    // DOMPurify's default URI scheme allowlist has no notion of `mxc://` —
+    // extend it (rather than disabling URI validation) so an `mxc://` `src`
+    // survives to reach the `uponSanitizeAttribute` hook above, which is the
+    // thing actually enforcing "only mxc://" for `<img>`.
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|mxc):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
   });
+}
+
+/**
+ * Escapes plain text for safe use as TipTap `content` HTML — needed when
+ * preloading a message's plain `body` (not `formatted_body`) into the edit
+ * composer: TipTap parses its `content` prop as HTML, so an unformatted
+ * message containing literal markup (`<b>hi</b>`, `<img onerror=...>`)
+ * would otherwise be interpreted as real formatting/markup the moment edit
+ * mode opens, before the user has touched anything.
+ */
+export function escapeHtmlText(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }

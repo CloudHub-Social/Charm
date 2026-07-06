@@ -98,4 +98,24 @@ describe("sanitizeMatrixHtml", () => {
     expect(out).not.toContain("<iframe");
     expect(out).toContain("hello");
   });
+
+  it("drops the class attribute", () => {
+    const out = sanitizeMatrixHtml('<p class="fixed inset-0 z-50">hi</p>');
+    expect(out).not.toContain("class");
+  });
+
+  it("keeps <s> strikethrough tags", () => {
+    const out = sanitizeMatrixHtml("<s>struck</s>");
+    expect(out).toContain("<s>struck</s>");
+  });
+
+  it("strips an <img> src that isn't an mxc:// URI", () => {
+    const out = sanitizeMatrixHtml('<img src="https://tracker.example/pixel.png">');
+    expect(out).not.toContain("tracker.example");
+  });
+
+  it("keeps an <img> src that is an mxc:// URI", () => {
+    const out = sanitizeMatrixHtml('<img src="mxc://example.org/abc123">');
+    expect(out).toContain("mxc://example.org/abc123");
+  });
 });

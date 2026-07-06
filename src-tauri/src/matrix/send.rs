@@ -148,9 +148,11 @@ pub async fn send_message(
 }
 
 /// Builds a `RoomMessageEventContent` from a plain body, an optional
-/// sanitized HTML body, and optional mention user ids. Shared by
-/// `send_message` and `commands::run_command`'s `/me` arm (which needs the
-/// same html-vs-plain + mentions logic for `m.emote`).
+/// sanitized HTML body, and optional mention user ids. Used by
+/// `send_message`. `commands::run_command`'s `/me` arm does NOT go through
+/// this — slash commands are typed as plain text in the composer (no
+/// formatted body to carry), so it calls `RoomMessageEventContent::emote_plain`
+/// directly instead.
 pub fn build_message_content(
     body: String,
     formatted_body: Option<String>,

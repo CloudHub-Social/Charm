@@ -27,6 +27,15 @@ const CLOSED_STATE: SuggestionMenuState = {
 export function useSuggestionMenu() {
   const [state, setState] = useState<SuggestionMenuState>(CLOSED_STATE);
   const pendingSelectRef = useRef<((index: number) => void) | null>(null);
+  // Mirrors `state.activeIndex` outside the setState updater — `selectActive`
+  // is called from a stable closure created once (Composer's
+  // `editorProps.handleKeyDown`) and needs the *current* index at call time,
+  // not whatever it closed over. Reading (and calling `pendingSelectRef`)
+  // from inside a `setState` updater instead would run under React Strict
+  // Mode's deliberate double-invocation of updaters, firing the selection
+  // callback twice.
+  const activeIndexRef = useRef(0);
+  activeIndexRef.current = state.activeIndex;
 
   const open = useCallback(
     (
@@ -48,7 +57,14 @@ export function useSuggestionMenu() {
     ) => {
       pendingSelectRef.current = onSelect;
       setState((prev) => ({
+        // `open: true` (not `...prev`'s possibly-still-false `open`) — an
+        // `onStart` that raced ahead of async data (e.g. room members not
+        // loaded yet) bails without opening when its first item list is
+        // empty; without forcing `open` here too, a later `onUpdate` that
+        // finally has real items would set them into state but the popover
+        // would never actually become visible.
         ...prev,
+        open: true,
         items,
         position,
         activeIndex: Math.min(prev.activeIndex, Math.max(items.length - 1, 0)),
@@ -71,10 +87,7 @@ export function useSuggestionMenu() {
   }, []);
 
   const selectActive = useCallback(() => {
-    setState((prev) => {
-      pendingSelectRef.current?.(prev.activeIndex);
-      return prev;
-    });
+    pendingSelectRef.current?.(activeIndexRef.current);
   }, []);
 
   const selectIndex = useCallback((index: number) => {

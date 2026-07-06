@@ -68,6 +68,19 @@ fn classify_room_action_error(err: matrix_sdk::Error) -> CommandResult {
     }
 }
 
+/// Joins `/me`'s args into the emote text, rejecting an empty result — pulled
+/// out as a standalone pure function so this validation is unit-testable
+/// without a real `Client`/`Room` (unlike the rest of `run_command_impl`,
+/// which needs a live SDK connection to exercise the room-action arms).
+fn me_text_from_args(args: &[String]) -> Result<String, CommandResult> {
+    let text = args.join(" ");
+    if text.is_empty() {
+        Err(bad_args("/me needs text to emote"))
+    } else {
+        Ok(text)
+    }
+}
+
 /// Runs a resolved slash command against `room_id`. `args` is the
 /// whitespace-split remainder of the command line after the `/word` (e.g.
 /// `/kick @bob:example.org spamming` -> `args = ["@bob:example.org",
@@ -95,10 +108,10 @@ pub async fn run_command_impl(
 
     match command {
         SlashCommand::Me => {
-            let text = args.join(" ");
-            if text.is_empty() {
-                return Ok(bad_args("/me needs text to emote"));
-            }
+            let text = match me_text_from_args(&args) {
+                Ok(text) => text,
+                Err(result) => return Ok(result),
+            };
             let content = RoomMessageEventContent::emote_plain(text);
             super::send::send_and_capture_transaction_id(
                 client,
@@ -165,13 +178,14 @@ mod tests {
 
     #[test]
     fn me_with_empty_args_is_bad_args() {
-        // Exercises the args-join branch directly; the SDK-calling arms need
-        // a real Client/Room and are covered by the higher-level
-        // `run_command_impl` behavior via manual/integration testing per the
-        // spec (matrix-rust-sdk has no in-process test double for
-        // Room::set_room_topic/invite_user_by_id/kick_user/ban_user).
-        let text = Vec::<String>::new().join(" ");
-        assert!(text.is_empty());
+        let result = me_text_from_args(&[]);
+        assert!(matches!(result, Err(CommandResult::BadArgs { .. })));
+    }
+
+    #[test]
+    fn me_joins_multi_word_args_into_emote_text() {
+        let args = vec!["waves".to_string(), "excitedly".to_string()];
+        assert_eq!(me_text_from_args(&args).unwrap(), "waves excitedly");
     }
 
     #[test]

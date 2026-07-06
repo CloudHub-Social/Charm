@@ -27,11 +27,35 @@ describe("UserMention", () => {
       HTMLAttributes: {},
     }) as [string, Record<string, string>, string];
 
-    expect(text).toBe("@@bob:example.org");
+    expect(text).toBe("@bob:example.org");
   });
 
   it("configures its trigger character as @", () => {
     expect(UserMention.options.suggestion.char).toBe("@");
+  });
+
+  it("parses its own rendered anchor back into a mention node's attrs", () => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", "https://matrix.to/#/@alice:example.org");
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "@Alice";
+
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+    const attrs = rules[0]!.getAttrs!(anchor);
+
+    expect(attrs).toEqual({ id: "@alice:example.org", label: "Alice" });
+  });
+
+  it("does not parse a room-mention anchor as a user mention", () => {
+    const anchor = document.createElement("a");
+    anchor.setAttribute("href", "https://matrix.to/#/!room:example.org");
+    anchor.setAttribute("data-mx-pill", "true");
+    anchor.textContent = "#General";
+
+    const rules = UserMention.config.parseHTML!.call({} as never)!;
+    const attrs = rules[0]!.getAttrs!(anchor);
+
+    expect(attrs).toBe(false);
   });
 });
 

@@ -22,7 +22,7 @@ import {
 import { resolveInlineShortcodes } from "./emojiShortcodes";
 import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
-import { parseSlashCommand, type ParsedSlashCommand } from "./slashCommands";
+import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
 
 export type ComposerMode = "send" | "edit" | "reply";
@@ -38,6 +38,8 @@ interface ComposerProps {
   onSlashCommand: (command: ParsedSlashCommand) => void;
   onEscape: () => void;
   onTypingInput: () => void;
+  /** The editor lost focus — old textarea's cue to stop the room's typing notice. */
+  onBlur?: () => void;
 }
 
 /** Lets a parent (the Send button in `ChatShell`) trigger the same submit path as Enter. */
@@ -60,6 +62,12 @@ function rectToPosition(rect: DOMRect | null | undefined): { top: number; left: 
 function createMenuBridgeRender<T>(menu: SuggestionMenuApi, toItem: (raw: T) => AutocompleteItem) {
   return () => ({
     onStart: (props: SuggestionProps<T>) => {
+      // A query with zero matches (e.g. `/nonexistent`, `:zz`) must not
+      // leave the menu "open" with nothing to show — `Composer`'s
+      // `handleKeyDown` treats `menuOpenRef.current` as "intercept Enter for
+      // the menu", so an open-but-empty menu would swallow Enter forever
+      // with nothing for `selectActive` to commit.
+      if (props.items.length === 0) return;
       const position = rectToPosition(props.clientRect?.());
       menu.open(props.items.map(toItem), position, (index: number) => {
         const item = props.items[index];
@@ -67,6 +75,10 @@ function createMenuBridgeRender<T>(menu: SuggestionMenuApi, toItem: (raw: T) => 
       });
     },
     onUpdate: (props: SuggestionProps<T>) => {
+      if (props.items.length === 0) {
+        menu.close();
+        return;
+      }
       const position = rectToPosition(props.clientRect?.());
       menu.update(props.items.map(toItem), position, (index: number) => {
         const item = props.items[index];
@@ -85,7 +97,7 @@ function createMenuBridgeRender<T>(menu: SuggestionMenuApi, toItem: (raw: T) => 
 function createTextSuggestionExtension(
   name: string,
   char: string,
-  options: Pick<SuggestionOptions, "items" | "command" | "render">,
+  options: Pick<SuggestionOptions, "items" | "command" | "render" | "allow">,
 ) {
   return Extension.create({
     name,
@@ -120,13 +132,37 @@ function collectMentionIds(editor: Editor): string[] {
 }
 
 /**
+ * Same text as `editor.getText()`, except `userMention`/`roomMention` nodes
+ * are rendered as their bare Matrix id rather than their display label — see
+ * `submit()`'s slash-command arg parsing for why this matters.
+ */
+function textWithMentionIds(editor: Editor): string {
+  return editor.state.doc.textBetween(0, editor.state.doc.content.size, "\n", (node) => {
+    if (node.type.name === "userMention" || node.type.name === "roomMention") {
+      return typeof node.attrs.id === "string" ? node.attrs.id : "";
+    }
+    return "";
+  });
+}
+
+/**
  * Shared rich-text composer for send/edit/reply (`mode`), driven by TipTap —
  * see the spec's "library decision" for why. All four autocomplete triggers
  * (`@`/`#`/`/`/`:`) go through the same `suggestion` mechanism and render
  * into one {@link AutocompletePopover} via {@link useSuggestionMenu}.
  */
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { roomId, mode, initialHtml, placeholder, onSubmit, onSlashCommand, onEscape, onTypingInput },
+  {
+    roomId,
+    mode,
+    initialHtml,
+    placeholder,
+    onSubmit,
+    onSlashCommand,
+    onEscape,
+    onTypingInput,
+    onBlur,
+  },
   ref,
 ) {
   const menu = useSuggestionMenu();
@@ -175,11 +211,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           items: ({ query }: { query: string }) =>
             filterRoomMembers(query, membersRef.current).map((m) => ({
               id: m.userId,
-              label: m.displayName ?? m.userId,
+              // `null`, not `m.userId`, when there's no real display name —
+              // the bare id already carries its own `@` sigil, so falling
+              // back to it here would double it up in the rendered pill
+              // (see `mentionExtensions.ts`'s `pillText`). The popover's
+              // display label still falls back to the id, below.
+              label: m.displayName ?? null,
             })),
-          render: createMenuBridgeRender(menu, (raw: { id: string; label: string }) => ({
+          render: createMenuBridgeRender(menu, (raw: { id: string; label: string | null }) => ({
             key: raw.id,
-            label: raw.label,
+            label: raw.label ?? raw.id,
             sublabel: raw.id,
           })),
         },
@@ -190,15 +231,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           items: ({ query }: { query: string }) =>
             filterRooms(query, roomsRef.current).map((r) => ({
               id: r.roomId,
-              label: r.name ?? r.alias ?? r.roomId,
+              label: r.name ?? r.alias ?? null,
             })),
-          render: createMenuBridgeRender(menu, (raw: { id: string; label: string }) => ({
+          render: createMenuBridgeRender(menu, (raw: { id: string; label: string | null }) => ({
             key: raw.id,
-            label: raw.label,
+            label: raw.label ?? raw.id,
           })),
         },
       }),
       createTextSuggestionExtension("slashCommand", "/", {
+        // Position 1 is the very first character of the doc's first
+        // paragraph — restricting to it means `/` only triggers the
+        // command menu at the true start of the message, not mid-sentence
+        // (e.g. "look /m"), where opening the menu would otherwise hijack
+        // Enter for "select suggestion" instead of sending.
+        allow: ({ range }) => range.from === 1,
         items: ({ query }: { query: string }) => filterSlashCommands(query),
         command: ({ editor, range, props }) => {
           const spec = props as ReturnType<typeof filterSlashCommands>[number];
@@ -291,28 +338,53 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       },
     },
     onUpdate: ({ editor: e }) => {
-      draft.setDraft(e.getHTML());
+      // Only `send`/`reply` mode content belongs in the shared room draft —
+      // writing edit-mode keystrokes here would overwrite whatever the user
+      // had actually drafted for their next new message, which then
+      // reappears (as the edited text) if they cancel the edit and the
+      // composer remounts back into send mode.
+      if (mode !== "edit") draft.setDraft(e.getHTML());
       onTypingInput();
     },
+    onBlur: () => onBlur?.(),
   });
 
   function submit() {
     if (!editor) return;
-    const plainText = resolveInlineShortcodes(editor.getText()).trim();
-    if (!plainText) return;
+    const rawPlainText = resolveInlineShortcodes(editor.getText()).trim();
+    if (!rawPlainText) return;
 
-    const slash = mode === "send" ? parseSlashCommand(plainText) : null;
+    // Slash-command args need each `@mention` resolved to its real Matrix id
+    // (`@alice:example.org`), not its display label (`Alice`) — `getText()`
+    // above renders mentions by label, which `UserId::parse` on the Rust
+    // side would then reject. `textBetween`'s `leafText` hook substitutes
+    // the mention node's `id` attr for exactly this parsing pass; the
+    // regular send path doesn't need it since `m.mentions` is populated
+    // separately via `collectMentionIds`.
+    const commandText = mode === "send" ? textWithMentionIds(editor) : rawPlainText;
+    const slash = mode === "send" ? parseSlashCommand(commandText.trim()) : null;
     if (slash) {
       onSlashCommand(slash);
-      editor.commands.clearContent();
+      // `clearContent(false)` skips emitting `onUpdate` — clearing after a
+      // send/command isn't the user typing, so it shouldn't re-trigger
+      // `onTypingInput` and send a spurious `typing: true` right after
+      // ChatShell already told the server `typing: false` for this send.
+      editor.commands.clearContent(false);
       draft.setDraft("");
       return;
     }
 
+    // A message that's genuinely meant to start with `/` (not a command)
+    // is typed as `//...` (see `parseSlashCommand`'s doc comment) — only
+    // unescape it here, once we know it isn't resolving to a real command,
+    // so the literal `/` survives instead of being sent as `//`.
+    const plainText = unescapeLiteralSlash(rawPlainText);
+    const html = resolveInlineShortcodes(editor.getHTML().replace(/^((?:<[^>]+>)*)\/\//, "$1/"));
+
     const mentionIds = collectMentionIds(editor);
-    const content = serializeComposerContent(editor.getHTML(), plainText, mentionIds);
+    const content = serializeComposerContent(html, plainText, mentionIds);
     onSubmit(content);
-    editor.commands.clearContent();
+    editor.commands.clearContent(false);
     draft.setDraft("");
   }
   submitRef.current = submit;

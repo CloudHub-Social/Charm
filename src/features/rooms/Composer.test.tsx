@@ -202,6 +202,28 @@ describe("Composer", () => {
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ body: "hello" }));
   });
 
+  it("unescapes a leading // to a literal / instead of running it as a command", async () => {
+    const onSubmit = vi.fn();
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!room-11:example.org"
+        mode="send"
+        placeholder="Message general"
+        onSubmit={onSubmit}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Message general"));
+    pasteText(editable, "//usr/bin/env");
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSlashCommand).not.toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ body: "/usr/bin/env" }));
+  });
+
   it("preloads initialHtml in edit mode", async () => {
     render(
       <Composer

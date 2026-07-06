@@ -75,4 +75,18 @@ describe("useSuggestionMenu", () => {
     expect(result.current.state.activeIndex).toBe(0);
     expect(result.current.state.position).toEqual({ top: 5, left: 5 });
   });
+
+  it("update opens the menu even when it was never opened (e.g. onStart raced ahead of async data)", () => {
+    // Regression: a provider whose first `onStart` call has zero items
+    // (still-loading room members, say) bails without calling `open()`. A
+    // later `onUpdate` with real items must still make the menu visible —
+    // `update()` alone used to only spread `prev.open`, which stayed
+    // `false` forever in this sequence.
+    const { result } = renderHook(() => useSuggestionMenu());
+    expect(result.current.state.open).toBe(false);
+
+    act(() => result.current.update(ITEMS, { top: 0, left: 0 }, vi.fn()));
+    expect(result.current.state.open).toBe(true);
+    expect(result.current.state.items).toEqual(ITEMS);
+  });
 });
