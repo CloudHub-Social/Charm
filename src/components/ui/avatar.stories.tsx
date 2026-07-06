@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { PresenceDot } from "@/features/presence/PresenceDot";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount, AvatarImage } from "./avatar";
 
 const meta = {
@@ -95,5 +96,51 @@ export const ReadReceiptStack: Story = {
       </Avatar>
       <AvatarGroupCount>+2</AvatarGroupCount>
     </AvatarGroup>
+  ),
+};
+
+/**
+ * Spec 01's timeline sender identity: an avatar (image when the sender has
+ * one resolved, initials fallback otherwise) paired with their display name
+ * — the `ChatShell` message-row shape, with/without a resolved avatar image.
+ */
+export const SenderIdentity: Story = {
+  render: () => (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <Avatar size="sm">
+          <AvatarImage
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23f59e0b'/%3E%3C/svg%3E"
+            alt=""
+          />
+          <AvatarFallback style={{ background: "var(--color-warning)" }} className="text-white">
+            AA
+          </AvatarFallback>
+        </Avatar>
+        <span className="text-sm font-semibold text-secondary-foreground">Alice Anderson</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Avatar size="sm">
+          <AvatarFallback style={{ background: "var(--color-accent)" }} className="text-white">
+            BO
+          </AvatarFallback>
+        </Avatar>
+        {/* No display name resolved yet — falls back to the raw MXID. */}
+        <span className="text-sm font-semibold text-secondary-foreground">@bob:example.org</span>
+      </div>
+    </div>
+  ),
+};
+
+/** The DM header/room-list avatar, with the online presence dot Spec 01 adds. */
+export const WithPresenceDot: Story = {
+  args: { size: "lg" },
+  render: (args) => (
+    <Avatar {...args}>
+      <AvatarFallback style={{ background: "var(--color-success)" }} className="text-white">
+        EV
+      </AvatarFallback>
+      <PresenceDot presence="online" />
+    </Avatar>
   ),
 };

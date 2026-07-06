@@ -44,6 +44,16 @@ pub const MAX_ENTRY_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// oldest-mtime-first.
 const EVICT_FRACTION: f64 = 0.10;
 
+/// Ceiling on a single avatar-thumbnail fetch, scoped to
+/// [`resolve_avatar_thumbnail`] only (not [`resolve`] generally): that
+/// function is called from `snapshot_rooms`/`items_to_summaries`, which run
+/// on every sync tick and timeline diff respectively, so a slow or hanging
+/// media endpoint shouldn't be able to stall an otherwise-ready room list or
+/// message batch — a timed-out fetch just resolves to `None` (initials
+/// fallback) and is retried on the next snapshot, same as any other cache
+/// miss.
+const AVATAR_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Ceiling on a full (non-thumbnail) media file's *declared* (sender-supplied
 /// `info.size`) byte count before `resolve` will auto-download it.
 /// `matrix-sdk`'s `get_media_content` has no streaming/early-abort API — it
@@ -319,17 +329,21 @@ pub async fn resolve_avatar_thumbnail(
 ) -> Option<PathBuf> {
     let uri = matrix_sdk::ruma::OwnedMxcUri::from(mxc);
     let source = MediaSource::Plain(uri);
-    resolve(
-        cache,
-        client,
-        source,
-        MediaKind::Thumbnail {
-            width: size,
-            height: size,
-        },
-        None,
+    tokio::time::timeout(
+        AVATAR_FETCH_TIMEOUT,
+        resolve(
+            cache,
+            client,
+            source,
+            MediaKind::Thumbnail {
+                width: size,
+                height: size,
+            },
+            None,
+        ),
     )
     .await
+    .ok()?
     .ok()
 }
 

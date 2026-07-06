@@ -9,6 +9,7 @@ pub mod members;
 pub mod notifications;
 pub mod persistence;
 pub mod presence;
+pub mod profiles;
 pub mod qr_login;
 pub mod room_admin;
 pub mod rooms;
@@ -156,6 +157,7 @@ impl MatrixState {
             app.clone(),
             room_id.to_owned(),
             std::sync::Arc::downgrade(&timeline),
+            client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
         timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));

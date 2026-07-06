@@ -12,11 +12,17 @@ describe("messageActionAtoms", () => {
     const store = createStore();
     const atom = activeReplyTargetAtomFamily("!room:localhost");
 
-    store.set(atom, { event_id: "$abc", sender: "@alice:localhost", preview: "hello" });
+    store.set(atom, {
+      event_id: "$abc",
+      sender: "@alice:localhost",
+      sender_display_name: null,
+      preview: "hello",
+    });
 
     expect(store.get(atom)).toEqual({
       event_id: "$abc",
       sender: "@alice:localhost",
+      sender_display_name: null,
       preview: "hello",
     });
   });
@@ -26,7 +32,12 @@ describe("messageActionAtoms", () => {
     const roomA = activeReplyTargetAtomFamily("!a:localhost");
     const roomB = activeReplyTargetAtomFamily("!b:localhost");
 
-    store.set(roomA, { event_id: "$a", sender: "@alice:localhost", preview: "in room a" });
+    store.set(roomA, {
+      event_id: "$a",
+      sender: "@alice:localhost",
+      sender_display_name: null,
+      preview: "in room a",
+    });
 
     expect(store.get(roomA)).not.toBeNull();
     expect(store.get(roomB)).toBeNull();
@@ -35,7 +46,12 @@ describe("messageActionAtoms", () => {
   it("clearing the reply target returns it to null", () => {
     const store = createStore();
     const atom = activeReplyTargetAtomFamily("!room:localhost");
-    store.set(atom, { event_id: "$abc", sender: "@alice:localhost", preview: "hello" });
+    store.set(atom, {
+      event_id: "$abc",
+      sender: "@alice:localhost",
+      sender_display_name: null,
+      preview: "hello",
+    });
 
     store.set(atom, null);
 

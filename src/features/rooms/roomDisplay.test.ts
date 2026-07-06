@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { avatarColor, displayName, initials } from "./roomDisplay";
+import { describe, expect, it, vi } from "vitest";
+import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${path}`,
+}));
 
 describe("displayName", () => {
   it("prefers the room name when present", () => {
@@ -33,5 +37,15 @@ describe("avatarColor", () => {
 
   it("returns a CSS custom-property reference", () => {
     expect(avatarColor("!abc:localhost")).toMatch(/^var\(--/);
+  });
+});
+
+describe("resolveAvatar", () => {
+  it("converts a resolved local path to a webview-loadable URL", () => {
+    expect(resolveAvatar("/cache/media/abc123")).toBe("asset://localhost//cache/media/abc123");
+  });
+
+  it("returns undefined (fallback to initials) when there's no path", () => {
+    expect(resolveAvatar(null)).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { BellOff } from "lucide-react";
 import type { CSSProperties } from "react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -8,9 +8,11 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { PresenceDot } from "@/features/presence/PresenceDot";
+import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import type { RoomSummary } from "@/lib/matrix";
-import { avatarColor, displayName, initials } from "./roomDisplay";
+import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 
 interface RoomListItemProps {
   room: RoomSummary;
@@ -39,6 +41,7 @@ export function RoomListItem({
   style,
 }: RoomListItemProps) {
   const unread = room.has_unread;
+  const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
 
   const button = (
     <button
@@ -51,12 +54,14 @@ export function RoomListItem({
       {...dragHandleProps}
     >
       <Avatar>
+        <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
         <AvatarFallback
           style={{ background: avatarColor(room.room_id) }}
           className="font-bold text-white"
         >
           {initials(room.room_id, room.name)}
         </AvatarFallback>
+        {room.is_direct && <PresenceDot presence={presence?.presence} />}
       </Avatar>
       <div className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
         <span className="flex min-w-0 items-center gap-1.5">

@@ -1,9 +1,15 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarGroup,
+  AvatarGroupCount,
+  AvatarImage,
+} from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { MediaMessage } from "./media/MediaMessage";
-import { avatarColor, initials } from "./roomDisplay";
+import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
@@ -143,11 +149,12 @@ export function MessageRow({
       {!own &&
         (showAvatar ? (
           <Avatar size="sm">
+            <AvatarImage src={resolveAvatar(message.sender_avatar_path)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(message.sender) }}
               className="font-bold text-white"
             >
-              {initials(message.sender, null)}
+              {initials(message.sender, message.sender_display_name)}
             </AvatarFallback>
           </Avatar>
         ) : (
@@ -155,7 +162,9 @@ export function MessageRow({
         ))}
       <div className={cn("flex min-w-0 flex-col gap-0.5", own && "items-end")}>
         {showAvatar && (
-          <span className="text-sm font-semibold text-secondary-foreground">{message.sender}</span>
+          <span className="text-sm font-semibold text-secondary-foreground">
+            {message.sender_display_name ?? message.sender}
+          </span>
         )}
         {message.in_reply_to && !message.redacted && (
           <ReplyPreview

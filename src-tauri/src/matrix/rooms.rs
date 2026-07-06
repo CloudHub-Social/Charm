@@ -13,7 +13,7 @@ use tauri::{AppHandle, State};
 use ts_rs::TS;
 
 use super::notifications::set_room_notification_mode;
-use super::MatrixState;
+use super::{media, profiles, MatrixState};
 
 /// Flat room summary for the room list. No message preview yet — that needs
 /// the timeline/event-cache API, which is Phase 1 timeline-rendering scope,
@@ -72,6 +72,21 @@ pub struct RoomSummary {
     /// [`has_unread`]. Every unread indicator in the UI reads this, not the
     /// raw counts above.
     pub has_unread: bool,
+    /// The room's own avatar mxc, when `m.room.avatar` is set — otherwise,
+    /// for an unnamed direct room, the single peer's avatar (from
+    /// `Room::heroes()`). `None` means render the initials fallback; see
+    /// [`resolve_room_identity`].
+    pub avatar_url: Option<String>,
+    /// `avatar_url` resolved to a local thumbnail path via Spec 02's media
+    /// cache, or `None` if unresolved (no cache yet, no avatar, or the fetch
+    /// failed) — the frontend falls back to initials in that case.
+    pub avatar_path: Option<String>,
+    /// For a direct room with exactly one other member, that member's user
+    /// id — lets the frontend key a presence lookup (`usePresence`) off the
+    /// DM peer rather than the room. `None` for group rooms and for direct
+    /// rooms matrix-rust-sdk can't resolve a single hero for (e.g. the peer
+    /// hasn't been synced yet).
+    pub dm_peer_user_id: Option<String>,
 }
 
 /// The tag a room's manual order lives on: whichever section tag is
@@ -144,16 +159,108 @@ fn section_rank(is_favourite: bool, is_low_priority: bool) -> u8 {
     }
 }
 
+/// A room's resolved display identity: its name (via the SDK's spec-mandated
+/// naming algorithm, not just raw `m.room.name` state), and — for a direct
+/// room with no avatar of its own — the single other member's avatar and
+/// user id, so the room list/header can show that peer's identity instead of
+/// initials. See [`resolve_room_identity`].
+struct RoomIdentity {
+    name: Option<String>,
+    avatar_url: Option<String>,
+    avatar_path: Option<String>,
+    dm_peer_user_id: Option<String>,
+}
+
+/// Resolves a room's display name and avatar. The name uses matrix-rust-sdk's
+/// own spec-mandated [naming algorithm][spec] (`Room::cached_display_name()`,
+/// falling back to the async `Room::display_name()` on a cache miss) rather
+/// than the raw `m.room.name` state alone — that raw value is `None` for a
+/// room named by canonical alias, an unnamed 1:1 room not marked direct, or a
+/// group room whose name is computed from its heroes, and this identity path
+/// feeds every `list_rooms`/`room_list:update`, so falling straight back to
+/// the room id in those common cases would leave the room list showing raw
+/// `!roomid`s instead of the name a user would actually recognize.
+///
+/// `Room::heroes()` is separately used below for the room's avatar/DM-peer
+/// fallback — it's the same synced, cached data the naming algorithm itself
+/// reads, so this needs no separate member-profile fetch (see `profiles.rs`'s
+/// module doc comment for why a bespoke member cache would be redundant
+/// here). Only treats the room as having a resolvable DM peer when
+/// `heroes()` returns exactly one entry: a direct room that gained a
+/// second/third participant, or one with inconsistent `m.direct` account
+/// data, can have more than one hero, and picking an arbitrary one of them
+/// would show that member's presence/identity as if they were *the* peer —
+/// see Spec 01 review discussion on `dm_peer_user_id`'s contract (exactly
+/// one other member, not "at least one").
+///
+/// [spec]: <https://spec.matrix.org/latest/client-server-api/#calculating-the-display-name-for-a-room>
+async fn resolve_room_identity(
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+    room: &Room,
+    is_direct: bool,
+) -> RoomIdentity {
+    let display_name = match room.cached_display_name() {
+        Some(name) => name,
+        None => room
+            .display_name()
+            .await
+            .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
+    };
+    // `Empty` means the algorithm found nothing useful at all (no name, no
+    // alias, no other members ever) — `None` here so the frontend's
+    // room-id/initials fallback kicks in, same as before this room had any
+    // resolvable identity. Every other variant (including `EmptyWas`, whose
+    // `Display` impl already renders a friendly "Empty Room (was X)" string)
+    // is a real name worth showing.
+    let name = match display_name {
+        matrix_sdk::RoomDisplayName::Empty => None,
+        other => Some(other.to_string()),
+    };
+
+    let raw_avatar_url = room.avatar_url();
+
+    let dm_peer = is_direct
+        .then(|| room.heroes())
+        .and_then(|heroes| match heroes.as_slice() {
+            [hero] => Some(hero.clone()),
+            _ => None,
+        });
+
+    let avatar_url = raw_avatar_url.map(|url| url.to_string()).or_else(|| {
+        dm_peer
+            .as_ref()
+            .and_then(|hero| hero.avatar_url.clone())
+            .map(|url| url.to_string())
+    });
+
+    let avatar_path = match &avatar_url {
+        Some(mxc) => profiles::resolve_avatar_path(client, media_cache, mxc).await,
+        None => None,
+    };
+
+    RoomIdentity {
+        name,
+        avatar_url,
+        avatar_path,
+        dm_peer_user_id: dm_peer.map(|hero| hero.user_id.to_string()),
+    }
+}
+
 /// Snapshots the client's in-memory room list into sorted [`RoomSummary`]s —
 /// shared by [`list_rooms`] and every iteration of the background sync loop
 /// (`sync::spawn_sync_loop`), which emits the result as `room_list:update`.
-pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
+/// `pub` (not `pub(crate)`) so the network-dependent test for this lives in
+/// `tests/`, same rationale as [`resolve_alias`]/[`discover`].
+pub async fn snapshot_rooms(
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
 
     let mut summaries = Vec::new();
     for room in client.rooms() {
         let room_id = room.room_id().to_string();
-        let name = room.name();
         let unread_count = room.unread_notification_counts().notification_count;
         let unread_messages = room.num_unread_messages();
         let is_marked_unread = room.is_marked_unread();
@@ -171,14 +278,15 @@ pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         let is_space = room.is_space();
         let is_direct = room.is_direct().await.unwrap_or(false);
         let has_unread_flag = has_unread(is_marked_unread, is_muted, unread_messages, unread_count);
+        let identity = resolve_room_identity(client, media_cache, &room, is_direct).await;
 
         summaries.push((
             section_rank(is_favourite, is_low_priority),
             manual_order,
-            name.clone().unwrap_or_default(),
+            identity.name.clone().unwrap_or_default(),
             RoomSummary {
                 room_id: room_id.clone(),
-                name,
+                name: identity.name,
                 unread_count,
                 unread_messages,
                 is_marked_unread,
@@ -191,6 +299,9 @@ pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
                 parent_space_ids: parents.get(&room_id).cloned().unwrap_or_default(),
                 is_direct,
                 has_unread: has_unread_flag,
+                avatar_url: identity.avatar_url,
+                avatar_path: identity.avatar_path,
+                dm_peer_user_id: identity.dm_peer_user_id,
             },
         ));
     }
@@ -215,9 +326,13 @@ pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
 /// Reads the current room list out of the client's in-memory store —
 /// no network round-trip, just whatever the last sync populated.
 #[tauri::command]
-pub async fn list_rooms(state: State<'_, MatrixState>) -> Result<Vec<RoomSummary>, String> {
+pub async fn list_rooms(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+) -> Result<Vec<RoomSummary>, String> {
     let client = state.require_client().await?;
-    Ok(snapshot_rooms(&client).await)
+    let media_cache = state.require_media_cache(&app).await.ok();
+    Ok(snapshot_rooms(&client, media_cache).await)
 }
 
 /// Resolves a room alias (e.g. `#general:localhost`) to its room id, so

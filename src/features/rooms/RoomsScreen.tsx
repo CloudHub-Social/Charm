@@ -27,8 +27,8 @@ export function RoomsScreen({
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
 
   // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
-  // app; consumers (e.g. a DM-aware header/room-list dot) read the atoms
-  // directly once DM detection lands — see ChatShell/RoomListItem.
+  // app; consumers (the DM header/room-list presence dot) read the atoms
+  // directly via `usePresence` — see ChatShell/RoomListItem.
   usePresenceListener();
 
   useEffect(() => {

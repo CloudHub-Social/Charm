@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use super::{ephemeral, presence, room_admin, rooms, verification, MatrixState};
+use super::{ephemeral, presence, profiles, room_admin, rooms, verification, MatrixState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -124,6 +124,7 @@ async fn emit_room_updates(
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
+    profiles::register_self_profile_handler(app.clone(), &client);
 
     let app_for_handle = app.clone();
 
@@ -153,7 +154,14 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
-        let _ = app.emit("room_list:update", rooms::snapshot_rooms(&client).await);
+        {
+            let state = app.state::<MatrixState>();
+            let media_cache = state.require_media_cache(&app).await.ok();
+            let _ = app.emit(
+                "room_list:update",
+                rooms::snapshot_rooms(&client, media_cache).await,
+            );
+        }
         emit_room_updates(&app, &client, &initial_response).await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
@@ -185,7 +193,12 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    let _ = app.emit("room_list:update", rooms::snapshot_rooms(&client).await);
+                    let state = app.state::<MatrixState>();
+                    let media_cache = state.require_media_cache(&app).await.ok();
+                    let _ = app.emit(
+                        "room_list:update",
+                        rooms::snapshot_rooms(&client, media_cache).await,
+                    );
                     emit_room_updates(&app, &client, &response).await;
                 }
                 Err(e) => {

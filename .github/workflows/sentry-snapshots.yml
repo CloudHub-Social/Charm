@@ -47,7 +47,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # 24, not 22 like the other jobs: @storybook/test-runner's Jest
+          # loader `require()`s .storybook/test-runner.ts (an ES module)
+          # synchronously, which needs Node's synchronous vm-module APIs —
+          # only available from Node v24.9 on. Node 22 fails every story
+          # with "Must use import to load ES Module".
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

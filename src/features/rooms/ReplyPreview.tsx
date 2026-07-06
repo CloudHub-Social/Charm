@@ -25,6 +25,13 @@ export function ReplyPreview({
   onCancel,
   className,
 }: ReplyPreviewProps) {
+  // `sender`/`preview` are both empty strings (not null/undefined) when the
+  // backend hasn't resolved the replied-to event yet — see `timeline.rs`'s
+  // `ReplyRef` mapping. Render a placeholder instead of a blank name/quote.
+  const unresolved = reply.sender === "" && reply.preview === "";
+  const senderLabel = unresolved ? "a message" : (reply.sender_display_name ?? reply.sender);
+  const previewLabel = unresolved ? "Original message not available" : reply.preview;
+
   if (variant === "composer") {
     return (
       <div
@@ -35,9 +42,11 @@ export function ReplyPreview({
       >
         <div className="flex min-w-0 flex-col">
           <span className="text-xs font-semibold text-secondary-foreground">
-            Replying to {reply.sender}
+            Replying to {senderLabel}
           </span>
-          <span className="truncate text-muted-foreground">{reply.preview}</span>
+          <span className={cn("truncate text-muted-foreground", unresolved && "italic")}>
+            {previewLabel}
+          </span>
         </div>
         <button
           type="button"
@@ -60,8 +69,10 @@ export function ReplyPreview({
         className,
       )}
     >
-      <span className="font-semibold text-primary">{reply.sender}</span>
-      <span className="truncate text-muted-foreground">{reply.preview}</span>
+      <span className="font-semibold text-primary">{senderLabel}</span>
+      <span className={cn("truncate text-muted-foreground", unresolved && "italic")}>
+        {previewLabel}
+      </span>
     </button>
   );
 }

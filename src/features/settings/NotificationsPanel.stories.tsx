@@ -19,6 +19,9 @@ const ROOMS: RoomSummary[] = [
     parent_space_ids: [],
     is_direct: false,
     has_unread: false,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
   },
   {
     room_id: "!announcements:localhost",
@@ -35,6 +38,9 @@ const ROOMS: RoomSummary[] = [
     parent_space_ids: [],
     is_direct: false,
     has_unread: false,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
   },
   {
     room_id: "!watercooler:localhost",
@@ -51,6 +57,9 @@ const ROOMS: RoomSummary[] = [
     parent_space_ids: [],
     is_direct: false,
     has_unread: false,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
   },
 ];
 

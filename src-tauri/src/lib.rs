@@ -135,6 +135,7 @@ pub fn run() {
             matrix::ephemeral::mark_room_read,
             matrix::presence::set_presence,
             matrix::presence::get_presence,
+            matrix::profiles::get_own_profile,
             matrix::rooms::set_room_favourite,
             matrix::rooms::set_room_low_priority,
             matrix::rooms::set_room_muted,

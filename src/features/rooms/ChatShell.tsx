@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
 import { Info, Paperclip, Send, X } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { PresenceDot } from "@/features/presence/PresenceDot";
+import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import {
   canRedact,
@@ -21,7 +24,7 @@ import {
   type RoomMessageSummary,
   type RoomSummary,
 } from "@/lib/matrix";
-import { displayName } from "./roomDisplay";
+import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import type { ParsedSlashCommand } from "./slashCommands";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -150,8 +153,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }, [roomId]);
 
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
-  // Header presence dot is gated on DM detection, which doesn't exist yet —
-  // no-ops here for the same reason RoomListItem's presence dot no-ops.
+  const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
 
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
@@ -448,17 +450,27 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <div className="flex items-center justify-between border-b border-border p-4">
-        <span className="text-[15px] font-bold text-foreground">
-          {displayName(room.room_id, room.name)}
-        </span>
+      <div className="flex items-center justify-between gap-2 border-b border-border p-4">
+        <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
+          <Avatar size="sm">
+            <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+            <AvatarFallback
+              style={{ background: avatarColor(room.room_id) }}
+              className="font-bold text-white"
+            >
+              {initials(room.room_id, room.name)}
+            </AvatarFallback>
+            {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
+          </Avatar>
+          <span>{displayName(room.room_id, room.name)}</span>
+        </div>
         <button
           type="button"
           aria-label={rightPanelOpen ? "Hide room info" : "Show room info"}
           aria-pressed={rightPanelOpen}
           onClick={() => setRightPanelOpen((open) => !open)}
           className={cn(
-            "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
             rightPanelOpen && "bg-accent text-accent-foreground",
           )}
         >
@@ -500,6 +512,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 setReplyTarget({
                   event_id: message.event_id,
                   sender: message.sender,
+                  sender_display_name: message.sender_display_name,
                   preview: message.body,
                 })
               }
