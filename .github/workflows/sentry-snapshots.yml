@@ -47,7 +47,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # See quality-checks.yml's storybook-a11y job — this runs the same
+          # @storybook/test-runner against .storybook/test-runner.ts and
+          # needs the same Node v24.9+ floor for Jest's require(ESM) path.
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile

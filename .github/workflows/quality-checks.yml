@@ -39,7 +39,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # @storybook/test-runner loads .storybook/test-runner.ts (an ESM
+          # config file) through Jest's require(ESM) path, which needs
+          # Node's synchronous vm module APIs — only available from Node
+          # v24.9+. The other jobs in this file don't run the Storybook
+          # test-runner, so they're unaffected and stay on 22.
+          node-version: 24
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
