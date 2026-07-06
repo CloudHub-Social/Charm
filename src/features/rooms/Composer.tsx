@@ -380,7 +380,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     // the mention node's `id` attr for exactly this parsing pass; the
     // regular send path doesn't need it since `m.mentions` is populated
     // separately via `collectMentionIds`.
-    const commandText = mode === "send" ? textWithMentionIds(editor) : rawPlainText;
+    const commandText =
+      mode === "send" ? resolveInlineShortcodes(textWithMentionIds(editor)) : rawPlainText;
     const slash = mode === "send" ? parseSlashCommand(commandText.trim()) : null;
     if (slash) {
       onSlashCommand(slash);

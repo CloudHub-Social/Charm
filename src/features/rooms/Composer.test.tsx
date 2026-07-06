@@ -128,6 +128,26 @@ describe("Composer", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("resolves emoji shortcodes in slash-command args before parsing", async () => {
+    const onSlashCommand = vi.fn();
+    render(
+      <Composer
+        roomId="!room-12:example.org"
+        mode="send"
+        placeholder="Message general"
+        onSubmit={vi.fn()}
+        onSlashCommand={onSlashCommand}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+      />,
+    );
+    const editable = await waitFor(() => screen.getByLabelText("Message general"));
+    pasteText(editable, "/me :wave:");
+    fireEvent.keyDown(editable, { key: "Enter" });
+
+    expect(onSlashCommand).toHaveBeenCalledWith({ command: "me", args: ["👋"] });
+  });
+
   it("does not submit an empty message on Enter", async () => {
     const onSubmit = vi.fn();
     render(
