@@ -34,16 +34,15 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-06, after the fifth Spec 08 review-fix round (OAuth/SSO
-        // action gating, mute-snapshot persistence ordering, dialog error
-        // surfacing): lines 73.42 / statements 71.33 / functions 65.36 /
-        // branches 72.66), so any regression fails CI. When you add tests and
-        // coverage rises, raise these to the new floor in the same PR — never
-        // lower them just to make CI pass.
-        lines: 73,
-        statements: 71,
+        // 2026-07-06, after merging Spec 08 into main alongside Spec 07's
+        // room-info/room-admin work: lines 74.00 / statements 72.05 /
+        // functions 65.51 / branches 73.41), so any regression fails CI. When
+        // you add tests and coverage rises, raise these to the new floor in
+        // the same PR — never lower them just to make CI pass.
+        lines: 74,
+        statements: 72,
         functions: 65,
-        branches: 72,
+        branches: 73,
       },
     },
   },
