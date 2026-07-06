@@ -4,6 +4,7 @@ import { RoomList } from "./RoomList";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
+import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { listRooms, onRoomListUpdate, resolveRoomAlias, type RoomSummary } from "@/lib/matrix";
 import { RoomInfoPanel } from "@/features/room-info/RoomInfoPanel";
 import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
@@ -12,12 +13,14 @@ interface RoomsScreenProps {
   currentUserId: string;
   deepLinkRoomId: string | null;
   onDeepLinkConsumed: () => void;
+  onLoggedOut: () => void;
 }
 
 export function RoomsScreen({
   currentUserId,
   deepLinkRoomId,
   onDeepLinkConsumed,
+  onLoggedOut,
 }: RoomsScreenProps) {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -86,6 +89,7 @@ export function RoomsScreen({
         />
       )}
       <VerificationOverlay />
+      <SettingsScreen onLoggedOut={onLoggedOut} />
     </div>
   );
 }

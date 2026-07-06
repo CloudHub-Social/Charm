@@ -1,8 +1,12 @@
+import { useSetAtom } from "jotai";
 import { useDrag } from "@use-gesture/react";
+import { SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
+import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import {
   markRoomRead,
   setRoomFavourite,
@@ -39,6 +43,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [browsingSpace, setBrowsingSpace] = useState<RoomSummary | null>(null);
   const { data: ownProfile } = useOwnProfile();
+  const setSettingsOpen = useSetAtom(settingsOpenAtom);
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
 
@@ -68,9 +73,9 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
 
   return (
     <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
-      <div className="flex items-center gap-2 p-4">
+      <div className="flex items-center justify-between gap-2 p-4">
         {ownProfile ? (
-          <>
+          <div className="flex min-w-0 items-center gap-2">
             <Avatar size="sm">
               <AvatarImage src={resolveAvatar(ownProfile.avatar_path)} alt="" />
               <AvatarFallback
@@ -84,10 +89,18 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
             <span className="truncate text-base font-bold text-foreground">
               {ownProfile.display_name ?? ownProfile.user_id}
             </span>
-          </>
+          </div>
         ) : (
           <span className="text-base font-bold text-foreground">Charm</span>
         )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Open settings"
+          onClick={() => setSettingsOpen("account")}
+        >
+          <SettingsIcon />
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {allEmpty ? (

@@ -58,6 +58,10 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("set favourite");
     let tags = timeout(POLL_TIMEOUT, async {
         loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
             if let Ok(Some(tags)) = room.tags().await {
                 if tags.contains_key(&TagName::Favorite) {
                     return tags;
@@ -76,6 +80,10 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("set low priority");
     timeout(POLL_TIMEOUT, async {
         loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
             if room.is_low_priority() && !room.is_favourite() {
                 return;
             }
@@ -91,26 +99,128 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
     );
 
     // --- Mark-unread flag round-trips via `is_marked_unread()` ---
+    // `set_unread_flag` only sends the account-data mutation to the server;
+    // `is_marked_unread()` reads the client's local cache, which only picks up
+    // the change on the next sync — same pattern as the tag polls above.
     room.set_unread_flag(true).await.expect("set unread flag");
-    assert!(room.is_marked_unread());
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            if room.is_marked_unread() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("unread flag observed");
     room.set_unread_flag(false)
         .await
         .expect("clear unread flag");
-    assert!(!room.is_marked_unread());
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            if !room.is_marked_unread() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("unread flag cleared");
 
     // --- Mute round-trips via `get_user_defined_room_notification_mode` ---
+    // `NotificationSettings::set_room_notification_mode` applies the rule
+    // change to its own in-memory `rules` immediately, which would let this
+    // assertion pass even if the mutation never reached the server. To
+    // actually prove the round-trip, sync until the account-data store picks
+    // up the change, then read back through a *fresh*
+    // `client.notification_settings()` instance (which rebuilds `rules` from
+    // that store) rather than the mutated instance.
     client
         .notification_settings()
         .await
         .set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute)
         .await
         .expect("mute room");
-    let mode = client
-        .notification_settings()
-        .await
-        .get_user_defined_room_notification_mode(room.room_id())
-        .await;
+    let mode = timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            let mode = client
+                .notification_settings()
+                .await
+                .get_user_defined_room_notification_mode(room.room_id())
+                .await;
+            if mode == Some(RoomNotificationMode::Mute) {
+                return mode;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("mute mode observed via a fresh NotificationSettings instance");
     assert_eq!(mode, Some(RoomNotificationMode::Mute));
+
+    // --- A room-level override survives a "mute all rooms" / unmute cycle ---
+    // (Spec 08 review: `notifications::set_global_mute` only overrode the
+    // four *default* rules, which a room-level override always takes
+    // precedence over — so a room like this one, explicitly set to
+    // `MentionsAndKeywordsOnly`, would keep notifying right through "Mute all
+    // rooms" being shown as active. `mute_room_overrides`/
+    // `restore_room_overrides` in `notifications.rs` fix this by snapshotting
+    // every room-level override before forcing it to `Mute`, then restoring
+    // the snapshot on unmute — this proves that exact sequence round-trips
+    // against a real homeserver, using the same `NotificationSettings` calls
+    // those private helpers make.)
+    let settings = client.notification_settings().await;
+    settings
+        .set_room_notification_mode(
+            room.room_id(),
+            RoomNotificationMode::MentionsAndKeywordsOnly,
+        )
+        .await
+        .expect("set room to mentions-only");
+    assert!(settings
+        .get_rooms_with_user_defined_rules(None)
+        .await
+        .contains(&room.room_id().to_string()));
+    let pre_mute_mode = settings
+        .get_user_defined_room_notification_mode(room.room_id())
+        .await
+        .expect("room has a user-defined mode before muting");
+    assert_eq!(pre_mute_mode, RoomNotificationMode::MentionsAndKeywordsOnly);
+
+    settings
+        .set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute)
+        .await
+        .expect("force-mute the room's override, simulating 'mute all rooms'");
+    assert_eq!(
+        settings
+            .get_user_defined_room_notification_mode(room.room_id())
+            .await,
+        Some(RoomNotificationMode::Mute)
+    );
+
+    settings
+        .set_room_notification_mode(room.room_id(), pre_mute_mode)
+        .await
+        .expect("restore the snapshotted override, simulating unmute");
+    assert_eq!(
+        settings
+            .get_user_defined_room_notification_mode(room.room_id())
+            .await,
+        Some(RoomNotificationMode::MentionsAndKeywordsOnly),
+        "the room's specific override must survive a mute/unmute cycle, not collapse to Mute"
+    );
 
     // --- Space hierarchy: create a space with this room as a child, list it, join it as a second membership check ---
     let mut space_creation_content = create_room::v3::CreationContent::new();
@@ -130,8 +240,20 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("sync after space creation");
     assert_eq!(space.room_type(), Some(RoomType::Space));
 
+    // `via` must be non-empty for the server to treat this as a valid child
+    // link — an empty list (as if the child had been removed) is silently
+    // excluded from `/hierarchy` results. Derive it from the logged-in user's
+    // own server name rather than the room ID: newer room versions (e.g. v12)
+    // drop the `:server` component from room IDs, so `RoomId::server_name()`
+    // would be `None` there even though the room is clearly reachable via
+    // this homeserver.
+    let via = client
+        .user_id()
+        .expect("logged in")
+        .server_name()
+        .to_owned();
     space
-        .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![]))
+        .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![via]))
         .await
         .expect("add room as space child");
 

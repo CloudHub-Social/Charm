@@ -2,13 +2,46 @@ import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST;
+const procEnv = process.env as Record<string, string | undefined>;
+
+const host = procEnv.TAURI_DEV_HOST;
+
+// Source-map upload + Sentry release only run when a build provides all three
+// credentials (the release build passes them). Absent them — every dev run and every PR
+// CI build — the plugin isn't added and the build is unchanged, so PR builds never
+// create Sentry releases or emit source maps.
+const sentryEnabled = Boolean(
+  procEnv.SENTRY_AUTH_TOKEN && procEnv.SENTRY_ORG && procEnv.SENTRY_PROJECT,
+);
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss()],
+  // Emit source maps only when Sentry will upload them; the plugin deletes the emitted
+  // `.map` files after upload so they're never shipped to users.
+  build: { sourcemap: sentryEnabled },
+  plugins: [
+    react(),
+    tailwindcss(),
+    ...(sentryEnabled
+      ? [
+          sentryVitePlugin({
+            org: procEnv.SENTRY_ORG,
+            project: procEnv.SENTRY_PROJECT,
+            authToken: procEnv.SENTRY_AUTH_TOKEN,
+            // Auto-detected from git if SENTRY_RELEASE isn't set; falls back to the
+            // package version when a script sets `npm_package_version`.
+            release: { name: procEnv.SENTRY_RELEASE || procEnv.npm_package_version },
+            sourcemaps: { filesToDeleteAfterUpload: ["dist/**/*.map"] },
+            // Annotate React components with data-sentry-* attributes so Sentry shows
+            // component names in breadcrumbs/replay instead of raw CSS selectors.
+            reactComponentAnnotation: { enabled: true },
+          }),
+        ]
+      : []),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
