@@ -85,11 +85,16 @@ async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> R
     persistence::clear_oauth_session(&account_key)?;
     *state.client.lock().await = None;
 
-    // The background sync loop (`mod::spawn_sync_loop`) holds its own clone
+    // The background sync loop (`sync::spawn_sync_loop`) holds its own clone
     // of the `Client`, independent of the one just cleared above — without
     // this, it keeps syncing (and emitting `room_list:update`/`sync:state`)
     // for the now-signed-out account until it happens to fail on its own.
-    if let Some(handle) = state.sync_loop_task.lock().unwrap().take() {
+    if let Some(handle) = state
+        .sync_loop_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    {
         handle.abort();
     }
 

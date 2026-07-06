@@ -228,17 +228,16 @@ function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps)
           <p className="text-sm text-foreground">Your password has been changed.</p>
         ) : (
           <div className="space-y-3">
-            {!needsPassword && (
-              <div>
-                <Label htmlFor="new-password">New password</Label>
-                <Input
-                  id="new-password"
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                />
-              </div>
-            )}
+            <div>
+              <Label htmlFor="new-password">New password</Label>
+              <Input
+                id="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                readOnly={needsPassword}
+              />
+            </div>
             {needsPassword && (
               <div>
                 <Label htmlFor="current-password">Current password</Label>

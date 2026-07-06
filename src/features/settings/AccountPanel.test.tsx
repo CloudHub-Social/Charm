@@ -149,4 +149,20 @@ describe("AccountPanel", () => {
     expect(await screen.findByText("Your password has been changed.")).toBeInTheDocument();
     expect(changePassword).toHaveBeenLastCalledWith("new-password-1", "current-password");
   });
+
+  it("keeps the typed new password visible (read-only) during the UIA confirmation step", async () => {
+    changePassword.mockRejectedValueOnce(new Error("uia"));
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
+    fireEvent.change(await screen.findByLabelText("New password"), {
+      target: { value: "new-password-1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByLabelText("Current password");
+    const newPasswordInput = screen.getByLabelText("New password") as HTMLInputElement;
+    expect(newPasswordInput.value).toBe("new-password-1");
+    expect(newPasswordInput).toHaveAttribute("readonly");
+  });
 });

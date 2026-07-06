@@ -34,15 +34,15 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-06, after the Spec 08 review-fix pass: lines 64.2 /
-        // statements 62.61 / functions 57.9 / branches 63.58), so any
-        // regression fails CI. When you add tests and coverage rises, raise
-        // these to the new floor in the same PR — never lower them just to
-        // make CI pass.
-        lines: 64,
-        statements: 62,
-        functions: 57,
-        branches: 63,
+        // 2026-07-06, after merging Spec 08 into main and fixing the
+        // ChangePasswordDialog UIA-step regression: lines 71.65 / statements
+        // 69.75 / functions 63.73 / branches 70.66), so any regression fails
+        // CI. When you add tests and coverage rises, raise these to the new
+        // floor in the same PR — never lower them just to make CI pass.
+        lines: 71,
+        statements: 69,
+        functions: 63,
+        branches: 70,
       },
     },
   },

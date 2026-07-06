@@ -6,8 +6,8 @@
  * not this first sync-wiring cut.
  *
  * `has_unread` is the single authoritative "needs attention" signal (see
- * [`rooms::has_unread`]) — computed once here, in [`snapshot_rooms`]; every
- * UI unread indicator reads this field rather than re-deriving it from
+ * [`has_unread`]) — computed once here, in [`snapshot_rooms`]; every UI
+ * unread indicator reads this field rather than re-deriving it from
  * `unread_count`/`unread_messages`/`is_marked_unread` itself.
  *
  * `list_rooms`/`room_list:update` pre-sort by (section, `manual_order`,
@@ -38,7 +38,7 @@ is_favourite: boolean,
 is_low_priority: boolean, 
 /**
  * `TagInfo.order` for whichever tag currently governs this room's
- * section — see `rooms::order_tag_name`. `None` sorts last within its
+ * section — see [`order_tag_name`]. `None` sorts last within its
  * section.
  */
 manual_order: number | null, 
@@ -56,7 +56,7 @@ parent_space_ids: Array<string>,
 is_direct: boolean, 
 /**
  * The single "does this room need attention" signal — see
- * [`rooms::has_unread`]. Every unread indicator in the UI reads this,
- * not the raw counts above.
+ * [`has_unread`]. Every unread indicator in the UI reads this, not the
+ * raw counts above.
  */
 has_unread: boolean, };
