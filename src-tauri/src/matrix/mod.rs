@@ -6,6 +6,7 @@ pub mod members;
 pub mod persistence;
 pub mod presence;
 pub mod qr_login;
+pub mod room_admin;
 pub mod rooms;
 pub mod send;
 pub mod spaces;
@@ -1132,7 +1133,19 @@ async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
 /// independent of the raw per-sync-batch event list — which is what fixes a
 /// relation (edit/reaction/redaction) targeting an already-loaded-but-out-of-
 /// batch message being silently dropped instead of updating it in place.
-fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sync::SyncResponse) {
+///
+/// Also emits `room_details:update` (Spec 07) for any joined room whose batch
+/// carries state events — covers room settings, power levels, and membership
+/// changes (kick/ban/invite/unban all land as `m.room.member` state events).
+/// Unconditional on every such room rather than only rooms with an open right
+/// panel: simple, and the frontend already filters by `room_id` the same way
+/// `timeline:update` is filtered — see Spec 07's design notes on revisiting
+/// if this proves too chatty.
+async fn emit_room_updates(
+    app: &AppHandle,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -1169,6 +1182,17 @@ fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sy
                 },
             );
         }
+
+        let state_events_present = match &update.state {
+            matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
+                !events.is_empty()
+            }
+        };
+        if state_events_present {
+            if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
+                let _ = app.emit("room_details:update", details);
+            }
+        }
     }
 }
 
@@ -1203,7 +1227,7 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
         let _ = app.emit("room_list:update", snapshot_rooms(&client).await);
-        emit_room_updates(&app, &client, &initial_response);
+        emit_room_updates(&app, &client, &initial_response).await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
         // the `SyncSettings` passed to its *first* call for the whole
@@ -1231,7 +1255,7 @@ fn spawn_sync_loop(app: AppHandle, client: Client) {
                 Ok(response) => {
                     consecutive_failures = 0;
                     let _ = app.emit("room_list:update", snapshot_rooms(&client).await);
-                    emit_room_updates(&app, &client, &response);
+                    emit_room_updates(&app, &client, &response).await;
                 }
                 Err(e) => {
                     consecutive_failures += 1;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
-import { Paperclip, Send, X } from "lucide-react";
+import { Info, Paperclip, Send, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import {
@@ -31,6 +31,7 @@ import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
 import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
+import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
@@ -161,6 +162,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   currentRoomIdRef.current = roomId;
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
+  const [rightPanelOpen, setRightPanelOpen] = useAtom(rightPanelOpenAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
 
@@ -469,8 +471,22 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <div className="border-b border-border p-4 text-[15px] font-bold text-foreground">
-        {displayName(room.room_id, room.name)}
+      <div className="flex items-center justify-between border-b border-border p-4">
+        <span className="text-[15px] font-bold text-foreground">
+          {displayName(room.room_id, room.name)}
+        </span>
+        <button
+          type="button"
+          aria-label={rightPanelOpen ? "Hide room info" : "Show room info"}
+          aria-pressed={rightPanelOpen}
+          onClick={() => setRightPanelOpen((open) => !open)}
+          className={cn(
+            "flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            rightPanelOpen && "bg-accent text-accent-foreground",
+          )}
+        >
+          <Info className="size-4" />
+        </button>
       </div>
 
       <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">

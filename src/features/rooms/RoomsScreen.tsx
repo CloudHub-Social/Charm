@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { useAtom } from "jotai";
 import { RoomList } from "./RoomList";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { listRooms, onRoomListUpdate, resolveRoomAlias, type RoomSummary } from "@/lib/matrix";
+import { RoomInfoPanel } from "@/features/room-info/RoomInfoPanel";
+import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 
 interface RoomsScreenProps {
   currentUserId: string;
@@ -67,11 +70,17 @@ export function RoomsScreen({
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const [rightPanelOpen, setRightPanelOpen] = useAtom(
+    rightPanelOpenAtomFamily(activeRoom?.room_id ?? ""),
+  );
 
   return (
     <div className="flex h-screen">
       <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
       <ChatShell room={activeRoom} currentUserId={currentUserId} />
+      {activeRoom && rightPanelOpen && (
+        <RoomInfoPanel roomId={activeRoom.room_id} onClose={() => setRightPanelOpen(false)} />
+      )}
       <VerificationOverlay />
     </div>
   );

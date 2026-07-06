@@ -98,7 +98,22 @@ pub fn run() {
             matrix::rooms::set_room_manual_order,
             matrix::spaces::list_space_children,
             matrix::spaces::join_room,
-            matrix::spaces::knock_room
+            matrix::spaces::knock_room,
+            matrix::room_admin::get_room_details,
+            matrix::room_admin::get_room_member_list,
+            matrix::room_admin::set_room_name,
+            matrix::room_admin::set_room_topic,
+            matrix::room_admin::set_room_avatar,
+            matrix::room_admin::remove_room_avatar,
+            matrix::room_admin::set_room_join_rule,
+            matrix::room_admin::set_room_history_visibility,
+            matrix::room_admin::enable_room_encryption,
+            matrix::room_admin::set_member_power_level,
+            matrix::room_admin::set_room_power_level_thresholds,
+            matrix::room_admin::invite_member,
+            matrix::room_admin::kick_member,
+            matrix::room_admin::ban_member,
+            matrix::room_admin::unban_member
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
