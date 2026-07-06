@@ -101,7 +101,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Admin: Story = {
-  args: { roomId: ROOM_ID, onClose: () => {} },
+  args: { roomId: ROOM_ID, currentUserId: "@evie:localhost", onClose: () => {} },
   decorators: [
     (Story) => (
       <AppProviders client={seededQueryClient(ADMIN_DETAILS)}>
@@ -114,7 +114,7 @@ export const Admin: Story = {
 };
 
 export const ReadOnlyMember: Story = {
-  args: { roomId: ROOM_ID, onClose: () => {} },
+  args: { roomId: ROOM_ID, currentUserId: "@evie:localhost", onClose: () => {} },
   decorators: [
     (Story) => (
       <AppProviders client={seededQueryClient(READ_ONLY_DETAILS)}>

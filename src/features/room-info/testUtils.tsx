@@ -6,6 +6,20 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import type { RoomDetails } from "@/lib/matrix";
 
 /**
+ * Wraps `ui` in the same provider tree `renderWithProviders` uses, without
+ * rendering it — for tests that need to call RTL's `rerender` (which
+ * replaces the whole tree it was given, so a bare `rerender(<Component />)`
+ * would drop the QueryClient/TooltipProvider context and throw).
+ */
+export function wrapWithProviders(ui: ReactElement, client: QueryClient) {
+  return (
+    <AppProviders client={client}>
+      <TooltipProvider>{ui}</TooltipProvider>
+    </AppProviders>
+  );
+}
+
+/**
  * Fresh, retry-disabled `QueryClient` per test — this feature is the first
  * user of TanStack Query, so every test needs its own provider tree rather
  * than a global singleton. Also wraps in `TooltipProvider`, since every
@@ -15,11 +29,7 @@ import type { RoomDetails } from "@/lib/matrix";
  */
 export function renderWithProviders(ui: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <AppProviders client={client}>
-      <TooltipProvider>{ui}</TooltipProvider>
-    </AppProviders>,
-  );
+  return { ...render(wrapWithProviders(ui, client)), client };
 }
 
 /** Radix's `DropdownMenu` opens on pointerdown, not click, in jsdom — see `MessageActions.test.tsx`'s identical helper. */

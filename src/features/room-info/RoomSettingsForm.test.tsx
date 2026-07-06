@@ -118,8 +118,8 @@ describe("RoomSettingsForm", () => {
     const details = makeRoomDetails({ history_visibility: "shared" });
     renderWithProviders(<RoomSettingsForm details={details} />);
 
-    openDropdownMenu("Anyone, from when they're invited");
-    fireEvent.click(await screen.findByText("Members only, from when they joined"));
+    openDropdownMenu("Members, including before they joined");
+    fireEvent.click(await screen.findByText("Members, from when they joined"));
 
     await waitFor(() => {
       expect(setRoomHistoryVisibility).toHaveBeenCalledWith(details.room_id, "joined");

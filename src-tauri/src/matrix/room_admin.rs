@@ -16,6 +16,7 @@ use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tauri::State;
 use ts_rs::TS;
 
@@ -24,8 +25,10 @@ use super::MatrixState;
 
 /// Tauri passes avatar bytes over IPC as a plain `Vec<u8>` — cap how large a
 /// file the frontend can hand over, rather than trusting a file picker to
-/// only ever offer something reasonable.
-const MAX_AVATAR_BYTES: usize = 5 * 1024 * 1024;
+/// only ever offer something reasonable. Checked against file metadata
+/// before reading (see `set_room_avatar`), not after, so a huge or
+/// malicious path can't be read into memory first.
+const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -213,9 +216,19 @@ pub struct RoomDetails {
     pub can: RoomPermissions,
 }
 
+/// Room v12+ creators have an "infinite" power level (see [`UserPowerLevel::Infinite`]),
+/// which has no `Int` (Matrix's own power-level type, itself JS-safe-integer-bounded)
+/// representation to fall back to. `i64::MAX` would round-trip incorrectly once it
+/// crosses into JS (`#[ts(type = "number")]` fields are plain `number`s, and
+/// `Number.MAX_SAFE_INTEGER` is `2^53 - 1`) — displaying a silently-rounded value, and
+/// potentially a different value than what's shown if ever sent back to
+/// `set_member_power_level`. Capping to that same bound instead keeps whatever value
+/// the frontend sees exact, even though it's no longer literally "infinite".
+pub(crate) const JS_SAFE_INFINITE_POWER_LEVEL: i64 = 9_007_199_254_740_991;
+
 fn user_power_level_to_i64(level: UserPowerLevel) -> i64 {
     match level {
-        UserPowerLevel::Infinite => i64::MAX,
+        UserPowerLevel::Infinite => JS_SAFE_INFINITE_POWER_LEVEL,
         UserPowerLevel::Int(value) => value.into(),
         _ => 0,
     }
@@ -293,9 +306,18 @@ pub async fn get_room_details(
     build_room_details(&client, &room_id).await
 }
 
-/// Every membership (including banned/left), unlike [`members::get_room_members`]'s
+/// Active + banned memberships, unlike [`members::get_room_members`]'s
 /// active-only autocomplete scope — the right panel's Members tab must show
 /// banned users under their own grouping (see Spec 07 acceptance criteria).
+/// `LEAVE`/`KNOCK` are deliberately excluded: the panel never renders them,
+/// and a long-lived room can accumulate a lot of left members, so fetching
+/// them here would just be wasted work.
+///
+/// Uses the network-aware `members()` (not `members_no_sync`) — this is a
+/// moderation surface the admin explicitly opened, unlike the mention
+/// autocomplete's latency-sensitive path, so it's worth a round-trip to
+/// cover a lazy-loaded room whose banned/older members aren't in the local
+/// store yet.
 #[tauri::command]
 pub async fn get_room_member_list(
     state: State<'_, MatrixState>,
@@ -304,7 +326,7 @@ pub async fn get_room_member_list(
     let client = state.require_client().await?;
     let room = require_room(&client, &room_id)?;
     let members = room
-        .members_no_sync(RoomMemberships::all())
+        .members(RoomMemberships::ACTIVE | RoomMemberships::BAN)
         .await
         .map_err(|e| e.to_string())?;
     Ok(members.iter().map(members::member_to_summary).collect())
@@ -344,14 +366,25 @@ pub async fn set_room_avatar(
 ) -> Result<(), String> {
     // Reads the path + sniffs its MIME type server-side, same convention as
     // `send::send_attachment` — the frontend hands over a path from its file
-    // picker rather than marshaling raw bytes over IPC itself.
-    let data = tokio::fs::read(&file_path)
-        .await
-        .map_err(|e| e.to_string())?;
-    if data.len() > MAX_AVATAR_BYTES {
-        return Err("avatar image is too large (5 MB max)".to_string());
+    // picker rather than marshaling raw bytes over IPC itself. Checks
+    // metadata (regular file + size) *before* reading, same as
+    // `send_attachment`: reading first would mean a huge or symlinked-to-a-
+    // special-file path gets pulled fully into memory before this ever gets
+    // a chance to reject it.
+    let path = Path::new(&file_path);
+    let metadata = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("file_path does not refer to a regular file".to_string());
     }
-    let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
+    if metadata.len() > MAX_AVATAR_BYTES {
+        return Err(format!(
+            "avatar is {} bytes, over the {MAX_AVATAR_BYTES}-byte limit",
+            metadata.len()
+        ));
+    }
+
+    let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
 
     let client = state.require_client().await?;
     let room = require_room(&client, &room_id)?;

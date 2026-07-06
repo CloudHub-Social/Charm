@@ -17,13 +17,35 @@ interface MemberRowProps {
   member: RoomMemberSummary;
   can: RoomPermissions;
   myPowerLevel: number;
+  currentUserId: string;
 }
 
-export function MemberRow({ roomId, member, can, myPowerLevel }: MemberRowProps) {
+export function MemberRow({ roomId, member, can, myPowerLevel, currentUserId }: MemberRowProps) {
   const actions = useRoomAdminActions(roomId);
   const [powerLevelDialogOpen, setPowerLevelDialogOpen] = useState(false);
   const label = member.display_name ?? member.user_id;
-  const hasAnyAction = can.kick || can.ban || can.set_power_levels || member.membership === "ban";
+  const isSelf = member.user_id === currentUserId;
+  // Matrix rejects kick/ban (and power-level edits) of a member at or above
+  // the acting user's own power level regardless of the room's kick/ban
+  // threshold — gating on the room-wide `can.*` alone would show an enabled
+  // control that's guaranteed to fail server-side against a peer admin.
+  const targetOutranked = member.power_level < myPowerLevel;
+  const kickAllowed = can.kick && targetOutranked;
+  const banAllowed = can.ban && targetOutranked;
+  const setPowerLevelAllowed = can.set_power_levels && (isSelf || targetOutranked);
+  // Unbanning is a membership change to "leave" for a banned target, which
+  // Matrix authorizes on *both* the ban check and the kick-level check, not
+  // ban alone — a room with a higher kick threshold than ban threshold would
+  // otherwise show an Unban that's guaranteed to fail server-side.
+  const unbanAllowed = can.ban && can.kick;
+  // For an active member, the menu still opens (showing whichever of
+  // kick/ban/set-power-level is disabled-with-tooltip) even if none of the
+  // *target-specific* refinements above pass, so the row explains why. A
+  // banned member has only one possible action, so there's nothing useful to
+  // show if that one action isn't available — hide the menu entirely instead
+  // of a single disabled item.
+  const hasAnyAction =
+    member.membership === "ban" ? unbanAllowed : can.kick || can.ban || can.set_power_levels;
 
   return (
     <div className="flex min-h-11 items-center gap-2 px-4 py-1.5">
@@ -52,7 +74,7 @@ export function MemberRow({ roomId, member, can, myPowerLevel }: MemberRowProps)
           <DropdownMenuContent align="end">
             {member.membership === "ban" ? (
               <GatedItem
-                allowed={can.ban}
+                allowed={unbanAllowed}
                 onSelect={() => actions.unban.mutate({ userId: member.user_id })}
               >
                 Unban
@@ -60,19 +82,19 @@ export function MemberRow({ roomId, member, can, myPowerLevel }: MemberRowProps)
             ) : (
               <>
                 <GatedItem
-                  allowed={can.set_power_levels}
+                  allowed={setPowerLevelAllowed}
                   onSelect={() => setPowerLevelDialogOpen(true)}
                 >
                   Set power level
                 </GatedItem>
                 <GatedItem
-                  allowed={can.kick}
+                  allowed={kickAllowed}
                   onSelect={() => actions.kick.mutate({ userId: member.user_id })}
                 >
                   Kick
                 </GatedItem>
                 <GatedItem
-                  allowed={can.ban}
+                  allowed={banAllowed}
                   variant="destructive"
                   onSelect={() => actions.ban.mutate({ userId: member.user_id })}
                 >
@@ -88,6 +110,7 @@ export function MemberRow({ roomId, member, can, myPowerLevel }: MemberRowProps)
         userId={member.user_id}
         currentPowerLevel={member.power_level}
         myPowerLevel={myPowerLevel}
+        isSelf={isSelf}
         open={powerLevelDialogOpen}
         onOpenChange={setPowerLevelDialogOpen}
       />
@@ -120,9 +143,16 @@ function GatedItem({ allowed, variant, onSelect, children }: GatedItemProps) {
     </DropdownMenuItem>
   );
   if (allowed) return item;
+  // `DropdownMenuItem`'s disabled state sets `pointer-events: none` on the
+  // item itself, so a `TooltipTrigger asChild` wrapping it directly never
+  // sees the hover — wrap it in a plain (non-disabled) span instead so the
+  // tooltip actually triggers, same pattern as `RoomSettingsForm`'s
+  // `PermissionGate`.
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{item}</TooltipTrigger>
+      <TooltipTrigger asChild>
+        <span className="block">{item}</span>
+      </TooltipTrigger>
       <TooltipContent side="left">You need a higher power level to do this</TooltipContent>
     </Tooltip>
   );

@@ -93,11 +93,26 @@ async fn emit_room_updates(
             );
         }
 
+        // `update.state`'s `Before` variant only covers changes up to the
+        // *start* of the timeline — state events landing within the timeline
+        // window itself (the common case for an incremental sync) arrive as
+        // ordinary timeline events that happen to carry a `state_key`, not in
+        // this separate field (see `State::Before`'s doc comment). Missing
+        // that would mean a room-name/power-level/member change often never
+        // triggers `room_details:update`. `After` already covers the whole
+        // window, so checking the timeline too there is redundant but harmless.
         let state_events_present = match &update.state {
             matrix_sdk::sync::State::Before(events) | matrix_sdk::sync::State::After(events) => {
                 !events.is_empty()
             }
-        };
+        } || update.timeline.events.iter().any(|event| {
+            event
+                .raw()
+                .get_field::<String>("state_key")
+                .ok()
+                .flatten()
+                .is_some()
+        });
         if state_events_present {
             if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
                 let _ = app.emit("room_details:update", details);

@@ -32,10 +32,13 @@ const JOIN_RULE_LABELS: Record<JoinRuleKind, string> = {
 };
 
 const HISTORY_VISIBILITY_LABELS: Record<HistoryVisibilityKind, string> = {
-  shared: "Anyone, from when they're invited",
-  invited: "Members only, from when they're invited",
-  joined: "Members only, from when they joined",
-  world_readable: "Anyone, including non-members",
+  // Matrix's `m.room.history_visibility` semantics, not "from when invited" —
+  // `shared` in particular grants a joined member the room's entire history,
+  // not just what happened after they joined.
+  invited: "Members, from when they were invited",
+  joined: "Members, from when they joined",
+  shared: "Members, including before they joined",
+  world_readable: "Anyone, including people not in the room",
 };
 
 /** No allow-list editor exists yet (Day-2) — offering it here would silently produce an empty allow-list. */

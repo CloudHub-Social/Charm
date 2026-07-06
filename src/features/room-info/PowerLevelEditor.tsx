@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +24,8 @@ interface MemberPowerLevelDialogProps {
   userId: string;
   currentPowerLevel: number;
   myPowerLevel: number;
+  /** Whether `userId` is the acting (signed-in) user — gates the self-demotion confirm below. */
+  isSelf: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -39,6 +41,7 @@ export function MemberPowerLevelDialog({
   userId,
   currentPowerLevel,
   myPowerLevel,
+  isSelf,
   open,
   onOpenChange,
 }: MemberPowerLevelDialogProps) {
@@ -46,7 +49,18 @@ export function MemberPowerLevelDialog({
   const [powerLevel, setPowerLevel] = useState(currentPowerLevel);
   const [confirming, setConfirming] = useState(false);
 
-  const needsConfirm = powerLevel >= myPowerLevel;
+  // The dialog stays mounted across open/close (and across sync-driven
+  // `currentPowerLevel` changes) — without this, reopening it could show
+  // (and let the user save) a stale draft power level or a stale
+  // confirmation step instead of the room's current state.
+  useEffect(() => {
+    if (open) {
+      setPowerLevel(currentPowerLevel);
+      setConfirming(false);
+    }
+  }, [open, currentPowerLevel]);
+
+  const needsConfirm = powerLevel >= myPowerLevel || (isSelf && powerLevel < currentPowerLevel);
 
   function commit() {
     actions.setMemberPowerLevel.mutate({ userId, powerLevel });
@@ -72,8 +86,10 @@ export function MemberPowerLevelDialog({
         {confirming ? (
           <>
             <p className="text-sm text-muted-foreground">
-              This sets a power level at or above your own — you may not be able to undo this
-              yourself afterward. Continue?
+              {isSelf && powerLevel < currentPowerLevel
+                ? "This lowers your own power level — you may not be able to undo this yourself afterward."
+                : "This sets a power level at or above your own — you may not be able to undo this yourself afterward."}{" "}
+              Continue?
             </p>
             <DialogFooter>
               <Button variant="outline" onClick={() => setConfirming(false)}>
@@ -140,6 +156,14 @@ interface PowerLevelThresholdsEditorProps {
 export function PowerLevelThresholdsEditor({ details }: PowerLevelThresholdsEditorProps) {
   const actions = useRoomAdminActions(details.room_id);
   const [thresholds, setThresholds] = useState<PowerLevelThresholds>(details.power_levels);
+
+  // Without this, a `room_details:update` while this editor is open (e.g. another
+  // admin changes a threshold) re-renders with fresh `details.power_levels` but
+  // leaves this local draft stale — the next Save would then silently revert
+  // their change back to what this editor loaded initially.
+  useEffect(() => {
+    setThresholds(details.power_levels);
+  }, [details.power_levels]);
 
   const disabled = !details.can.set_power_levels;
 

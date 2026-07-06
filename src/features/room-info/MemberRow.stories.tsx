@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient } from "@tanstack/react-query";
 import { AppProviders } from "@/providers";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { MemberRow } from "./MemberRow";
 import type { RoomMemberSummary, RoomPermissions } from "@/lib/matrix";
 
@@ -54,9 +55,11 @@ const meta = {
   decorators: [
     (Story) => (
       <AppProviders client={new QueryClient()}>
-        <div className="w-80 rounded-md border border-border bg-card">
-          <Story />
-        </div>
+        <TooltipProvider>
+          <div className="w-80 rounded-md border border-border bg-card">
+            <Story />
+          </div>
+        </TooltipProvider>
       </AppProviders>
     ),
   ],
@@ -66,7 +69,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Admin: Story = {
-  args: { roomId: "!story:localhost", member: MEMBER, can: ADMIN_PERMISSIONS, myPowerLevel: 100 },
+  args: {
+    roomId: "!story:localhost",
+    member: MEMBER,
+    can: ADMIN_PERMISSIONS,
+    myPowerLevel: 100,
+    currentUserId: "@evie:localhost",
+  },
 };
 
 export const ReadOnly: Story = {
@@ -75,6 +84,7 @@ export const ReadOnly: Story = {
     member: MEMBER,
     can: READ_ONLY_PERMISSIONS,
     myPowerLevel: 0,
+    currentUserId: "@evie:localhost",
   },
 };
 
@@ -84,5 +94,23 @@ export const Banned: Story = {
     member: BANNED_MEMBER,
     can: ADMIN_PERMISSIONS,
     myPowerLevel: 100,
+    currentUserId: "@evie:localhost",
+  },
+};
+
+/**
+ * The acting user has `can.kick`/`can.ban`/`can.set_power_levels`, but this
+ * particular member outranks them — the menu still opens (unlike the
+ * `ReadOnly` story, which has no permissions at all and hides it entirely),
+ * with every item disabled behind a tooltip once opened. Open the "⋯" menu
+ * in Storybook's canvas to check the `GatedItem`/`TooltipProvider` path.
+ */
+export const OutrankedPeer: Story = {
+  args: {
+    roomId: "!story:localhost",
+    member: { ...MEMBER, power_level: 100 },
+    can: ADMIN_PERMISSIONS,
+    myPowerLevel: 100,
+    currentUserId: "@evie:localhost",
   },
 };

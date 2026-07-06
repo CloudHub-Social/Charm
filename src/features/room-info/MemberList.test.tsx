@@ -38,7 +38,7 @@ describe("MemberList", () => {
     getRoomMemberList.mockResolvedValue(MEMBERS);
     const details = makeRoomDetails({ member_count: 2 });
 
-    renderWithProviders(<MemberList details={details} />);
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
 
     expect(await screen.findByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("Banned")).toBeInTheDocument();
@@ -50,7 +50,7 @@ describe("MemberList", () => {
     getRoomMemberList.mockResolvedValue([MEMBERS[0]]);
     const details = makeRoomDetails({ member_count: 1 });
 
-    renderWithProviders(<MemberList details={details} />);
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
 
     await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
     expect(screen.queryByText("Banned")).not.toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("MemberList", () => {
     getRoomMemberList.mockResolvedValue([]);
     const details = makeRoomDetails({ can: { ...makeRoomDetails().can, invite: false } });
 
-    renderWithProviders(<MemberList details={details} />);
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
 
     expect(screen.getByRole("button", { name: "Invite" })).toBeDisabled();
   });

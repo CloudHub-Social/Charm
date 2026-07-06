@@ -35,7 +35,13 @@ describe("RoomInfoPanel", () => {
     const original = makeRoomDetails({ name: "Original Name" });
     getRoomDetails.mockResolvedValue(original);
 
-    renderWithProviders(<RoomInfoPanel roomId={original.room_id} onClose={() => {}} />);
+    renderWithProviders(
+      <RoomInfoPanel
+        roomId={original.room_id}
+        currentUserId="@evie:localhost"
+        onClose={() => {}}
+      />,
+    );
 
     expect(await screen.findByDisplayValue("Original Name")).toBeInTheDocument();
 
@@ -53,7 +59,13 @@ describe("RoomInfoPanel", () => {
     const original = makeRoomDetails({ name: "Original Name" });
     getRoomDetails.mockResolvedValue(original);
 
-    renderWithProviders(<RoomInfoPanel roomId={original.room_id} onClose={() => {}} />);
+    renderWithProviders(
+      <RoomInfoPanel
+        roomId={original.room_id}
+        currentUserId="@evie:localhost"
+        onClose={() => {}}
+      />,
+    );
     expect(await screen.findByDisplayValue("Original Name")).toBeInTheDocument();
 
     act(() => {

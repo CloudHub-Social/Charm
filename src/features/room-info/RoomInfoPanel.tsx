@@ -8,6 +8,7 @@ import { MemberList } from "./MemberList";
 
 interface RoomInfoPanelProps {
   roomId: string;
+  currentUserId: string;
   onClose: () => void;
 }
 
@@ -17,7 +18,7 @@ interface RoomInfoPanelProps {
  * non-goals). Rendered as a third column by `RoomsScreen` when
  * `rightPanelOpenAtomFamily(roomId)` is true.
  */
-export function RoomInfoPanel({ roomId, onClose }: RoomInfoPanelProps) {
+export function RoomInfoPanel({ roomId, currentUserId, onClose }: RoomInfoPanelProps) {
   const { data: details, isLoading } = useRoomDetails(roomId);
 
   return (
@@ -53,7 +54,7 @@ export function RoomInfoPanel({ roomId, onClose }: RoomInfoPanelProps) {
               </div>
             </TabsContent>
             <TabsContent value="members" className="overflow-y-auto">
-              <MemberList details={details} />
+              <MemberList details={details} currentUserId={currentUserId} />
             </TabsContent>
             <TabsContent value="pinned">
               <p className="p-4 text-sm text-muted-foreground">Coming soon</p>

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
 
-use super::room_admin::MembershipKind;
+use super::room_admin::{MembershipKind, JS_SAFE_INFINITE_POWER_LEVEL};
 use super::MatrixState;
 
 /// A room member as offered by the `@` mention autocomplete and the Spec 07
@@ -33,7 +33,7 @@ pub struct RoomMemberSummary {
 /// `room_admin::get_room_member_list` (all memberships, admin panel).
 pub(crate) fn member_to_summary(member: &RoomMember) -> RoomMemberSummary {
     let power_level = match member.power_level() {
-        UserPowerLevel::Infinite => i64::MAX,
+        UserPowerLevel::Infinite => JS_SAFE_INFINITE_POWER_LEVEL,
         UserPowerLevel::Int(level) => level.into(),
         _ => 0,
     };

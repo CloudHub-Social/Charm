@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberPowerLevelDialog, PowerLevelThresholdsEditor } from "./PowerLevelEditor";
-import { makeRoomDetails, renderWithProviders } from "./testUtils";
+import { makeRoomDetails, renderWithProviders, wrapWithProviders } from "./testUtils";
 
 const setMemberPowerLevel = vi.fn().mockResolvedValue(undefined);
 const setRoomPowerLevelThresholds = vi.fn().mockResolvedValue(undefined);
@@ -23,6 +23,7 @@ describe("MemberPowerLevelDialog", () => {
         userId="@alice:example.org"
         currentPowerLevel={0}
         myPowerLevel={100}
+        isSelf={false}
         open={true}
         onOpenChange={() => {}}
       />,
@@ -43,6 +44,7 @@ describe("MemberPowerLevelDialog", () => {
         userId="@alice:example.org"
         currentPowerLevel={0}
         myPowerLevel={100}
+        isSelf={false}
         open={true}
         onOpenChange={() => {}}
       />,
@@ -62,6 +64,81 @@ describe("MemberPowerLevelDialog", () => {
         100,
       );
     });
+  });
+
+  it("requires confirmation when the acting user demotes themself, even though the new level is below their own", async () => {
+    renderWithProviders(
+      <MemberPowerLevelDialog
+        roomId="!test:localhost"
+        userId="@evie:localhost"
+        currentPowerLevel={100}
+        myPowerLevel={100}
+        isSelf={true}
+        open={true}
+        onOpenChange={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Moderator" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(setMemberPowerLevel).not.toHaveBeenCalled();
+    expect(screen.getByText(/lowers your own power level/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Set power level" }));
+    await waitFor(() => {
+      expect(setMemberPowerLevel).toHaveBeenCalledWith("!test:localhost", "@evie:localhost", 50);
+    });
+  });
+
+  it("resets its draft power level when reopened against a fresher currentPowerLevel", () => {
+    const { rerender, client } = renderWithProviders(
+      <MemberPowerLevelDialog
+        roomId="!test:localhost"
+        userId="@alice:example.org"
+        currentPowerLevel={0}
+        myPowerLevel={100}
+        isSelf={false}
+        open={true}
+        onOpenChange={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Admin" }));
+    expect(screen.getByLabelText("Custom power level")).toHaveValue(100);
+
+    // Simulate closing, a sync-driven power-level change landing while
+    // closed, then reopening — the draft should reflect the fresh value,
+    // not the "Admin" preset picked before it closed.
+    rerender(
+      wrapWithProviders(
+        <MemberPowerLevelDialog
+          roomId="!test:localhost"
+          userId="@alice:example.org"
+          currentPowerLevel={50}
+          myPowerLevel={100}
+          isSelf={false}
+          open={false}
+          onOpenChange={() => {}}
+        />,
+        client,
+      ),
+    );
+    rerender(
+      wrapWithProviders(
+        <MemberPowerLevelDialog
+          roomId="!test:localhost"
+          userId="@alice:example.org"
+          currentPowerLevel={50}
+          myPowerLevel={100}
+          isSelf={false}
+          open={true}
+          onOpenChange={() => {}}
+        />,
+        client,
+      ),
+    );
+
+    expect(screen.getByLabelText("Custom power level")).toHaveValue(50);
   });
 });
 

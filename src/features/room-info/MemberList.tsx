@@ -5,6 +5,7 @@ import { InviteMemberDialog } from "./InviteMemberDialog";
 
 interface MemberListProps {
   details: RoomDetails;
+  currentUserId: string;
 }
 
 function groupByMembership(members: RoomMemberSummary[]) {
@@ -13,7 +14,7 @@ function groupByMembership(members: RoomMemberSummary[]) {
   return { active, banned };
 }
 
-export function MemberList({ details }: MemberListProps) {
+export function MemberList({ details, currentUserId }: MemberListProps) {
   const { data: members, isLoading } = useRoomMembers(details.room_id);
 
   return (
@@ -40,6 +41,7 @@ export function MemberList({ details }: MemberListProps) {
                     member={member}
                     can={details.can}
                     myPowerLevel={details.my_power_level}
+                    currentUserId={currentUserId}
                   />
                 ))}
               </div>
@@ -55,6 +57,7 @@ export function MemberList({ details }: MemberListProps) {
                       member={member}
                       can={details.can}
                       myPowerLevel={details.my_power_level}
+                      currentUserId={currentUserId}
                     />
                   ))}
                 </div>

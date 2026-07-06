@@ -79,7 +79,11 @@ export function RoomsScreen({
       <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
       <ChatShell room={activeRoom} currentUserId={currentUserId} />
       {activeRoom && rightPanelOpen && (
-        <RoomInfoPanel roomId={activeRoom.room_id} onClose={() => setRightPanelOpen(false)} />
+        <RoomInfoPanel
+          roomId={activeRoom.room_id}
+          currentUserId={currentUserId}
+          onClose={() => setRightPanelOpen(false)}
+        />
       )}
       <VerificationOverlay />
     </div>

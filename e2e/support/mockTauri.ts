@@ -207,20 +207,27 @@ export function installMockTauri(seed: {
       return undefined;
     },
     kick_member: (args) => {
-      const index = memberList.findIndex((m) => m.user_id === args.userId);
-      if (index !== -1) memberList.splice(index, 1);
+      const member = memberList.find((m) => m.user_id === args.userId);
+      const wasActive = member?.membership === "join" || member?.membership === "invite";
+      if (member) member.membership = "leave";
+      if (wasActive) roomDetails.member_count = (roomDetails.member_count as number) - 1;
       pushRoomDetailsUpdate();
       return undefined;
     },
     ban_member: (args) => {
       const member = memberList.find((m) => m.user_id === args.userId);
+      const wasActive = member?.membership === "join" || member?.membership === "invite";
       if (member) member.membership = "ban";
+      if (wasActive) roomDetails.member_count = (roomDetails.member_count as number) - 1;
       pushRoomDetailsUpdate();
       return undefined;
     },
+    // A real homeserver leaves an unbanned user in `leave`, not `join` — they
+    // aren't automatically re-added to the room, so `member_count` (active
+    // members only) doesn't change either.
     unban_member: (args) => {
       const member = memberList.find((m) => m.user_id === args.userId);
-      if (member) member.membership = "join";
+      if (member) member.membership = "leave";
       pushRoomDetailsUpdate();
       return undefined;
     },
