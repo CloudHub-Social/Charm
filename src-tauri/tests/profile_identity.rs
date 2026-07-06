@@ -23,7 +23,7 @@ mod common;
 
 use std::time::Duration;
 
-use charm_lib::matrix::snapshot_rooms;
+use charm_lib::matrix::rooms::snapshot_rooms;
 use charm_lib::matrix::timeline::items_to_summaries;
 use common::{synced_client, synced_client_2};
 use matrix_sdk::config::SyncSettings;

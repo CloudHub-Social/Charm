@@ -21,6 +21,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm audit --audit-level=high
       - run: pnpm lint
       - run: pnpm fmt:check
       - run: pnpm typecheck
@@ -107,6 +108,10 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - run: cargo audit
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a

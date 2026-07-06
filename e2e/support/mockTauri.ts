@@ -33,6 +33,7 @@ export function installMockTauri(seed: {
   deviceId: string;
   room: { room_id: string; name: string | null; unread_count: number };
   members?: { user_id: string; display_name: string | null }[];
+  roomDetails?: Record<string, unknown>;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -100,6 +101,55 @@ export function installMockTauri(seed: {
     emit("timeline:update", { room_id: roomId, messages: [...(messagesByRoom.get(roomId) ?? [])] });
   }
 
+  // Spec 07's room-info panel — `roomDetails` is mutated in place by the
+  // setter handlers below and re-emitted via `room_details:update`, mirroring
+  // the real sync loop's "state event lands -> re-read -> emit" flow (no
+  // optimistic UI on the Rust side, so the mock shouldn't have any either).
+  const roomDetails: Record<string, unknown> = {
+    room_id: room.room_id,
+    name: room.name,
+    topic: null,
+    avatar_url: null,
+    is_encrypted: false,
+    join_rule: "invite",
+    history_visibility: "shared",
+    member_count: (seed.members?.length ?? 0) + 1,
+    my_power_level: 100,
+    power_levels: {
+      invite: 0,
+      kick: 50,
+      ban: 50,
+      redact: 50,
+      events_default: 0,
+      state_default: 50,
+      users_default: 0,
+    },
+    can: {
+      set_name: true,
+      set_topic: true,
+      set_avatar: true,
+      set_join_rules: true,
+      set_history_visibility: true,
+      set_encryption: true,
+      set_power_levels: true,
+      invite: true,
+      kick: true,
+      ban: true,
+    },
+    ...seed.roomDetails,
+  };
+
+  const memberList: Record<string, unknown>[] = (seed.members ?? []).map((member) => ({
+    avatar_url: null,
+    power_level: 0,
+    membership: "join",
+    ...member,
+  }));
+
+  function pushRoomDetailsUpdate() {
+    emit("room_details:update", { ...roomDetails });
+  }
+
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
     list_rooms: () => [room],
@@ -113,6 +163,88 @@ export function installMockTauri(seed: {
     can_redact: () => true,
     get_room_members: () => seed.members ?? [],
     run_command: () => ({ status: "success" }),
+
+    get_room_details: () => ({ ...roomDetails }),
+    get_room_member_list: () => [...memberList],
+    set_room_name: (args) => {
+      roomDetails.name = args.name;
+      room.name = args.name as string | null;
+      pushRoomDetailsUpdate();
+      // Real sync also re-snapshots the room list on any state change —
+      // the chat header and `RoomList` both read the room's name from
+      // `RoomSummary`, not `RoomDetails`, so this keeps them in sync too
+      // (see Spec 07 acceptance criteria 2).
+      emit("room_list:update", [room]);
+      return undefined;
+    },
+    set_room_topic: (args) => {
+      roomDetails.topic = args.topic;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    set_room_join_rule: (args) => {
+      roomDetails.join_rule = args.joinRule;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    set_room_history_visibility: (args) => {
+      roomDetails.history_visibility = args.visibility;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    enable_room_encryption: () => {
+      roomDetails.is_encrypted = true;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    invite_member: (args) => {
+      memberList.push({
+        user_id: args.userId,
+        display_name: null,
+        avatar_url: null,
+        power_level: 0,
+        membership: "invite",
+      });
+      roomDetails.member_count = (roomDetails.member_count as number) + 1;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    kick_member: (args) => {
+      const member = memberList.find((m) => m.user_id === args.userId);
+      const wasActive = member?.membership === "join" || member?.membership === "invite";
+      if (member) member.membership = "leave";
+      if (wasActive) roomDetails.member_count = (roomDetails.member_count as number) - 1;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    ban_member: (args) => {
+      const member = memberList.find((m) => m.user_id === args.userId);
+      const wasActive = member?.membership === "join" || member?.membership === "invite";
+      if (member) member.membership = "ban";
+      if (wasActive) roomDetails.member_count = (roomDetails.member_count as number) - 1;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    // A real homeserver leaves an unbanned user in `leave`, not `join` — they
+    // aren't automatically re-added to the room, so `member_count` (active
+    // members only) doesn't change either.
+    unban_member: (args) => {
+      const member = memberList.find((m) => m.user_id === args.userId);
+      if (member) member.membership = "leave";
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    set_member_power_level: (args) => {
+      const member = memberList.find((m) => m.user_id === args.userId);
+      if (member) member.power_level = args.powerLevel;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    set_room_power_level_thresholds: (args) => {
+      roomDetails.power_levels = args.changes;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
 
     // Models the real `Timeline`'s two-phase local echo (Spec 14): a
     // `timeline:update` carrying the item with `send_state: "pending"` and

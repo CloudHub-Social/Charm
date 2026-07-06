@@ -1,6 +1,9 @@
 import { atom } from "jotai";
-import { atomFamily } from "jotai/utils";
+import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
 import type { PresenceUpdate } from "@/lib/matrix";
+
+/** Distinct user ids tracked at once — see `boundedAtomFamily`'s doc comment. */
+const MAX_TRACKED_USERS = 500;
 
 /**
  * One atom per `user_id`, holding the last `presence:update` seen for that
@@ -8,11 +11,11 @@ import type { PresenceUpdate } from "@/lib/matrix";
  * independent — a presence push for one user only re-renders components
  * reading that user's atom, not every presence consumer in the tree.
  */
-export const presenceAtomFamily = atomFamily((userId: string) => {
+export const presenceAtomFamily = boundedAtomFamily((userId: string) => {
   const userPresenceAtom = atom<PresenceUpdate | null>(null);
   userPresenceAtom.debugLabel = `presence:${userId}`;
   return userPresenceAtom;
-});
+}, MAX_TRACKED_USERS);
 
 /**
  * Applies an incoming `presence:update` push to the relevant per-user atom.

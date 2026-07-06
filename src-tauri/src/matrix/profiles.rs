@@ -62,8 +62,11 @@ pub struct OwnProfile {
 /// Pushed on `profile:self` when the signed-in user's own membership event
 /// (in any shared room) carries a changed display name/avatar — see the
 /// module doc comment for why this is keyed off a membership event rather
-/// than a dedicated profile-change event.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// than a dedicated profile-change event. `PartialEq` so
+/// `register_self_profile_handler` can suppress a re-emit when a membership
+/// event fires for an unrelated reason (e.g. a kick/invite in some other
+/// shared room) but the profile fields it carries haven't actually changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct SelfProfileUpdate {
     pub display_name: Option<String>,
@@ -104,20 +107,18 @@ pub async fn get_own_profile_impl(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Cheap cached read first; only hits the network on a genuine first-run
-    // cache miss (see `Account::get_cached_avatar_url`'s doc comment).
-    let mut avatar_url = client
+    // Always a fresh network fetch, same as `get_display_name` above — not
+    // `get_cached_avatar_url`, which only ever reads the SDK's own
+    // last-fetched-avatar cache. `register_self_profile_handler` invalidates
+    // `useOwnProfile` (which calls this) precisely when an out-of-band
+    // `m.room.member` event says our avatar changed, so serving the stale
+    // cached value here would defeat that invalidation — the whole point of
+    // the refetch is to observe the *new* avatar, not echo the old one back.
+    let avatar_url = client
         .account()
-        .get_cached_avatar_url()
+        .get_avatar_url()
         .await
         .map_err(|e| e.to_string())?;
-    if avatar_url.is_none() {
-        avatar_url = client
-            .account()
-            .get_avatar_url()
-            .await
-            .map_err(|e| e.to_string())?;
-    }
 
     let avatar_path = match &avatar_url {
         Some(mxc) => resolve_avatar_path(client, media_cache, mxc.as_str()).await,
@@ -154,11 +155,24 @@ pub(crate) fn self_profile_update(
 /// Registers the handler described in this module's doc comment. Mirrors
 /// `presence::register_presence_handler` — called once, right after the
 /// client is built (login or session restore).
+///
+/// A membership event about the signed-in user fires for *any* membership
+/// change in a shared room (join/leave/kick/invite elsewhere, not just a
+/// profile edit), and every such event's content carries the user's *current*
+/// full display name/avatar regardless of why it fired — so without
+/// deduping, `profile:self` (and the frontend's `useOwnProfile` refetch it
+/// triggers) would fire on every membership change, not just ones that
+/// actually changed the profile. `last_emitted` tracks the last pushed value
+/// across event-handler invocations so an unrelated membership event that
+/// carries the same, unchanged profile is silently dropped.
 pub fn register_self_profile_handler(app: AppHandle, client: &Client) {
     let own_user_id = client.user_id().map(ToOwned::to_owned);
+    let last_emitted: std::sync::Arc<std::sync::Mutex<Option<SelfProfileUpdate>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     client.add_event_handler(move |ev: SyncRoomMemberEvent| {
         let app = app.clone();
         let own_user_id = own_user_id.clone();
+        let last_emitted = last_emitted.clone();
         async move {
             let Some(own_user_id) = own_user_id else {
                 return;
@@ -168,9 +182,16 @@ pub fn register_self_profile_handler(app: AppHandle, client: &Client) {
                 // to report — nothing to compare or push.
                 return;
             };
-            if let Some(update) = self_profile_update(&own_user_id, &ev.state_key, &ev.content) {
-                let _ = app.emit("profile:self", update);
+            let Some(update) = self_profile_update(&own_user_id, &ev.state_key, &ev.content) else {
+                return;
+            };
+            let mut last_emitted = last_emitted.lock().unwrap_or_else(|e| e.into_inner());
+            if last_emitted.as_ref() == Some(&update) {
+                return;
             }
+            *last_emitted = Some(update.clone());
+            drop(last_emitted);
+            let _ = app.emit("profile:self", update);
         }
     });
 }

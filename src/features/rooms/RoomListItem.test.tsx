@@ -18,6 +18,12 @@ vi.mock("@/lib/matrix", () => ({
 afterEach(() => {
   getPresence.mockClear();
   onPresenceUpdate.mockClear();
+  // Unconditional, not just at the end of the one test that stubs `Image`
+  // below: if an assertion in that test throws before it reaches its own
+  // cleanup, the stub would otherwise leak into every later test in this
+  // file (and, since `vi.stubGlobal` mutates the shared global object,
+  // possibly other files run in the same worker).
+  vi.unstubAllGlobals();
 });
 
 const room = makeRoomSummary();
@@ -129,7 +135,6 @@ describe("RoomListItem", () => {
       "src",
       "asset://localhost//cache/media/room-avatar.png",
     );
-    vi.unstubAllGlobals();
   });
 
   it("renders initials, not an image, when there's no avatar_path", () => {

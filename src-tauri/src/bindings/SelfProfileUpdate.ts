@@ -4,6 +4,9 @@
  * Pushed on `profile:self` when the signed-in user's own membership event
  * (in any shared room) carries a changed display name/avatar — see the
  * module doc comment for why this is keyed off a membership event rather
- * than a dedicated profile-change event.
+ * than a dedicated profile-change event. `PartialEq` so
+ * `register_self_profile_handler` can suppress a re-emit when a membership
+ * event fires for an unrelated reason (e.g. a kick/invite in some other
+ * shared room) but the profile fields it carries haven't actually changed.
  */
 export type SelfProfileUpdate = { display_name: string | null, avatar_url: string | null, };

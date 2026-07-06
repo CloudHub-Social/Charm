@@ -601,8 +601,18 @@ pub async fn get_timeline_page(
         .get_or_create_timeline(&app, &client, &parsed_room_id)
         .await?;
 
+    // 200 is well over any real UI need (the documented default is 30) —
+    // reject rather than silently clamp, so a caller passing a bogus/huge
+    // value gets an error instead of quietly triggering a 65535-event
+    // backward-pagination request.
+    const MAX_PAGE_LIMIT: u32 = 200;
     let requested = limit.unwrap_or(30);
-    let num_events = u16::try_from(requested).unwrap_or(u16::MAX);
+    if requested == 0 || requested > MAX_PAGE_LIMIT {
+        return Err(format!(
+            "limit must be between 1 and {MAX_PAGE_LIMIT}, got {requested}"
+        ));
+    }
+    let num_events = u16::try_from(requested).map_err(|e| e.to_string())?;
     let hit_start = timeline
         .paginate_backwards(num_events)
         .await

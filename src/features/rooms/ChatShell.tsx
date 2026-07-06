@@ -1,14 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
-import { Paperclip, Send, X } from "lucide-react";
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarGroup,
-  AvatarGroupCount,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Info, Paperclip, Send, X } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
@@ -30,15 +24,16 @@ import {
   type RoomMessageSummary,
   type RoomSummary,
 } from "@/lib/matrix";
-import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import type { ParsedSlashCommand } from "./slashCommands";
-import { MessageActions, type MessageActionsHandle } from "./MessageActions";
-import { ReactionBar } from "./ReactionBar";
+import { type MessageActionsHandle } from "./MessageActions";
+import { MessageRow, messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
+import { UploadTray, type PendingUpload } from "./UploadTray";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
 import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
+import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
@@ -46,25 +41,8 @@ interface ChatShellProps {
   currentUserId: string;
 }
 
-/** Caps the read-receipt avatar stack under a message; the rest collapse into a "+N". */
-const MAX_RECEIPT_AVATARS = 3;
-
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
-
-interface PendingUpload {
-  txnId: string;
-  filename: string;
-  sent: number;
-  total: number;
-  failed: boolean;
-}
-
-function formatTime(timestampMs: number): string {
-  return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
-    new Date(timestampMs),
-  );
-}
 
 function typingLabel(userIds: string[]): string {
   if (userIds.length === 0) return "";
@@ -72,11 +50,6 @@ function typingLabel(userIds: string[]): string {
   if (userIds.length === 2) return `${userIds[0]} and ${userIds[1]} are typing…`;
   const [first, second, ...rest] = userIds;
   return `${first}, ${second}, and ${rest.length} other${rest.length === 1 ? "" : "s"} are typing…`;
-}
-
-/** Stable identity for a timeline item across the local-echo -> ack lifecycle. */
-function itemKey(message: RoomMessageSummary): string {
-  return message.transaction_id ?? message.event_id;
 }
 
 /**
@@ -169,6 +142,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   currentRoomIdRef.current = roomId;
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
+  const [rightPanelOpen, setRightPanelOpen] = useAtom(rightPanelOpenAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
 
@@ -476,18 +450,32 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <div className="flex items-center gap-2 border-b border-border p-4 text-[15px] font-bold text-foreground">
-        <Avatar size="sm">
-          <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
-          <AvatarFallback
-            style={{ background: avatarColor(room.room_id) }}
-            className="font-bold text-white"
-          >
-            {initials(room.room_id, room.name)}
-          </AvatarFallback>
-          {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
-        </Avatar>
-        {displayName(room.room_id, room.name)}
+      <div className="flex items-center justify-between gap-2 border-b border-border p-4">
+        <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
+          <Avatar size="sm">
+            <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+            <AvatarFallback
+              style={{ background: avatarColor(room.room_id) }}
+              className="font-bold text-white"
+            >
+              {initials(room.room_id, room.name)}
+            </AvatarFallback>
+            {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
+          </Avatar>
+          <span>{displayName(room.room_id, room.name)}</span>
+        </div>
+        <button
+          type="button"
+          aria-label={rightPanelOpen ? "Hide room info" : "Show room info"}
+          aria-pressed={rightPanelOpen}
+          onClick={() => setRightPanelOpen((open) => !open)}
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            rightPanelOpen && "bg-accent text-accent-foreground",
+          )}
+        >
+          <Info className="size-4" />
+        </button>
       </div>
 
       <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
@@ -499,177 +487,43 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const own = message.sender === currentUserId;
           const prev = messages[i - 1];
           const next = messages[i + 1];
-          const sameSenderAsPrev = prev?.sender === message.sender;
-          const sameSenderAsNext = next?.sender === message.sender;
-          const showAvatar = !own && !sameSenderAsPrev;
-          const showMeta = !sameSenderAsNext;
           // Own messages are always redactable — don't wait on the async
           // `canRedactBySender` resolution (which only matters for other
           // senders' power levels) or Delete flashes hidden-then-shown.
           const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
-          const isPending = message.send_state.state === "pending";
-          const isError = message.send_state.state === "error";
-          // `send_state` flips to "sent" as soon as the homeserver acks the
-          // event, but `event_id` only becomes the real Matrix event id once
-          // a later `timeline:update` replaces the echo — until then it's
-          // still the send-queue transaction id (or, on a failed send,
-          // stays that way permanently). Real Matrix event ids always start
-          // with "$", so this is a reliable way to tell the two apart
-          // without depending on send_state timing.
-          const hasRealEventId = message.event_id.startsWith("$");
-          const disableRelationActions = isPending || !hasRealEventId;
           const readers = receiptsByEvent.get(message.event_id) ?? [];
 
-          const rowKey = itemKey(message);
-
           return (
-            <div
-              key={rowKey}
-              id={`message-${message.event_id}`}
-              className={cn(
-                "group flex max-w-120 gap-2",
-                sameSenderAsPrev ? "mt-0.5" : "mt-3",
-                own && "ml-auto flex-row-reverse",
-              )}
-              onTouchStart={() => actionsRefs.current.get(rowKey)?.startLongPress()}
-              onTouchEnd={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
-              onTouchCancel={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
-              onTouchMove={() => actionsRefs.current.get(rowKey)?.cancelLongPress()}
-            >
-              {!own &&
-                (showAvatar ? (
-                  <Avatar size="sm">
-                    <AvatarImage src={resolveAvatar(message.sender_avatar_path)} alt="" />
-                    <AvatarFallback
-                      style={{ background: avatarColor(message.sender) }}
-                      className="font-bold text-white"
-                    >
-                      {initials(message.sender, message.sender_display_name)}
-                    </AvatarFallback>
-                  </Avatar>
-                ) : (
-                  <div className="w-6 shrink-0" />
-                ))}
-              <div className={cn("flex min-w-0 flex-col gap-0.5", own && "items-end")}>
-                {showAvatar && (
-                  <span className="text-sm font-semibold text-secondary-foreground">
-                    {message.sender_display_name ?? message.sender}
-                  </span>
-                )}
-                {message.in_reply_to && !message.redacted && (
-                  <ReplyPreview
-                    reply={message.in_reply_to}
-                    onClick={() => {
-                      document
-                        .getElementById(`message-${message.in_reply_to?.event_id}`)
-                        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }}
-                  />
-                )}
-                <div className="flex items-center gap-1">
-                  {!own && <div className="w-11 shrink-0" />}
-                  {message.redacted ? (
-                    <div className="w-fit rounded-md bg-secondary/50 px-3 py-2 text-[15px] italic text-muted-foreground">
-                      Message deleted
-                    </div>
-                  ) : message.media ? (
-                    <MediaMessage
-                      content={message.media}
-                      roomId={room.room_id}
-                      eventId={message.event_id}
-                      body={message.body}
-                    />
-                  ) : message.formatted_body ? (
-                    // Re-sanitized here rather than trusted from the sender —
-                    // `formatted_body` crosses IPC as untrusted content from
-                    // whoever sent the event (any client, not just this
-                    // one), so the Matrix-allowlist sanitizer runs on both
-                    // the send path (`serializeComposerContent`) and this
-                    // render path independently.
-                    <div
-                      className={cn(
-                        "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
-                        own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
-                        isError && "border border-destructive",
-                      )}
-                      // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
-                      dangerouslySetInnerHTML={{
-                        __html: sanitizeMatrixHtml(message.formatted_body),
-                      }}
-                    />
-                  ) : (
-                    <div
-                      className={cn(
-                        "w-fit rounded-md px-3 py-2 text-[15px]",
-                        own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
-                        isError && "border border-destructive",
-                      )}
-                    >
-                      {message.body}
-                    </div>
-                  )}
-                  {!message.redacted && (
-                    <MessageActions
-                      ref={(el) => {
-                        if (el) actionsRefs.current.set(rowKey, el);
-                        else actionsRefs.current.delete(rowKey);
-                      }}
-                      isOwn={own}
-                      canRedact={allowedToRedact}
-                      disableRelationActions={disableRelationActions}
-                      className="opacity-0 transition-opacity group-hover:opacity-100"
-                      onReply={() =>
-                        setReplyTarget({
-                          event_id: message.event_id,
-                          sender: message.sender,
-                          sender_display_name: message.sender_display_name,
-                          preview: message.body,
-                        })
-                      }
-                      onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-                      onEdit={() => {
-                        setReplyTarget(null);
-                        setEditingEventId(message.event_id);
-                      }}
-                      onDelete={() => handleDelete(message.event_id)}
-                      onCopy={() => navigator.clipboard?.writeText(message.body)}
-                    />
-                  )}
-                </div>
-                {!message.redacted && (
-                  <ReactionBar
-                    reactions={message.reactions}
-                    onToggle={(key) => handleToggleReaction(message.event_id, key)}
-                    disabled={disableRelationActions}
-                  />
-                )}
-                {showMeta && (
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {formatTime(message.timestamp_ms)}
-                    {message.edited && " (edited)"}
-                    {isPending && " · sending…"}
-                    {isError && " · failed to send"}
-                  </span>
-                )}
-                {readers.length > 0 && (
-                  <AvatarGroup className="mt-0.5 justify-end">
-                    {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => (
-                      <Avatar key={userId} size="sm">
-                        <AvatarFallback
-                          style={{ background: avatarColor(userId) }}
-                          className="font-bold text-white"
-                        >
-                          {initials(userId, null)}
-                        </AvatarFallback>
-                      </Avatar>
-                    ))}
-                    {readers.length > MAX_RECEIPT_AVATARS && (
-                      <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
-                    )}
-                  </AvatarGroup>
-                )}
-              </div>
-            </div>
+            <MessageRow
+              key={messageRowKey(message)}
+              message={message}
+              roomId={room.room_id}
+              own={own}
+              sameSenderAsPrev={prev?.sender === message.sender}
+              sameSenderAsNext={next?.sender === message.sender}
+              canRedact={allowedToRedact}
+              readers={readers}
+              getActionsHandle={(key) => actionsRefs.current.get(key)}
+              registerActionsRef={(key, el) => {
+                if (el) actionsRefs.current.set(key, el);
+                else actionsRefs.current.delete(key);
+              }}
+              onReply={() =>
+                setReplyTarget({
+                  event_id: message.event_id,
+                  sender: message.sender,
+                  sender_display_name: message.sender_display_name,
+                  preview: message.body,
+                })
+              }
+              onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
+              onEdit={() => {
+                setReplyTarget(null);
+                setEditingEventId(message.event_id);
+              }}
+              onDelete={() => handleDelete(message.event_id)}
+              onCopy={() => navigator.clipboard?.writeText(message.body)}
+            />
           );
         })}
         {/* Block-level sibling of the flex message rows above (not a flex
@@ -682,45 +536,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
       )}
 
-      {uploads.length > 0 && (
-        <div className="flex flex-col gap-1 px-4 pb-2">
-          {uploads.map((upload) => (
-            <div
-              key={upload.txnId}
-              className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-[13px]"
-            >
-              <span className="truncate text-foreground">{upload.filename}</span>
-              {upload.failed ? (
-                <>
-                  <span className="text-destructive-foreground">Upload failed</span>
-                  <button
-                    type="button"
-                    aria-label={`Dismiss failed upload ${upload.filename}`}
-                    onClick={() =>
-                      setUploads((prev) => prev.filter((u) => u.txnId !== upload.txnId))
-                    }
-                    className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
-                  >
-                    <X size={14} />
-                  </button>
-                </>
-              ) : (
-                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
-                  <div
-                    className="h-full bg-primary transition-[width]"
-                    style={{
-                      width:
-                        upload.total > 0
-                          ? `${Math.min(100, (upload.sent / upload.total) * 100)}%`
-                          : "10%",
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <UploadTray
+        uploads={uploads}
+        onDismiss={(txnId) => setUploads((prev) => prev.filter((u) => u.txnId !== txnId))}
+      />
 
       {replyTarget && !editingEventId && (
         <div className="px-3 pb-1">

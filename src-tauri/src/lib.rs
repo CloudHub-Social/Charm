@@ -13,12 +13,56 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// Matches `key = value` / `key: "value"` pairs (JSON-ish or Debug/Display
+/// formatted) for field names that should never reach Sentry, case
+/// insensitively. Not a general-purpose secret scanner — just a
+/// defense-in-depth backstop: nothing in this codebase today formats a
+/// token/passphrase/key into a panic or error string, but `Result<_, String>`
+/// is pervasive here (see `persistence.rs`, `qr_login.rs`), so a single
+/// future `.expect()`/`unwrap()` added against one of those `Err`s could
+/// otherwise ship a secret verbatim to Sentry with nothing catching it.
+static SECRET_FIELD_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?i)(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)("?\s*[:=]\s*"?)([^"'\s,}\]]+)"#,
+    )
+    .expect("SECRET_FIELD_PATTERN is a valid static regex")
+});
+
+fn scrub_secrets(text: &str) -> String {
+    SECRET_FIELD_PATTERN
+        .replace_all(text, "$1$2[redacted]")
+        .into_owned()
+}
+
+/// Sentry `before_send` hook: redacts anything matching [`SECRET_FIELD_PATTERN`]
+/// from the event's top-level message, exception values, and breadcrumb
+/// messages before the event ever leaves the process.
+fn scrub_event(
+    mut event: sentry::protocol::Event<'static>,
+) -> Option<sentry::protocol::Event<'static>> {
+    if let Some(message) = &mut event.message {
+        *message = scrub_secrets(message);
+    }
+    for exception in event.exception.iter_mut() {
+        if let Some(value) = &mut exception.value {
+            *value = scrub_secrets(value);
+        }
+    }
+    for breadcrumb in event.breadcrumbs.iter_mut() {
+        if let Some(message) = &mut breadcrumb.message {
+            *message = scrub_secrets(message);
+        }
+    }
+    Some(event)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _sentry_guard = sentry::init((
         std::env::var("SENTRY_DSN").unwrap_or_default(),
         sentry::ClientOptions {
             release: sentry::release_name!(),
+            before_send: Some(std::sync::Arc::new(scrub_event)),
             ..Default::default()
         },
     ));
@@ -57,19 +101,19 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
-            matrix::login,
-            matrix::register,
-            matrix::discover_homeserver,
-            matrix::start_sso_login,
-            matrix::complete_sso_login,
-            matrix::cancel_sso_login,
-            matrix::try_restore_session,
-            matrix::list_rooms,
-            matrix::resolve_room_alias,
+            matrix::auth::login,
+            matrix::auth::register,
+            matrix::auth::discover_homeserver,
+            matrix::auth::start_sso_login,
+            matrix::auth::complete_sso_login,
+            matrix::auth::cancel_sso_login,
+            matrix::auth::try_restore_session,
+            matrix::rooms::list_rooms,
+            matrix::rooms::resolve_room_alias,
             matrix::timeline::get_timeline_page,
             matrix::send::send_message,
             matrix::send::send_attachment,
-            matrix::resolve_media,
+            matrix::media::resolve_media,
             matrix::actions::edit_message,
             matrix::actions::redact_event,
             matrix::actions::can_redact,
@@ -99,7 +143,22 @@ pub fn run() {
             matrix::rooms::set_room_manual_order,
             matrix::spaces::list_space_children,
             matrix::spaces::join_room,
-            matrix::spaces::knock_room
+            matrix::spaces::knock_room,
+            matrix::room_admin::get_room_details,
+            matrix::room_admin::get_room_member_list,
+            matrix::room_admin::set_room_name,
+            matrix::room_admin::set_room_topic,
+            matrix::room_admin::set_room_avatar,
+            matrix::room_admin::remove_room_avatar,
+            matrix::room_admin::set_room_join_rule,
+            matrix::room_admin::set_room_history_visibility,
+            matrix::room_admin::enable_room_encryption,
+            matrix::room_admin::set_member_power_level,
+            matrix::room_admin::set_room_power_level_thresholds,
+            matrix::room_admin::invite_member,
+            matrix::room_admin::kick_member,
+            matrix::room_admin::ban_member,
+            matrix::room_admin::unban_member
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

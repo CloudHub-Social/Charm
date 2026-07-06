@@ -5,10 +5,14 @@ import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSumm
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
+import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
+import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
+import type { MembershipKind } from "@bindings/MembershipKind";
 import type { OwnProfile } from "@bindings/OwnProfile";
+import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
@@ -18,8 +22,10 @@ import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
+import type { RoomDetails } from "@bindings/RoomDetails";
 import type { RoomMemberSummary } from "@bindings/RoomMemberSummary";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
+import type { RoomPermissions } from "@bindings/RoomPermissions";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
@@ -47,10 +53,14 @@ export type {
   DiscoverHomeserverResponse,
   EmojiPair,
   EventReceipt,
+  HistoryVisibilityKind,
+  JoinRuleKind,
   LoginRequest,
   LoginResponse,
   MediaContent,
+  MembershipKind,
   OwnProfile,
+  PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
   QrLoginProgressEvent,
@@ -60,8 +70,10 @@ export type {
   ReceiptUpdate,
   RegisterRequest,
   ReplyRef,
+  RoomDetails,
   RoomMemberSummary,
   RoomMessageSummary,
+  RoomPermissions,
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
@@ -364,4 +376,82 @@ export function joinRoom(roomIdOrAlias: string): Promise<void> {
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
+}
+
+export function getRoomDetails(roomId: string): Promise<RoomDetails> {
+  return invoke("get_room_details", { roomId });
+}
+
+/** Every membership (including banned/left) — see `get_room_members` for the active-only autocomplete scope. */
+export function getRoomMemberList(roomId: string): Promise<RoomMemberSummary[]> {
+  return invoke("get_room_member_list", { roomId });
+}
+
+export function setRoomName(roomId: string, name: string): Promise<void> {
+  return invoke("set_room_name", { roomId, name });
+}
+
+export function setRoomTopic(roomId: string, topic: string): Promise<void> {
+  return invoke("set_room_topic", { roomId, topic });
+}
+
+/** `filePath` comes from the avatar file picker — Rust reads and MIME-sniffs it, same convention as `sendAttachment`. */
+export function setRoomAvatar(roomId: string, filePath: string): Promise<void> {
+  return invoke("set_room_avatar", { roomId, filePath });
+}
+
+export function removeRoomAvatar(roomId: string): Promise<void> {
+  return invoke("remove_room_avatar", { roomId });
+}
+
+export function setRoomJoinRule(roomId: string, joinRule: JoinRuleKind): Promise<void> {
+  return invoke("set_room_join_rule", { roomId, joinRule });
+}
+
+export function setRoomHistoryVisibility(
+  roomId: string,
+  visibility: HistoryVisibilityKind,
+): Promise<void> {
+  return invoke("set_room_history_visibility", { roomId, visibility });
+}
+
+/** One-way — see `RoomDetails.is_encrypted`'s doc comment; there is no disable. */
+export function enableRoomEncryption(roomId: string): Promise<void> {
+  return invoke("enable_room_encryption", { roomId });
+}
+
+export function setMemberPowerLevel(
+  roomId: string,
+  userId: string,
+  powerLevel: number,
+): Promise<void> {
+  return invoke("set_member_power_level", { roomId, userId, powerLevel });
+}
+
+export function setRoomPowerLevelThresholds(
+  roomId: string,
+  changes: PowerLevelThresholds,
+): Promise<void> {
+  return invoke("set_room_power_level_thresholds", { roomId, changes });
+}
+
+export function inviteMember(roomId: string, userId: string): Promise<void> {
+  return invoke("invite_member", { roomId, userId });
+}
+
+export function kickMember(roomId: string, userId: string, reason?: string): Promise<void> {
+  return invoke("kick_member", { roomId, userId, reason });
+}
+
+export function banMember(roomId: string, userId: string, reason?: string): Promise<void> {
+  return invoke("ban_member", { roomId, userId, reason });
+}
+
+export function unbanMember(roomId: string, userId: string, reason?: string): Promise<void> {
+  return invoke("unban_member", { roomId, userId, reason });
+}
+
+/** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
+export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
+  return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
 }
