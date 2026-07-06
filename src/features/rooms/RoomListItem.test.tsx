@@ -1,9 +1,45 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoomListItem } from "./RoomListItem";
 import { makeRoomSummary } from "./testFixtures";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  convertFileSrc: (path: string) => `asset://localhost/${path}`,
+}));
+
+const getPresence = vi.fn().mockResolvedValue(null);
+const onPresenceUpdate = vi.fn().mockResolvedValue(() => {});
+
+vi.mock("@/lib/matrix", () => ({
+  getPresence: (...args: unknown[]) => getPresence(...args),
+  onPresenceUpdate: (...args: unknown[]) => onPresenceUpdate(...args),
+}));
+
+afterEach(() => {
+  getPresence.mockClear();
+  onPresenceUpdate.mockClear();
+});
+
 const room = makeRoomSummary();
+
+/**
+ * jsdom's real `Image` never fires `load`/`error` (no network stack), so
+ * Radix's `AvatarImage` — which only renders the `<img>` once its internal
+ * loading-status hook observes a load — never mounts one in tests by
+ * default. Stubbing `Image` to resolve on the next microtask lets tests
+ * that care about the rendered image opt in.
+ */
+class MockImage extends EventTarget {
+  complete = false;
+  naturalWidth = 0;
+  set src(_value: string) {
+    queueMicrotask(() => {
+      this.complete = true;
+      this.naturalWidth = 1;
+      this.dispatchEvent(new Event("load"));
+    });
+  }
+}
 
 describe("RoomListItem", () => {
   it("renders the room name", () => {
@@ -77,5 +113,63 @@ describe("RoomListItem", () => {
     const item = await screen.findByText("Add to Favourites");
     fireEvent.click(item);
     expect(onToggleFavourite).toHaveBeenCalledOnce();
+  });
+
+  it("renders an avatar image when the room has a resolved avatar_path", async () => {
+    vi.stubGlobal("Image", MockImage);
+    const { container } = render(
+      <RoomListItem
+        room={makeRoomSummary({ avatar_path: "/cache/media/room-avatar.png" })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    await waitFor(() => expect(container.querySelector("img")).not.toBeNull());
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      "asset://localhost//cache/media/room-avatar.png",
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("renders initials, not an image, when there's no avatar_path", () => {
+    const { container } = render(
+      <RoomListItem
+        room={makeRoomSummary({ avatar_path: null })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(container.querySelector("img")).not.toBeInTheDocument();
+    expect(screen.getByText("GE")).toBeInTheDocument();
+  });
+
+  it("shows a presence dot for a direct room with a resolved peer", async () => {
+    getPresence.mockResolvedValueOnce({
+      user_id: "@peer:localhost",
+      presence: "online",
+      status_msg: null,
+      last_active_ago_ms: null,
+    });
+    render(
+      <RoomListItem
+        room={makeRoomSummary({ is_direct: true, dm_peer_user_id: "@peer:localhost" })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(await screen.findByText("Online")).toBeInTheDocument();
+  });
+
+  it("shows no presence dot for a group room", () => {
+    render(
+      <RoomListItem
+        room={makeRoomSummary({ is_direct: false })}
+        active={false}
+        onSelect={() => {}}
+      />,
+    );
+    expect(getPresence).not.toHaveBeenCalled();
+    expect(screen.queryByText("Online")).not.toBeInTheDocument();
   });
 });

@@ -6,6 +6,27 @@ import type { SendState } from "./SendState";
 
 export type RoomMessageSummary = { event_id: string, sender: string, 
 /**
+ * Resolved from `EventTimelineItem::sender_profile()` — already
+ * fetched and kept live by `matrix-sdk-ui`'s `Timeline` itself (it
+ * re-resolves and re-diffs on membership changes), so this never costs
+ * its own `get_member` round-trip. `None` (fall back to `sender`, the
+ * MXID) when the profile hasn't resolved yet or the member has no
+ * display name set.
+ */
+sender_display_name: string | null, 
+/**
+ * The sender's avatar mxc, if set — carried alongside the resolved
+ * `sender_avatar_path` so the frontend can cache-key on the mxc
+ * independently of local path resolution.
+ */
+sender_avatar_url: string | null, 
+/**
+ * `sender_avatar_url` resolved to a local thumbnail path via Spec 02's
+ * media cache, or `None` if unresolved — the frontend falls back to an
+ * initials avatar in that case.
+ */
+sender_avatar_path: string | null, 
+/**
  * Text-preview/room-list use — kept for backwards compatibility
  * alongside `content`, which carries the full tagged-union payload.
  */

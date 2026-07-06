@@ -60,7 +60,7 @@ async fn create_test_room(client: &Client) -> matrix_sdk::Room {
 /// `get_timeline_page`/`timeline:update` path does.
 async fn snapshot(timeline: &Timeline, client: &Client) -> Vec<RoomMessageSummary> {
     let (items, _stream) = timeline.subscribe().await;
-    items_to_summaries(&items, client.user_id())
+    items_to_summaries(&items, client.user_id(), client, None).await
 }
 
 /// Sends a plain text message via the send queue and polls `timeline` until

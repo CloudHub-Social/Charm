@@ -59,4 +59,25 @@ is_direct: boolean,
  * [`rooms::has_unread`]. Every unread indicator in the UI reads this,
  * not the raw counts above.
  */
-has_unread: boolean, };
+has_unread: boolean, 
+/**
+ * The room's own avatar mxc, when `m.room.avatar` is set — otherwise,
+ * for an unnamed direct room, the single peer's avatar (from
+ * `Room::heroes()`). `None` means render the initials fallback; see
+ * [`resolve_room_identity`].
+ */
+avatar_url: string | null, 
+/**
+ * `avatar_url` resolved to a local thumbnail path via Spec 02's media
+ * cache, or `None` if unresolved (no cache yet, no avatar, or the fetch
+ * failed) — the frontend falls back to initials in that case.
+ */
+avatar_path: string | null, 
+/**
+ * For a direct room with exactly one other member, that member's user
+ * id — lets the frontend key a presence lookup (`usePresence`) off the
+ * DM peer rather than the room. `None` for group rooms and for direct
+ * rooms matrix-rust-sdk can't resolve a single hero for (e.g. the peer
+ * hasn't been synced yet).
+ */
+dm_peer_user_id: string | null, };

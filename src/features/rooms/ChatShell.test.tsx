@@ -135,6 +135,9 @@ function summary(
   overrides: Partial<RoomMessageSummary> & Pick<RoomMessageSummary, "event_id" | "sender" | "body">,
 ): RoomMessageSummary {
   return {
+    sender_display_name: null,
+    sender_avatar_url: null,
+    sender_avatar_path: null,
     formatted_body: null,
     timestamp_ms: 1,
     edited: false,
@@ -187,6 +190,51 @@ describe("ChatShell", () => {
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("renders the sender's resolved display name over the raw MXID, with matching initials", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$1",
+            sender: "@alice:localhost",
+            sender_display_name: "Alice Anderson",
+            body: "hi there",
+          }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("Alice Anderson")).toBeInTheDocument();
+    expect(screen.queryByText("@alice:localhost")).not.toBeInTheDocument();
+    // Initials come from the display name, not the MXID ("@a" -> "AL" vs "AL").
+    expect(screen.getByText("AL")).toBeInTheDocument();
+  });
+
+  it("falls back to the raw MXID as the sender label when no display name has resolved", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            sender_display_name: null,
+            body: "hi there",
+          }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("@bob:localhost")).toBeInTheDocument();
   });
 
   it("flips a bubble from pending to sent as the Timeline's own timeline:update local echo transitions", async () => {
@@ -477,7 +525,12 @@ describe("ChatShell", () => {
     renderChatShell();
     await vi.waitFor(() => expect(timelineUpdateCallback).toBeDefined());
 
-    const replyRef = { event_id: "$original", sender: "@me:localhost", preview: "the original" };
+    const replyRef = {
+      event_id: "$original",
+      sender: "@me:localhost",
+      sender_display_name: null,
+      preview: "the original",
+    };
 
     act(() => {
       timelineUpdateCallback?.({

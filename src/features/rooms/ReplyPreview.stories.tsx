@@ -14,6 +14,7 @@ type Story = StoryObj<typeof meta>;
 const reply = {
   event_id: "$original:localhost",
   sender: "@alice:localhost",
+  sender_display_name: "Alice Anderson",
   preview: "Let's meet at 3pm to review the design",
 };
 

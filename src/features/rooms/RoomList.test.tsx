@@ -1,7 +1,18 @@
+import type { ReactElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
+
+// RoomList's header now fetches the signed-in user's own profile via
+// `useOwnProfile` (TanStack Query), which needs a `QueryClientProvider`
+// ancestor — a fresh, retry-disabled client per render, same as
+// `useMediaSource.test.tsx`.
+function renderRoomList(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 // RoomList wires context-menu actions and drag-reorder straight to Tauri IPC
 // — mock lib/matrix so this test exercises sectioning/rendering only.
@@ -14,6 +25,10 @@ const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const listSpaceChildren = vi.fn().mockResolvedValue([]);
 const joinRoom = vi.fn().mockResolvedValue(undefined);
 const knockRoom = vi.fn().mockResolvedValue(undefined);
+// Never resolves — these tests don't care about the header profile chip
+// (see useOwnProfile.test.tsx for that), just that rendering it doesn't blow up.
+const getOwnProfile = vi.fn().mockReturnValue(new Promise(() => {}));
+const onSelfProfileUpdate = vi.fn().mockResolvedValue(() => {});
 
 vi.mock("@/lib/matrix", () => ({
   setRoomFavourite: (...args: unknown[]) => setRoomFavourite(...args),
@@ -25,6 +40,8 @@ vi.mock("@/lib/matrix", () => ({
   listSpaceChildren: (...args: unknown[]) => listSpaceChildren(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
+  getOwnProfile: () => getOwnProfile(),
+  onSelfProfileUpdate: (...args: unknown[]) => onSelfProfileUpdate(...args),
 }));
 
 // @use-gesture/react's useDrag attaches real pointer-event listeners; none of
@@ -36,7 +53,7 @@ vi.mock("@use-gesture/react", () => ({
 
 describe("RoomList", () => {
   it("shows the empty state when there are no rooms", () => {
-    render(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
     expect(screen.getByText("No rooms yet")).toBeInTheDocument();
   });
 
@@ -47,7 +64,7 @@ describe("RoomList", () => {
       is_favourite: true,
     });
     const plain = makeRoomSummary({ room_id: "!plain:localhost", name: "Plain room" });
-    render(<RoomList rooms={[fav, plain]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList rooms={[fav, plain]} activeRoomId={null} onSelectRoom={() => {}} />);
 
     expect(screen.getByText("Favourites")).toBeInTheDocument();
     expect(screen.getByText("Fav room")).toBeInTheDocument();
@@ -63,7 +80,7 @@ describe("RoomList", () => {
       name: "Team chat",
       parent_space_ids: ["!space:localhost"],
     });
-    render(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
 
     expect(screen.getAllByText("Team").length).toBeGreaterThan(0);
     expect(screen.getByText("Team chat")).toBeInTheDocument();
@@ -72,14 +89,14 @@ describe("RoomList", () => {
   it("calls onSelectRoom when a room is clicked", () => {
     const onSelectRoom = vi.fn();
     const room = makeRoomSummary({ name: "general" });
-    render(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={onSelectRoom} />);
+    renderRoomList(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={onSelectRoom} />);
     screen.getByText("general").click();
     expect(onSelectRoom).toHaveBeenCalledWith(room.room_id);
   });
 
   it("wires the context menu's favourite/mute/mark actions to their IPC calls", async () => {
     const room = makeRoomSummary({ name: "general" });
-    render(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={() => {}} />);
 
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Add to Favourites"));
@@ -109,7 +126,7 @@ describe("RoomList", () => {
       name: "Team chat",
       parent_space_ids: ["!space:localhost"],
     });
-    render(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Team" }));
     expect(listSpaceChildren).toHaveBeenCalledWith("!space:localhost");

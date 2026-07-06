@@ -2,7 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom } from "jotai";
 import { Paperclip, Send, X } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarGroup,
+  AvatarGroupCount,
+  AvatarImage,
+} from "@/components/ui/avatar";
+import { PresenceDot } from "@/features/presence/PresenceDot";
+import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import {
   canRedact,
@@ -23,7 +31,7 @@ import {
   type RoomSummary,
 } from "@/lib/matrix";
 import { MediaMessage } from "./media/MediaMessage";
-import { avatarColor, displayName, initials } from "./roomDisplay";
+import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import type { ParsedSlashCommand } from "./slashCommands";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
@@ -171,8 +179,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }, [roomId]);
 
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
-  // Header presence dot is gated on DM detection, which doesn't exist yet —
-  // no-ops here for the same reason RoomListItem's presence dot no-ops.
+  const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
 
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
@@ -469,7 +476,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <div className="border-b border-border p-4 text-[15px] font-bold text-foreground">
+      <div className="flex items-center gap-2 border-b border-border p-4 text-[15px] font-bold text-foreground">
+        <Avatar size="sm">
+          <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+          <AvatarFallback
+            style={{ background: avatarColor(room.room_id) }}
+            className="font-bold text-white"
+          >
+            {initials(room.room_id, room.name)}
+          </AvatarFallback>
+          {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
+        </Avatar>
         {displayName(room.room_id, room.name)}
       </div>
 
@@ -522,11 +539,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               {!own &&
                 (showAvatar ? (
                   <Avatar size="sm">
+                    <AvatarImage src={resolveAvatar(message.sender_avatar_path)} alt="" />
                     <AvatarFallback
                       style={{ background: avatarColor(message.sender) }}
                       className="font-bold text-white"
                     >
-                      {initials(message.sender, null)}
+                      {initials(message.sender, message.sender_display_name)}
                     </AvatarFallback>
                   </Avatar>
                 ) : (
@@ -535,7 +553,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               <div className={cn("flex min-w-0 flex-col gap-0.5", own && "items-end")}>
                 {showAvatar && (
                   <span className="text-sm font-semibold text-secondary-foreground">
-                    {message.sender}
+                    {message.sender_display_name ?? message.sender}
                   </span>
                 )}
                 {message.in_reply_to && !message.redacted && (
@@ -604,6 +622,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                         setReplyTarget({
                           event_id: message.event_id,
                           sender: message.sender,
+                          sender_display_name: message.sender_display_name,
                           preview: message.body,
                         })
                       }

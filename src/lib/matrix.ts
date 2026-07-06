@@ -8,6 +8,7 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
+import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
@@ -22,6 +23,7 @@ import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
+import type { SelfProfileUpdate } from "@bindings/SelfProfileUpdate";
 import type { SendState } from "@bindings/SendState";
 import type { SlashCommand } from "@bindings/SlashCommand";
 import type { SpaceChild } from "@bindings/SpaceChild";
@@ -48,6 +50,7 @@ export type {
   LoginRequest,
   LoginResponse,
   MediaContent,
+  OwnProfile,
   PresenceStateDto,
   PresenceUpdate,
   QrLoginProgressEvent,
@@ -62,6 +65,7 @@ export type {
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
+  SelfProfileUpdate,
   SendState,
   SlashCommand,
   SpaceChild,
@@ -316,6 +320,17 @@ export function getPresence(userId: string): Promise<PresenceUpdate | null> {
 
 export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
   return listen<PresenceUpdate>("presence:update", (e) => callback(e.payload));
+}
+
+export function getOwnProfile(): Promise<OwnProfile> {
+  return invoke("get_own_profile");
+}
+
+/** Fires when the signed-in user's own display name/avatar changes out of band (e.g. from another client) — see `profiles.rs`'s module doc comment. */
+export function onSelfProfileUpdate(
+  callback: (update: SelfProfileUpdate) => void,
+): Promise<UnlistenFn> {
+  return listen<SelfProfileUpdate>("profile:self", (e) => callback(e.payload));
 }
 
 export function setRoomFavourite(roomId: string, favourite: boolean): Promise<void> {

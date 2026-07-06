@@ -35,7 +35,7 @@ export function ReplyPreview({
       >
         <div className="flex min-w-0 flex-col">
           <span className="text-xs font-semibold text-secondary-foreground">
-            Replying to {reply.sender}
+            Replying to {reply.sender_display_name ?? reply.sender}
           </span>
           <span className="truncate text-muted-foreground">{reply.preview}</span>
         </div>
@@ -60,7 +60,9 @@ export function ReplyPreview({
         className,
       )}
     >
-      <span className="font-semibold text-primary">{reply.sender}</span>
+      <span className="font-semibold text-primary">
+        {reply.sender_display_name ?? reply.sender}
+      </span>
       <span className="truncate text-muted-foreground">{reply.preview}</span>
     </button>
   );

@@ -3,14 +3,16 @@ use std::sync::Arc;
 use imbl::Vector;
 use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
 use matrix_sdk::ruma::{RoomId, UserId};
+use matrix_sdk::Client;
 use matrix_sdk_ui::timeline::{
-    EventSendState, EventTimelineItem, MsgLikeKind, Timeline, TimelineDetails, TimelineItem,
+    EventSendState, EventTimelineItem, MsgLikeKind, Profile, Timeline, TimelineDetails,
+    TimelineItem,
 };
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::MatrixState;
+use super::{media, profiles, MatrixState};
 
 /// Display metadata for a non-text `m.room.message` msgtype, additive
 /// alongside Spec 03's flat `RoomMessageSummary` fields — `None` for text
@@ -161,6 +163,9 @@ pub struct ReactionGroup {
 pub struct ReplyRef {
     pub event_id: String,
     pub sender: String,
+    /// Resolved from the replied-to event's own `sender_profile()` — `None`
+    /// if that event isn't loaded/resolved yet, same caveat as `preview`.
+    pub sender_display_name: Option<String>,
     pub preview: String,
 }
 
@@ -184,6 +189,21 @@ pub enum SendState {
 pub struct RoomMessageSummary {
     pub event_id: String,
     pub sender: String,
+    /// Resolved from `EventTimelineItem::sender_profile()` — already
+    /// fetched and kept live by `matrix-sdk-ui`'s `Timeline` itself (it
+    /// re-resolves and re-diffs on membership changes), so this never costs
+    /// its own `get_member` round-trip. `None` (fall back to `sender`, the
+    /// MXID) when the profile hasn't resolved yet or the member has no
+    /// display name set.
+    pub sender_display_name: Option<String>,
+    /// The sender's avatar mxc, if set — carried alongside the resolved
+    /// `sender_avatar_path` so the frontend can cache-key on the mxc
+    /// independently of local path resolution.
+    pub sender_avatar_url: Option<String>,
+    /// `sender_avatar_url` resolved to a local thumbnail path via Spec 02's
+    /// media cache, or `None` if unresolved — the frontend falls back to an
+    /// initials avatar in that case.
+    pub sender_avatar_path: Option<String>,
     /// Text-preview/room-list use — kept for backwards compatibility
     /// alongside `content`, which carries the full tagged-union payload.
     pub body: String,
@@ -252,23 +272,72 @@ pub struct RoomTimelineUpdate {
 /// this lives in `tests/message_actions.rs` rather than the `--lib`
 /// unit-test target CI runs without a local Synapse available — same
 /// rationale as `resolve_alias`/`discover` elsewhere in this crate.
-pub fn items_to_summaries(
+pub async fn items_to_summaries(
     items: &Vector<Arc<TimelineItem>>,
     own_user_id: Option<&UserId>,
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
 ) -> Vec<RoomMessageSummary> {
-    items
+    // Dedupes avatar-thumbnail resolution across one batch — several
+    // messages from the same sender shouldn't each re-touch the media
+    // cache's lock/mtime bookkeeping when they all resolve to the same mxc.
+    let mut avatar_paths: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+
+    let mut summaries = Vec::new();
+    for item in items
         .iter()
         .filter_map(|item: &Arc<TimelineItem>| item.as_event())
-        .filter_map(|item| timeline_item_to_summary(item, own_user_id))
-        .collect()
+    {
+        if let Some(summary) =
+            timeline_item_to_summary(item, own_user_id, client, media_cache, &mut avatar_paths)
+                .await
+        {
+            summaries.push(summary);
+        }
+    }
+    summaries
+}
+
+/// Pulls a resolved `sender_profile()`'s display name + avatar mxc, or
+/// `(None, None)` if it isn't `Ready` yet (still being fetched, never
+/// requested, or errored) — matrix-sdk-ui resolves and live-updates this for
+/// us (see the module doc comment), so there's nothing to fetch here.
+fn sender_profile_fields(profile: &TimelineDetails<Profile>) -> (Option<String>, Option<String>) {
+    match profile {
+        TimelineDetails::Ready(profile) => (
+            profile.display_name.clone(),
+            profile.avatar_url.as_ref().map(ToString::to_string),
+        ),
+        _ => (None, None),
+    }
+}
+
+/// Resolves `mxc` to a local thumbnail path, checking `seen` (this batch's
+/// dedup map) before falling through to the shared media cache.
+async fn resolve_avatar_path_cached(
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+    mxc: &str,
+    seen: &mut std::collections::HashMap<String, Option<String>>,
+) -> Option<String> {
+    if let Some(cached) = seen.get(mxc) {
+        return cached.clone();
+    }
+    let resolved = profiles::resolve_avatar_path(client, media_cache, mxc).await;
+    seen.insert(mxc.to_string(), resolved.clone());
+    resolved
 }
 
 /// Maps one `EventTimelineItem` to a `RoomMessageSummary`, keeping the DTO
 /// shape Spec 02/03 established stable. See the module-level doc for the
 /// per-field mapping rationale.
-fn timeline_item_to_summary(
+async fn timeline_item_to_summary(
     item: &EventTimelineItem,
     own_user_id: Option<&UserId>,
+    client: &Client,
+    media_cache: Option<&media::MediaCache>,
+    avatar_paths: &mut std::collections::HashMap<String, Option<String>>,
 ) -> Option<RoomMessageSummary> {
     let msglike = item.content().as_msglike()?;
 
@@ -301,7 +370,7 @@ fn timeline_item_to_summary(
     };
 
     let in_reply_to = msglike.in_reply_to.as_ref().map(|reply| {
-        let (sender, preview) = match &reply.event {
+        let (sender, sender_display_name, preview) = match &reply.event {
             TimelineDetails::Ready(embedded) => {
                 let preview = if embedded.content.is_redacted() {
                     String::new()
@@ -312,16 +381,18 @@ fn timeline_item_to_summary(
                         .map(|m| m.body().to_string())
                         .unwrap_or_default()
                 };
-                (embedded.sender.to_string(), preview)
+                let (sender_display_name, _) = sender_profile_fields(&embedded.sender_profile);
+                (embedded.sender.to_string(), sender_display_name, preview)
             }
             // Not yet resolved (or resolution failed) — the target may not be
             // loaded in this timeline's window; render an empty preview
             // rather than blocking the whole summary on a fetch.
-            _ => (String::new(), String::new()),
+            _ => (String::new(), None, String::new()),
         };
         ReplyRef {
             event_id: reply.event_id.to_string(),
             sender,
+            sender_display_name,
             preview,
         }
     });
@@ -344,11 +415,19 @@ fn timeline_item_to_summary(
 
     let timestamp_ms: u64 = item.timestamp().0.into();
     let sender = item.sender().to_string();
+    let (sender_display_name, sender_avatar_url) = sender_profile_fields(item.sender_profile());
+    let sender_avatar_path = match &sender_avatar_url {
+        Some(mxc) => resolve_avatar_path_cached(client, media_cache, mxc, avatar_paths).await,
+        None => None,
+    };
 
     match &msglike.kind {
         MsgLikeKind::Message(message) => Some(RoomMessageSummary {
             event_id,
             sender,
+            sender_display_name,
+            sender_avatar_url,
+            sender_avatar_path,
             body: message.body().to_string(),
             formatted_body: formatted_html_body(message.msgtype()),
             timestamp_ms,
@@ -363,6 +442,9 @@ fn timeline_item_to_summary(
         MsgLikeKind::Redacted => Some(RoomMessageSummary {
             event_id,
             sender,
+            sender_display_name,
+            sender_avatar_url,
+            sender_avatar_path,
             body: String::new(),
             formatted_body: None,
             timestamp_ms,
@@ -382,6 +464,9 @@ fn timeline_item_to_summary(
         MsgLikeKind::UnableToDecrypt(_) => Some(RoomMessageSummary {
             event_id,
             sender,
+            sender_display_name,
+            sender_avatar_url,
+            sender_avatar_path,
             body: "Unable to decrypt message".to_string(),
             formatted_body: None,
             timestamp_ms,
@@ -423,9 +508,11 @@ pub(crate) fn spawn_timeline_listener(
     app: AppHandle,
     room_id: matrix_sdk::ruma::OwnedRoomId,
     timeline: std::sync::Weak<Timeline>,
+    client: Client,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
 ) {
     use futures_util::StreamExt;
+    use tauri::Manager;
 
     /// How often to check whether this room's `Timeline` has been evicted
     /// from the LRU map while the diff stream is otherwise idle (no activity
@@ -442,11 +529,18 @@ pub(crate) fn spawn_timeline_listener(
         drop(strong);
         let mut items = initial_items;
 
+        // Re-fetched (cheaply — it's an already-initialized `OnceCell` after
+        // the first call) each time rather than held across the loop below,
+        // since it borrows from a fresh `State` guard each time and this
+        // task otherwise only holds the `'static` `AppHandle`/`Client`.
+        let state = app.state::<MatrixState>();
+        let media_cache = state.require_media_cache(&app).await.ok();
         let _ = app.emit(
             "timeline:update",
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
-                messages: items_to_summaries(&items, own_user_id.as_deref()),
+                messages: items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache)
+                    .await,
             },
         );
 
@@ -465,11 +559,19 @@ pub(crate) fn spawn_timeline_listener(
             for diff in diffs {
                 diff.apply(&mut items);
             }
+            let state = app.state::<MatrixState>();
+            let media_cache = state.require_media_cache(&app).await.ok();
             let _ = app.emit(
                 "timeline:update",
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
-                    messages: items_to_summaries(&items, own_user_id.as_deref()),
+                    messages: items_to_summaries(
+                        &items,
+                        own_user_id.as_deref(),
+                        &client,
+                        media_cache,
+                    )
+                    .await,
                 },
             );
         }
@@ -512,9 +614,10 @@ pub async fn get_timeline_page(
     // is already owned by the listener task `get_or_create_timeline` spawned;
     // this second subscription's stream half is dropped immediately below.
     let (items, _stream) = timeline.subscribe().await;
+    let media_cache = state.require_media_cache(&app).await.ok();
 
     Ok(TimelinePage {
-        messages: items_to_summaries(&items, own_user_id.as_deref()),
+        messages: items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await,
         next_cursor: if hit_start {
             None
         } else {
@@ -571,7 +674,45 @@ mod mapping_tests {
 
         let own_user_id = client.user_id().map(ToOwned::to_owned);
         let (items, _stream) = timeline.subscribe().await;
-        items_to_summaries(&items, own_user_id.as_deref())
+        items_to_summaries(&items, own_user_id.as_deref(), &client, None).await
+    }
+
+    /// Same as [`summaries_for`], but syncs each `Vec` in `batches` as its
+    /// own separate sync response rather than one combined one — needed
+    /// when a later event's mapping depends on an earlier one already being
+    /// committed to room state (e.g. a member's profile needing to be known
+    /// before the message that follows it resolves `sender_profile()`),
+    /// which isn't guaranteed for two events processed within the same
+    /// batch.
+    async fn summaries_for_batches(
+        batches: Vec<
+            Vec<matrix_sdk::ruma::serde::Raw<matrix_sdk::ruma::events::AnySyncTimelineEvent>>,
+        >,
+    ) -> Vec<RoomMessageSummary> {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+        let timeline = room.timeline().await.expect("failed to build timeline");
+        let (_, mut stream) = timeline.subscribe().await;
+
+        for events in batches {
+            let mut room_builder = JoinedRoomBuilder::new(room_id);
+            for event in events {
+                room_builder = room_builder.add_timeline_event(event);
+            }
+            server.sync_room(&client, room_builder).await;
+            while let Ok(Some(_)) =
+                tokio::time::timeout(std::time::Duration::from_millis(200), stream.next()).await
+            {
+            }
+        }
+
+        let own_user_id = client.user_id().map(ToOwned::to_owned);
+        let (items, _stream) = timeline.subscribe().await;
+        items_to_summaries(&items, own_user_id.as_deref(), &client, None).await
     }
 
     fn factory() -> EventFactory {
@@ -736,9 +877,50 @@ mod mapping_tests {
         assert!(summaries.is_empty());
     }
 
-    #[test]
-    fn empty_snapshot_maps_to_no_summaries() {
+    #[tokio::test]
+    async fn empty_snapshot_maps_to_no_summaries() {
         let items: Vector<Arc<TimelineItem>> = Vector::new();
-        assert!(items_to_summaries(&items, None).is_empty());
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        assert!(items_to_summaries(&items, None, &client, None)
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolves_sender_display_name_once_the_members_profile_is_known() {
+        let member_event = factory()
+            .member(&ALICE)
+            .display_name("Alice A.")
+            .sender(&ALICE)
+            .into_raw_sync();
+        let message = factory()
+            .text_msg("hello")
+            .sender(&ALICE)
+            .event_id(event_id!("$with-profile"))
+            .into_raw_sync();
+
+        let summaries = summaries_for_batches(vec![vec![member_event], vec![message]]).await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].sender_display_name.as_deref(),
+            Some("Alice A.")
+        );
+    }
+
+    #[tokio::test]
+    async fn sender_display_name_is_none_when_the_profile_never_resolves() {
+        let summaries = summaries_for(vec![factory()
+            .text_msg("hello")
+            .sender(&ALICE)
+            .event_id(event_id!("$no-profile"))
+            .into_raw_sync()])
+        .await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].sender_display_name, None);
+        assert_eq!(summaries[0].sender_avatar_url, None);
+        assert_eq!(summaries[0].sender_avatar_path, None);
     }
 }

@@ -50,6 +50,9 @@ export function installMockTauri(seed: {
     parent_space_ids: [],
     is_direct: false,
     has_unread: seed.room.unread_count > 0,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
     ...seed.room,
   };
   type Listener = (payload: unknown) => void;
@@ -126,6 +129,9 @@ export function installMockTauri(seed: {
       const pending = {
         event_id: transactionId,
         sender: seed.userId,
+        sender_display_name: null,
+        sender_avatar_url: null,
+        sender_avatar_path: null,
         body: args.body,
         formatted_body: args.formattedBody ?? null,
         timestamp_ms: Date.now(),
@@ -154,11 +160,19 @@ export function installMockTauri(seed: {
       const transactionId = `txn-${nextTxnId++}`;
       const eventId = `\$${nextEventId++}`;
       const inReplyTo = target
-        ? { event_id: target.event_id, sender: target.sender, preview: target.body }
+        ? {
+            event_id: target.event_id,
+            sender: target.sender,
+            sender_display_name: target.sender_display_name ?? null,
+            preview: target.body,
+          }
         : null;
       const pending = {
         event_id: transactionId,
         sender: seed.userId,
+        sender_display_name: null,
+        sender_avatar_url: null,
+        sender_avatar_path: null,
         body: args.body,
         formatted_body: null,
         timestamp_ms: Date.now(),

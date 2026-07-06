@@ -16,6 +16,9 @@ export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSumma
     parent_space_ids: [],
     is_direct: false,
     has_unread: false,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
     ...overrides,
   };
 }
