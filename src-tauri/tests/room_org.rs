@@ -58,6 +58,10 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("set favourite");
     let tags = timeout(POLL_TIMEOUT, async {
         loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
             if let Ok(Some(tags)) = room.tags().await {
                 if tags.contains_key(&TagName::Favorite) {
                     return tags;
@@ -76,6 +80,10 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("set low priority");
     timeout(POLL_TIMEOUT, async {
         loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
             if room.is_low_priority() && !room.is_favourite() {
                 return;
             }
@@ -91,23 +99,55 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
     );
 
     // --- Mark-unread flag round-trips via `is_marked_unread()` ---
+    // `set_unread_flag` only sends the account-data mutation to the server;
+    // `is_marked_unread()` reads the client's local cache, which only picks up
+    // the change on the next sync — same pattern as the tag polls above.
     room.set_unread_flag(true).await.expect("set unread flag");
-    assert!(room.is_marked_unread());
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            if room.is_marked_unread() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("unread flag observed");
     room.set_unread_flag(false)
         .await
         .expect("clear unread flag");
-    assert!(!room.is_marked_unread());
+    timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            if !room.is_marked_unread() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("unread flag cleared");
 
     // --- Mute round-trips via `get_user_defined_room_notification_mode` ---
-    client
-        .notification_settings()
-        .await
+    // `NotificationSettings::set_room_notification_mode` applies the rule
+    // change to its own in-memory `rules` immediately, but a fresh
+    // `client.notification_settings()` rebuilds `rules` from the account-data
+    // store, which doesn't reflect the mutation until an actual `/sync`
+    // round-trip. Reuse one instance across the mutate-then-read pair instead
+    // of fetching a new one for the read.
+    let notification_settings = client.notification_settings().await;
+    notification_settings
         .set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute)
         .await
         .expect("mute room");
-    let mode = client
-        .notification_settings()
-        .await
+    let mode = notification_settings
         .get_user_defined_room_notification_mode(room.room_id())
         .await;
     assert_eq!(mode, Some(RoomNotificationMode::Mute));
@@ -130,8 +170,16 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .expect("sync after space creation");
     assert_eq!(space.room_type(), Some(RoomType::Space));
 
+    // `via` must be non-empty for the server to treat this as a valid child
+    // link — an empty list (as if the child had been removed) is silently
+    // excluded from `/hierarchy` results.
+    let via = room
+        .room_id()
+        .server_name()
+        .expect("room id has a server name")
+        .to_owned();
     space
-        .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![]))
+        .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![via]))
         .await
         .expect("add room as space child");
 
