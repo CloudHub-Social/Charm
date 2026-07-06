@@ -303,12 +303,29 @@ pub async fn items_to_summaries(
 /// `(None, None)` if it isn't `Ready` yet (still being fetched, never
 /// requested, or errored) — matrix-sdk-ui resolves and live-updates this for
 /// us (see the module doc comment), so there's nothing to fetch here.
-fn sender_profile_fields(profile: &TimelineDetails<Profile>) -> (Option<String>, Option<String>) {
+/// The Matrix spec requires disambiguating a sender's display name when
+/// another member of the room shares it (`Profile::display_name_ambiguous`)
+/// — otherwise one user could pick a display name matching another member's
+/// to impersonate them in the timeline. Appends the sender's own MXID in
+/// that case, same convention other Matrix clients use.
+fn sender_profile_fields(
+    sender: &UserId,
+    profile: &TimelineDetails<Profile>,
+) -> (Option<String>, Option<String>) {
     match profile {
-        TimelineDetails::Ready(profile) => (
-            profile.display_name.clone(),
-            profile.avatar_url.as_ref().map(ToString::to_string),
-        ),
+        TimelineDetails::Ready(profile) => {
+            let display_name = profile.display_name.as_ref().map(|name| {
+                if profile.display_name_ambiguous {
+                    format!("{name} ({sender})")
+                } else {
+                    name.clone()
+                }
+            });
+            (
+                display_name,
+                profile.avatar_url.as_ref().map(ToString::to_string),
+            )
+        }
         _ => (None, None),
     }
 }
@@ -381,7 +398,8 @@ async fn timeline_item_to_summary(
                         .map(|m| m.body().to_string())
                         .unwrap_or_default()
                 };
-                let (sender_display_name, _) = sender_profile_fields(&embedded.sender_profile);
+                let (sender_display_name, _) =
+                    sender_profile_fields(&embedded.sender, &embedded.sender_profile);
                 (embedded.sender.to_string(), sender_display_name, preview)
             }
             // Not yet resolved (or resolution failed) — the target may not be
@@ -415,7 +433,8 @@ async fn timeline_item_to_summary(
 
     let timestamp_ms: u64 = item.timestamp().0.into();
     let sender = item.sender().to_string();
-    let (sender_display_name, sender_avatar_url) = sender_profile_fields(item.sender_profile());
+    let (sender_display_name, sender_avatar_url) =
+        sender_profile_fields(item.sender(), item.sender_profile());
     let sender_avatar_path = match &sender_avatar_url {
         Some(mxc) => resolve_avatar_path_cached(client, media_cache, mxc, avatar_paths).await,
         None => None,
@@ -932,5 +951,36 @@ mod mapping_tests {
         assert_eq!(summaries[0].sender_display_name, None);
         assert_eq!(summaries[0].sender_avatar_url, None);
         assert_eq!(summaries[0].sender_avatar_path, None);
+    }
+
+    /// Two members sharing a display name must be disambiguated (per the
+    /// Matrix spec) before it's shown as a sender label, or one could pick a
+    /// name matching another member's to impersonate them.
+    #[tokio::test]
+    async fn disambiguates_sender_display_name_shared_with_another_member() {
+        let alice_member = factory()
+            .member(&ALICE)
+            .display_name("Alex")
+            .sender(&ALICE)
+            .into_raw_sync();
+        let bob_member = factory()
+            .member(&BOB)
+            .display_name("Alex")
+            .sender(&BOB)
+            .into_raw_sync();
+        let message = factory()
+            .text_msg("hello")
+            .sender(&ALICE)
+            .event_id(event_id!("$ambiguous-name"))
+            .into_raw_sync();
+
+        let summaries =
+            summaries_for_batches(vec![vec![alice_member, bob_member], vec![message]]).await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].sender_display_name.as_deref(),
+            Some(format!("Alex ({})", *ALICE).as_str())
+        );
     }
 }

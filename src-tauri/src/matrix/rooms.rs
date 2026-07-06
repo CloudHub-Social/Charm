@@ -159,9 +159,11 @@ fn section_rank(is_favourite: bool, is_low_priority: bool) -> u8 {
     }
 }
 
-/// A direct room's display identity beyond its own state: which hero (the
-/// other member) to show when the room has no name/avatar of its own, and
-/// that peer's resolved display name/avatar — see [`resolve_room_identity`].
+/// A room's resolved display identity: its name (via the SDK's spec-mandated
+/// naming algorithm, not just raw `m.room.name` state), and — for a direct
+/// room with no avatar of its own — the single other member's avatar and
+/// user id, so the room list/header can show that peer's identity instead of
+/// initials. See [`resolve_room_identity`].
 struct RoomIdentity {
     name: Option<String>,
     avatar_url: Option<String>,
@@ -169,27 +171,53 @@ struct RoomIdentity {
     dm_peer_user_id: Option<String>,
 }
 
-/// Resolves a room's display name and avatar, falling back to the single
-/// other member's identity for an unnamed direct room — `Room::heroes()` is
-/// already the same synced, cached data `Room::display_name()`'s
-/// spec-mandated algorithm uses for exactly this case, so this needs no
-/// separate member-profile fetch (see `profiles.rs`'s module doc comment for
-/// why a bespoke member cache would be redundant here).
+/// Resolves a room's display name and avatar. The name uses matrix-rust-sdk's
+/// own spec-mandated [naming algorithm][spec] (`Room::cached_display_name()`,
+/// falling back to the async `Room::display_name()` on a cache miss) rather
+/// than the raw `m.room.name` state alone — that raw value is `None` for a
+/// room named by canonical alias, an unnamed 1:1 room not marked direct, or a
+/// group room whose name is computed from its heroes, and this identity path
+/// feeds every `list_rooms`/`room_list:update`, so falling straight back to
+/// the room id in those common cases would leave the room list showing raw
+/// `!roomid`s instead of the name a user would actually recognize.
 ///
-/// Only treats the room as having a resolvable DM peer when `heroes()`
-/// returns exactly one entry: a direct room that gained a second/third
-/// participant, or one with inconsistent `m.direct` account data, can have
-/// more than one hero, and picking an arbitrary one of them would show that
-/// member's presence/identity as if they were *the* peer — see Spec 01
-/// review discussion on `dm_peer_user_id`'s contract (exactly one other
-/// member, not "at least one").
+/// `Room::heroes()` is separately used below for the room's avatar/DM-peer
+/// fallback — it's the same synced, cached data the naming algorithm itself
+/// reads, so this needs no separate member-profile fetch (see `profiles.rs`'s
+/// module doc comment for why a bespoke member cache would be redundant
+/// here). Only treats the room as having a resolvable DM peer when
+/// `heroes()` returns exactly one entry: a direct room that gained a
+/// second/third participant, or one with inconsistent `m.direct` account
+/// data, can have more than one hero, and picking an arbitrary one of them
+/// would show that member's presence/identity as if they were *the* peer —
+/// see Spec 01 review discussion on `dm_peer_user_id`'s contract (exactly
+/// one other member, not "at least one").
+///
+/// [spec]: <https://spec.matrix.org/latest/client-server-api/#calculating-the-display-name-for-a-room>
 async fn resolve_room_identity(
     client: &Client,
     media_cache: Option<&media::MediaCache>,
     room: &Room,
     is_direct: bool,
 ) -> RoomIdentity {
-    let raw_name = room.name();
+    let display_name = match room.cached_display_name() {
+        Some(name) => name,
+        None => room
+            .display_name()
+            .await
+            .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
+    };
+    // `Empty` means the algorithm found nothing useful at all (no name, no
+    // alias, no other members ever) — `None` here so the frontend's
+    // room-id/initials fallback kicks in, same as before this room had any
+    // resolvable identity. Every other variant (including `EmptyWas`, whose
+    // `Display` impl already renders a friendly "Empty Room (was X)" string)
+    // is a real name worth showing.
+    let name = match display_name {
+        matrix_sdk::RoomDisplayName::Empty => None,
+        other => Some(other.to_string()),
+    };
+
     let raw_avatar_url = room.avatar_url();
 
     let dm_peer = is_direct
@@ -198,14 +226,6 @@ async fn resolve_room_identity(
             [hero] => Some(hero.clone()),
             _ => None,
         });
-
-    let name = raw_name.or_else(|| {
-        dm_peer.as_ref().map(|hero| {
-            hero.display_name
-                .clone()
-                .unwrap_or_else(|| hero.user_id.to_string())
-        })
-    });
 
     let avatar_url = raw_avatar_url.map(|url| url.to_string()).or_else(|| {
         dm_peer
