@@ -137,19 +137,37 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
 
     // --- Mute round-trips via `get_user_defined_room_notification_mode` ---
     // `NotificationSettings::set_room_notification_mode` applies the rule
-    // change to its own in-memory `rules` immediately, but a fresh
-    // `client.notification_settings()` rebuilds `rules` from the account-data
-    // store, which doesn't reflect the mutation until an actual `/sync`
-    // round-trip. Reuse one instance across the mutate-then-read pair instead
-    // of fetching a new one for the read.
-    let notification_settings = client.notification_settings().await;
-    notification_settings
+    // change to its own in-memory `rules` immediately, which would let this
+    // assertion pass even if the mutation never reached the server. To
+    // actually prove the round-trip, sync until the account-data store picks
+    // up the change, then read back through a *fresh*
+    // `client.notification_settings()` instance (which rebuilds `rules` from
+    // that store) rather than the mutated instance.
+    client
+        .notification_settings()
+        .await
         .set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute)
         .await
         .expect("mute room");
-    let mode = notification_settings
-        .get_user_defined_room_notification_mode(room.room_id())
-        .await;
+    let mode = timeout(POLL_TIMEOUT, async {
+        loop {
+            client
+                .sync_once(SyncSettings::default())
+                .await
+                .expect("sync");
+            let mode = client
+                .notification_settings()
+                .await
+                .get_user_defined_room_notification_mode(room.room_id())
+                .await;
+            if mode == Some(RoomNotificationMode::Mute) {
+                return mode;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("mute mode observed via a fresh NotificationSettings instance");
     assert_eq!(mode, Some(RoomNotificationMode::Mute));
 
     // --- Space hierarchy: create a space with this room as a child, list it, join it as a second membership check ---
