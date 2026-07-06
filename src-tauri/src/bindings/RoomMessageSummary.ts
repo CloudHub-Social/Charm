@@ -11,7 +11,11 @@ export type RoomMessageSummary = { event_id: string, sender: string,
  */
 body: string, 
 /**
- * Reserved: always `None` until the formatted-body/rich-text composition spec lands.
+ * `org.matrix.custom.html` formatted body, when the message (or its
+ * latest edit) has one — see `formatted_html_body` in this module.
+ * `None` for plain-text messages. Rendered only after re-sanitizing
+ * against the Matrix-permitted allowlist (`composerSanitize.ts`); never
+ * trust this as pre-sanitized just because it came from the SDK.
  */
 formatted_body: string | null, timestamp_ms: number, edited: boolean, redacted: boolean, reactions: Array<ReactionGroup>, in_reply_to: ReplyRef | null, transaction_id: string | null, send_state: SendState, 
 /**

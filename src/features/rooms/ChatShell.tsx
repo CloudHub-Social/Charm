@@ -13,6 +13,7 @@ import {
   onTypingUpdate,
   onUploadProgress,
   redactEvent,
+  runCommand,
   sendAttachment,
   sendMessage,
   sendReply,
@@ -23,10 +24,13 @@ import {
 } from "@/lib/matrix";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, displayName, initials } from "./roomDisplay";
+import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
+import type { ParsedSlashCommand } from "./slashCommands";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
 import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
+import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
 import { useReadReceipts } from "./useReadReceipts";
 
 interface ChatShellProps {
@@ -134,10 +138,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [draft, setDraft] = useState("");
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
+  const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerHandle>(null);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
@@ -149,22 +153,26 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // on the row open that message's action menu.
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
+  // Tracks the *currently viewed* room id across renders — used by
+  // `handleSlashCommand`'s async continuation below to check whether the
+  // user switched rooms mid-command, so a stale room's feedback isn't
+  // misattributed to whatever room is showing now.
+  const currentRoomIdRef = useRef(roomId);
+  currentRoomIdRef.current = roomId;
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
 
+  // Room-scoped, not persistent: a bad-args/permission-denied banner from
+  // room A shouldn't still be showing once the user has switched to room B.
+  useEffect(() => {
+    setCommandFeedback(null);
+  }, [roomId]);
+
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   // Header presence dot is gated on DM detection, which doesn't exist yet —
   // no-ops here for the same reason RoomListItem's presence dot no-ops.
-
-  // `editingEventId` is a per-room atom, so it's already `null` in a freshly
-  // switched-to room — but `draft` isn't room-scoped, so without this a
-  // half-typed edit in room A would carry over as an ordinary draft in room
-  // B, and pressing Send there would post that edit text as a new message.
-  useEffect(() => {
-    setDraft("");
-  }, [roomId]);
 
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
@@ -323,19 +331,23 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     );
   }
 
-  const body = draft.trim();
   const editingMessage = messages.find((m) => m.event_id === editingEventId) ?? null;
+  const composerMode: ComposerMode = editingEventId ? "edit" : replyTarget ? "reply" : "send";
 
-  async function handleSend() {
-    if (!body || !room) return;
+  async function handleComposerSubmit(content: {
+    body: string;
+    formattedBody: string | null;
+    mentions: string[] | null;
+  }) {
+    if (!room) return;
     const targetRoom = room;
-    setDraft("");
 
     if (editingEventId) {
       const eventId = editingEventId;
       setEditingEventId(null);
+      sendTyping(targetRoom.room_id, false).catch(console.error);
       try {
-        await editMessage(targetRoom.room_id, eventId, body);
+        await editMessage(targetRoom.room_id, eventId, content.body);
       } catch (err) {
         console.error(err);
       }
@@ -356,10 +368,35 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // for rendering any more, only for triggering the send.
     try {
       if (replyingTo) {
-        await sendReply(targetRoom.room_id, replyingTo.event_id, body);
+        // Replies don't yet carry formatting/mentions — `send_reply` wasn't
+        // extended in this pass (only `send_message` was, per spec scope); a
+        // formatted reply falls back to its plain body.
+        await sendReply(targetRoom.room_id, replyingTo.event_id, content.body);
       } else {
-        await sendMessage(targetRoom.room_id, body);
+        await sendMessage(
+          targetRoom.room_id,
+          content.body,
+          content.formattedBody,
+          content.mentions,
+        );
       }
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function handleSlashCommand(parsed: ParsedSlashCommand) {
+    if (!room) return;
+    const targetRoomId = room.room_id;
+    sendTyping(targetRoomId, false).catch(console.error);
+    try {
+      const result = await runCommand(targetRoomId, parsed.command, parsed.args);
+      // The user may have switched rooms while this command was in flight —
+      // don't show room A's feedback under room B, and don't leave a stale
+      // failure banner up once a later command (in the still-active room)
+      // succeeds.
+      if (currentRoomIdRef.current !== targetRoomId) return;
+      setCommandFeedback(result.status === "success" ? null : result.message);
     } catch (err) {
       console.error(err);
     }
@@ -417,7 +454,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     }
   }
 
-  function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+  function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
     const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
     const file = files.find((f) => f.type.startsWith("image/"));
     if (file?.path) {
@@ -524,6 +561,24 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                       eventId={message.event_id}
                       body={message.body}
                     />
+                  ) : message.formatted_body ? (
+                    // Re-sanitized here rather than trusted from the sender —
+                    // `formatted_body` crosses IPC as untrusted content from
+                    // whoever sent the event (any client, not just this
+                    // one), so the Matrix-allowlist sanitizer runs on both
+                    // the send path (`serializeComposerContent`) and this
+                    // render path independently.
+                    <div
+                      className={cn(
+                        "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
+                        own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
+                        isError && "border border-destructive",
+                      )}
+                      // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
+                      dangerouslySetInnerHTML={{
+                        __html: sanitizeMatrixHtml(message.formatted_body),
+                      }}
+                    />
                   ) : (
                     <div
                       className={cn(
@@ -556,7 +611,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                       onEdit={() => {
                         setReplyTarget(null);
                         setEditingEventId(message.event_id);
-                        setDraft(message.body);
                       }}
                       onDelete={() => handleDelete(message.event_id)}
                       onCopy={() => navigator.clipboard?.writeText(message.body)}
@@ -665,10 +719,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             <button
               type="button"
               aria-label="Cancel edit"
-              onClick={() => {
-                setEditingEventId(null);
-                setDraft("");
-              }}
+              onClick={() => setEditingEventId(null)}
               className="text-xs text-muted-foreground hover:underline"
             >
               Cancel
@@ -677,8 +728,27 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       )}
 
+      {commandFeedback && (
+        <div className="px-3 pb-1">
+          <output className="flex items-center justify-between gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground">
+            {commandFeedback}
+            <button
+              type="button"
+              aria-label="Dismiss command feedback"
+              onClick={() => setCommandFeedback(null)}
+              className="shrink-0"
+            >
+              <X size={14} />
+            </button>
+          </output>
+        </div>
+      )}
+
       <div className="p-3">
-        <div className="flex items-end gap-2 rounded-lg border border-border bg-card p-2">
+        <div
+          className="flex items-end gap-2 rounded-lg border border-border bg-card p-2"
+          onPaste={handlePaste}
+        >
           <button
             aria-label="Attach"
             onClick={handleAttachClick}
@@ -686,30 +756,32 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           >
             <Paperclip size={18} />
           </button>
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.currentTarget.value);
-              handleTypingInput(room.room_id);
-            }}
-            onPaste={handlePaste}
-            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
+          <Composer
+            key={`${room.room_id}-${editingEventId ?? "new"}`}
+            ref={composerRef}
+            roomId={room.room_id}
+            mode={composerMode}
+            initialHtml={
+              editingMessage
+                ? editingMessage.formatted_body
+                  ? sanitizeMatrixHtml(editingMessage.formatted_body)
+                  : escapeHtmlText(editingMessage.body)
+                : undefined
+            }
             placeholder={`Message ${displayName(room.room_id, room.name)}`}
-            className="max-h-30 min-h-6 flex-1 resize-none bg-transparent px-1 py-2 text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
+            onSubmit={handleComposerSubmit}
+            onSlashCommand={handleSlashCommand}
+            onEscape={() => {
+              if (editingEventId) setEditingEventId(null);
+              else if (replyTarget) setReplyTarget(null);
+            }}
+            onTypingInput={() => handleTypingInput(room.room_id)}
+            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
           />
           <button
             aria-label="Send"
-            disabled={!body}
-            onClick={handleSend}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:bg-accent disabled:text-muted-foreground"
+            onClick={() => composerRef.current?.submit()}
+            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
           >
             <Send size={16} />
           </button>

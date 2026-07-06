@@ -32,6 +32,7 @@ export function installMockTauri(seed: {
   userId: string;
   deviceId: string;
   room: { room_id: string; name: string | null; unread_count: number };
+  members?: { user_id: string; display_name: string | null }[];
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -107,6 +108,8 @@ export function installMockTauri(seed: {
     mark_room_read: () => undefined,
     send_typing: () => undefined,
     can_redact: () => true,
+    get_room_members: () => seed.members ?? [],
+    run_command: () => ({ status: "success" }),
 
     // Models the real `Timeline`'s two-phase local echo (Spec 14): a
     // `timeline:update` carrying the item with `send_state: "pending"` and
@@ -124,7 +127,7 @@ export function installMockTauri(seed: {
         event_id: transactionId,
         sender: seed.userId,
         body: args.body,
-        formatted_body: null,
+        formatted_body: args.formattedBody ?? null,
         timestamp_ms: Date.now(),
         edited: false,
         redacted: false,

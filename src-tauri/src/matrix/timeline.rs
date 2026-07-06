@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use imbl::Vector;
+use matrix_sdk::ruma::events::room::message::{MessageFormat, MessageType};
 use matrix_sdk::ruma::{RoomId, UserId};
 use matrix_sdk_ui::timeline::{
     EventSendState, EventTimelineItem, MsgLikeKind, Timeline, TimelineDetails, TimelineItem,
@@ -63,11 +64,7 @@ pub enum MediaContent {
 /// Builds the `media` field for a `RoomMessageSummary` from a `MessageType` —
 /// pure and synchronous, no cache/network access, since it only reads fields
 /// already present on the deserialized event.
-fn message_type_to_media(
-    msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
-) -> Option<MediaContent> {
-    use matrix_sdk::ruma::events::room::message::MessageType;
-
+fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
     match msgtype {
         MessageType::Image(image) => Some(MediaContent::Image {
             mime: image.info.as_ref().and_then(|i| i.mimetype.clone()),
@@ -129,6 +126,25 @@ fn message_type_to_media(
     }
 }
 
+/// Extracts a message's `org.matrix.custom.html` formatted body, if it has
+/// one — `None` for plain-text messages/emotes/notices or ones formatted
+/// with anything other than HTML (the only format Matrix currently defines).
+/// Trusted only as raw content here: rendering it is the frontend's job, and
+/// the frontend re-sanitizes against the Matrix-permitted allowlist before
+/// ever putting it in the DOM (see `composerSanitize.ts`) rather than
+/// trusting that this event's sender did. `matrix-sdk-ui`'s `Timeline`
+/// already collapses edits onto `message.msgtype()` before this is called,
+/// so this covers both an original send and its latest edit uniformly.
+fn formatted_html_body(msgtype: &MessageType) -> Option<String> {
+    let formatted = match msgtype {
+        MessageType::Text(content) => content.formatted.as_ref(),
+        MessageType::Emote(content) => content.formatted.as_ref(),
+        MessageType::Notice(content) => content.formatted.as_ref(),
+        _ => None,
+    }?;
+    (formatted.format == MessageFormat::Html).then(|| formatted.body.clone())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct ReactionGroup {
@@ -171,7 +187,11 @@ pub struct RoomMessageSummary {
     /// Text-preview/room-list use — kept for backwards compatibility
     /// alongside `content`, which carries the full tagged-union payload.
     pub body: String,
-    /// Reserved: always `None` until the formatted-body/rich-text composition spec lands.
+    /// `org.matrix.custom.html` formatted body, when the message (or its
+    /// latest edit) has one — see `formatted_html_body` in this module.
+    /// `None` for plain-text messages. Rendered only after re-sanitizing
+    /// against the Matrix-permitted allowlist (`composerSanitize.ts`); never
+    /// trust this as pre-sanitized just because it came from the SDK.
     pub formatted_body: Option<String>,
     // Milliseconds since epoch stays well within JS's safe-integer range; emit `number`
     // rather than ts-rs's default `bigint` so the frontend can use it directly.
@@ -330,7 +350,7 @@ fn timeline_item_to_summary(
             event_id,
             sender,
             body: message.body().to_string(),
-            formatted_body: None,
+            formatted_body: formatted_html_body(message.msgtype()),
             timestamp_ms,
             edited: message.is_edited(),
             redacted: false,
@@ -586,6 +606,35 @@ mod mapping_tests {
             Some(MediaContent::Image { .. }) => {}
             other => panic!("expected Image media, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn carries_html_formatted_body_for_a_formatted_message() {
+        let summaries = summaries_for(vec![factory()
+            .text_html("hello", "<strong>hello</strong>")
+            .sender(&ALICE)
+            .event_id(event_id!("$formatted"))
+            .into_raw_sync()])
+        .await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries[0].formatted_body.as_deref(),
+            Some("<strong>hello</strong>")
+        );
+    }
+
+    #[tokio::test]
+    async fn has_no_formatted_body_for_a_plain_text_message() {
+        let summaries = summaries_for(vec![factory()
+            .text_msg("hello")
+            .sender(&ALICE)
+            .event_id(event_id!("$plain"))
+            .into_raw_sync()])
+        .await;
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].formatted_body, None);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { CommandResult } from "@bindings/CommandResult";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
 import type { EmojiPair } from "@bindings/EmojiPair";
@@ -16,11 +17,13 @@ import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
+import type { RoomMemberSummary } from "@bindings/RoomMemberSummary";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SendState } from "@bindings/SendState";
+import type { SlashCommand } from "@bindings/SlashCommand";
 import type { SpaceChild } from "@bindings/SpaceChild";
 import type { SpaceJoinRule } from "@bindings/SpaceJoinRule";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
@@ -37,6 +40,7 @@ import type { VerificationRequestSummary } from "@bindings/VerificationRequestSu
  * do not redefine them by hand.
  */
 export type {
+  CommandResult,
   CrossSigningStatusSummary,
   DiscoverHomeserverResponse,
   EmojiPair,
@@ -53,11 +57,13 @@ export type {
   ReceiptUpdate,
   RegisterRequest,
   ReplyRef,
+  RoomMemberSummary,
   RoomMessageSummary,
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
   SendState,
+  SlashCommand,
   SpaceChild,
   SpaceJoinRule,
   SyncStateEvent,
@@ -121,6 +127,11 @@ export function resolveRoomAlias(alias: string): Promise<string> {
   return invoke("resolve_room_alias", { alias });
 }
 
+/** Backs the composer's `@` mention autocomplete — see its doc comment for scope. */
+export function getRoomMembers(roomId: string): Promise<RoomMemberSummary[]> {
+  return invoke("get_room_members", { roomId });
+}
+
 export function onSyncState(callback: (event: SyncStateEvent) => void): Promise<UnlistenFn> {
   return listen<SyncStateEvent>("sync:state", (e) => callback(e.payload));
 }
@@ -143,8 +154,27 @@ export function getTimelinePage(
  * room's live `Timeline` creates the local echo itself and pushes it via
  * `timeline:update`, keyed on this same transaction id.
  */
-export function sendMessage(roomId: string, body: string): Promise<string> {
-  return invoke("send_message", { roomId, body });
+export function sendMessage(
+  roomId: string,
+  body: string,
+  formattedBody?: string | null,
+  mentions?: string[] | null,
+): Promise<string> {
+  return invoke("send_message", {
+    roomId,
+    body,
+    formattedBody: formattedBody ?? null,
+    mentions: mentions ?? null,
+  });
+}
+
+/** Runs a resolved slash command (see `parseSlashCommand` in `slashCommands.ts`). */
+export function runCommand(
+  roomId: string,
+  command: SlashCommand,
+  args: string[],
+): Promise<CommandResult> {
+  return invoke("run_command", { roomId, command, args });
 }
 
 export function onTimelineUpdate(

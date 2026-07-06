@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
 import type {
@@ -30,6 +31,9 @@ const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
 const openFileDialog = vi.fn();
+const getRoomMembers = vi.fn().mockResolvedValue([]);
+const listRooms = vi.fn().mockResolvedValue([]);
+const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -53,6 +57,9 @@ vi.mock("@/lib/matrix", () => ({
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
+  getRoomMembers: (...args: unknown[]) => getRoomMembers(...args),
+  listRooms: (...args: unknown[]) => listRooms(...args),
+  runCommand: (...args: unknown[]) => runCommand(...args),
   onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
     timelineUpdateCallback = callback;
     return Promise.resolve(() => {});
@@ -68,6 +75,55 @@ vi.mock("@/lib/matrix", () => ({
   onUploadProgress: vi.fn((callback: typeof uploadProgressCallback) => {
     uploadProgressCallback = callback;
     return Promise.resolve(() => {});
+  }),
+}));
+
+// Composer's own rich-text/TipTap behavior (formatting, autocomplete,
+// keybinding) is unit-tested directly in composerSerialize.test.ts /
+// composerSuggestions.test.ts / composerKeybinding.test.ts — driving a real
+// ProseMirror editor through jsdom here would test TipTap, not ChatShell's
+// own send/echo/reconciliation logic. This fake keeps the same
+// props contract (placeholder, onSubmit, onSlashCommand, submit() via ref).
+vi.mock("./Composer", () => ({
+  Composer: forwardRef(function Composer(
+    props: {
+      placeholder: string;
+      onSubmit: (content: {
+        body: string;
+        formattedBody: string | null;
+        mentions: string[] | null;
+      }) => void;
+      onSlashCommand: (parsed: { command: string; args: string[] }) => void;
+    },
+    ref,
+  ) {
+    const [value, setValue] = useState("");
+    const commit = () => {
+      const trimmed = value.trim();
+      if (!trimmed) return;
+      if (trimmed.startsWith("/")) {
+        const [word, ...rest] = trimmed.slice(1).split(/\s+/);
+        props.onSlashCommand({ command: word, args: rest });
+      } else {
+        props.onSubmit({ body: trimmed, formattedBody: null, mentions: null });
+      }
+      setValue("");
+    };
+    useImperativeHandle(ref, () => ({ submit: commit }));
+    return (
+      <textarea
+        aria-label={props.placeholder}
+        placeholder={props.placeholder}
+        value={value}
+        onChange={(e) => setValue(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            commit();
+          }
+        }}
+      />
+    );
   }),
 }));
 
@@ -141,7 +197,7 @@ describe("ChatShell", () => {
     await screen.findByText("No messages yet");
 
     sendDraft("hello");
-    expect(sendMessage).toHaveBeenCalledWith(room.room_id, "hello");
+    expect(sendMessage).toHaveBeenCalledWith(room.room_id, "hello", null, null);
 
     act(() => {
       timelineUpdateCallback?.({
