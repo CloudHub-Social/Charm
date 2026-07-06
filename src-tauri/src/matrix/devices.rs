@@ -156,8 +156,17 @@ pub async fn request_device_verification(
         while let Some(request_state) = changes.next().await {
             match request_state {
                 VerificationRequestState::Ready { .. } => break,
-                VerificationRequestState::Cancelled(_) => return,
-                _ => continue,
+                // Terminal states this task never expects to reach without
+                // first observing `Ready` — bail rather than loop forever if
+                // one somehow does (e.g. the other side cancels, or the
+                // request transitions/finishes through some path that skips
+                // `Ready`). Mirrors the exhaustive terminal-state handling in
+                // `verification::start_sas_verification`'s SAS-state loop.
+                VerificationRequestState::Cancelled(_)
+                | VerificationRequestState::Done
+                | VerificationRequestState::Transitioned { .. } => return,
+                VerificationRequestState::Created { .. }
+                | VerificationRequestState::Requested { .. } => continue,
             }
         }
 

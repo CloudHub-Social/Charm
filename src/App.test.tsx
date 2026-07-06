@@ -37,4 +37,14 @@ describe("App", () => {
 
     clearSpy.mockRestore();
   });
+
+  it("calls the onLoggedOut prop so a caller can reset state App doesn't own (e.g. main.tsx's Jotai store)", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    const onLoggedOut = vi.fn();
+
+    render(<App onLoggedOut={onLoggedOut} />);
+    fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
+
+    expect(onLoggedOut).toHaveBeenCalled();
+  });
 });

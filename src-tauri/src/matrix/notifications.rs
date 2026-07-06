@@ -260,12 +260,31 @@ pub async fn set_default_notification_mode(
 
 #[tauri::command]
 pub async fn set_room_notification_mode(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     mode: RoomNotificationModeKind,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
     let parsed_room_id = matrix_sdk::ruma::RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let account_key = persistence::account_key(user_id.as_str());
+    let _guard = PREFS_LOCK.lock().await;
+    let mut prefs = load_prefs(&app, &account_key)?;
+
+    // Same rationale as `set_default_notification_mode`: while global mute is
+    // active, a room-level override always takes precedence over the muted
+    // default, so applying it live would silently un-mute this one room out
+    // from under an active "Mute all rooms" toggle. Update only what unmute
+    // should restore instead, leaving the live rule at `Mute`.
+    if prefs.muted_from_mode.is_some() {
+        prefs.muted_room_overrides.insert(room_id, mode);
+        return save_prefs(&app, &account_key, &prefs);
+    }
+
     client
         .notification_settings()
         .await

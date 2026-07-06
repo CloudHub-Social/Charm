@@ -7,6 +7,7 @@
 //! "Dependencies & sequencing"). Align the two into one shared model once
 //! Spec 01 lands; until then this module doesn't depend on it.
 
+use matrix_sdk::ruma::api::client::account::change_password;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
@@ -254,7 +255,13 @@ pub async fn remove_avatar(state: State<'_, MatrixState>) -> Result<(), String> 
 }
 
 /// UIA-gated: the first call (no `password`) always fails with a UIA
-/// challenge — see [`retry_uia_with_session`].
+/// challenge — see [`retry_uia_with_session`]. Sends the raw request rather
+/// than going through `Account::change_password` (which hardcodes Ruma's
+/// `logout_devices: true` default): this is meant as a routine credential
+/// rotation, not an "I think my account is compromised, kick everyone else
+/// off" action, so it must not silently sign out every other device — that
+/// needs to be its own explicit choice, not a side effect of changing your
+/// password.
 #[tauri::command]
 pub async fn change_password(
     state: State<'_, MatrixState>,
@@ -266,13 +273,19 @@ pub async fn change_password(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-    let account = client.account();
 
     retry_uia_with_session(&user_id, password, |auth| {
-        account.change_password(&new_password, auth)
+        let client = client.clone();
+        let new_password = new_password.clone();
+        async move {
+            let mut request = change_password::v3::Request::new(new_password);
+            request.logout_devices = false;
+            request.auth = auth;
+            client.send(request).await.map_err(matrix_sdk::Error::from)
+        }
     })
-    .await?;
-    Ok(())
+    .await
+    .map(|_| ())
 }
 
 /// UIA-gated, same retry convention as [`change_password`]. Tears down the
@@ -370,6 +383,56 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// The production `change_password` command builds its request raw
+    /// (rather than via `Account::change_password`, which hardcodes Ruma's
+    /// `logout_devices: true` default) specifically so a routine password
+    /// change doesn't silently sign out every other device. The mock here
+    /// only accepts a body containing `"logout_devices":false`, so this only
+    /// passes if that field actually made it onto the wire.
+    #[tokio::test]
+    async fn change_password_never_logs_out_other_devices() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/account/password";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .and(body_string_contains("\"logout_devices\":false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .with_priority(1)
+            .mount(server.server())
+            .await;
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "errcode": "M_FORBIDDEN",
+                "flows": [{ "stages": ["m.login.password"] }],
+                "params": {},
+                "session": "test-uia-session"
+            })))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+
+        let result =
+            retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
+                let client = client.clone();
+                async move {
+                    let mut request = change_password::v3::Request::new("new-password".to_string());
+                    request.logout_devices = false;
+                    request.auth = auth;
+                    client.send(request).await.map_err(matrix_sdk::Error::from)
+                }
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "expected the retry to succeed against the mock that only accepts logout_devices: false"
         );
     }
 
