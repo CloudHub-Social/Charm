@@ -6,9 +6,13 @@ import { SettingsScreen } from "./SettingsScreen";
 import { settingsOpenAtom } from "./settingsAtoms";
 
 vi.mock("@/lib/matrix", () => ({
-  getProfile: vi
-    .fn()
-    .mockResolvedValue({ user_id: "@me:localhost", display_name: null, avatar_url: null }),
+  getProfile: vi.fn().mockResolvedValue({
+    user_id: "@me:localhost",
+    display_name: null,
+    avatar_url: null,
+    uses_oauth: false,
+  }),
+  getAccountDeactivateUrl: vi.fn().mockResolvedValue(null),
   listDevices: vi.fn().mockResolvedValue([]),
   crossSigningStatus: vi.fn().mockResolvedValue({
     has_master_key: true,
@@ -16,6 +20,7 @@ vi.mock("@/lib/matrix", () => ({
     has_user_signing_key: true,
   }),
   getCrossSigningResetUrl: vi.fn().mockResolvedValue(null),
+  getDeviceDeleteUrl: vi.fn().mockResolvedValue(null),
   getNotificationSettings: vi.fn().mockResolvedValue({
     default_mode: "all_messages",
     keywords: [],

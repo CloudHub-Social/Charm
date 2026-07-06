@@ -8,10 +8,12 @@
 //! Spec 01 lands; until then this module doesn't depend on it.
 
 use matrix_sdk::ruma::api::client::account::change_password;
+use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
 use matrix_sdk::ruma::UserId;
+use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 use ts_rs::TS;
@@ -188,6 +190,41 @@ pub async fn get_profile(state: State<'_, MatrixState>) -> Result<ProfileSummary
         avatar_url: avatar_url.map(|url| url.to_string()),
         uses_oauth: client.oauth().user_session().is_some(),
     })
+}
+
+/// The OIDC account-management URL for a given action, if the homeserver
+/// advertises one — `None` for a plain password/SSO session (no OIDC
+/// provider at all) or if the homeserver's auth metadata doesn't advertise
+/// the action. Shared by every "this in-app flow can't work for an
+/// OAuth-managed account, so point at their provider instead" command (see
+/// `devices::get_cross_signing_reset_url`, `get_account_deactivate_url`,
+/// `devices::get_device_delete_url`) — the frontend only offers those
+/// URL-backed links when this is `Some`; per Spec 08, the flows themselves
+/// are never reimplemented in-app.
+pub(crate) async fn account_management_url(
+    client: &Client,
+    action: AccountManagementActionData<'_>,
+) -> Option<String> {
+    if client.matrix_auth().logged_in() {
+        return None;
+    }
+
+    let metadata = client.oauth().server_metadata().await.ok()?;
+    metadata
+        .account_management_url_with_action(action)
+        .map(|url| url.to_string())
+}
+
+/// See [`account_management_url`] — `None` for a non-OAuth session, hiding
+/// the in-app "Deactivate account" action makes no sense for: the password-
+/// only UIA retry `deactivate_account` uses can't ever satisfy an
+/// OAuth-managed account's challenge.
+#[tauri::command]
+pub async fn get_account_deactivate_url(
+    state: State<'_, MatrixState>,
+) -> Result<Option<String>, String> {
+    let client = state.require_client().await?;
+    Ok(account_management_url(&client, AccountManagementActionData::AccountDeactivate).await)
 }
 
 /// Resolves `ProfileSummary.avatar_url` (a bare `mxc://` URI — never

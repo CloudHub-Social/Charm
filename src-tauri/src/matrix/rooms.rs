@@ -9,9 +9,10 @@ use matrix_sdk::ruma::events::tag::{TagInfo, TagName, UserTagName};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tauri::State;
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
+use super::notifications::set_room_notification_mode;
 use super::MatrixState;
 
 /// Flat room summary for the room list. No message preview yet — that needs
@@ -343,8 +344,20 @@ pub async fn set_room_low_priority(
     }
 }
 
+/// Spec 06's room-list "Mute"/"Unmute" context-menu action — a different UI
+/// surface from the settings Notifications panel's per-room picker
+/// (`notifications::set_room_notification_mode`), but writing the same
+/// underlying push rule, so it delegates there rather than calling
+/// `NotificationSettings::set_room_notification_mode` directly: without
+/// that, this action had no idea about `muted_from_mode`/
+/// `muted_room_overrides`, so muting/unmuting a room from here while global
+/// mute was active would desync the room from the restore snapshot — e.g.
+/// "Unmute" here writes an explicit override that undoes the room's part of
+/// "Mute all rooms" without ever recording it, so turning global mute back
+/// off later wouldn't know to leave (or restore) this room correctly.
 #[tauri::command]
 pub async fn set_room_muted(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     muted: bool,
@@ -355,8 +368,8 @@ pub async fn set_room_muted(
         .get_room(&parsed_room_id)
         .ok_or_else(|| format!("room {room_id} not found"))?;
 
-    let mode = if muted {
-        RoomNotificationMode::Mute
+    let mode: super::notifications::RoomNotificationModeKind = if muted {
+        RoomNotificationMode::Mute.into()
     } else {
         // Unmuting restores this room's default (encrypted / DM-vs-not)
         // notification mode rather than hardcoding `AllMessages` — we can't
@@ -373,14 +386,10 @@ pub async fn set_room_muted(
             .await
             .get_default_room_notification_mode(is_encrypted.into(), is_one_to_one.into())
             .await
+            .into()
     };
 
-    client
-        .notification_settings()
-        .await
-        .set_room_notification_mode(&parsed_room_id, mode)
-        .await
-        .map_err(|e| e.to_string())
+    set_room_notification_mode(app, state, room_id, mode).await
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ import {
   crossSigningStatus,
   deleteDevice,
   getCrossSigningResetUrl,
+  getDeviceDeleteUrl,
   listDevices,
   onSasUpdate,
   requestDeviceVerification,
@@ -31,6 +32,21 @@ export function useCrossSigningResetUrl() {
   return useQuery({
     queryKey: CROSS_SIGNING_RESET_URL_QUERY_KEY,
     queryFn: getCrossSigningResetUrl,
+  });
+}
+
+/**
+ * `null` when there's no OIDC account-management URL for revoking this
+ * device — see the Rust command's doc comment. Only fetched when `enabled`
+ * (the session itself is OAuth-managed): `delete_device`'s password-only UIA
+ * retry already works fine for a plain password/SSO session, so there's no
+ * reason to make this extra round trip there.
+ */
+export function useDeviceDeleteUrl(deviceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ["deviceDeleteUrl", deviceId],
+    queryFn: () => getDeviceDeleteUrl(deviceId),
+    enabled,
   });
 }
 

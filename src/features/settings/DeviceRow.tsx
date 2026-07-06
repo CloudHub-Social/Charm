@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { DeviceSummary } from "@/lib/matrix";
+import { useDeviceDeleteUrl } from "./useDevices";
 
 function formatLastSeen(ts: number | null): string | null {
   if (ts === null) return null;
@@ -29,9 +31,12 @@ interface DeviceRowProps {
   onVerify: () => Promise<unknown>;
   /** UIA-gated — throw on the first (password-less) attempt to trigger the retry prompt. */
   onRevoke: (password?: string) => Promise<void>;
+  /** Whether the current session is OAuth/OIDC-managed — see the Rust command's doc comment on `get_device_delete_url`. */
+  usesOAuth: boolean;
 }
 
-export function DeviceRow({ device, onVerify, onRevoke }: DeviceRowProps) {
+export function DeviceRow({ device, onVerify, onRevoke, usesOAuth }: DeviceRowProps) {
+  const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, usesOAuth);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -63,11 +68,14 @@ export function DeviceRow({ device, onVerify, onRevoke }: DeviceRowProps) {
     try {
       await onRevoke(needsPassword ? password : undefined);
       setRevokeOpen(false);
-    } catch {
+    } catch (err) {
       if (!needsPassword) {
         setNeedsPassword(true);
       } else {
-        setError("Incorrect password. Please try again.");
+        // Same rationale as `ChangePasswordDialog`: surface the backend's
+        // actual error instead of assuming every retry failure means the
+        // current password was wrong.
+        setError(String(err));
       }
     } finally {
       setSubmitting(false);
@@ -113,9 +121,18 @@ export function DeviceRow({ device, onVerify, onRevoke }: DeviceRowProps) {
               Verify
             </DropdownMenuItem>
           )}
-          {!device.is_current && (
+          {/* `delete_device`'s password-only UIA retry can't satisfy an
+              OAuth-managed session's challenge — for those, offer the
+              account-management deep link (once resolved) instead of an
+              in-app "Sign out" that can never complete. */}
+          {!device.is_current && !usesOAuth && (
             <DropdownMenuItem variant="destructive" onClick={() => setRevokeOpen(true)}>
               Sign out
+            </DropdownMenuItem>
+          )}
+          {!device.is_current && usesOAuth && deleteUrl && (
+            <DropdownMenuItem onClick={() => openUrl(deleteUrl)}>
+              Manage in account settings
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
@@ -150,7 +167,14 @@ export function DeviceRow({ device, onVerify, onRevoke }: DeviceRowProps) {
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
-            <Button variant="secondary" onClick={() => setRevokeOpen(false)} disabled={submitting}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                reset();
+                setRevokeOpen(false);
+              }}
+              disabled={submitting}
+            >
               Cancel
             </Button>
             <Button

@@ -4,13 +4,15 @@
 
 use futures_util::StreamExt;
 use matrix_sdk::encryption::verification::VerificationRequestState;
-use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
+use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::{
+    AccountManagementActionData, DeviceDeleteData,
+};
 use matrix_sdk::ruma::{DeviceId, OwnedDeviceId};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::account::retry_uia_with_session;
+use super::account::{account_management_url, retry_uia_with_session};
 use super::verification::VerificationRequestSummary;
 use super::MatrixState;
 
@@ -183,27 +185,31 @@ pub async fn request_device_verification(
     Ok(flow_id)
 }
 
-/// The OIDC account-management URL for resetting cross-signing, if the
-/// homeserver advertises one — `None` for a plain password/SSO session (no
-/// OIDC provider at all) or if the homeserver's auth metadata doesn't
-/// advertise the action. The frontend only shows a "Reset" link when this is
-/// `Some`; per Spec 08, the flow itself is never reimplemented in-app.
+/// See `account::account_management_url` — the frontend only shows a "Reset"
+/// link when this is `Some`.
 #[tauri::command]
 pub async fn get_cross_signing_reset_url(
     state: State<'_, MatrixState>,
 ) -> Result<Option<String>, String> {
     let client = state.require_client().await?;
-    if client.matrix_auth().logged_in() {
-        return Ok(None);
-    }
+    Ok(account_management_url(&client, AccountManagementActionData::CrossSigningReset).await)
+}
 
-    let Ok(metadata) = client.oauth().server_metadata().await else {
-        return Ok(None);
-    };
-
-    Ok(metadata
-        .account_management_url_with_action(AccountManagementActionData::CrossSigningReset)
-        .map(|url| url.to_string()))
+/// See `account::account_management_url` — `None` for a non-OAuth session,
+/// where `delete_device`'s password-only UIA retry can satisfy the
+/// challenge itself, so the frontend keeps the in-app "Sign out" action.
+#[tauri::command]
+pub async fn get_device_delete_url(
+    state: State<'_, MatrixState>,
+    device_id: String,
+) -> Result<Option<String>, String> {
+    let client = state.require_client().await?;
+    let device_id: OwnedDeviceId = device_id.into();
+    Ok(account_management_url(
+        &client,
+        AccountManagementActionData::DeviceDelete(DeviceDeleteData::new(&device_id)),
+    )
+    .await)
 }
 
 #[cfg(test)]

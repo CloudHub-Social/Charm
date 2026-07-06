@@ -10,8 +10,10 @@ const crossSigningStatus = vi.fn();
 const getCrossSigningResetUrl = vi.fn();
 const bootstrapCrossSigning = vi.fn();
 const deleteDevice = vi.fn();
+const getDeviceDeleteUrl = vi.fn();
 const requestDeviceVerification = vi.fn();
 const onSasUpdate = vi.fn();
+const getProfile = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   listDevices: (...args: unknown[]) => listDevices(...args),
@@ -19,8 +21,10 @@ vi.mock("@/lib/matrix", () => ({
   getCrossSigningResetUrl: (...args: unknown[]) => getCrossSigningResetUrl(...args),
   bootstrapCrossSigning: (...args: unknown[]) => bootstrapCrossSigning(...args),
   deleteDevice: (...args: unknown[]) => deleteDevice(...args),
+  getDeviceDeleteUrl: (...args: unknown[]) => getDeviceDeleteUrl(...args),
   requestDeviceVerification: (...args: unknown[]) => requestDeviceVerification(...args),
   onSasUpdate: (...args: unknown[]) => onSasUpdate(...args),
+  getProfile: (...args: unknown[]) => getProfile(...args),
 }));
 
 const openUrl = vi.fn();
@@ -71,9 +75,16 @@ beforeEach(() => {
   getCrossSigningResetUrl.mockReset().mockResolvedValue(null);
   bootstrapCrossSigning.mockReset().mockResolvedValue(undefined);
   deleteDevice.mockReset().mockResolvedValue(undefined);
+  getDeviceDeleteUrl.mockReset().mockResolvedValue(null);
   requestDeviceVerification.mockReset().mockResolvedValue("flow-1");
   onSasUpdate.mockReset().mockResolvedValue(vi.fn());
   openUrl.mockReset();
+  getProfile.mockReset().mockResolvedValue({
+    user_id: "@me:localhost",
+    display_name: "Me",
+    avatar_url: null,
+    uses_oauth: false,
+  });
 });
 
 describe("DevicesPanel", () => {
@@ -144,6 +155,26 @@ describe("DevicesPanel", () => {
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("This laptop");
     expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+  });
+
+  it("routes an un-bootstrapped OAuth account to account management instead of the in-app password flow", async () => {
+    crossSigningStatus.mockResolvedValue({
+      has_master_key: false,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    });
+    getCrossSigningResetUrl.mockResolvedValue("https://example.org/account");
+    renderWithProviders(<DevicesPanel />);
+
+    // Wait for the OAuth-specific copy (only rendered once both queries have
+    // settled) before clicking, so this doesn't race the in-app "Set up"
+    // button's brief presence while `resetUrl` is still pending.
+    await screen.findByText(/identity provider/);
+    fireEvent.click(screen.getByRole("button", { name: "Set up" }));
+
+    expect(openUrl).toHaveBeenCalledWith("https://example.org/account");
+    expect(bootstrapCrossSigning).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
   });
 
   it("revokes another device", async () => {

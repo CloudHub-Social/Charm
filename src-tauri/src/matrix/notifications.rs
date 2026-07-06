@@ -137,15 +137,17 @@ async fn apply_default_mode(
     Ok(())
 }
 
-/// Snapshots every room with a user-defined push-rule override and forces
-/// each one to `Mute`. A room-level override (set via
-/// `set_room_notification_mode`) always takes precedence over the default
-/// rules `apply_default_mode` changes, so without this, a room the user had
-/// explicitly set to e.g. `AllMessages` would keep notifying right through
-/// "Mute all rooms" being shown as active.
+/// Snapshots every room with a user-defined push-rule override — a pure read,
+/// deliberately separate from [`apply_mute_to_rooms`] (which does the actual
+/// server writes) so the snapshot can be persisted to `notification_prefs`
+/// *before* any live rule is touched. Snapshotting and muting in one pass
+/// used to mean a failure partway through left already-muted rooms with no
+/// saved record of their pre-mute mode to restore later — worse, retrying
+/// would re-snapshot those rooms as already reading `Mute`, permanently
+/// losing the real original value.
 async fn mute_room_overrides(
     settings: &NotificationSettings,
-) -> Result<std::collections::HashMap<String, RoomNotificationModeKind>, String> {
+) -> std::collections::HashMap<String, RoomNotificationModeKind> {
     let room_ids = settings.get_rooms_with_user_defined_rules(None).await;
     let mut snapshot = std::collections::HashMap::new();
     for room_id_str in room_ids {
@@ -158,13 +160,30 @@ async fn mute_room_overrides(
         else {
             continue;
         };
+        snapshot.insert(room_id_str, mode.into());
+    }
+    snapshot
+}
+
+/// Forces every room in `overrides` (as captured by [`mute_room_overrides`],
+/// which must already be durably saved by the time this runs) to `Mute`.
+/// Idempotent per room (`NotificationSettings::set_room_notification_mode`
+/// no-ops if already at the target mode), so a retry after a partial failure
+/// here is safe and just picks up wherever it left off.
+async fn apply_mute_to_rooms(
+    settings: &NotificationSettings,
+    overrides: &std::collections::HashMap<String, RoomNotificationModeKind>,
+) -> Result<(), String> {
+    for room_id_str in overrides.keys() {
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id_str) else {
+            continue;
+        };
         settings
             .set_room_notification_mode(&room_id, RoomNotificationMode::Mute)
             .await
             .map_err(|e| e.to_string())?;
-        snapshot.insert(room_id_str, mode.into());
     }
-    Ok(snapshot)
+    Ok(())
 }
 
 /// Restores every room-level override captured by `mute_room_overrides`.
@@ -358,9 +377,15 @@ pub async fn set_global_mute(
             let current = settings
                 .get_default_room_notification_mode(false.into(), false.into())
                 .await;
-            prefs.muted_room_overrides = mute_room_overrides(&settings).await?;
+            prefs.muted_room_overrides = mute_room_overrides(&settings).await;
             prefs.muted_from_mode = Some(current.into());
+            // Persisted *before* any live rule below is touched: if a
+            // per-room or default-mode write then fails partway through,
+            // the snapshot on disk still reflects the real pre-mute state
+            // rather than being lost along with this call's error.
+            save_prefs(&app, &account_key, &prefs)?;
         }
+        apply_mute_to_rooms(&settings, &prefs.muted_room_overrides).await?;
         apply_default_mode(&settings, RoomNotificationMode::Mute).await?;
     } else if let Some(restore_mode) = prefs.muted_from_mode {
         restore_room_overrides(&settings, &prefs.muted_room_overrides).await?;

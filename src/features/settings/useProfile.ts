@@ -1,6 +1,13 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getProfile, removeAvatar, resolveAvatar, setAvatar, setDisplayName } from "@/lib/matrix";
+import {
+  getAccountDeactivateUrl,
+  getProfile,
+  removeAvatar,
+  resolveAvatar,
+  setAvatar,
+  setDisplayName,
+} from "@/lib/matrix";
 
 const PROFILE_QUERY_KEY = ["profile"] as const;
 
@@ -8,6 +15,14 @@ export function useProfile() {
   return useQuery({
     queryKey: PROFILE_QUERY_KEY,
     queryFn: getProfile,
+  });
+}
+
+/** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
+export function useAccountDeactivateUrl() {
+  return useQuery({
+    queryKey: ["accountDeactivateUrl"],
+    queryFn: getAccountDeactivateUrl,
   });
 }
 

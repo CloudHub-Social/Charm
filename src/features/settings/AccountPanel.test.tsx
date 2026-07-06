@@ -12,6 +12,7 @@ const removeAvatar = vi.fn();
 const resolveAvatar = vi.fn();
 const changePassword = vi.fn();
 const deactivateAccount = vi.fn();
+const getAccountDeactivateUrl = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
@@ -22,6 +23,7 @@ vi.mock("@/lib/matrix", () => ({
   resolveAvatar: (...args: unknown[]) => resolveAvatar(...args),
   changePassword: (...args: unknown[]) => changePassword(...args),
   deactivateAccount: (...args: unknown[]) => deactivateAccount(...args),
+  getAccountDeactivateUrl: (...args: unknown[]) => getAccountDeactivateUrl(...args),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -31,6 +33,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 const openFileDialog = vi.fn();
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openFileDialog(...args),
+}));
+
+const openUrl = vi.fn();
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrl(...args),
 }));
 
 function renderWithProviders(children: ReactNode) {
@@ -46,6 +53,8 @@ beforeEach(() => {
     uses_oauth: false,
   });
   logout.mockReset();
+  getAccountDeactivateUrl.mockReset().mockResolvedValue(null);
+  deactivateAccount.mockReset();
 });
 
 describe("AccountPanel", () => {
@@ -93,6 +102,29 @@ describe("AccountPanel", () => {
       target: { value: "DEACTIVATE" },
     });
     expect(confirmButton).not.toBeDisabled();
+  });
+
+  it("surfaces the actual deactivation retry error instead of assuming it's always a wrong password", async () => {
+    deactivateAccount
+      .mockRejectedValueOnce(new Error("uia"))
+      .mockRejectedValueOnce(new Error("server is temporarily unavailable"));
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    const [openButton] = screen.getAllByRole("button", { name: "Deactivate account" });
+    fireEvent.click(openButton);
+    fireEvent.click(await screen.findByRole("button", { name: "I understand, continue" }));
+    fireEvent.change(await screen.findByLabelText("Type DEACTIVATE to confirm"), {
+      target: { value: "DEACTIVATE" },
+    });
+    const confirmButtons = await screen.findAllByRole("button", { name: "Deactivate account" });
+    fireEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    fireEvent.change(await screen.findByLabelText("Current password"), {
+      target: { value: "current-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Deactivate account" }));
+
+    expect(await screen.findByText("Error: server is temporarily unavailable")).toBeInTheDocument();
   });
 
   it("saves an edited display name", async () => {
@@ -216,5 +248,40 @@ describe("AccountPanel", () => {
 
     await screen.findByText(/managed there rather than in Charm/);
     expect(screen.queryByRole("button", { name: "Change password" })).not.toBeInTheDocument();
+  });
+
+  it("routes deactivation to the identity provider for an OAuth account that has one", async () => {
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: true,
+    });
+    getAccountDeactivateUrl.mockResolvedValue("https://example.org/account/deactivate");
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    // Wait for the profile query to resolve as OAuth (only then does the
+    // Deactivate button switch from opening the in-app dialog to routing
+    // out) before clicking, so this doesn't race the initial, still-loading
+    // render.
+    await screen.findByText(/its password is managed there/);
+    fireEvent.click(screen.getByRole("button", { name: "Deactivate account" }));
+
+    expect(openUrl).toHaveBeenCalledWith("https://example.org/account/deactivate");
+    expect(deactivateAccount).not.toHaveBeenCalled();
+  });
+
+  it("hides the in-app deactivate flow for an OAuth account with no advertised management URL", async () => {
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: true,
+    });
+    getAccountDeactivateUrl.mockResolvedValue(null);
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    await screen.findByText(/deactivate it there instead/);
+    expect(screen.queryByRole("button", { name: "Deactivate account" })).not.toBeInTheDocument();
   });
 });

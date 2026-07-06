@@ -403,6 +403,11 @@ export function deactivateAccount(password?: string): Promise<void> {
   return invoke("deactivate_account", { password });
 }
 
+/** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
+export function getAccountDeactivateUrl(): Promise<string | null> {
+  return invoke("get_account_deactivate_url");
+}
+
 export function listDevices(): Promise<DeviceSummary[]> {
   return invoke("list_devices");
 }
@@ -410,6 +415,11 @@ export function listDevices(): Promise<DeviceSummary[]> {
 /** Same UIA retry convention as {@link changePassword}. */
 export function deleteDevice(deviceId: string, password?: string): Promise<void> {
   return invoke("delete_device", { deviceId, password });
+}
+
+/** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
+export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
+  return invoke("get_device_delete_url", { deviceId });
 }
 
 /**

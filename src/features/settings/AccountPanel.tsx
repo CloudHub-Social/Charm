@@ -1,4 +1,5 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -13,7 +14,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
-import { useProfile, useResolvedAvatarSrc, useUpdateProfile } from "./useProfile";
+import {
+  useAccountDeactivateUrl,
+  useProfile,
+  useResolvedAvatarSrc,
+  useUpdateProfile,
+} from "./useProfile";
 
 interface AccountPanelProps {
   onLoggedOut: () => void;
@@ -23,6 +29,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
   const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
+  const { data: deactivateUrl } = useAccountDeactivateUrl();
 
   const [displayNameDraft, setDisplayNameDraft] = useState<string | null>(null);
   const displayName = displayNameDraft ?? profile?.display_name ?? "";
@@ -139,9 +146,21 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
 
       <section className="space-y-2 border-t border-border pt-6">
         <h2 className="text-lg font-bold text-destructive">Danger zone</h2>
-        <Button variant="destructive" onClick={() => setDeactivateOpen(true)}>
-          Deactivate account
-        </Button>
+        {profile?.uses_oauth ? (
+          deactivateUrl ? (
+            <Button variant="destructive" onClick={() => openUrl(deactivateUrl)}>
+              Deactivate account
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              This account signs in through your identity provider — deactivate it there instead.
+            </p>
+          )
+        ) : (
+          <Button variant="destructive" onClick={() => setDeactivateOpen(true)}>
+            Deactivate account
+          </Button>
+        )}
       </section>
 
       <ChangePasswordDialog open={passwordDialogOpen} onOpenChange={setPasswordDialogOpen} />
@@ -329,11 +348,14 @@ function DeactivateAccountDialog({
     try {
       await deactivateAccount(needsPassword ? password : undefined);
       onDeactivated();
-    } catch {
+    } catch (err) {
       if (!needsPassword) {
         setNeedsPassword(true);
       } else {
-        setError("Incorrect password. Please try again.");
+        // Same rationale as `ChangePasswordDialog`: the backend already
+        // distinguishes a rejected password from an unrelated failure, so
+        // surface it directly instead of assuming it's always the password.
+        setError(String(err));
       }
     } finally {
       setSubmitting(false);

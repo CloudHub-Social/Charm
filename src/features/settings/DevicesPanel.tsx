@@ -11,6 +11,7 @@ import {
   useDeviceActions,
   useDevices,
 } from "./useDevices";
+import { useProfile } from "./useProfile";
 
 function groupDevices(devices: DeviceSummary[]) {
   return {
@@ -21,10 +22,12 @@ function groupDevices(devices: DeviceSummary[]) {
 }
 
 export function DevicesPanel() {
+  const { data: profile } = useProfile();
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
   const { revoke, verify, invalidateCrossSigning } = useDeviceActions();
+  const usesOAuth = Boolean(profile?.uses_oauth);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -66,7 +69,9 @@ export function DevicesPanel() {
             ? "Set up. Verifying another session compares this account's trusted identity."
             : needsPassword
               ? "Re-enter your account password to finish setting up cross-signing."
-              : "Not set up yet. Set it up to be able to verify your other sessions."}
+              : resetUrl
+                ? "Not set up yet. This account signs in through your identity provider — use the link below to set it up there."
+                : "Not set up yet. Set it up to be able to verify your other sessions."}
         </p>
         {needsPassword && !isBootstrapped && (
           <div className="mb-3 max-w-xs">
@@ -80,7 +85,12 @@ export function DevicesPanel() {
           </div>
         )}
         <div className="flex gap-2">
-          {!isBootstrapped && (
+          {/* `resetUrl` is only ever populated for OAuth/OIDC sessions (see
+              `get_cross_signing_reset_url`), which `bootstrapCrossSigning`'s
+              password-only UIA retry can never satisfy — the account
+              management URL below is the only path that works there, so the
+              in-app "Set up" flow is only offered when it isn't OAuth. */}
+          {!isBootstrapped && !resetUrl && (
             <Button
               size="sm"
               onClick={handleBootstrap}
@@ -91,7 +101,7 @@ export function DevicesPanel() {
           )}
           {resetUrl && (
             <Button size="sm" variant="outline" onClick={() => openUrl(resetUrl)}>
-              Reset
+              {isBootstrapped ? "Reset" : "Set up"}
             </Button>
           )}
         </div>
@@ -104,9 +114,27 @@ export function DevicesPanel() {
         </p>
       )}
 
-      <DeviceGroup title="This device" devices={groups.current} revoke={revoke} verify={verify} />
-      <DeviceGroup title="Verified" devices={groups.verified} revoke={revoke} verify={verify} />
-      <DeviceGroup title="Unverified" devices={groups.unverified} revoke={revoke} verify={verify} />
+      <DeviceGroup
+        title="This device"
+        devices={groups.current}
+        revoke={revoke}
+        verify={verify}
+        usesOAuth={usesOAuth}
+      />
+      <DeviceGroup
+        title="Verified"
+        devices={groups.verified}
+        revoke={revoke}
+        verify={verify}
+        usesOAuth={usesOAuth}
+      />
+      <DeviceGroup
+        title="Unverified"
+        devices={groups.unverified}
+        revoke={revoke}
+        verify={verify}
+        usesOAuth={usesOAuth}
+      />
     </div>
   );
 }
@@ -116,11 +144,13 @@ function DeviceGroup({
   devices,
   revoke,
   verify,
+  usesOAuth,
 }: {
   title: string;
   devices: DeviceSummary[];
   revoke: ReturnType<typeof useDeviceActions>["revoke"];
   verify: ReturnType<typeof useDeviceActions>["verify"];
+  usesOAuth: boolean;
 }) {
   if (devices.length === 0) return null;
 
@@ -132,6 +162,7 @@ function DeviceGroup({
           <DeviceRow
             key={device.device_id}
             device={device}
+            usesOAuth={usesOAuth}
             onVerify={() => verify.mutateAsync(device.device_id)}
             onRevoke={(password) => revoke.mutateAsync({ deviceId: device.device_id, password })}
           />
