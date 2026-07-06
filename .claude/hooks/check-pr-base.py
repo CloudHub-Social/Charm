@@ -112,19 +112,28 @@ def main():
     if not cmd:
         return 0
 
-    try:
-        tokens = tokenize(cmd)
-    except ValueError:
-        return 0  # Unbalanced quotes: can't safely tokenize, fail open.
+    # A multi-line bash script (e.g. a heredoc'd block with several
+    # statements) has newline boundaries that shlex's whitespace tokenization
+    # discards, which would otherwise glue an earlier line's last token to a
+    # later line's first token (e.g. `true` then `gh`) and hide a `gh pr
+    # create` that isn't on the blob's first line. Split on newlines first, so
+    # each line is tokenized and scanned independently.
+    for line in cmd.splitlines():
+        if not line.strip():
+            continue
+        try:
+            tokens = tokenize(line)
+        except ValueError:
+            continue  # Unbalanced quotes on this line: can't safely tokenize, fail open.
 
-    for simple in split_simple_commands(tokens):
-        is_pr_create, base_val = base_value_if_pr_create(simple)
-        if is_pr_create and not is_allowed(base_val):
-            sys.stderr.write(
-                "Blocked: 'gh pr create' must pass --base main (or "
-                "--base release/x.y.z for backports).\n"
-            )
-            return 2
+        for simple in split_simple_commands(tokens):
+            is_pr_create, base_val = base_value_if_pr_create(simple)
+            if is_pr_create and not is_allowed(base_val):
+                sys.stderr.write(
+                    "Blocked: 'gh pr create' must pass --base main (or "
+                    "--base release/x.y.z for backports).\n"
+                )
+                return 2
 
     return 0
 
