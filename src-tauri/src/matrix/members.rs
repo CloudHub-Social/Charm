@@ -1,21 +1,49 @@
-//! Room member lookup backing the composer's `@` mention autocomplete.
+//! Room member lookup backing the composer's `@` mention autocomplete and
+//! (Spec 07) the right panel's member-management list.
 
+use matrix_sdk::room::RoomMember;
+use matrix_sdk::ruma::events::room::power_levels::UserPowerLevel;
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk::{Client, RoomMemberships};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
 
+use super::room_admin::{MembershipKind, JS_SAFE_INFINITE_POWER_LEVEL};
 use super::MatrixState;
 
-/// A room member as offered by the `@` mention autocomplete. Deliberately
-/// thin — just enough to filter and render a suggestion row and build a
-/// mention pill.
+/// A room member as offered by the `@` mention autocomplete and the Spec 07
+/// member-management panel — one shared shape/mapping ([`member_to_summary`])
+/// for both, rather than two near-identical member DTOs.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct RoomMemberSummary {
     pub user_id: String,
     pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    // See `PowerLevelThresholds`'s doc comment in `room_admin.rs` for why
+    // this is `number`, not ts-rs's default `bigint`.
+    #[ts(type = "number")]
+    pub power_level: i64,
+    pub membership: MembershipKind,
+}
+
+/// Shared mapping from an SDK `RoomMember` to the IPC-facing summary —
+/// reused by both [`get_room_members`] (active-only, autocomplete) and
+/// `room_admin::get_room_member_list` (all memberships, admin panel).
+pub(crate) fn member_to_summary(member: &RoomMember) -> RoomMemberSummary {
+    let power_level = match member.power_level() {
+        UserPowerLevel::Infinite => JS_SAFE_INFINITE_POWER_LEVEL,
+        UserPowerLevel::Int(level) => level.into(),
+        _ => 0,
+    };
+    RoomMemberSummary {
+        user_id: member.user_id().to_string(),
+        display_name: member.display_name().map(ToOwned::to_owned),
+        avatar_url: member.avatar_url().map(ToString::to_string),
+        power_level,
+        membership: member.membership().into(),
+    }
 }
 
 /// Lists this room's active (joined + invited) members from the already-
@@ -47,11 +75,5 @@ pub async fn get_room_members_impl(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(members
-        .into_iter()
-        .map(|m| RoomMemberSummary {
-            user_id: m.user_id().to_string(),
-            display_name: m.display_name().map(ToOwned::to_owned),
-        })
-        .collect())
+    Ok(members.iter().map(member_to_summary).collect())
 }
