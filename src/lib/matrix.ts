@@ -22,7 +22,6 @@ import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
-import type { SendQueueUpdateEvent } from "@bindings/SendQueueUpdateEvent";
 import type { SendState } from "@bindings/SendState";
 import type { SlashCommand } from "@bindings/SlashCommand";
 import type { SpaceChild } from "@bindings/SpaceChild";
@@ -63,7 +62,6 @@ export type {
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
-  SendQueueUpdateEvent,
   SendState,
   SlashCommand,
   SpaceChild,
@@ -151,11 +149,10 @@ export function getTimelinePage(
 }
 
 /**
- * Queues a message and returns the SDK-generated send-queue transaction id
- * for it — key the optimistic local echo on this (not a client-generated
- * placeholder), since it's the same id the synced event's `transaction_id`
- * and `send_queue:update` events will carry, and reconciliation between the
- * three depends on all of them agreeing.
+ * Queues a message and returns the SDK-generated send-queue transaction id.
+ * The frontend doesn't need this for rendering any more (Spec 14): the
+ * room's live `Timeline` creates the local echo itself and pushes it via
+ * `timeline:update`, keyed on this same transaction id.
  */
 export function sendMessage(
   roomId: string,
@@ -213,12 +210,6 @@ export function toggleReaction(
 /** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
 export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
   return invoke("send_reply", { roomId, inReplyToEventId, body });
-}
-
-export function onSendQueueUpdate(
-  callback: (update: SendQueueUpdateEvent) => void,
-): Promise<UnlistenFn> {
-  return listen<SendQueueUpdateEvent>("send_queue:update", (e) => callback(e.payload));
 }
 
 export function bootstrapCrossSigning(password?: string): Promise<void> {

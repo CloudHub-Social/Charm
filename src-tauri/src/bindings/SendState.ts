@@ -3,7 +3,9 @@
 /**
  * Local send-queue state of a message, folded onto its `RoomMessageSummary`
  * so the frontend can flip a bubble pending -> sent -> error without a full
- * timeline diff. See `send_queue:update` in `actions.rs`, which carries the
- * same shape for out-of-band updates between timeline diffs.
+ * timeline diff. Sourced from `matrix-sdk-ui`'s `Timeline`
+ * (`EventTimelineItem::send_state`), which listens to the same room-level
+ * send queue as every send/edit/react/reply command regardless of which one
+ * queued a given event.
  */
 export type SendState = { "state": "pending" } | { "state": "sent" } | { "state": "error", message: string, };

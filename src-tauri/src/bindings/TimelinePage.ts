@@ -3,6 +3,15 @@ import type { RoomMessageSummary } from "./RoomMessageSummary";
 
 export type TimelinePage = { messages: Array<RoomMessageSummary>, 
 /**
- * Pass back as `cursor` to fetch the page further back in history.
+ * Spec 14 tweak (the one allowed IPC-contract change): with a
+ * `matrix-sdk-ui` `Timeline` backing pagination, there's no opaque
+ * server-side cursor to resume from any more — `Timeline::paginate_backwards`
+ * is stateful per-room (it just walks further back from wherever that
+ * room's `Timeline` currently is). So this is now a **sentinel**, not a
+ * token: `Some("more")` means the timeline start hasn't been reached yet
+ * (call `get_timeline_page` again to page further back), `None` means
+ * the start of the room's history has been reached. The frontend already
+ * only passes this back opaquely (never reads its value), so this is a
+ * same-shape, source-compatible change.
  */
 next_cursor: string | null, };

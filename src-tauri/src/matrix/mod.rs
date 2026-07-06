@@ -42,11 +42,26 @@ const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
 struct PendingSso {
     client: Client,
     state: String,
+    /// The temp store key `build_client` opened this client's store under —
+    /// the account isn't known until the callback completes, so this isn't
+    /// an `account_key` yet. `complete_sso_login` relocates it to one on
+    /// success; `cancel_sso_login` discards it on cancellation.
+    store_key: String,
 }
 
+/// How many rooms' live `matrix-sdk-ui` `Timeline`s are held open at once
+/// (see `MatrixState::get_or_create_timeline`) — bounds memory so visiting
+/// many rooms in one session doesn't grow the set of subscribed timelines
+/// (and their background listener tasks) without limit. LRU-evicted; the
+/// evicted `Arc<Timeline>`'s `Drop` tears down its background tasks once
+/// every clone (including any in-flight command still holding one) is gone.
+const MAX_LIVE_TIMELINES: usize = 20;
+
 /// Holds the active matrix-rust-sdk client for the running session.
-/// One `MatrixState` per app instance; per-account multiplexing is a Phase 1 concern.
-#[derive(Default)]
+/// One `MatrixState` per app instance; per-account multiplexing (multiple
+/// *concurrently active* clients) is a Day-2 concern. Storage itself,
+/// however, is already isolated per account on disk/keychain — see
+/// `persistence::account_key`.
 pub struct MatrixState {
     client: Mutex<Option<Client>>,
     /// Set by `start_sso_login`, consumed by `complete_sso_login`. Built
@@ -69,6 +84,10 @@ pub struct MatrixState {
     /// (no `.await` in between), or a `cancel_qr_login` racing in that gap
     /// could find nothing to abort yet.
     pub(crate) pending_qr_login_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The temp store key the in-flight QR login (if any) opened its client
+    /// against — see `PendingSso::store_key`'s doc comment; same rationale,
+    /// same `std::sync::Mutex` synchronous-with-spawn requirement.
+    pub(crate) pending_qr_temp_store_key: std::sync::Mutex<Option<String>>,
     /// Filesystem media cache (`<app_data>/media/`), built once at app
     /// startup and shared across every login/restore — see
     /// `media::MediaCache`. `OnceCell` rather than living inside the client
@@ -83,6 +102,30 @@ pub struct MatrixState {
     /// `offline` choice actually sticks across syncs instead of being
     /// silently reverted to online by the next long-poll.
     pub(crate) sync_presence: std::sync::Mutex<presence::PresenceStateDto>,
+    /// Live per-room `matrix-sdk-ui` `Timeline`s, built lazily the first time
+    /// a room is opened (`get_timeline_page`) and bounded to
+    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`.
+    timelines: Mutex<
+        lru::LruCache<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<matrix_sdk_ui::Timeline>>,
+    >,
+}
+
+impl Default for MatrixState {
+    fn default() -> Self {
+        Self {
+            client: Mutex::default(),
+            pending_sso: Mutex::default(),
+            pending_qr_check_code: Mutex::default(),
+            pending_qr_login_task: std::sync::Mutex::default(),
+            pending_qr_temp_store_key: std::sync::Mutex::default(),
+            media_cache: tokio::sync::OnceCell::default(),
+            sync_presence: std::sync::Mutex::default(),
+            timelines: Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(MAX_LIVE_TIMELINES)
+                    .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
+            )),
+        }
+    }
 }
 
 impl MatrixState {
@@ -92,6 +135,48 @@ impl MatrixState {
             .await
             .clone()
             .ok_or_else(|| "not logged in".to_string())
+    }
+
+    /// Returns the live `Timeline` for `room_id`, building (and spawning its
+    /// `timeline:update`-emitting listener task) on first use if it isn't
+    /// already held. Bounded LRU: opening more than [`MAX_LIVE_TIMELINES`]
+    /// distinct rooms in a session evicts the least-recently-opened one
+    /// rather than growing unbounded.
+    pub(crate) async fn get_or_create_timeline(
+        &self,
+        app: &AppHandle,
+        client: &Client,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
+        use matrix_sdk_ui::timeline::RoomExt as _;
+
+        if let Some(existing) = self.timelines.lock().await.get(room_id) {
+            return Ok(std::sync::Arc::clone(existing));
+        }
+
+        let room = client
+            .get_room(room_id)
+            .ok_or_else(|| format!("room {room_id} not found"))?;
+        let timeline = std::sync::Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
+
+        let mut timelines = self.timelines.lock().await;
+        // Re-check: another concurrent call may have built and inserted one
+        // for this same room while this call was awaiting `room.timeline()`
+        // above (lock isn't held across that await) — keep whichever was
+        // inserted first rather than running two listener tasks for one room.
+        if let Some(existing) = timelines.get(room_id) {
+            return Ok(std::sync::Arc::clone(existing));
+        }
+
+        timeline::spawn_timeline_listener(
+            app.clone(),
+            room_id.to_owned(),
+            std::sync::Arc::downgrade(&timeline),
+            client.user_id().map(ToOwned::to_owned),
+        );
+        timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));
+
+        Ok(timeline)
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
@@ -214,7 +299,12 @@ pub async fn login(
     state: State<'_, MatrixState>,
     request: LoginRequest,
 ) -> Result<LoginResponse, String> {
-    let client = build_client(&app, &request.homeserver_url).await?;
+    // The account's MXID isn't known for certain until login succeeds (the
+    // homeserver, not the client, has final say over the resolved server
+    // name), so this opens a temp store like SSO/QR and relocates it to the
+    // per-account path below — see `persistence::relocate_store`.
+    let temp_key = persistence::temp_store_key();
+    let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
 
     client
         .matrix_auth()
@@ -228,13 +318,25 @@ pub async fn login(
         .session()
         .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
 
+    let account_key = persistence::account_key(session.meta.user_id.as_str());
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
-    persistence::save_session(client.homeserver().as_ref(), &session)?;
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
+
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
-    let _ = persistence::clear_oauth_session();
+    let _ = persistence::clear_oauth_session(&account_key);
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -258,49 +360,88 @@ pub async fn try_restore_session(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Option<LoginResponse>, String> {
-    // Password/SSO login (matrix_auth()) and QR login (oauth()) are
-    // unrelated session kinds in matrix-sdk, persisted under separate
-    // keychain entries — see persistence::SavedOAuthSession. Only one should
-    // ever be present at a time for this single-account app, but check both
-    // rather than assuming which.
-    if let Some(saved) = persistence::load_oauth_session()? {
-        return restore_oauth_session(app, state, saved).await;
+    // Which account (if any) has a session worth restoring isn't known
+    // up front — iterate every account this install has a store for and
+    // restore the first one with a live saved session. Single-active-client
+    // for now (Day-2 multi-account UI will change this), so the first match
+    // wins.
+    //
+    // Deliberately no `?` inside this loop: a transient failure for one
+    // account (e.g. a momentarily locked keychain, or a homeserver that's
+    // unreachable right now) shouldn't abort the whole restore attempt and
+    // strand a user who has a perfectly restorable *other* account — log
+    // and move on to the next `account_key` instead.
+    for account_key in persistence::known_account_keys(&app)? {
+        // Password/SSO login (matrix_auth()) and QR login (oauth()) are
+        // unrelated session kinds in matrix-sdk, persisted under separate
+        // keychain entries — see persistence::SavedOAuthSession. Only one
+        // should ever be present at a time per account, but check both
+        // rather than assuming which.
+        let oauth_session = match persistence::load_oauth_session(&account_key) {
+            Ok(session) => session,
+            Err(e) => {
+                eprintln!("failed to load oauth session for {account_key}: {e}");
+                continue;
+            }
+        };
+        if let Some(saved) = oauth_session {
+            match restore_oauth_session(&app, &state, &account_key, saved).await {
+                Ok(Some(response)) => return Ok(Some(response)),
+                Ok(None) => {}
+                Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
+            }
+            continue;
+        }
+
+        let saved = match persistence::load_session(&account_key) {
+            Ok(Some(saved)) => saved,
+            Ok(None) => continue,
+            Err(e) => {
+                eprintln!("failed to load session for {account_key}: {e}");
+                continue;
+            }
+        };
+
+        let client = match build_client(&app, &saved.homeserver_url, &account_key).await {
+            Ok(client) => client,
+            Err(e) => {
+                eprintln!("failed to build client for {account_key}: {e}");
+                continue;
+            }
+        };
+
+        if client
+            .matrix_auth()
+            .restore_session(saved.session.clone(), RoomLoadSettings::default())
+            .await
+            .is_err()
+        {
+            let _ = persistence::clear_session(&account_key);
+            continue;
+        }
+
+        let response = LoginResponse {
+            user_id: saved.session.meta.user_id.to_string(),
+            device_id: saved.session.meta.device_id.to_string(),
+        };
+
+        *state.client.lock().await = Some(client.clone());
+        spawn_sync_loop(app.clone(), client);
+
+        return Ok(Some(response));
     }
 
-    let Some(saved) = persistence::load_session()? else {
-        return Ok(None);
-    };
-
-    let client = build_client(&app, &saved.homeserver_url).await?;
-
-    if client
-        .matrix_auth()
-        .restore_session(saved.session.clone(), RoomLoadSettings::default())
-        .await
-        .is_err()
-    {
-        let _ = persistence::clear_session();
-        return Ok(None);
-    }
-
-    let response = LoginResponse {
-        user_id: saved.session.meta.user_id.to_string(),
-        device_id: saved.session.meta.device_id.to_string(),
-    };
-
-    *state.client.lock().await = Some(client.clone());
-    spawn_sync_loop(app, client);
-
-    Ok(Some(response))
+    Ok(None)
 }
 
 async fn restore_oauth_session(
-    app: AppHandle,
-    state: State<'_, MatrixState>,
+    app: &AppHandle,
+    state: &State<'_, MatrixState>,
+    account_key: &str,
     saved: persistence::SavedOAuthSession,
 ) -> Result<Option<LoginResponse>, String> {
     let homeserver_url = saved.homeserver_url.clone();
-    let client = build_client(&app, &homeserver_url).await?;
+    let client = build_client(app, &homeserver_url, account_key).await?;
     let session = saved.into_oauth_session();
 
     if client
@@ -309,12 +450,12 @@ async fn restore_oauth_session(
         .await
         .is_err()
     {
-        let _ = persistence::clear_oauth_session();
+        let _ = persistence::clear_oauth_session(account_key);
         return Ok(None);
     }
 
     let Some(session_meta) = client.session_meta().cloned() else {
-        let _ = persistence::clear_oauth_session();
+        let _ = persistence::clear_oauth_session(account_key);
         return Ok(None);
     };
 
@@ -327,10 +468,10 @@ async fn restore_oauth_session(
     // only one session kind should be present at a time. Guards against
     // stale data from before this was enforced at save time (see
     // qr_login::start_qr_login).
-    let _ = persistence::clear_session();
+    let _ = persistence::clear_session(account_key);
 
     *state.client.lock().await = Some(client.clone());
-    spawn_sync_loop(app, client);
+    spawn_sync_loop(app.clone(), client);
 
     Ok(Some(response))
 }
@@ -338,9 +479,13 @@ async fn restore_oauth_session(
 /// Accepts either a bare server name (`matrix.org`) or a full homeserver URL —
 /// `server_name_or_homeserver_url` runs `.well-known/matrix/client` discovery
 /// for the former and falls back to treating the input as a URL otherwise.
-async fn build_client(app: &AppHandle, homeserver_url: &str) -> Result<Client, String> {
-    let store_path = persistence::store_path(app)?;
-    let passphrase = persistence::get_or_create_passphrase()?;
+async fn build_client(
+    app: &AppHandle,
+    homeserver_url: &str,
+    store_key: &str,
+) -> Result<Client, String> {
+    let store_path = persistence::store_path(app, store_key)?;
+    let passphrase = persistence::get_or_create_passphrase(store_key)?;
 
     Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
@@ -348,6 +493,49 @@ async fn build_client(app: &AppHandle, homeserver_url: &str) -> Result<Client, S
         .build()
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Relocates a temp-backed login's store to its per-account path, and — if
+/// [`persistence::relocate_store`] reports that account already had a store
+/// (a re-login) — swaps `client` out for a fresh one built against the
+/// *existing* store with `session` restored onto it.
+///
+/// This distinction matters: `relocate_store` discards the temp directory
+/// outright when the account already has a store (reusing the existing one
+/// rather than overwriting it — matrix-rust-sdk binds a store to whichever
+/// account first opened it, so relocating on top of a differently-bound
+/// existing store would reintroduce the very collision this module fixes).
+/// But `client` was already built against that now-deleted temp directory;
+/// continuing to use it would mean every write this session makes (sync
+/// state, crypto/device data) goes to files that no longer exist on disk
+/// once their handles close, silently lost.
+///
+/// Deliberately branches on `relocate_store`'s *return value*, not a
+/// separate pre-check of whether the account store exists: checking that
+/// beforehand and then calling `relocate_store` separately would race — a
+/// concurrent login for the same account could create the account store in
+/// the gap between those two calls, so the pre-check result wouldn't
+/// necessarily match what `relocate_store` actually did.
+async fn relocate_or_reuse_matrix_auth_store(
+    app: &AppHandle,
+    client: Client,
+    temp_key: &str,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &matrix_sdk::authentication::matrix::MatrixSession,
+) -> Result<Client, String> {
+    let outcome = persistence::relocate_store(app, temp_key, account_key)?;
+    let persistence::RelocateOutcome::Reused(_) = outcome else {
+        return Ok(client);
+    };
+
+    let existing_client = build_client(app, homeserver_url, account_key).await?;
+    existing_client
+        .matrix_auth()
+        .restore_session(session.clone(), RoomLoadSettings::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(existing_client)
 }
 
 /// Resolves a server name or homeserver URL for live feedback on the
@@ -381,7 +569,10 @@ pub async fn register(
     state: State<'_, MatrixState>,
     request: RegisterRequest,
 ) -> Result<LoginResponse, String> {
-    let client = build_client(&app, &request.homeserver_url).await?;
+    // Same rationale as `login`: the account isn't certain until
+    // registration succeeds, so this opens a temp store and relocates it.
+    let temp_key = persistence::temp_store_key();
+    let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
     register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
     let session = client
@@ -389,11 +580,23 @@ pub async fn register(
         .session()
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
 
-    persistence::save_session(client.homeserver().as_ref(), &session)?;
+    let account_key = persistence::account_key(session.meta.user_id.as_str());
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
+
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
-    let _ = persistence::clear_oauth_session();
+    let _ = persistence::clear_oauth_session(&account_key);
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -471,14 +674,27 @@ pub async fn start_sso_login(
     state: State<'_, MatrixState>,
     homeserver_url: String,
 ) -> Result<String, String> {
-    let client = build_client(&app, &homeserver_url).await?;
+    // The account isn't known until the browser redirects back with a
+    // `loginToken` — open a temp store now and relocate it in
+    // `complete_sso_login` once the MXID is known.
+    let store_key = persistence::temp_store_key();
+    let client = build_client(&app, &homeserver_url, &store_key).await?;
     let attempt_state = generate_sso_state();
     let sso_url = get_sso_login_url(&client, &attempt_state).await?;
 
-    *state.pending_sso.lock().await = Some(PendingSso {
+    let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
         state: attempt_state,
+        store_key,
     });
+    // A double-start (e.g. a double click) would otherwise overwrite the
+    // previous attempt's `PendingSso` without ever discarding its temp
+    // store/passphrase — same leak `cancel_sso_login` guards against, just
+    // via a different trigger (a new attempt instead of an explicit
+    // cancel).
+    if let Some(previous) = previous {
+        let _ = persistence::discard_temp_login_store(&app, &previous.store_key);
+    }
 
     Ok(sso_url)
 }
@@ -497,8 +713,10 @@ fn generate_sso_state() -> String {
 /// SQLite connection and HTTP pool open, until either a new SSO attempt
 /// overwrites it or the app closes. A no-op if there's nothing pending.
 #[tauri::command]
-pub async fn cancel_sso_login(state: State<'_, MatrixState>) -> Result<(), String> {
-    *state.pending_sso.lock().await = None;
+pub async fn cancel_sso_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
+    if let Some(pending) = state.pending_sso.lock().await.take() {
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+    }
     Ok(())
 }
 
@@ -573,21 +791,41 @@ pub async fn complete_sso_login(
     if !matches_pending {
         return Err("SSO callback does not match the pending login attempt".to_string());
     }
-    let client = pending_sso.take().expect("checked Some above").client;
+    let pending = pending_sso.take().expect("checked Some above");
     drop(pending_sso);
+    let client = pending.client;
 
-    complete_sso_login_with_callback(&client, &callback_url).await?;
+    if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
+        // The account was never learned, so this temp store would
+        // otherwise sit on disk (and in the keychain) until the next
+        // startup sweep — clean it up now instead, same as a cancelled
+        // attempt.
+        let _ = persistence::discard_temp_login_store(&app, &pending.store_key);
+        return Err(e);
+    }
 
     let session = client
         .matrix_auth()
         .session()
         .ok_or_else(|| "SSO login succeeded but no session was returned".to_string())?;
 
-    persistence::save_session(client.homeserver().as_ref(), &session)?;
+    let account_key = persistence::account_key(session.meta.user_id.as_str());
+    let homeserver_url = client.homeserver().to_string();
+    let client = relocate_or_reuse_matrix_auth_store(
+        &app,
+        client,
+        &pending.store_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )
+    .await?;
+
+    persistence::save_session(&account_key, &homeserver_url, &session)?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
-    let _ = persistence::clear_oauth_session();
+    let _ = persistence::clear_oauth_session(&account_key);
 
     let response = LoginResponse {
         user_id: session.meta.user_id.to_string(),
@@ -870,87 +1108,33 @@ async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         .collect()
 }
 
-/// Bridges matrix-rust-sdk's global send-queue update channel to a
-/// `send_queue:update` Tauri event per room, so local echoes for
-/// edit/react/reply/send can flip pending -> sent -> error without a full
-/// timeline diff. Spawned once per login/session-restore alongside the sync
-/// loop, for the lifetime of the session.
-fn spawn_send_queue_listener(app: AppHandle, client: Client) {
-    use matrix_sdk::send_queue::RoomSendQueueUpdate;
+// Spec 14 removed `spawn_send_queue_listener` (and the `send_queue:update`
+// event/`SendQueueUpdateEvent` DTO it fed): a room's live `matrix-sdk-ui`
+// `Timeline` now surfaces the same pending -> sent -> error transitions as
+// per-item `send_state` on the `RoomMessageSummary`s it emits via
+// `timeline:update` (see `timeline::spawn_timeline_listener`), so a second,
+// room-list-wide event carrying the identical information was redundant for
+// the message list this event only ever fed. If a future global "outbox" UI
+// needs cross-room send-queue status independent of any single room's
+// `Timeline` being open, that's a new, narrower listener to add back — not a
+// reason to keep this one around unused in the meantime.
 
-    let mut receiver = client.send_queue().subscribe();
-    tokio::spawn(async move {
-        loop {
-            let update = match receiver.recv().await {
-                Ok(update) => update,
-                // A burst of local send-queue activity can outrun this
-                // receiver and drop some updates — that's not the channel
-                // closing, just lag, so keep listening for whatever comes
-                // next rather than silently stopping `send_queue:update`
-                // for the rest of the session.
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            };
-            let room_id = update.room_id.to_string();
-            let send_state = match update.update {
-                RoomSendQueueUpdate::NewLocalEvent(echo) => Some((
-                    echo.transaction_id.to_string(),
-                    timeline::SendState::Pending,
-                )),
-                RoomSendQueueUpdate::SendError {
-                    transaction_id,
-                    error,
-                    ..
-                } => Some((
-                    transaction_id.to_string(),
-                    timeline::SendState::Error {
-                        message: error.to_string(),
-                    },
-                )),
-                RoomSendQueueUpdate::RetryEvent { transaction_id } => {
-                    Some((transaction_id.to_string(), timeline::SendState::Pending))
-                }
-                RoomSendQueueUpdate::SentEvent { transaction_id, .. } => {
-                    Some((transaction_id.to_string(), timeline::SendState::Sent))
-                }
-                RoomSendQueueUpdate::CancelledLocalEvent { .. }
-                | RoomSendQueueUpdate::ReplacedLocalEvent { .. }
-                | RoomSendQueueUpdate::MediaUpload { .. } => None,
-            };
-
-            if let Some((transaction_id, send_state)) = send_state {
-                let _ = app.emit(
-                    "send_queue:update",
-                    actions::SendQueueUpdateEvent {
-                        room_id: room_id.clone(),
-                        transaction_id,
-                        send_state,
-                    },
-                );
-            }
-        }
-    });
-}
-
-/// Emits `timeline:update`/`receipts:update`/`typing:update` for every joined
-/// room in one sync response. Shared by the initial `sync_once` (whose
-/// response can already carry ephemeral events — e.g. receipts left over from
-/// a prior session — and would otherwise be silently dropped) and every
-/// iteration of the long-running `sync_with_callback` loop.
+/// Emits `receipts:update`/`typing:update` for every joined room in one sync
+/// response. Shared by the initial `sync_once` (whose response can already
+/// carry ephemeral events — e.g. receipts left over from a prior session —
+/// and would otherwise be silently dropped) and every iteration of the
+/// long-running sync loop.
+///
+/// Message-timeline updates (`timeline:update`) are no longer driven from
+/// here as of Spec 14: each open room's live `matrix-sdk-ui` `Timeline` (see
+/// `MatrixState::get_or_create_timeline`) subscribes to its own diff stream
+/// and emits `timeline:update` itself (`timeline::spawn_timeline_listener`),
+/// independent of the raw per-sync-batch event list — which is what fixes a
+/// relation (edit/reaction/redaction) targeting an already-loaded-but-out-of-
+/// batch message being silently dropped instead of updating it in place.
 fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sync::SyncResponse) {
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
-        let messages = timeline::events_to_summaries(&update.timeline.events, own_user_id);
-        if !messages.is_empty() {
-            let _ = app.emit(
-                "timeline:update",
-                timeline::RoomTimelineUpdate {
-                    room_id: room_id.to_string(),
-                    messages,
-                },
-            );
-        }
-
         let mut receipts = Vec::new();
         for raw_event in &update.ephemeral {
             let Ok(event) = raw_event.deserialize() else {
@@ -990,7 +1174,6 @@ fn emit_room_updates(app: &AppHandle, client: &Client, response: &matrix_sdk::sy
 
 fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
-    spawn_send_queue_listener(app.clone(), client.clone());
     presence::register_presence_handler(app.clone(), &client);
 
     // Best-effort: some homeservers disable presence entirely, and a failure

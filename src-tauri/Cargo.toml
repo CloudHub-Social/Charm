@@ -39,6 +39,9 @@ sha2 = "0.11.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 eyeball = "0.8.8"
 tauri-plugin-dialog = "2.7.1"
+matrix-sdk-ui = "0.18.0"
+lru = "0.12"
+imbl = "6.1.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
@@ -47,9 +50,17 @@ keyring = { version = "3", features = ["apple-native"] }
 keyring = { version = "3", features = ["windows-native"] }
 
 [dev-dependencies]
+matrix-sdk-test = "0.18.0"
+# Enables `matrix_sdk::test_utils::mocks::MatrixMockServer`, used by the
+# Timeline-mapping unit tests in `tests/timeline_mapping.rs` to build a real
+# `matrix-sdk-ui` `Timeline` against a mocked homeserver (no live Synapse
+# needed) instead of hand-fabricating `EventTimelineItem`s, which the crate
+# doesn't expose a public constructor for.
+matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # For tests/sso_login.rs: drives the real Synapse<->Dex OIDC redirect chain
 # with a cookie jar, exactly like a browser would.
 reqwest = { version = "0.13", features = ["cookies"] }
+wiremock = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
