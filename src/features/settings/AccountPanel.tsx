@@ -203,11 +203,15 @@ function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps)
     try {
       await changePassword(newPassword, needsPassword ? currentPassword : undefined);
       setDone(true);
-    } catch {
+    } catch (err) {
       if (!needsPassword) {
         setNeedsPassword(true);
       } else {
-        setError("Incorrect password. Please try again.");
+        // The backend's error already distinguishes a rejected password from
+        // an unrelated failure (network error, password-policy rejection,
+        // etc.) — surfacing it directly avoids misattributing those to "the
+        // current password is wrong" the way a hardcoded message would.
+        setError(String(err));
       }
     } finally {
       setSubmitting(false);
@@ -236,7 +240,21 @@ function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps)
         ) : (
           <div className="space-y-3">
             <div>
-              <Label htmlFor="new-password">New password</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="new-password">New password</Label>
+                {needsPassword && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground underline hover:text-foreground"
+                    onClick={() => {
+                      setNeedsPassword(false);
+                      setError(null);
+                    }}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
               <Input
                 id="new-password"
                 type="password"

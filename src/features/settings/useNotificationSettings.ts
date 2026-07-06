@@ -25,10 +25,19 @@ export function useNotificationSettingsActions() {
   const queryClient = useQueryClient();
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: NOTIFICATION_SETTINGS_QUERY_KEY });
+  // Rooms with no room-level override take on whichever mode is current here
+  // (see `RoomSummary.notification_mode`), so a default-mode or global-mute
+  // change shifts their *effective* mode too — without also invalidating the
+  // rooms query, their rows in the Per-room overrides list would keep
+  // showing the mode from before this change until an unrelated remount.
+  const invalidateDefaultAndRooms = () => {
+    invalidate();
+    queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_PANEL_ROOMS_QUERY_KEY });
+  };
 
   const setDefaultMode = useMutation({
     mutationFn: (mode: RoomNotificationModeKind) => setDefaultNotificationMode(mode),
-    onSuccess: invalidate,
+    onSuccess: invalidateDefaultAndRooms,
   });
   const addKeyword = useMutation({
     mutationFn: (keyword: string) => addNotificationKeyword(keyword),
@@ -40,17 +49,16 @@ export function useNotificationSettingsActions() {
   });
   const setMute = useMutation({
     mutationFn: (muted: boolean) => setGlobalMute(muted),
-    onSuccess: invalidate,
+    onSuccess: invalidateDefaultAndRooms,
   });
   const setSound = useMutation({
     mutationFn: (enabled: boolean) => setSoundEnabled(enabled),
     onSuccess: invalidate,
   });
-  // There's no per-room-mode getter command yet (see `NotificationsPanel`'s
-  // `RoomModeRow`, which derives its displayed mode from `room.is_muted`),
-  // but `listRooms` does carry that signal — invalidating it here means a
-  // mute/unmute change is reflected on refetch instead of showing stale
-  // state until an unrelated remount.
+  // `RoomSummary.notification_mode` (read by `NotificationsPanel`'s
+  // `RoomModeRow`) is a snapshot from the last `listRooms` fetch — without
+  // invalidating it here, a room-level override change wouldn't be reflected
+  // until an unrelated remount.
   const setRoomMode = useMutation({
     mutationFn: ({ roomId, mode }: { roomId: string; mode: RoomNotificationModeKind }) =>
       setRoomNotificationMode(roomId, mode),

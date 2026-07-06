@@ -17,6 +17,7 @@ use ts_rs::TS;
 
 use super::media;
 use super::persistence;
+use super::presence;
 use super::MatrixState;
 
 /// Square thumbnail size (px) requested when resolving a profile avatar's
@@ -67,7 +68,14 @@ where
 
     let session = match call(None).await {
         Ok(value) => return Ok(value),
-        Err(e) => e.as_uiaa_response().and_then(|info| info.session.clone()),
+        Err(e) => match e.as_uiaa_response() {
+            Some(info) => info.session.clone(),
+            // Not a UIA challenge at all (network error, 500, etc.) — retrying
+            // with a password would just produce a second, unrelated failure
+            // that the frontend can only render as "incorrect password",
+            // masking what actually went wrong.
+            None => return Err(e.to_string()),
+        },
     };
 
     let mut auth = Password::new(
@@ -112,6 +120,17 @@ async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> R
     // this, a later login to a different account could be served a room's
     // Timeline still bound to this account's now-cleared client.
     state.clear_timelines().await;
+
+    // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
+    // iteration and isn't tied to any particular client — without resetting
+    // it, a different account logging in next (in the same app process)
+    // would have its very first syncs report whatever presence this account
+    // last set (e.g. Unavailable/Offline), even though login itself tries to
+    // set presence online.
+    *state
+        .sync_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = presence::PresenceStateDto::default();
 
     Ok(())
 }

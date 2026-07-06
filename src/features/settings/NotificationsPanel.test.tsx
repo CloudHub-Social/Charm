@@ -64,8 +64,9 @@ describe("NotificationsPanel", () => {
     await waitFor(() => expect(removeNotificationKeyword).toHaveBeenCalledWith("urgent"));
   });
 
-  it("changes the default notification mode", async () => {
+  it("changes the default notification mode and refetches rooms (their effective mode may have shifted)", async () => {
     renderWithProviders(<NotificationsPanel />);
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(1));
 
     // Radix's DropdownMenu opens on pointerdown, not click, in jsdom.
     fireEvent.pointerDown(await screen.findByRole("button", { name: "All messages" }), {
@@ -76,14 +77,17 @@ describe("NotificationsPanel", () => {
     fireEvent.click(await screen.findByText("Mute"));
 
     await waitFor(() => expect(setDefaultNotificationMode).toHaveBeenCalledWith("mute"));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
   });
 
-  it("toggles global mute", async () => {
+  it("toggles global mute and refetches rooms (their effective mode may have shifted)", async () => {
     renderWithProviders(<NotificationsPanel />);
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(1));
 
     fireEvent.click(await screen.findByLabelText("Mute all rooms"));
 
     await waitFor(() => expect(setGlobalMute).toHaveBeenCalledWith(true));
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
   });
 
   it("adds a keyword via Enter", async () => {

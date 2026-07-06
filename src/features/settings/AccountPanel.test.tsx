@@ -168,6 +168,43 @@ describe("AccountPanel", () => {
     expect(newPasswordInput).toHaveAttribute("readonly");
   });
 
+  it("surfaces the actual retry error instead of assuming it's always a wrong password", async () => {
+    changePassword
+      .mockRejectedValueOnce(new Error("uia"))
+      .mockRejectedValueOnce(new Error("password is too weak"));
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
+    fireEvent.change(await screen.findByLabelText("New password"), {
+      target: { value: "weak-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    fireEvent.change(await screen.findByLabelText("Current password"), {
+      target: { value: "current-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    expect(await screen.findByText("Error: password is too weak")).toBeInTheDocument();
+  });
+
+  it("lets the user go back and edit the new password after a failed retry", async () => {
+    changePassword.mockRejectedValueOnce(new Error("uia"));
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
+    fireEvent.change(await screen.findByLabelText("New password"), {
+      target: { value: "weak-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByLabelText("Current password");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+
+    const newPasswordInput = await screen.findByLabelText("New password");
+    expect(newPasswordInput).not.toHaveAttribute("readonly");
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
+  });
+
   it("hides the change-password action for an OAuth/OIDC-managed account", async () => {
     getProfile.mockResolvedValue({
       user_id: "@me:localhost",

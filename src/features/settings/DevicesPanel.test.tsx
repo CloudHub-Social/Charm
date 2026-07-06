@@ -157,4 +157,45 @@ describe("DevicesPanel", () => {
 
     await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
   });
+
+  it("lets a second device start verification while the first is still in flight", async () => {
+    const devices: DeviceSummary[] = [
+      ...DEVICES,
+      {
+        device_id: "TABLET",
+        display_name: "Tablet",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+    listDevices.mockResolvedValue(devices);
+    let resolveFirst!: (flowId: string) => void;
+    requestDeviceVerification.mockImplementation((deviceId: string) => {
+      if (deviceId === "OTHER") {
+        return new Promise((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return Promise.resolve("flow-tablet");
+    });
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Tablet");
+
+    openActionsMenu("Actions for Phone");
+    fireEvent.click(await screen.findByText("Verify"));
+    await waitFor(() => expect(requestDeviceVerification).toHaveBeenCalledWith("OTHER"));
+
+    // The Phone row's own "Verify" request is still pending (unresolved), but
+    // that must not disable the Tablet row's — each row tracks its own
+    // in-flight state rather than sharing one mutation's `isPending`.
+    openActionsMenu("Actions for Tablet");
+    const tabletVerify = await screen.findByText("Verify");
+    expect(tabletVerify.closest('[role="menuitem"]')).not.toHaveAttribute("data-disabled", "true");
+    fireEvent.click(tabletVerify);
+    await waitFor(() => expect(requestDeviceVerification).toHaveBeenCalledWith("TABLET"));
+
+    resolveFirst("flow-other");
+  });
 });

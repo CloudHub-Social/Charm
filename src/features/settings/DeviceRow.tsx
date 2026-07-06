@@ -25,18 +25,19 @@ function formatLastSeen(ts: number | null): string | null {
 
 interface DeviceRowProps {
   device: DeviceSummary;
-  onVerify: () => void;
+  /** Returns a promise so this row can track its own in-flight state, independent of every other row's. */
+  onVerify: () => Promise<unknown>;
   /** UIA-gated — throw on the first (password-less) attempt to trigger the retry prompt. */
   onRevoke: (password?: string) => Promise<void>;
-  verifying?: boolean;
 }
 
-export function DeviceRow({ device, onVerify, onRevoke, verifying }: DeviceRowProps) {
+export function DeviceRow({ device, onVerify, onRevoke }: DeviceRowProps) {
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [verifying, setVerifying] = useState(false);
 
   const label = device.display_name ?? device.device_id;
   const lastSeen = formatLastSeen(device.last_seen_ts);
@@ -45,6 +46,15 @@ export function DeviceRow({ device, onVerify, onRevoke, verifying }: DeviceRowPr
     setNeedsPassword(false);
     setPassword("");
     setError(null);
+  }
+
+  async function handleVerify() {
+    setVerifying(true);
+    try {
+      await onVerify();
+    } finally {
+      setVerifying(false);
+    }
   }
 
   async function handleRevoke() {
@@ -99,7 +109,7 @@ export function DeviceRow({ device, onVerify, onRevoke, verifying }: DeviceRowPr
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           {!device.is_verified && !device.is_current && (
-            <DropdownMenuItem onClick={onVerify} disabled={verifying}>
+            <DropdownMenuItem onClick={handleVerify} disabled={verifying}>
               Verify
             </DropdownMenuItem>
           )}

@@ -132,8 +132,7 @@ function DeviceGroup({
           <DeviceRow
             key={device.device_id}
             device={device}
-            onVerify={() => verify.mutate(device.device_id)}
-            verifying={verify.isPending}
+            onVerify={() => verify.mutateAsync(device.device_id)}
             onRevoke={(password) => revoke.mutateAsync({ deviceId: device.device_id, password })}
           />
         ))}
