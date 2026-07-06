@@ -1,5 +1,9 @@
+import { useSetAtom } from "jotai";
 import { useDrag } from "@use-gesture/react";
+import { SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import {
   markRoomRead,
   setRoomFavourite,
@@ -35,6 +39,7 @@ function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex:
 export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [browsingSpace, setBrowsingSpace] = useState<RoomSummary | null>(null);
+  const setSettingsOpen = useSetAtom(settingsOpenAtom);
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
 
@@ -66,6 +71,14 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
     <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
       <div className="flex items-center justify-between p-4">
         <span className="text-base font-bold text-foreground">Charm</span>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Open settings"
+          onClick={() => setSettingsOpen("account")}
+        >
+          <SettingsIcon />
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {allEmpty ? (

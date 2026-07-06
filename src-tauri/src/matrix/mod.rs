@@ -1,8 +1,11 @@
+pub mod account;
 pub mod actions;
 pub mod commands;
+pub mod devices;
 pub mod ephemeral;
 pub mod media;
 pub mod members;
+pub mod notifications;
 pub mod persistence;
 pub mod presence;
 pub mod qr_login;

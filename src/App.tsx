@@ -38,6 +38,7 @@ function App() {
       currentUserId={session.user_id}
       deepLinkRoomId={deepLinkRoomId}
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
+      onLoggedOut={() => setSession(null)}
     />
   );
 }

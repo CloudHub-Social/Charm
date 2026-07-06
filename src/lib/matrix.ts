@@ -2,14 +2,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
+import type { DeviceSummary } from "@bindings/DeviceSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
+import type { NotificationSettingsSummary } from "@bindings/NotificationSettingsSummary";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
+import type { ProfileSummary } from "@bindings/ProfileSummary";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
 import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
@@ -19,6 +22,7 @@ import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomMemberSummary } from "@bindings/RoomMemberSummary";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
+import type { RoomNotificationModeKind } from "@bindings/RoomNotificationModeKind";
 import type { RoomSummary } from "@bindings/RoomSummary";
 import type { RoomTimelineUpdate } from "@bindings/RoomTimelineUpdate";
 import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
@@ -42,14 +46,17 @@ import type { VerificationRequestSummary } from "@bindings/VerificationRequestSu
 export type {
   CommandResult,
   CrossSigningStatusSummary,
+  DeviceSummary,
   DiscoverHomeserverResponse,
   EmojiPair,
   EventReceipt,
   LoginRequest,
   LoginResponse,
   MediaContent,
+  NotificationSettingsSummary,
   PresenceStateDto,
   PresenceUpdate,
+  ProfileSummary,
   QrLoginProgressEvent,
   ReactionGroup,
   ReactionToggleResult,
@@ -59,6 +66,7 @@ export type {
   ReplyRef,
   RoomMemberSummary,
   RoomMessageSummary,
+  RoomNotificationModeKind,
   RoomSummary,
   RoomTimelineUpdate,
   SasUpdateEvent,
@@ -349,4 +357,95 @@ export function joinRoom(roomIdOrAlias: string): Promise<void> {
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
+}
+
+export function logout(): Promise<void> {
+  return invoke("logout");
+}
+
+export function getProfile(): Promise<ProfileSummary> {
+  return invoke("get_profile");
+}
+
+export function setDisplayName(displayName: string | null): Promise<void> {
+  return invoke("set_display_name", { displayName });
+}
+
+/** `filePath` is read on the Rust side — same convention as {@link sendAttachment}. */
+export function setAvatar(filePath: string): Promise<void> {
+  return invoke("set_avatar", { filePath });
+}
+
+export function removeAvatar(): Promise<void> {
+  return invoke("remove_avatar");
+}
+
+/**
+ * UIA-gated: call with `password` omitted first; on failure, prompt for the
+ * account password and retry with it — mirrors {@link bootstrapCrossSigning}.
+ */
+export function changePassword(newPassword: string, password?: string): Promise<void> {
+  return invoke("change_password", { newPassword, password });
+}
+
+/** Same UIA retry convention as {@link changePassword}. */
+export function deactivateAccount(password?: string): Promise<void> {
+  return invoke("deactivate_account", { password });
+}
+
+export function listDevices(): Promise<DeviceSummary[]> {
+  return invoke("list_devices");
+}
+
+/** Same UIA retry convention as {@link changePassword}. */
+export function deleteDevice(deviceId: string, password?: string): Promise<void> {
+  return invoke("delete_device", { deviceId, password });
+}
+
+/**
+ * Starts an outgoing SAS verification of another of this account's own
+ * devices and returns the new flow id. Drives the same
+ * `verification:request`/`verification:sas_update:*` events as an incoming
+ * request — see `VerificationOverlay`.
+ */
+export function requestDeviceVerification(deviceId: string): Promise<string> {
+  return invoke("request_device_verification", { deviceId });
+}
+
+/** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
+export function getCrossSigningResetUrl(): Promise<string | null> {
+  return invoke("get_cross_signing_reset_url");
+}
+
+export function getNotificationSettings(): Promise<NotificationSettingsSummary> {
+  return invoke("get_notification_settings");
+}
+
+export function setDefaultNotificationMode(mode: RoomNotificationModeKind): Promise<void> {
+  return invoke("set_default_notification_mode", { mode });
+}
+
+export function setRoomNotificationMode(
+  roomId: string,
+  mode: RoomNotificationModeKind,
+): Promise<void> {
+  return invoke("set_room_notification_mode", { roomId, mode });
+}
+
+export function addNotificationKeyword(keyword: string): Promise<void> {
+  return invoke("add_notification_keyword", { keyword });
+}
+
+export function removeNotificationKeyword(keyword: string): Promise<void> {
+  return invoke("remove_notification_keyword", { keyword });
+}
+
+/** See `NotificationSettingsSummary.global_mute` for what this toggles. */
+export function setGlobalMute(muted: boolean): Promise<void> {
+  return invoke("set_global_mute", { muted });
+}
+
+/** Preference-only for now — playback lands with the push-transport spec. */
+export function setSoundEnabled(enabled: boolean): Promise<void> {
+  return invoke("set_sound_enabled", { enabled });
 }

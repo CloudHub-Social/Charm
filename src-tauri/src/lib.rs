@@ -98,7 +98,25 @@ pub fn run() {
             matrix::rooms::set_room_manual_order,
             matrix::spaces::list_space_children,
             matrix::spaces::join_room,
-            matrix::spaces::knock_room
+            matrix::spaces::knock_room,
+            matrix::account::logout,
+            matrix::account::get_profile,
+            matrix::account::set_display_name,
+            matrix::account::set_avatar,
+            matrix::account::remove_avatar,
+            matrix::account::change_password,
+            matrix::account::deactivate_account,
+            matrix::devices::list_devices,
+            matrix::devices::delete_device,
+            matrix::devices::request_device_verification,
+            matrix::devices::get_cross_signing_reset_url,
+            matrix::notifications::get_notification_settings,
+            matrix::notifications::set_default_notification_mode,
+            matrix::notifications::set_room_notification_mode,
+            matrix::notifications::add_notification_keyword,
+            matrix::notifications::remove_notification_keyword,
+            matrix::notifications::set_global_mute,
+            matrix::notifications::set_sound_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
