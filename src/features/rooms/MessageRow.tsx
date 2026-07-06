@@ -35,22 +35,31 @@ const ALLOWED_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
  * sanitizer's allowlist) is simply left alone rather than resolved and opened.
  */
 function handleMessageLinkClick(event: React.MouseEvent<HTMLElement>) {
-  const anchor = (event.target as HTMLElement).closest("a");
+  // `event.target` is normally an Element for a real click, but isn't
+  // guaranteed to be one (e.g. a synthetic/dispatched event) — this is a
+  // type assertion away from a runtime throw on `.closest`.
+  if (!(event.target instanceof HTMLElement)) return;
+  const anchor = event.target.closest("a");
   if (!anchor) return;
 
   const href = anchor.getAttribute("href");
   if (!href) return;
 
-  event.preventDefault();
-
   let parsed: URL;
   try {
-    parsed = new URL(href, window.location.href);
+    // No base argument: a relative or fragment href (both valid per the
+    // sanitizer's allowlist) throws here instead of being silently resolved
+    // into an absolute `http(s)` URL against the app's own origin and
+    // handed to `openUrl` — that would both contradict "left alone" above
+    // and make no sense to open in an external browser. Only a href that's
+    // already absolute reaches the scheme check below.
+    parsed = new URL(href);
   } catch {
     return;
   }
   if (!ALLOWED_LINK_PROTOCOLS.has(parsed.protocol)) return;
 
+  event.preventDefault();
   void openUrl(parsed.href);
 }
 

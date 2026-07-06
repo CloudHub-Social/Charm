@@ -771,4 +771,30 @@ describe("ChatShell", () => {
 
     expect(openUrl).not.toHaveBeenCalled();
   });
+
+  it("leaves a relative or fragment link alone instead of resolving it against the app's own origin", async () => {
+    // Regression test: an earlier version resolved `href` against
+    // `window.location.href` before checking its scheme, which turned a
+    // relative path into an absolute `http(s)` URL and opened it via
+    // `openUrl` — contradicting the intent that relative/fragment hrefs
+    // (both valid per the sanitizer's allowlist) are left untouched.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          body: "click here",
+          formatted_body: '<a href="/some/path">click here</a>',
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    const link = await screen.findByRole("link", { name: "click here" });
+    fireEvent.click(link);
+
+    expect(openUrl).not.toHaveBeenCalled();
+  });
 });

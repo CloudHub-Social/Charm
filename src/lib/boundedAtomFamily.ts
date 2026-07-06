@@ -42,16 +42,18 @@ export function boundedAtomFamily<Param, AtomType extends Atom<unknown>>(
     const result = family(param);
 
     // `getParams()` is backed by a `Map`, which iterates in insertion order —
-    // the earliest-yielded keys are the oldest-created ones.
+    // the earliest-yielded keys are the oldest-created ones. The just-requested
+    // param is filtered out *before* slicing (never evicted, even if it were
+    // somehow the oldest — e.g. `maxSize` is 0) rather than skipped mid-slice:
+    // skipping mid-slice would silently evict one fewer entry than `excess`
+    // whenever the requested param happened to fall within the oldest-N
+    // slice, permanently leaving the family one entry over budget.
     const params = Array.from(family.getParams());
+    const evictionCandidates = params.filter((p) => !isSameParam(p, param));
     const excess = params.length - maxSize;
     if (excess > 0) {
-      for (const staleParam of params.slice(0, excess)) {
-        // Never evict the key that was just requested, even if it was
-        // somehow already the oldest (e.g. `maxSize` is 0).
-        if (!isSameParam(staleParam, param)) {
-          family.remove(staleParam);
-        }
+      for (const staleParam of evictionCandidates.slice(0, excess)) {
+        family.remove(staleParam);
       }
     }
 
