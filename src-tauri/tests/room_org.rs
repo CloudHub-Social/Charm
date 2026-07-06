@@ -190,11 +190,15 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
 
     // `via` must be non-empty for the server to treat this as a valid child
     // link — an empty list (as if the child had been removed) is silently
-    // excluded from `/hierarchy` results.
-    let via = room
-        .room_id()
+    // excluded from `/hierarchy` results. Derive it from the logged-in user's
+    // own server name rather than the room ID: newer room versions (e.g. v12)
+    // drop the `:server` component from room IDs, so `RoomId::server_name()`
+    // would be `None` there even though the room is clearly reachable via
+    // this homeserver.
+    let via = client
+        .user_id()
+        .expect("logged in")
         .server_name()
-        .expect("room id has a server name")
         .to_owned();
     space
         .send_state_event_for_key(room.room_id(), SpaceChildEventContent::new(vec![via]))
