@@ -33,3 +33,27 @@ export const ComposerReplyBar: Story = {
     onCancel: () => {},
   },
 };
+
+const unresolvedReply = {
+  event_id: "$original:localhost",
+  sender: "",
+  sender_display_name: null,
+  preview: "",
+};
+
+/** The replied-to event hasn't resolved yet (outside the loaded window, or still fetching) — see `timeline.rs`'s `ReplyRef` mapping. */
+export const UnresolvedQuote: Story = {
+  args: {
+    reply: unresolvedReply,
+    variant: "quote",
+    onClick: () => {},
+  },
+};
+
+export const UnresolvedComposerReplyBar: Story = {
+  args: {
+    reply: unresolvedReply,
+    variant: "composer",
+    onCancel: () => {},
+  },
+};
