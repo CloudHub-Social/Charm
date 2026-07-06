@@ -1,14 +1,12 @@
 use futures_util::StreamExt;
 use matrix_sdk::encryption::verification::{Emoji, SasState, Verification};
-use matrix_sdk::ruma::api::client::uiaa::{
-    AuthData, MatrixUserIdentifier, Password, UserIdentifier,
-};
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
+use super::account::retry_uia_with_session;
 use super::MatrixState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -83,7 +81,13 @@ pub fn register_verification_handler(app: AppHandle, client: &Client) {
 /// Bootstraps cross-signing for the current account if it isn't already set
 /// up. Most homeservers require a fresh UIA session for this — pass the
 /// account password if a first attempt without it fails; the frontend should
-/// treat any error here as "prompt for password and retry".
+/// treat any error here as "prompt for password and retry". Goes through
+/// `retry_uia_with_session` (same as `account::change_password`/
+/// `deactivate_account`) rather than building `AuthData::Password` directly:
+/// a `session: None` retry is treated as a brand-new UIA attempt on
+/// homeservers that enforce session continuity across stages, so without
+/// threading the real session id through, entering the correct password can
+/// still fail to satisfy the challenge.
 #[tauri::command]
 pub async fn bootstrap_cross_signing(
     state: State<'_, MatrixState>,
@@ -94,19 +98,12 @@ pub async fn bootstrap_cross_signing(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
+    let encryption = client.encryption();
 
-    let auth_data = password.map(|password| {
-        AuthData::Password(Password::new(
-            UserIdentifier::Matrix(MatrixUserIdentifier::new(user_id.to_string())),
-            password,
-        ))
-    });
-
-    client
-        .encryption()
-        .bootstrap_cross_signing_if_needed(auth_data)
-        .await
-        .map_err(|e| e.to_string())
+    retry_uia_with_session(&user_id, password, |auth| {
+        encryption.bootstrap_cross_signing_if_needed(auth)
+    })
+    .await
 }
 
 #[tauri::command]

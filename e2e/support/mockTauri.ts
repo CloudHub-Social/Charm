@@ -33,6 +33,7 @@ export function installMockTauri(seed: {
   deviceId: string;
   room: { room_id: string; name: string | null; unread_count: number };
   members?: { user_id: string; display_name: string | null }[];
+  otherDevices?: { device_id: string; display_name: string | null; is_verified: boolean }[];
   roomDetails?: Record<string, unknown>;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
@@ -44,6 +45,7 @@ export function installMockTauri(seed: {
     unread_messages: seed.room.unread_count,
     is_marked_unread: false,
     is_muted: false,
+    notification_mode: "all_messages",
     is_favourite: false,
     is_low_priority: false,
     manual_order: null,
@@ -77,6 +79,22 @@ export function installMockTauri(seed: {
   let nextEventId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
   messagesByRoom.set(room.room_id, []);
+
+  // Spec 08 (settings): minimal in-memory state for the account/devices/
+  // notifications commands — just enough to drive the logout and
+  // verify-another-session e2e flows; not a full settings-panel fake.
+  let profile = { user_id: seed.userId, display_name: null as string | null, avatar_url: null };
+  const devices = [
+    { device_id: seed.deviceId, display_name: "This browser", is_verified: true },
+    ...(seed.otherDevices ?? []),
+  ];
+  let crossSigningBootstrapped = true;
+  const notificationSettings = {
+    default_mode: "all_messages",
+    keywords: [] as string[],
+    global_mute: false,
+    sound_enabled: true,
+  };
 
   function findMessage(roomId: string, eventId: string) {
     return messagesByRoom.get(roomId)?.find((m) => m.event_id === eventId);
@@ -160,6 +178,73 @@ export function installMockTauri(seed: {
     can_redact: () => true,
     get_room_members: () => seed.members ?? [],
     run_command: () => ({ status: "success" }),
+
+    // Spec 08: account/devices/notifications settings commands.
+    logout: () => undefined,
+    get_profile: () => profile,
+    set_display_name: (args) => {
+      profile = { ...profile, display_name: args.displayName as string | null };
+      return undefined;
+    },
+    list_devices: () =>
+      devices.map((d) => ({
+        ...d,
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: d.device_id === seed.deviceId,
+      })),
+    delete_device: (args) => {
+      const index = devices.findIndex((d) => d.device_id === args.deviceId);
+      if (index !== -1) devices.splice(index, 1);
+      return undefined;
+    },
+    // Skips the real Rust command's "wait for the other device to accept"
+    // step — this fake has no second device to accept anything, so it emits
+    // `verification:request` for the target device right away, same shape
+    // `VerificationOverlay` already expects from an incoming request.
+    request_device_verification: (args) => {
+      const deviceId = args.deviceId as string;
+      const flowId = `flow-${deviceId}`;
+      emit("verification:request", {
+        flow_id: flowId,
+        other_user_id: seed.userId,
+        other_device_id: deviceId,
+      });
+      return flowId;
+    },
+    get_cross_signing_reset_url: () => null,
+    cross_signing_status: () => ({
+      has_master_key: crossSigningBootstrapped,
+      has_self_signing_key: crossSigningBootstrapped,
+      has_user_signing_key: crossSigningBootstrapped,
+    }),
+    bootstrap_cross_signing: () => {
+      crossSigningBootstrapped = true;
+      return undefined;
+    },
+    get_notification_settings: () => ({ ...notificationSettings }),
+    set_default_notification_mode: (args) => {
+      notificationSettings.default_mode = args.mode as string;
+      return undefined;
+    },
+    add_notification_keyword: (args) => {
+      notificationSettings.keywords.push(args.keyword as string);
+      return undefined;
+    },
+    remove_notification_keyword: (args) => {
+      notificationSettings.keywords = notificationSettings.keywords.filter(
+        (k) => k !== args.keyword,
+      );
+      return undefined;
+    },
+    set_global_mute: (args) => {
+      notificationSettings.global_mute = args.muted as boolean;
+      return undefined;
+    },
+    set_sound_enabled: (args) => {
+      notificationSettings.sound_enabled = args.enabled as boolean;
+      return undefined;
+    },
 
     get_room_details: () => ({ ...roomDetails }),
     get_room_member_list: () => [...memberList],

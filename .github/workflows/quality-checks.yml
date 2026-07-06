@@ -243,7 +243,7 @@ jobs:
             -u "$TEST_MATRIX_USERNAME_2" -p "$TEST_MATRIX_PASSWORD_2" --no-admin \
             -c /data/homeserver.yaml http://localhost:8008
 
-      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test room_org
+      - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org
 
       - name: Stop Synapse and Dex
         if: always()

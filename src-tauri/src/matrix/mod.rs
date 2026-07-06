@@ -1,9 +1,12 @@
+pub mod account;
 pub mod actions;
 pub mod auth;
 pub mod commands;
+pub mod devices;
 pub mod ephemeral;
 pub mod media;
 pub mod members;
+pub mod notifications;
 pub mod persistence;
 pub mod presence;
 pub mod qr_login;
@@ -158,6 +161,17 @@ impl MatrixState {
         timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));
 
         Ok(timeline)
+    }
+
+    /// Drops every live `Timeline` this session holds — called on
+    /// logout/deactivate (see `account::clear_local_session`). Without this,
+    /// the cache stays keyed by bare `room_id` across accounts: signing into
+    /// a different account in the same process and opening a room with the
+    /// same id as one the previous account had open would otherwise be
+    /// served that stale `Timeline` (and its listener still emitting for the
+    /// old client) before ever consulting the new one.
+    pub(crate) async fn clear_timelines(&self) {
+        self.timelines.lock().await.clear();
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,

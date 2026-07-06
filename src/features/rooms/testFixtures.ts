@@ -9,6 +9,7 @@ export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSumma
     unread_messages: 0,
     is_marked_unread: false,
     is_muted: false,
+    notification_mode: "all_messages",
     is_favourite: false,
     is_low_priority: false,
     manual_order: null,
