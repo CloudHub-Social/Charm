@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +24,7 @@ type Phase =
 export function VerificationOverlay() {
   const [request, setRequest] = useState<VerificationRequestSummary | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "incoming" });
+  const doneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unlisten = onVerificationRequest((incoming) => {
@@ -51,7 +52,7 @@ export function VerificationOverlay() {
           break;
         case "done":
           setPhase({ kind: "done" });
-          setTimeout(() => setRequest(null), 2000);
+          doneTimeoutRef.current = setTimeout(() => setRequest(null), 2000);
           break;
         case "cancelled":
           setPhase({ kind: "cancelled", reason: update.reason });
@@ -60,6 +61,14 @@ export function VerificationOverlay() {
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
+      // Without this, a "done" auto-dismiss scheduled here can still fire
+      // after this effect has torn down — e.g. a new verification request
+      // arriving (which changes `request` and reruns this effect) or the
+      // component unmounting — and wipe out whatever state came after it.
+      if (doneTimeoutRef.current !== null) {
+        clearTimeout(doneTimeoutRef.current);
+        doneTimeoutRef.current = null;
+      }
     };
   }, [request]);
 

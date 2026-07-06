@@ -30,6 +30,7 @@ coverage
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .claude/.DS_Store
+.claude/hooks/__pycache__/
 
 # Local dev homeserver — generated config, signing keys, DB
 dev/synapse/data/

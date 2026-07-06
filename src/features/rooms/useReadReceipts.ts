@@ -1,9 +1,12 @@
 import { useEffect, useMemo } from "react";
 import { atom } from "jotai";
-import { atomFamily } from "jotai/utils";
 import { useAtomValue, useStore } from "jotai";
+import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
 import type { EventReceipt } from "@/lib/matrix";
 import { onReceiptsUpdate } from "@/lib/matrix";
+
+/** Distinct rooms tracked at once — see `boundedAtomFamily`'s doc comment. */
+const MAX_TRACKED_ROOMS = 100;
 
 /** `event_id` -> the user ids who have a read receipt on it. */
 export type ReceiptsByEvent = Map<string, string[]>;
@@ -33,11 +36,11 @@ function applyReceipts(
  * already-observed avatars every time the user revisits a room until a new
  * receipt happened to arrive.
  */
-const receiptsAtomFamily = atomFamily((roomId: string) => {
+const receiptsAtomFamily = boundedAtomFamily((roomId: string) => {
   const roomReceiptsAtom = atom<Map<string, EventReceipt>>(new Map());
   roomReceiptsAtom.debugLabel = `receipts:${roomId}`;
   return roomReceiptsAtom;
-});
+}, MAX_TRACKED_ROOMS);
 
 /** Used as the atomFamily key when no room is active, so it's never written to. */
 const NO_ROOM = "__no_room__";

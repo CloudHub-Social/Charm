@@ -21,14 +21,17 @@ the vault planning doc `15.12 Charm 2.0` for scope and architecture.
 
 ## Quality Gates
 
-Run before committing and fix all failures:
+Run before committing and fix all failures. These mirror the `frontend` job in
+`.github/workflows/quality-checks.yml` and are enforced in CI:
 
 ```
-pnpm build   # tsc && vite build — must succeed with no errors
+pnpm lint             # oxlint
+pnpm fmt:check        # oxfmt --check
+pnpm typecheck        # tsc --noEmit
+pnpm test:coverage    # vitest run --coverage — enforces the coverage floor
+pnpm knip             # dead-code / unused-dependency check
+pnpm build            # tsc && vite build — must succeed with no errors
 ```
-
-Lint / format / unit-test / dead-code gates aren't set up yet. Add them mirroring
-1.0's stack (oxlint, oxfmt, vitest, knip) as the codebase grows, and extend this list.
 
 ## Pull Requests
 

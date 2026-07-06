@@ -1032,6 +1032,7 @@ dependencies = [
  "mime",
  "mime_guess",
  "rand 0.10.2",
+ "regex",
  "reqwest",
  "sentry",
  "serde",

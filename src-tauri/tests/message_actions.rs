@@ -204,7 +204,7 @@ async fn step_can_redact_false_for_a_genuinely_low_power_member(
         .build()
         .await
         .expect("build low-power client");
-    charm_lib::matrix::register_with_dummy_auth(
+    charm_lib::matrix::auth::register_with_dummy_auth(
         &low_power_client,
         &low_power_username,
         "testpass123",
