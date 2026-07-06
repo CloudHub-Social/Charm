@@ -1,0 +1,101 @@
+name: Sentry Snapshots
+
+# Captures a screenshot of every Storybook story and uploads them to Sentry's visual
+# snapshot system for review/diffing. Gated on the `SENTRY_SNAPSHOTS_ENABLED` repo
+# variable — until that's `true` (and the Sentry project has snapshot upload enabled),
+# the capture still runs and uploads a debug artifact, but the Sentry upload is skipped.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - ".storybook/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/sentry-snapshots.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".storybook/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/sentry-snapshots.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sentry-snapshots-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snapshots:
+    name: Storybook visual snapshots
+    # Skip on fork PRs (no access to secrets) and Dependabot.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SENTRY_SNAPSHOTS_ENABLED: ${{ vars.SENTRY_SNAPSHOTS_ENABLED }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - run: pnpm build-storybook --quiet
+
+      # Reuses the same Storybook test-runner as the a11y job; SENTRY_SNAPSHOT_CAPTURE
+      # flips on the screenshot postVisit hook (see .storybook/test-runner.ts).
+      - name: Capture story snapshots
+        env:
+          SENTRY_SNAPSHOT_CAPTURE: "1"
+        run: pnpm test-storybook:ci
+
+      - name: Upload snapshot artifact (debug)
+        if: always() && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-snapshots
+          retention-days: 7
+
+      # Snapshot names are the file paths within the dir (each story id = one snapshot).
+      # Non-blocking on PRs so an upload/Sentry-side hiccup can't fail a contributor's PR.
+      - name: Upload snapshots to Sentry
+        id: sentry_upload
+        if: env.SENTRY_SNAPSHOTS_ENABLED == 'true' && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 snapshots upload
+          .artifacts/sentry-snapshots
+          --app-id charm-storybook
+          --diff-threshold 0.01
+          --log-level info
+
+      - name: Note snapshot status
+        if: always()
+        run: |
+          {
+            echo "### Storybook Sentry Snapshots"
+            echo
+            if [ "${SENTRY_SNAPSHOTS_ENABLED:-}" != "true" ]; then
+              echo "- Captured story screenshots (see the debug artifact)."
+              echo "- Sentry upload is **disabled** — set the repo variable \`SENTRY_SNAPSHOTS_ENABLED=true\` (once the Sentry project has snapshot upload enabled) to turn it on."
+            elif [ "${{ steps.sentry_upload.outcome }}" = "failure" ]; then
+              echo "- Captured story screenshots and attempted upload, but the Sentry upload **failed** — see the \`Upload snapshots to Sentry\` step logs."
+            else
+              echo "- Captured story screenshots and uploaded them to Sentry."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
