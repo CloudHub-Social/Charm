@@ -345,6 +345,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (editingEventId) {
       const eventId = editingEventId;
       setEditingEventId(null);
+      sendTyping(targetRoom.room_id, false).catch(console.error);
       try {
         await editMessage(targetRoom.room_id, eventId, content.body);
       } catch (err) {
@@ -387,6 +388,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   async function handleSlashCommand(parsed: ParsedSlashCommand) {
     if (!room) return;
     const targetRoomId = room.room_id;
+    sendTyping(targetRoomId, false).catch(console.error);
     try {
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —

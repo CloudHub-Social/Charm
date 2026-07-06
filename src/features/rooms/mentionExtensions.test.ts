@@ -34,6 +34,15 @@ describe("UserMention", () => {
     expect(UserMention.options.suggestion.char).toBe("@");
   });
 
+  it("renders the real user id (not the display label) for plain-text getText()", () => {
+    const renderText = UserMention.config.renderText!;
+    const text = renderText.call(undefined as never, {
+      node: fakeNode({ id: "@alice:example.org", label: "Alice" }),
+      options: {},
+    } as never);
+    expect(text).toBe("@alice:example.org");
+  });
+
   it("parses its own rendered anchor back into a mention node's attrs", () => {
     const anchor = document.createElement("a");
     anchor.setAttribute("href", "https://matrix.to/#/@alice:example.org");

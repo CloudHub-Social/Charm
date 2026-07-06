@@ -172,6 +172,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const membersRef = useRef<RoomMemberOption[]>([]);
   const roomsRef = useRef<RoomOption[]>([]);
   const draft = useRoomDraft(roomId);
+  // Mirrors the `roomId` prop outside the room-fetch effect's own closure —
+  // read at promise-resolution time (not effect-creation time) so a slow
+  // response for a room this instance has since moved away from can be
+  // told apart from the current one. `Composer` is normally remounted on a
+  // real room switch (`ChatShell` keys it by room id), but this is a cheap
+  // extra guard in case that invariant ever changes.
+  const currentRoomIdRef = useRef(roomId);
+  currentRoomIdRef.current = roomId;
 
   // Called on every keystroke and room switch (acceptance criterion 8) —
   // the `useEffect` below covers "room switch" by reading the seam's
@@ -183,8 +191,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   }, [roomId]);
 
   useEffect(() => {
+    // Cleared immediately (not just overwritten once the fetch resolves) —
+    // otherwise the previous room's members stay in `membersRef` until this
+    // request settles, and a slow response for a room the user has since
+    // navigated away from can still land and overwrite the new room's list.
+    // Both guarded by a room-id check on resolution for the same reason.
+    membersRef.current = [];
+    roomsRef.current = [];
+    const requestedRoomId = roomId;
+
     getRoomMembers(roomId)
       .then((members) => {
+        if (currentRoomIdRef.current !== requestedRoomId) return;
         membersRef.current = members.map((m) => ({
           userId: m.user_id,
           displayName: m.display_name,
@@ -193,6 +211,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .catch(console.error);
     listRooms()
       .then((rooms) => {
+        if (currentRoomIdRef.current !== requestedRoomId) return;
         roomsRef.current = rooms.map((r) => ({
           roomId: r.room_id,
           name: r.name,

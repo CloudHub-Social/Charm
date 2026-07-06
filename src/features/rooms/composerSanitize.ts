@@ -111,7 +111,10 @@ export function sanitizeMatrixHtml(dirtyHtml: string): string {
  * composer: TipTap parses its `content` prop as HTML, so an unformatted
  * message containing literal markup (`<b>hi</b>`, `<img onerror=...>`)
  * would otherwise be interpreted as real formatting/markup the moment edit
- * mode opens, before the user has touched anything.
+ * mode opens, before the user has touched anything. Converts `\n` to `<br>`
+ * after escaping — a raw newline in an HTML string is collapsible
+ * whitespace, so a plain multi-line message (sent via Shift+Enter) would
+ * otherwise lose its line breaks the moment it's reopened for editing.
  */
 export function escapeHtmlText(text: string): string {
   return text
@@ -119,5 +122,6 @@ export function escapeHtmlText(text: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replaceAll("'", "&#39;")
+    .replaceAll("\n", "<br>");
 }

@@ -39,6 +39,13 @@ export const UserMention = Mention.extend({
   parseHTML() {
     return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("@") }];
   },
+  // `editor.getText()`'s plain `body` must carry the real Matrix id, not the
+  // display label the pill shows — a plain-text client has no other way to
+  // resolve "Alice" back to a specific `@alice:example.org`, and two members
+  // can share a display name.
+  renderText({ node }) {
+    return node.attrs.id as string;
+  },
   renderHTML({ node, HTMLAttributes }) {
     const id = node.attrs.id as string;
     return [
@@ -59,6 +66,9 @@ export const RoomMention = Mention.extend({
   name: "roomMention",
   parseHTML() {
     return [{ tag: "a[data-mx-pill]", getAttrs: parseMentionAnchor("!") }];
+  },
+  renderText({ node }) {
+    return node.attrs.id as string;
   },
   renderHTML({ node, HTMLAttributes }) {
     const id = node.attrs.id as string;
