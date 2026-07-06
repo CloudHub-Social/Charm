@@ -162,6 +162,17 @@ impl MatrixState {
         Ok(timeline)
     }
 
+    /// Drops every live `Timeline` this session holds — called on
+    /// logout/deactivate (see `account::clear_local_session`). Without this,
+    /// the cache stays keyed by bare `room_id` across accounts: signing into
+    /// a different account in the same process and opening a room with the
+    /// same id as one the previous account had open would otherwise be
+    /// served that stale `Timeline` (and its listener still emitting for the
+    /// old client) before ever consulting the new one.
+    pub(crate) async fn clear_timelines(&self) {
+        self.timelines.lock().await.clear();
+    }
+
     /// Lazily initializes (on first use) and returns the shared media cache,
     /// rebuilding its in-memory index from a directory scan the first time
     /// it's created.

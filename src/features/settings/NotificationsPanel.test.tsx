@@ -119,4 +119,24 @@ describe("NotificationsPanel", () => {
     // this row would keep showing "All messages" until an unrelated remount.
     await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
   });
+
+  it("shows a mentions-and-keywords-only room override accurately, not folded into All messages", async () => {
+    listRooms.mockResolvedValue([
+      makeRoomSummary({
+        room_id: "!watercooler:localhost",
+        name: "Watercooler",
+        is_muted: false,
+        notification_mode: "mentions_and_keywords_only",
+      }),
+    ]);
+    renderWithProviders(<NotificationsPanel />);
+    await screen.findByText("Watercooler");
+
+    // The *default* mode picker (settings.default_mode: "all_messages" from
+    // the `beforeEach` mock) also renders an "All messages" button, so this
+    // asserts there's exactly one — the default's — and not a second one for
+    // this room's row, which would mean the override got folded away.
+    expect(await screen.findByRole("button", { name: "Mentions & keywords only" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "All messages" })).toHaveLength(1);
+  });
 });

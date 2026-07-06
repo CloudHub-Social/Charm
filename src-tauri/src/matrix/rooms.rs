@@ -41,8 +41,18 @@ pub struct RoomSummary {
     /// The MSC2867 `m.marked_unread` flag (`room.is_marked_unread()`).
     pub is_marked_unread: bool,
     /// True when the user-defined-or-default notification mode for this
-    /// room is `Mute`.
+    /// room is `Mute`. Kept alongside `notification_mode` below for the
+    /// existing `has_unread`/room-list consumers that only ever needed the
+    /// muted/not-muted distinction.
     pub is_muted: bool,
+    /// The room's effective notification mode (user-defined override, or the
+    /// account default if none is set) — distinguishes `AllMessages` from
+    /// `MentionsAndKeywordsOnly`, which `is_muted` alone can't (both read as
+    /// "not muted" there). `None` only if the client couldn't resolve a mode
+    /// at all (e.g. room not yet fully synced). The settings Notifications
+    /// panel's per-room picker reads this rather than reconstructing a mode
+    /// from `is_muted`.
+    pub notification_mode: Option<super::notifications::RoomNotificationModeKind>,
     /// `m.favourite` tag present.
     pub is_favourite: bool,
     /// `m.lowpriority` tag present.
@@ -148,8 +158,9 @@ pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
         let is_marked_unread = room.is_marked_unread();
         let is_favourite = room.is_favourite();
         let is_low_priority = room.is_low_priority();
+        let room_notification_mode = room.notification_mode().await;
         let is_muted = matches!(
-            room.notification_mode().await,
+            room_notification_mode,
             Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
         );
         let manual_order = room.tags().await.ok().flatten().and_then(|tags| {
@@ -171,6 +182,7 @@ pub(crate) async fn snapshot_rooms(client: &Client) -> Vec<RoomSummary> {
                 unread_messages,
                 is_marked_unread,
                 is_muted,
+                notification_mode: room_notification_mode.map(Into::into),
                 is_favourite,
                 is_low_priority,
                 manual_order,

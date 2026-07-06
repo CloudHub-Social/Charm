@@ -118,9 +118,16 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
 
       <section className="space-y-2">
         <h2 className="text-lg font-bold text-foreground">Password</h2>
-        <Button variant="outline" onClick={() => setPasswordDialogOpen(true)}>
-          Change password
-        </Button>
+        {profile?.uses_oauth ? (
+          <p className="text-sm text-muted-foreground">
+            This account signs in through your identity provider, so its password is managed there
+            rather than in Charm.
+          </p>
+        ) : (
+          <Button variant="outline" onClick={() => setPasswordDialogOpen(true)}>
+            Change password
+          </Button>
+        )}
       </section>
 
       <section className="space-y-2">

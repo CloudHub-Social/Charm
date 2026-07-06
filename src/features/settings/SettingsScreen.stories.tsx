@@ -10,6 +10,7 @@ const PROFILE: ProfileSummary = {
   user_id: "@evie:cloudhub.social",
   display_name: "Evie",
   avatar_url: null,
+  uses_oauth: false,
 };
 
 const DEVICES: DeviceSummary[] = [

@@ -112,6 +112,58 @@ async fn room_organization_round_trips_against_a_real_homeserver() {
         .await;
     assert_eq!(mode, Some(RoomNotificationMode::Mute));
 
+    // --- A room-level override survives a "mute all rooms" / unmute cycle ---
+    // (Spec 08 review: `notifications::set_global_mute` only overrode the
+    // four *default* rules, which a room-level override always takes
+    // precedence over — so a room like this one, explicitly set to
+    // `MentionsAndKeywordsOnly`, would keep notifying right through "Mute all
+    // rooms" being shown as active. `mute_room_overrides`/
+    // `restore_room_overrides` in `notifications.rs` fix this by snapshotting
+    // every room-level override before forcing it to `Mute`, then restoring
+    // the snapshot on unmute — this proves that exact sequence round-trips
+    // against a real homeserver, using the same `NotificationSettings` calls
+    // those private helpers make.)
+    let settings = client.notification_settings().await;
+    settings
+        .set_room_notification_mode(
+            room.room_id(),
+            RoomNotificationMode::MentionsAndKeywordsOnly,
+        )
+        .await
+        .expect("set room to mentions-only");
+    assert!(settings
+        .get_rooms_with_user_defined_rules(None)
+        .await
+        .contains(&room.room_id().to_string()));
+    let pre_mute_mode = settings
+        .get_user_defined_room_notification_mode(room.room_id())
+        .await
+        .expect("room has a user-defined mode before muting");
+    assert_eq!(pre_mute_mode, RoomNotificationMode::MentionsAndKeywordsOnly);
+
+    settings
+        .set_room_notification_mode(room.room_id(), RoomNotificationMode::Mute)
+        .await
+        .expect("force-mute the room's override, simulating 'mute all rooms'");
+    assert_eq!(
+        settings
+            .get_user_defined_room_notification_mode(room.room_id())
+            .await,
+        Some(RoomNotificationMode::Mute)
+    );
+
+    settings
+        .set_room_notification_mode(room.room_id(), pre_mute_mode)
+        .await
+        .expect("restore the snapshotted override, simulating unmute");
+    assert_eq!(
+        settings
+            .get_user_defined_room_notification_mode(room.room_id())
+            .await,
+        Some(RoomNotificationMode::MentionsAndKeywordsOnly),
+        "the room's specific override must survive a mute/unmute cycle, not collapse to Mute"
+    );
+
     // --- Space hierarchy: create a space with this room as a child, list it, join it as a second membership check ---
     let mut space_creation_content = create_room::v3::CreationContent::new();
     space_creation_content.room_type = Some(RoomType::Space);

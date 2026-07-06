@@ -75,6 +75,13 @@ struct LocalNotificationPrefs {
     /// The default mode to restore when global mute is turned back off —
     /// `None` whenever mute isn't active.
     muted_from_mode: Option<RoomNotificationModeKind>,
+    /// Every room with a user-defined push-rule override (from
+    /// `set_room_notification_mode`) at the moment global mute was turned
+    /// on, keyed by room id, so it can be restored verbatim on unmute — see
+    /// `set_global_mute`'s doc comment for why overriding the default alone
+    /// isn't enough.
+    #[serde(default)]
+    muted_room_overrides: std::collections::HashMap<String, RoomNotificationModeKind>,
     sound_enabled: bool,
 }
 
@@ -82,6 +89,7 @@ impl Default for LocalNotificationPrefs {
     fn default() -> Self {
         Self {
             muted_from_mode: None,
+            muted_room_overrides: std::collections::HashMap::new(),
             sound_enabled: true,
         }
     }
@@ -123,6 +131,53 @@ async fn apply_default_mode(
     for (is_encrypted, is_one_to_one) in DEFAULT_MODE_DIMENSIONS {
         settings
             .set_default_room_notification_mode(is_encrypted.into(), is_one_to_one.into(), mode)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Snapshots every room with a user-defined push-rule override and forces
+/// each one to `Mute`. A room-level override (set via
+/// `set_room_notification_mode`) always takes precedence over the default
+/// rules `apply_default_mode` changes, so without this, a room the user had
+/// explicitly set to e.g. `AllMessages` would keep notifying right through
+/// "Mute all rooms" being shown as active.
+async fn mute_room_overrides(
+    settings: &NotificationSettings,
+) -> Result<std::collections::HashMap<String, RoomNotificationModeKind>, String> {
+    let room_ids = settings.get_rooms_with_user_defined_rules(None).await;
+    let mut snapshot = std::collections::HashMap::new();
+    for room_id_str in room_ids {
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(&room_id_str) else {
+            continue;
+        };
+        let Some(mode) = settings
+            .get_user_defined_room_notification_mode(&room_id)
+            .await
+        else {
+            continue;
+        };
+        settings
+            .set_room_notification_mode(&room_id, RoomNotificationMode::Mute)
+            .await
+            .map_err(|e| e.to_string())?;
+        snapshot.insert(room_id_str, mode.into());
+    }
+    Ok(snapshot)
+}
+
+/// Restores every room-level override captured by `mute_room_overrides`.
+async fn restore_room_overrides(
+    settings: &NotificationSettings,
+    overrides: &std::collections::HashMap<String, RoomNotificationModeKind>,
+) -> Result<(), String> {
+    for (room_id_str, mode) in overrides {
+        let Ok(room_id) = matrix_sdk::ruma::RoomId::parse(room_id_str) else {
+            continue;
+        };
+        settings
+            .set_room_notification_mode(&room_id, (*mode).into())
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -247,11 +302,18 @@ pub async fn remove_notification_keyword(
         .map_err(|e| e.to_string())
 }
 
-/// Turning mute on remembers the current default mode (if not already
-/// remembered — a second `muted(true)` call is a no-op on that front) and
-/// overrides every room's default to `Mute`; turning it off restores
-/// whatever was remembered. See this module's doc comment for why this is
-/// client-local rather than a push rule.
+/// Turning mute on remembers the current default mode and every room-level
+/// override in effect (if not already remembered — a second `muted(true)`
+/// call is a no-op on that front, otherwise it would clobber the real
+/// pre-mute snapshot with "everything reads Mute now"), then overrides every
+/// room's default *and* every room-level override to `Mute`; turning it off
+/// restores whatever was remembered for both. Room-level overrides need
+/// their own snapshot/override pass — separate from the four default rules
+/// `apply_default_mode` touches — because a room-level override always
+/// takes precedence over the default, so a room the user had explicitly set
+/// to e.g. `AllMessages` would otherwise keep notifying right through "Mute
+/// all rooms" being shown as active. See this module's doc comment for why
+/// this is client-local rather than a push rule.
 #[tauri::command]
 pub async fn set_global_mute(
     app: AppHandle,
@@ -273,20 +335,19 @@ pub async fn set_global_mute(
     // leave the in-memory copy showing "restored"/"remembered" even though
     // the server-side change that was supposed to match it never landed.
     if muted {
-        let restore_mode = match prefs.muted_from_mode {
-            Some(mode) => mode,
-            None => {
-                let current = settings
-                    .get_default_room_notification_mode(false.into(), false.into())
-                    .await;
-                current.into()
-            }
-        };
+        if prefs.muted_from_mode.is_none() {
+            let current = settings
+                .get_default_room_notification_mode(false.into(), false.into())
+                .await;
+            prefs.muted_room_overrides = mute_room_overrides(&settings).await?;
+            prefs.muted_from_mode = Some(current.into());
+        }
         apply_default_mode(&settings, RoomNotificationMode::Mute).await?;
-        prefs.muted_from_mode = Some(restore_mode);
     } else if let Some(restore_mode) = prefs.muted_from_mode {
+        restore_room_overrides(&settings, &prefs.muted_room_overrides).await?;
         apply_default_mode(&settings, restore_mode.into()).await?;
         prefs.muted_from_mode = None;
+        prefs.muted_room_overrides.clear();
     }
 
     save_prefs(&app, &account_key, &prefs)

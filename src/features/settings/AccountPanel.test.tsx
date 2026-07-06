@@ -43,6 +43,7 @@ beforeEach(() => {
     user_id: "@me:localhost",
     display_name: "Me",
     avatar_url: null,
+    uses_oauth: false,
   });
   logout.mockReset();
 });
@@ -120,6 +121,7 @@ describe("AccountPanel", () => {
       user_id: "@me:localhost",
       display_name: "Me",
       avatar_url: "mxc://example.org/abc123",
+      uses_oauth: false,
     });
     resolveAvatar.mockResolvedValue("/cache/avatar-thumb.png");
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
@@ -164,5 +166,18 @@ describe("AccountPanel", () => {
     const newPasswordInput = screen.getByLabelText("New password") as HTMLInputElement;
     expect(newPasswordInput.value).toBe("new-password-1");
     expect(newPasswordInput).toHaveAttribute("readonly");
+  });
+
+  it("hides the change-password action for an OAuth/OIDC-managed account", async () => {
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: true,
+    });
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    await screen.findByText(/managed there rather than in Charm/);
+    expect(screen.queryByRole("button", { name: "Change password" })).not.toBeInTheDocument();
   });
 });

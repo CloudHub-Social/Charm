@@ -29,6 +29,15 @@ pub struct ProfileSummary {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+    /// Whether this session was established via OAuth 2.0/OIDC (QR login;
+    /// see `auth::start_qr_login`) rather than the classic `matrix_auth()`
+    /// login API (password or SSO). `change_password`/`deactivate_account`
+    /// only ever retry UIA with `AuthData::Password`, which an OIDC-managed
+    /// account's homeserver has no obligation to accept (account
+    /// management for those is typically delegated to the OIDC provider
+    /// instead) — the frontend uses this to hide actions that can't
+    /// succeed rather than let them fail confusingly.
+    pub uses_oauth: bool,
 }
 
 /// Runs a UIA-gated `call` (`change_password`/`deactivate`/`delete_devices`),
@@ -98,14 +107,23 @@ async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> R
         handle.abort();
     }
 
+    // The live-timeline cache (`MatrixState::get_or_create_timeline`) is
+    // keyed by bare `room_id`, independent of which client built it — without
+    // this, a later login to a different account could be served a room's
+    // Timeline still bound to this account's now-cleared client.
+    state.clear_timelines().await;
+
     Ok(())
 }
 
 /// Signs the current session out: best-effort server-side revoke (an
 /// unreachable homeserver must not block clearing the local session — see
-/// Spec 08 acceptance criterion 2), then unconditionally clears both
-/// keychain session entries and drops the client so a relaunch doesn't
-/// auto-restore.
+/// Spec 08 acceptance criterion 2 — so this backgrounds the revoke instead of
+/// awaiting it; the client HTTP stack has no bounded timeout of its own, so
+/// awaiting it inline could hang the command for as long as the OS-level TCP
+/// timeout on a homeserver that's merely unreachable rather than promptly
+/// refusing), then unconditionally clears both keychain session entries and
+/// drops the client so a relaunch doesn't auto-restore.
 #[tauri::command]
 pub async fn logout(state: State<'_, MatrixState>) -> Result<(), String> {
     let client = state.require_client().await?;
@@ -114,11 +132,14 @@ pub async fn logout(state: State<'_, MatrixState>) -> Result<(), String> {
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
 
-    if client.matrix_auth().logged_in() {
-        let _ = client.matrix_auth().logout().await;
-    } else {
-        let _ = client.oauth().logout().await;
-    }
+    let revoke_client = client.clone();
+    tokio::spawn(async move {
+        if revoke_client.matrix_auth().logged_in() {
+            let _ = revoke_client.matrix_auth().logout().await;
+        } else {
+            let _ = revoke_client.oauth().logout().await;
+        }
+    });
 
     clear_local_session(&state, user_id.as_str()).await
 }
@@ -145,6 +166,7 @@ pub async fn get_profile(state: State<'_, MatrixState>) -> Result<ProfileSummary
         user_id: user_id.to_string(),
         display_name,
         avatar_url: avatar_url.map(|url| url.to_string()),
+        uses_oauth: client.oauth().user_session().is_some(),
     })
 }
 

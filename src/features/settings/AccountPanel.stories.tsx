@@ -30,6 +30,7 @@ export const Default: Story = {
       user_id: "@evie:cloudhub.social",
       display_name: "Evie",
       avatar_url: null,
+      uses_oauth: false,
     });
     return (
       <QueryClientProvider client={client}>
@@ -46,6 +47,24 @@ export const NoDisplayNameSet: Story = {
       user_id: "@evie:cloudhub.social",
       display_name: null,
       avatar_url: null,
+      uses_oauth: false,
+    });
+    return (
+      <QueryClientProvider client={client}>
+        <AccountPanel {...args} />
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const OAuthAccount: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededProfile({
+      user_id: "@evie:cloudhub.social",
+      display_name: "Evie",
+      avatar_url: null,
+      uses_oauth: true,
     });
     return (
       <QueryClientProvider client={client}>

@@ -121,11 +121,7 @@ function RoomModeRow({
   onChangeMode: (roomId: string, mode: RoomNotificationModeKind) => void;
   disabled?: boolean;
 }) {
-  // No per-room-mode getter command exists yet (Spec 08 command list gap) —
-  // `is_muted` is the one per-room signal `list_rooms` already carries, so
-  // this can distinguish "muted" from "not muted" but not
-  // all_messages vs. mentions_and_keywords_only until that command lands.
-  const currentMode: RoomNotificationModeKind = room.is_muted ? "mute" : "all_messages";
+  const currentMode: RoomNotificationModeKind = room.notification_mode ?? "all_messages";
 
   return (
     <div className="flex items-center justify-between py-2">
