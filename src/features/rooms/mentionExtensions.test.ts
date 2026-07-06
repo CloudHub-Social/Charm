@@ -36,10 +36,13 @@ describe("UserMention", () => {
 
   it("renders the real user id (not the display label) for plain-text getText()", () => {
     const renderText = UserMention.config.renderText!;
-    const text = renderText.call(undefined as never, {
-      node: fakeNode({ id: "@alice:example.org", label: "Alice" }),
-      options: {},
-    } as never);
+    const text = renderText.call(
+      undefined as never,
+      {
+        node: fakeNode({ id: "@alice:example.org", label: "Alice" }),
+        options: {},
+      } as never,
+    );
     expect(text).toBe("@alice:example.org");
   });
 
