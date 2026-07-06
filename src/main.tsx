@@ -8,6 +8,7 @@ import "@fontsource/manrope/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
+import { ErrorFallback } from "./components/ErrorFallback";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
@@ -18,8 +19,13 @@ Sentry.init({
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <AppProviders>
-      <App />
-    </AppProviders>
+    <Sentry.ErrorBoundary
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- Sentry's own FallbackRender type shapes resetError as a method signature, but the actual value it passes is already an arrow function (`() => this.resetErrorBoundary()`) with no `this` dependency
+      fallback={({ resetError }) => <ErrorFallback resetError={resetError} />}
+    >
+      <AppProviders>
+        <App />
+      </AppProviders>
+    </Sentry.ErrorBoundary>
   </React.StrictMode>,
 );

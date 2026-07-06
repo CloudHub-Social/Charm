@@ -34,6 +34,7 @@ const openFileDialog = vi.fn();
 const getRoomMembers = vi.fn().mockResolvedValue([]);
 const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
+const openUrl = vi.fn().mockResolvedValue(undefined);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -44,6 +45,10 @@ let uploadProgressCallback:
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openFileDialog(...args),
+}));
+
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: (...args: unknown[]) => openUrl(...args),
 }));
 
 vi.mock("@/lib/matrix", () => ({
@@ -173,6 +178,7 @@ describe("ChatShell", () => {
     sendTyping.mockReset().mockResolvedValue(undefined);
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
+    openUrl.mockReset().mockResolvedValue(undefined);
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
@@ -718,5 +724,51 @@ describe("ChatShell", () => {
         expect.any(String),
       ),
     );
+  });
+
+  it("opens a formatted-body link via the system browser instead of navigating the webview", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          body: "click here",
+          formatted_body: '<a href="https://example.org/path">click here</a>',
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    const link = await screen.findByRole("link", { name: "click here" });
+    fireEvent.click(link);
+
+    expect(openUrl).toHaveBeenCalledWith("https://example.org/path");
+  });
+
+  it("does not open a link with a scheme outside the http/https/mailto/tel allowlist", async () => {
+    // `mxc://` survives the sanitizer's own URI allowlist (it's meaningful
+    // for `<img src>`) but isn't a scheme `handleMessageLinkClick` will ever
+    // hand to `openUrl` for an `<a href>` — this exercises that extra check
+    // specifically, independent of what the sanitizer already strips.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          body: "click here",
+          formatted_body: '<a href="mxc://example.org/mediaid">click here</a>',
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    const link = await screen.findByRole("link", { name: "click here" });
+    fireEvent.click(link);
+
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });
