@@ -6,7 +6,7 @@
 
 mod common;
 
-use charm_lib::matrix::{discover, register_with_dummy_auth};
+use charm_lib::matrix::auth::{discover, register_with_dummy_auth};
 use common::HOMESERVER;
 use matrix_sdk::Client;
 

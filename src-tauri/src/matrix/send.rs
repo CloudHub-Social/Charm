@@ -16,6 +16,12 @@ use ts_rs::TS;
 
 use super::MatrixState;
 
+/// Client-side sanity cap on outbound attachments. Not a substitute for
+/// homeserver upload-size policy (which still applies independently and can
+/// reject a smaller file too) — just a bound so an unexpectedly huge
+/// `file_path` isn't read fully into memory before any upload even starts.
+const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+
 /// Pushed to the frontend as an attachment upload progresses. `sent`/`total`
 /// are in bytes. The vendored matrix-rust-sdk (0.18.0) exposes real
 /// byte-level upload progress via `SendAttachment::with_send_progress_observable`
@@ -220,6 +226,22 @@ pub async fn send_attachment(
         .and_then(|n| n.to_str())
         .ok_or_else(|| "file_path has no filename component".to_string())?
         .to_string();
+
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    // `is_file()` follows symlinks and reflects the *target's* file type, so
+    // this also rejects a symlink pointed at a device/pipe/proc special file
+    // masquerading as an attachment, not just directories.
+    if !metadata.is_file() {
+        return Err("file_path does not refer to a regular file".to_string());
+    }
+    if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
+        return Err(format!(
+            "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
+            metadata.len()
+        ));
+    }
 
     let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
     let total_bytes = data.len() as u64;
@@ -432,5 +454,73 @@ mod tests {
             Some(vec!["not-a-user-id".to_string()]),
         );
         assert!(result.is_err());
+    }
+}
+
+/// Exercises `SEND_CAPTURE_LOCK`'s reason for existing. Against a mocked
+/// homeserver (no live Synapse needed) via `matrix-sdk-test`'s
+/// `MatrixMockServer` — same pattern as `timeline::mapping_tests`.
+///
+/// Note on what this can and can't prove: `NewLocalEvent` fires as soon as
+/// `send()` enqueues the content locally, before the (mocked, artificially
+/// delayed in an earlier version of this test) network round trip — so
+/// there's no reliable way from outside the function to force the exact
+/// subscribe/send/broadcast interleaving `SEND_CAPTURE_LOCK` guards against;
+/// that requires genuine OS-thread-level scheduling luck, not just
+/// `tokio::join!` on a single task. This test instead locks in the invariant
+/// the lock exists to guarantee — concurrent sends resolve to distinct,
+/// correctly separated transaction ids — as regression coverage for the
+/// currently-correct (locked) behavior.
+#[cfg(test)]
+mod concurrency_tests {
+    use matrix_sdk::ruma::room_id;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_sends_each_capture_a_distinct_transaction_id() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+
+        // Not `.expect(n)`-scoped: both concurrent sends hit this endpoint,
+        // and the returned event id isn't what this test is checking (that's
+        // the send-queue's own concern) — only that each call's *own*
+        // client-generated transaction id is the one it gets back.
+        server
+            .mock_room_send()
+            .ok(matrix_sdk::ruma::event_id!("$fake"))
+            .mount()
+            .await;
+
+        let content_a = AnyMessageLikeEventContent::RoomMessage(
+            build_message_content("message one".to_string(), None, None).unwrap(),
+        );
+        let content_b = AnyMessageLikeEventContent::RoomMessage(
+            build_message_content("message two".to_string(), None, None).unwrap(),
+        );
+
+        let (result_a, result_b) = tokio::join!(
+            send_and_capture_transaction_id(&client, &room, content_a),
+            send_and_capture_transaction_id(&client, &room, content_b),
+        );
+
+        let id_a = result_a.expect("first concurrent send should succeed");
+        let id_b = result_b.expect("second concurrent send should succeed");
+
+        // The actual bug `SEND_CAPTURE_LOCK` prevents: without it, two
+        // overlapping calls could both end up reading the same first
+        // `NewLocalEvent` broadcast and return identical ids, misattributing
+        // one send's local echo to the other.
+        assert_ne!(
+            id_a, id_b,
+            "two concurrent sends must not capture the same transaction id"
+        );
+        assert!(!id_a.is_empty());
+        assert!(!id_b.is_empty());
     }
 }
