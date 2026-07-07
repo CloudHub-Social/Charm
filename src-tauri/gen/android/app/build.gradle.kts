@@ -63,6 +63,10 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
+    // Backs `SecureStorage.kt` (Keystore-backed `EncryptedSharedPreferences`)
+    // — `matrix::secret_store`'s Android implementation, called via JNI,
+    // stands in for `keyring`'s desktop-only OS-keychain backends there.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

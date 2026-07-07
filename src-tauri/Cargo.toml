@@ -74,4 +74,13 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # used on any other platform. Surfaced by Spec 13's CI spike; needed for any
 # Android build of this app, not just that spike.
 openssl = { version = "0.10", features = ["vendored"] }
+# `keyring` has no Android backend (there's no OS-level "secret service"/
+# credential-manager API it wraps there — Android's equivalent is the
+# Keystore system, reached via JNI, not a native Rust crate). These back
+# `matrix::secret_store`'s Android implementation, which calls into a small
+# Kotlin helper (`SecureStorage.kt`, bundled in `gen/android`) wrapping
+# `androidx.security`'s `EncryptedSharedPreferences` — itself backed by an
+# AES key generated and held in the Android Keystore, not a plaintext file.
+jni = "0.21"
+ndk-context = "0.1"
 
