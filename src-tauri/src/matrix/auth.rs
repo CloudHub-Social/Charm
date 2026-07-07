@@ -106,6 +106,16 @@ pub async fn login(
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
     let homeserver_url = client.homeserver().to_string();
+
+    // Held for the rest of this function: serializes stopping the previous
+    // sync loop/client, relocating the store, saving the session, and
+    // adopting the new client against any *other* interactive login
+    // completing for this same account at the same time — see
+    // `MatrixState::login_completion_lock`'s doc comment for why a narrower
+    // lock (or none) lets one completion's cleanup clobber another's
+    // already-adopted client.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
     // Stop any sync loop already running for this account *before*
     // relocating its store — otherwise a live client from an earlier login
     // (e.g. a double-submitted login button) could still be mid-`/sync` and
@@ -119,18 +129,13 @@ pub async fn login(
         &session,
     )?;
 
-    // A concurrent completion for the same account (e.g. another
-    // double-submitted login) could have superseded what was just saved
-    // above between that call returning and here — if so, this device's own
-    // login *did* succeed against the homeserver, but it lost the race
-    // locally: don't clear a session kind or publish a client for a store
-    // that's no longer current (the completion that won already did its own
-    // version of this), and don't report success either — `LoginScreen`
-    // treats any `Ok` response as signed-in-and-adopted, and returning this
-    // device's response here would let a double-submit advance the UI with
-    // a session Rust never actually published (and, if this promise
-    // resolves after the winner's, overwrite the frontend's already-correct
-    // device id with this losing one).
+    // With `login_completion_lock` held for the whole sequence, no other
+    // completion for this account can run concurrently — so this should
+    // always hold. Kept as a cheap defense-in-depth assertion rather than
+    // load-bearing synchronization (which is now `login_completion_lock`'s
+    // job): if it ever *did* somehow fail, the fallback is the same as
+    // before — report the loss rather than a losing `Ok`, since
+    // `LoginScreen` treats any `Ok` response as signed-in-and-adopted.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
         return Err(
             "login succeeded but was superseded by a concurrent login for the same account"
@@ -387,6 +392,11 @@ pub async fn register(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
+
+    // See `login`'s identical guard and its doc comment on
+    // `MatrixState::login_completion_lock`.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
@@ -399,8 +409,8 @@ pub async fn register(
     )?;
 
     // See `login`'s identical check and rationale for returning `Err` rather
-    // than a losing `Ok` response: a concurrent completion for the same
-    // account may have superseded what was just saved.
+    // than a losing `Ok` response: with `login_completion_lock` held for the
+    // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
@@ -625,6 +635,13 @@ pub async fn complete_sso_login(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
+
+    // See `login`'s identical guard and its doc comment on
+    // `MatrixState::login_completion_lock`. Safe to acquire here: the
+    // `pending_sso` lock taken earlier in this function was already
+    // `drop`-ped before this point.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
     sync::abort_current_sync_loop(&app).await;
@@ -637,8 +654,8 @@ pub async fn complete_sso_login(
     )?;
 
     // See `login`'s identical check and rationale for returning `Err` rather
-    // than a losing `Ok` response: a concurrent completion for the same
-    // account may have superseded what was just saved.
+    // than a losing `Ok` response: with `login_completion_lock` held for the
+    // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
         return Err(
             "SSO login succeeded but was superseded by a concurrent login for the same account"

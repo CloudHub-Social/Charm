@@ -197,6 +197,15 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // longer matches the store a *different* completion just
                 // relocated.
                 let homeserver_url = client.homeserver().to_string();
+
+                // Held for the rest of this branch: see auth.rs's identical
+                // guard and `MatrixState::login_completion_lock`'s doc
+                // comment for why the whole abort/relocate/adopt sequence
+                // needs to be atomic against another completion for the
+                // same account (e.g. an overlapping password/SSO login).
+                let state = app.state::<MatrixState>();
+                let _completion_guard = state.login_completion_lock.lock().await;
+
                 // Stop any sync loop already running for this account
                 // before relocating its store — same rationale as the
                 // identical step in auth.rs's login/register/
@@ -231,7 +240,6 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // `cancel_qr_login`/restart aborted it), and clobbering that
                 // would leave the new attempt's own cleanup with nothing to
                 // find.
-                let state = app.state::<MatrixState>();
                 {
                     let mut pending_key = state
                         .pending_qr_temp_store_key

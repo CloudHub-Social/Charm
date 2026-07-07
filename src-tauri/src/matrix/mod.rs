@@ -46,6 +46,24 @@ const MAX_NOTIFIED_EVENT_IDS: usize = 200;
 /// `persistence::account_key`.
 pub struct MatrixState {
     pub(crate) client: Mutex<Option<Client>>,
+    /// Serializes an interactive login's *entire* completion sequence —
+    /// stopping the previous sync loop/client, relocating the account's
+    /// store, saving the session, and adopting the new client — across
+    /// `login`/`register`/`complete_sso_login`/QR login's completion. Without
+    /// this, two overlapping completions for the same account (e.g. a
+    /// double-submitted login racing an in-flight QR login) could interleave
+    /// arbitrarily: one could finish adopting its client while the other was
+    /// mid-abort of the *first* one's now-stale sync loop, and that first
+    /// completion's abort step would then unconditionally clear
+    /// `MatrixState::client` — wiping out the second completion's
+    /// just-installed winning client. Holding this for the whole sequence
+    /// (not just the store-swap `persistence::RELOCATE_LOCK` already
+    /// guards) makes the sequence atomic instead: a second completion simply
+    /// waits for the first to fully finish before starting its own abort
+    /// step, so there's no window where "which client is currently active"
+    /// is ambiguous. A `tokio::sync::Mutex`, not `std::sync::Mutex`, because
+    /// this needs to be held across `.await` points.
+    pub(crate) login_completion_lock: Mutex<()>,
     /// Set by `auth::start_sso_login`, consumed by `auth::complete_sso_login`.
     /// Built once and carried across the two calls (rather than rebuilt in
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
@@ -133,6 +151,7 @@ impl Default for MatrixState {
     fn default() -> Self {
         Self {
             client: Mutex::default(),
+            login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),

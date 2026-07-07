@@ -37,6 +37,20 @@ const TEMP_STORE_PREFIX: &str = "tmp-";
 /// would attempt — and fail — to restore a session for it on every launch).
 const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
 
+/// Marker file written inside an account's store directory only once a
+/// superseding [`relocate_store_at_locked_with`] call has *fully* committed
+/// — the directory rename *and* `on_commit` (typically the session save)
+/// have both succeeded. `account_path` starts existing as soon as the
+/// rename completes, before `on_commit` runs, so its mere existence isn't
+/// proof the whole relocation finished — [`recover_or_discard_stale_backup`]
+/// checks for this marker instead, so a crash in that narrow window (new
+/// store installed, but the keychain still holds the *old* session) is
+/// treated the same as a crash before the rename at all: the new,
+/// not-actually-committed store is discarded and the backup — which still
+/// correctly pairs with whatever's in the keychain, since `on_commit` never
+/// ran to change it — is restored instead.
+const COMMIT_MARKER_FILENAME: &str = ".relocation-committed";
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -175,18 +189,23 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
 }
 
 /// Handles a leftover `[account_key].stale-backup` directory found at
-/// startup. Two ways it can exist: (1) [`relocate_store_at_locked_with`]
-/// fully committed a relocation but its own final best-effort backup
-/// removal failed — `account_key`'s path has a real, current store, and the
-/// backup is genuinely safe to discard — or (2) the process crashed
-/// *between* the backup rename and the final commit — `account_key`'s path
-/// is empty and this backup is the account's *only* surviving store, which
-/// must be restored (directory and its durably-saved passphrase together),
-/// not discarded, or the account's data is silently lost. Distinguishing
-/// the two only by whether `account_key`'s path currently exists is safe
-/// because [`relocate_store_at_locked_with`] never leaves that path
-/// pointing at anything *other* than a fully-committed store or nothing at
-/// all — there's no partial-install state it could be caught in.
+/// startup. Three ways it can exist: (1) [`relocate_store_at_locked_with`]
+/// fully committed a relocation (rename *and* `on_commit` both succeeded,
+/// marked by [`COMMIT_MARKER_FILENAME`]) but its own final best-effort
+/// backup removal failed — `account_key`'s path has a real, current,
+/// correctly-paired store, and the backup is genuinely safe to discard — or
+/// (2) the process crashed before the rename, or between the rename and
+/// `on_commit` succeeding — either way there's no fully-committed store at
+/// `account_key`'s path (in case (2)'s "between" scenario, whatever's there
+/// is a store the keychain's saved session was never updated to match), and
+/// this backup — which the keychain's *current* saved session still
+/// correctly pairs with, since `on_commit` never ran to change it — must be
+/// restored instead, or the account's data (and a matching session for it)
+/// is lost. Checking the marker rather than mere directory existence is
+/// what distinguishes case (1) from the "rename succeeded, `on_commit`
+/// didn't" half of case (2) — both leave a directory at `account_key`'s
+/// path, but only one of them is actually paired with what's in the
+/// keychain.
 fn recover_or_discard_stale_backup(
     root: &Path,
     account_key: &str,
@@ -197,13 +216,18 @@ fn recover_or_discard_stale_backup(
     let backup_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(backup_key));
 
-    if account_path.exists() {
+    if account_path.join(COMMIT_MARKER_FILENAME).exists() {
         let _ = std::fs::remove_dir_all(backup_path);
         if let Ok(entry) = backup_passphrase_entry {
             let _ = entry.delete_credential();
         }
         return;
     }
+
+    // Not (fully) committed — discard whatever's at `account_path` (it
+    // might not exist at all, or might be an uncommitted store whose
+    // session was never saved) before restoring the backup into its place.
+    let _ = std::fs::remove_dir_all(&account_path);
 
     let restored = (|| -> Option<()> {
         let backup_entry = backup_passphrase_entry.ok()?;
@@ -607,9 +631,21 @@ fn relocate_store_at_locked_with(
         // directory on the next startup and, if the relocation never
         // reached its final commit, restores both it and this passphrase
         // together rather than discarding the account's only surviving
-        // store.
+        // store. A *hard* requirement, not best-effort: if this write fails
+        // and a later step still overwrites the account's own passphrase
+        // entry, the backup would become durably unrecoverable — the
+        // in-process `original_passphrase` is gone once this function
+        // returns, and `recover_or_discard_stale_backup` requires this
+        // entry to restore anything. Nothing else has been touched yet at
+        // this point, so on failure just undo the directory move and bail —
+        // no rollback machinery needed for a step this early.
         if let Some(ref passphrase) = original_passphrase {
-            let _ = backup_passphrase_entry.set_password(passphrase);
+            if let Err(e) = backup_passphrase_entry.set_password(passphrase) {
+                let _ = std::fs::rename(&backup_path, &account_path);
+                return Err(format!(
+                    "failed to durably save the existing store's passphrase for {account_key}: {e}"
+                ));
+            }
         }
     }
 
@@ -637,8 +673,20 @@ fn relocate_store_at_locked_with(
             // the backup (and its durable passphrase entry) intact —
             // `sweep_orphan_temp_stores` recovers that combination on the
             // next startup exactly like an interrupted crash would.
-            let dir_restored = std::fs::remove_dir_all(&account_path).is_ok()
-                && std::fs::rename(&backup_path, &account_path).is_ok();
+            //
+            // A missing `account_path` (failures *before* the final rename,
+            // e.g. a transient keychain error in `get_or_create_passphrase`
+            // or the account-entry `set_password`) counts as "removed" here,
+            // not as a rollback failure — nothing was ever installed there
+            // to remove, so there's nothing blocking the rename-back, and
+            // this is in fact the easy, always-safe case this whole
+            // mechanism exists for.
+            let removed_or_absent = match std::fs::remove_dir_all(&account_path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+            let dir_restored =
+                removed_or_absent && std::fs::rename(&backup_path, &account_path).is_ok();
             if dir_restored {
                 if let Some(ref passphrase) = original_passphrase {
                     let _ = account_passphrase_entry.set_password(passphrase);
@@ -676,6 +724,22 @@ fn relocate_store_at_locked_with(
     if let Err(e) = on_commit() {
         return Err(roll_back(e));
     }
+
+    // See `COMMIT_MARKER_FILENAME`'s doc comment: `account_path` already
+    // existed before `on_commit` ran, so its presence alone can't tell a
+    // startup sweep whether the whole relocation actually finished. Written
+    // unconditionally (not just when `existed`) for consistency, though it's
+    // only load-bearing in the supersede case — a first-time relocation has
+    // no backup for `recover_or_discard_stale_backup` to make a decision
+    // about in the first place. Best-effort: if this write fails, the
+    // relocation itself already fully succeeded (the marker is only
+    // consulted by the startup sweep, not by this function's own return
+    // value), so it shouldn't turn an otherwise-successful login into an
+    // error — worst case, a crash immediately after this point looks
+    // uncommitted to the sweep and the backup gets restored over a store
+    // that was actually fine, which is exactly the safe-by-default behavior
+    // the marker exists to fall back to when things are ambiguous.
+    let _ = std::fs::write(account_path.join(COMMIT_MARKER_FILENAME), []);
 
     if existed {
         // Everything is fully committed at this point, so the backup (both
@@ -1177,10 +1241,12 @@ mod tests {
         let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
         let backup_path = root.0.join(&backup_key);
 
-        // A real, current store at `account_key` — the relocation that
-        // created this backup already fully committed; only its own
-        // best-effort backup removal failed.
-        store_path_at(&root.0, &account_key).unwrap();
+        // A real, current, *fully committed* store at `account_key` — the
+        // relocation that created this backup ran the rename and its commit
+        // hook to completion (marked by COMMIT_MARKER_FILENAME); only its
+        // own best-effort backup removal failed.
+        let account_path = store_path_at(&root.0, &account_key).unwrap();
+        std::fs::write(account_path.join(COMMIT_MARKER_FILENAME), []).unwrap();
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         let _ = get_or_create_passphrase(&temp_key).unwrap();
         std::fs::create_dir_all(&backup_path).unwrap();
@@ -1237,6 +1303,44 @@ mod tests {
             backup_entry.get_password(),
             Err(keyring::Error::NoEntry)
         ));
+
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key))
+        {
+            let _ = entry.delete_credential();
+        }
+    }
+
+    #[test]
+    fn sweep_orphan_temp_stores_restores_backup_over_uncommitted_renamed_store() {
+        let root = ScratchRoot::new("sweep-restore-uncommitted");
+        let account_key =
+            account_key("@charm-persistence-test-sweep-restore-uncommitted:localhost");
+        let account_path = root.0.join(&account_key);
+        let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
+        let backup_path = root.0.join(&backup_key);
+
+        // A store *does* exist at `account_key` — the final rename in
+        // `relocate_store_at_locked_with` succeeded — but it has no
+        // COMMIT_MARKER_FILENAME, mirroring a crash between that rename and
+        // `on_commit` (the session save) actually running: the keychain's
+        // saved session was never updated, so it still only pairs correctly
+        // with the *backup*, not this uncommitted new store.
+        std::fs::create_dir_all(&account_path).unwrap();
+        std::fs::write(account_path.join("uncommitted.txt"), b"wrong device").unwrap();
+        std::fs::create_dir_all(&backup_path).unwrap();
+        std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
+        let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
+
+        sweep_orphan_temp_stores_at(&root.0).unwrap();
+
+        // The uncommitted store is discarded; the backup takes its place.
+        assert!(!backup_path.exists());
+        assert!(!account_path.join("uncommitted.txt").exists());
+        assert!(account_path.join("existing.txt").exists());
+        assert_eq!(
+            get_or_create_passphrase(&account_key).unwrap(),
+            backup_passphrase
+        );
 
         if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key))
         {
