@@ -44,8 +44,8 @@ eyeball = "0.8.8"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
-lru = "0.12"
-imbl = "6.1.0"
+lru = "0.18"
+imbl = "7.0.0"
 regex = "1"
 async-trait = "0.1"
 
@@ -104,5 +104,5 @@ openssl = { version = "0.10", features = ["vendored"] }
 # Kotlin helper (`SecureStorage.kt`, bundled in `gen/android`) wrapping
 # `androidx.security`'s `EncryptedSharedPreferences` — itself backed by an
 # AES key generated and held in the Android Keystore, not a plaintext file.
-jni = "0.21"
+jni = "0.22"
 ndk-context = "0.1"
