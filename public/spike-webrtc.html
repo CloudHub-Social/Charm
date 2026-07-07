@@ -104,8 +104,11 @@
 
       let localStream = null;
 
-      // --- Button A: getUserMedia ---
-      document.getElementById("btnA").onclick = async () => {
+      // Each runner returns { status: "PASS"|"FAIL"|"EXPECTED-GAP", detail: string }
+      // so both the manual button handlers and the CI auto-runner share one
+      // source of truth for what counts as a pass.
+
+      async function runA() {
         log("A: requesting getUserMedia({audio:true,video:true})...");
         try {
           localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
@@ -113,17 +116,19 @@
           const tracks = localStream
             .getTracks()
             .map((t) => `${t.kind}:${t.readyState}:enabled=${t.enabled}`);
-          log(`A: PASS — granted, tracks = [${tracks.join(", ")}]`);
+          const allLive = localStream.getTracks().every((t) => t.readyState === "live" && t.enabled);
+          log(`A: ${allLive ? "PASS" : "FAIL"} — granted, tracks = [${tracks.join(", ")}]`);
+          return { status: allLive ? "PASS" : "FAIL", detail: tracks.join(", ") };
         } catch (err) {
           log(`A: FAIL — ${err.name}: ${err.message}`);
+          return { status: "FAIL", detail: `${err.name}: ${err.message}` };
         }
-      };
+      }
 
-      // --- Button B: loopback RTCPeerConnection ---
-      document.getElementById("btnB").onclick = async () => {
+      async function runB() {
         if (!localStream) {
           log("B: no local stream yet — run A first (loopback needs a media source).");
-          return;
+          return { status: "FAIL", detail: "no local stream (A did not run or failed)" };
         }
         log("B: building pcA/pcB loopback...");
         const pcA = new RTCPeerConnection();
@@ -160,24 +165,45 @@
           log("B: offer/answer exchanged, waiting for ICE + connectionState=connected...");
         } catch (err) {
           log(`B: FAIL during negotiation — ${err.name}: ${err.message}`);
+          return { status: "FAIL", detail: `negotiation error: ${err.name}: ${err.message}` };
         }
-      };
 
-      // --- Button C: getDisplayMedia ---
-      document.getElementById("btnC").onclick = async () => {
+        // Poll connectionState instead of only relying on the event handlers above,
+        // so the auto-runner (CI) has a definite pass/fail instead of an open-ended wait.
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          if (pcA.connectionState === "connected" && pcB.connectionState === "connected") {
+            log("B: PASS — both peers connected");
+            return { status: "PASS", detail: "connectionState=connected on both peers" };
+          }
+          if (pcA.connectionState === "failed" || pcB.connectionState === "failed") break;
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        log(`B: FAIL — timed out, pcA=${pcA.connectionState} pcB=${pcB.connectionState}`);
+        return { status: "FAIL", detail: `timed out: pcA=${pcA.connectionState} pcB=${pcB.connectionState}` };
+      }
+
+      async function runC() {
         log("C: requesting getDisplayMedia()...");
         if (!navigator.mediaDevices?.getDisplayMedia) {
           log("C: EXPECTED-GAP — getDisplayMedia not present on this platform/webview.");
-          return;
+          return { status: "EXPECTED-GAP", detail: "getDisplayMedia not present" };
         }
         try {
           const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
           document.getElementById("screenVideo").srcObject = stream;
           log(`C: PASS — got display stream, tracks=${stream.getTracks().length}`);
+          return { status: "PASS", detail: `tracks=${stream.getTracks().length}` };
         } catch (err) {
-          log(`C: FAIL/EXPECTED-GAP — ${err.name}: ${err.message}`);
+          const gap = err.name === "NotSupportedError";
+          log(`C: ${gap ? "EXPECTED-GAP" : "FAIL"} — ${err.name}: ${err.message}`);
+          return { status: gap ? "EXPECTED-GAP" : "FAIL", detail: `${err.name}: ${err.message}` };
         }
-      };
+      }
+
+      document.getElementById("btnA").onclick = runA;
+      document.getElementById("btnB").onclick = runB;
+      document.getElementById("btnC").onclick = runC;
 
       // --- Manual two-device signalling shim (mobile leg, R2) ---
       // Enable by appending ?manual=1 to the URL.
@@ -222,6 +248,33 @@
           await pc.setRemoteDescription(remote);
           log("manual: remote SDP applied.");
         };
+      }
+
+      // --- CI auto-runner ---
+      // Enable by appending ?auto=1 to the URL. Runs A -> B -> C unattended (relies
+      // on the host having pre-granted/faked permissions — e.g. Chromium's
+      // --use-fake-device-for-media-stream / --use-fake-ui-for-media-stream flags
+      // passed to WebView2 via WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS on Windows, or
+      // an emulator's virtual camera + pre-granted runtime permission on Android),
+      // then reports the result to the Rust side over IPC so a CI job can assert on
+      // it without a human clicking anything.
+      if (new URLSearchParams(location.search).get("auto") === "1") {
+        (async () => {
+          log("auto: CI mode — running A, B, C unattended...");
+          const results = {
+            userAgent: navigator.userAgent,
+            a_getUserMedia: await runA(),
+            b_loopbackPeerConnection: await runB(),
+            c_getDisplayMedia: await runC(),
+          };
+          log(`auto: done — ${JSON.stringify(results)}`);
+          try {
+            await window.__TAURI__.core.invoke("spike_ci_report", { results });
+            log("auto: report sent to Rust side, exiting.");
+          } catch (err) {
+            log(`auto: FAILED to report — ${err}`);
+          }
+        })();
       }
     </script>
   </body>

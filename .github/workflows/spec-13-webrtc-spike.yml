@@ -1,0 +1,189 @@
+name: Spec 13 spike — WebRTC capability CI
+
+# Spike scaffolding only (see Spec 13 in the vault) — proves whether the
+# webview on each platform actually grants getUserMedia/RTCPeerConnection/
+# getDisplayMedia, without needing a human to click through a permission
+# prompt. Lives only on the spike branch; not wired into quality-checks.yml
+# and not required for any PR against main.
+
+on:
+  push:
+    branches: [spike/voice-video-platform]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (WebView2, fake device + fake UI)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run spike harness in auto mode and capture report
+        shell: pwsh
+        env:
+          # Chromium (which WebView2 is built on) flags: synthesize a virtual
+          # camera/mic and auto-accept the permission prompt. This is what lets
+          # capability (1) be tested with zero human interaction — if WRY/Tauri
+          # doesn't surface WebView2's PermissionRequested event at all (the R1
+          # risk in the spec), getUserMedia hangs/rejects here exactly like it
+          # would for a real user with no handler wired up, so this is a real
+          # test of the risk, not a workaround that hides it.
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--use-fake-device-for-media-stream --use-fake-ui-for-media-stream"
+          SPIKE_CI_REPORT_PATH: ${{ github.workspace }}\spike-ci-report.json
+        run: |
+          Remove-Item -ErrorAction SilentlyContinue $env:SPIKE_CI_REPORT_PATH
+          $proc = Start-Process -FilePath "pnpm" -ArgumentList "tauri","dev","--config","src-tauri/tauri.ci.conf.json" -PassThru -NoNewWindow -RedirectStandardOutput "tauri-dev-stdout.log" -RedirectStandardError "tauri-dev-stderr.log"
+          $deadline = (Get-Date).AddMinutes(5)
+          while (-not (Test-Path $env:SPIKE_CI_REPORT_PATH) -and (Get-Date) -lt $deadline -and -not $proc.HasExited) {
+            Start-Sleep -Seconds 3
+          }
+          if (-not (Test-Path $env:SPIKE_CI_REPORT_PATH)) {
+            Write-Host "--- tauri dev stdout ---"; Get-Content tauri-dev-stdout.log -ErrorAction SilentlyContinue
+            Write-Host "--- tauri dev stderr ---"; Get-Content tauri-dev-stderr.log -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            Write-Error "Timed out waiting for spike-ci-report.json — harness never reported (see logs above)"
+            exit 1
+          }
+          Get-Content $env:SPIKE_CI_REPORT_PATH
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+      - name: Assert all three capabilities passed
+        if: always()
+        shell: pwsh
+        env:
+          SPIKE_CI_REPORT_PATH: ${{ github.workspace }}\spike-ci-report.json
+        run: |
+          if (-not (Test-Path $env:SPIKE_CI_REPORT_PATH)) { exit 1 }
+          $r = Get-Content $env:SPIKE_CI_REPORT_PATH | ConvertFrom-Json
+          $fail = $false
+          foreach ($key in @("a_getUserMedia", "b_loopbackPeerConnection", "c_getDisplayMedia")) {
+            $status = $r.$key.status
+            Write-Host "$key => $status ($($r.$key.detail))"
+            if ($status -eq "FAIL") { $fail = $true }
+          }
+          if ($fail) { Write-Error "One or more capabilities FAILed — see above"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-13-windows-report
+          path: |
+            spike-ci-report.json
+            tauri-dev-stdout.log
+            tauri-dev-stderr.log
+          if-no-files-found: warn
+
+  android:
+    name: Android (emulator, virtual camera)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: "Build debug APK (CI window config: auto-run harness on launch)"
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+        run: pnpm tauri android build --debug --target x86_64 --config src-tauri/tauri.ci.conf.json
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run emulator, install APK, launch, and pull the CI report
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          # Both faked so getUserMedia has an actual (synthetic) device to grant
+          # — real camera hardware isn't available in CI either way, but a
+          # present device is what lets this test capability (1) at all rather
+          # than failing on "no camera" before permission wiring is even reached.
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back emulated -camera-front emulated
+          disable-animations: true
+          script: |
+            PKG=social.cloudhub.charm
+            APK=$(find src-tauri/gen/android -iname "*-x86_64-debug.apk" | head -1)
+            echo "Installing $APK"
+            adb install -r "$APK"
+            # Pre-grant the OS-level runtime permission (Android 6+ requirement).
+            # Deliberately NOT touching WebChromeClient — whether Tauri's default
+            # Android shell calls PermissionRequest.grant() for the in-webview
+            # media prompt on top of this is exactly the open question (R1);
+            # if it doesn't, capability (1) below reports FAIL, which is the
+            # real answer, not a workaround.
+            adb shell pm grant $PKG android.permission.CAMERA
+            adb shell pm grant $PKG android.permission.RECORD_AUDIO
+            adb shell am start -n $PKG/.MainActivity
+            REPORT=""
+            for i in $(seq 1 60); do
+              if adb shell run-as $PKG test -f files/spike-ci-report.json 2>/dev/null; then
+                REPORT=$(adb shell run-as $PKG cat files/spike-ci-report.json)
+                break
+              fi
+              sleep 5
+            done
+            if [ -z "$REPORT" ]; then
+              echo "Timed out waiting for spike-ci-report.json; last logcat:"
+              adb logcat -d | tail -200
+              exit 1
+            fi
+            echo "$REPORT" | tee spike-ci-report.json
+            # Not captured via $() — that would swallow node's exit code and let
+            # a FAIL silently pass. Piping directly makes this the last command
+            # in the step, so its exit code is the step's exit code.
+            echo "$REPORT" | node -e '
+              let d = "";
+              process.stdin.on("data", c => d += c);
+              process.stdin.on("end", () => {
+                const r = JSON.parse(d);
+                let fail = false;
+                for (const k of ["a_getUserMedia", "b_loopbackPeerConnection", "c_getDisplayMedia"]) {
+                  console.log(k, "=>", r[k].status, "(" + r[k].detail + ")");
+                  if (r[k].status === "FAIL") fail = true;
+                }
+                process.exit(fail ? 1 : 0);
+              });
+            '
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: spike-13-android-report
+          path: spike-ci-report.json
+          if-no-files-found: warn
