@@ -16,7 +16,7 @@ const captureDir = process.env.SENTRY_SNAPSHOT_CAPTURE
   : null;
 
 /**
- * Captures a full-page screenshot named `name` for Sentry visual-regression
+ * Captures a viewport screenshot named `name` for Sentry visual-regression
  * baselines. Call this after the assertions that establish the state you want to
  * capture are already settled — this does not itself wait for anything.
  */
