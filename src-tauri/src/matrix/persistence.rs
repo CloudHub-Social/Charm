@@ -476,6 +476,32 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
     }
 }
 
+/// Where the local first-run-onboarding marker for `account_key` lives — a
+/// bare empty file, not keychain-backed: unlike a session/passphrase this
+/// carries no secret, and it only exists as a fast-path so `useOnboardingGate`
+/// doesn't flash the onboarding screen for one frame while the account-data
+/// flag (the cross-device source of truth — see Spec 12) is still syncing.
+fn onboarding_flag_path(app: &AppHandle, account_key: &str) -> Result<PathBuf, String> {
+    onboarding_flag_path_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+    )
+}
+
+fn onboarding_flag_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> {
+    let dir = root.join("onboarding_flags");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(account_key))
+}
+
+pub fn save_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    std::fs::write(onboarding_flag_path(app, account_key)?, "").map_err(|e| e.to_string())
+}
+
+pub fn has_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<bool, String> {
+    Ok(onboarding_flag_path(app, account_key)?.exists())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -754,5 +780,29 @@ mod tests {
             temp_entry.get_password(),
             Err(keyring::Error::NoEntry)
         ));
+    }
+
+    #[test]
+    fn onboarding_flag_is_absent_until_saved_and_isolated_per_account() {
+        let root = ScratchRoot::new("onboarding-flag");
+        let account_key_a = account_key("@charm-persistence-test-onboarding-a:localhost");
+        let account_key_b = account_key("@charm-persistence-test-onboarding-b:localhost");
+
+        assert!(!onboarding_flag_path_at(&root.0, &account_key_a)
+            .unwrap()
+            .exists());
+
+        std::fs::write(
+            onboarding_flag_path_at(&root.0, &account_key_a).unwrap(),
+            "",
+        )
+        .unwrap();
+
+        assert!(onboarding_flag_path_at(&root.0, &account_key_a)
+            .unwrap()
+            .exists());
+        assert!(!onboarding_flag_path_at(&root.0, &account_key_b)
+            .unwrap()
+            .exists());
     }
 }

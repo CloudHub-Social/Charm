@@ -613,7 +613,13 @@ pub(crate) fn spawn_timeline_listener(
             let new_messages: Vec<&RoomMessageSummary> = summaries
                 .iter()
                 .filter(|m| {
-                    !seen_event_ids.contains(&m.event_id) && m.timestamp_ms > max_seen_timestamp_ms
+                    // `>=`, not `>`: two genuinely new messages can share the
+                    // same millisecond timestamp (e.g. back-to-back sends),
+                    // and a strict `>` would wrongly suppress the second one
+                    // just for tying the running max. `seen_event_ids` is
+                    // what actually guards against re-notifying a message
+                    // already accounted for, so this can safely admit ties.
+                    !seen_event_ids.contains(&m.event_id) && m.timestamp_ms >= max_seen_timestamp_ms
                 })
                 .collect();
             for message in &new_messages {

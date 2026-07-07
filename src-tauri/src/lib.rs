@@ -274,7 +274,11 @@ pub fn run() {
             matrix::shell::set_focused_room,
             matrix::shell::set_badge_count,
             matrix::shell::get_autostart,
-            matrix::shell::set_autostart
+            matrix::shell::set_autostart,
+            matrix::account_data::get_account_data,
+            matrix::account_data::set_account_data,
+            matrix::account_data::get_local_onboarding_flag,
+            matrix::account_data::set_local_onboarding_flag
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
