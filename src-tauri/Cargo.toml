@@ -49,7 +49,12 @@ imbl = "6.1.0"
 regex = "1"
 async-trait = "0.1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+# `keyring`'s "apple-native" feature backs both macOS and iOS (same Keychain
+# Services API on both) — one dependency declaration covers both targets.
+# iOS was never actually compiled before Spec 11's CI run surfaced this gap;
+# `secret_store.rs`'s `#[cfg(not(target_os = "android"))]` guard already
+# assumed iOS had `keyring` available like every other non-Android target.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

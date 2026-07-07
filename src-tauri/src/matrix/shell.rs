@@ -335,22 +335,44 @@ pub async fn maybe_send_notification<F, Fut>(
         .show();
 }
 
-/// Whether the app is currently registered to launch on login.
+/// Whether the app is currently registered to launch on login. Desktop-only:
+/// `tauri_plugin_autostart` (only ever registered under `#[cfg(desktop)]` in
+/// `lib.rs`'s builder chain — mobile has no equivalent OS concept) doesn't
+/// expose `ManagerExt`/`autolaunch()` on mobile targets at all, so this
+/// reports "not enabled" there rather than failing to compile/panicking on a
+/// plugin that was never registered.
 #[tauri::command]
 pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
-    use tauri_plugin_autostart::ManagerExt;
-    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        app.autolaunch().is_enabled().map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(false)
+    }
 }
 
-/// Enables/disables launch-on-login.
+/// Enables/disables launch-on-login. No-ops on mobile — see
+/// [`get_autostart`]'s doc comment.
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
-    use tauri_plugin_autostart::ManagerExt;
-    let autostart = app.autolaunch();
-    if enabled {
-        autostart.enable().map_err(|e| e.to_string())
-    } else {
-        autostart.disable().map_err(|e| e.to_string())
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let autostart = app.autolaunch();
+        if enabled {
+            autostart.enable().map_err(|e| e.to_string())
+        } else {
+            autostart.disable().map_err(|e| e.to_string())
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, enabled);
+        Ok(())
     }
 }
 
