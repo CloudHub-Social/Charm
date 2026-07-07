@@ -120,11 +120,17 @@ pub fn spawn(
         emit_room_list_and_badge(&client, &events).await;
         emit_room_updates(&client, &events, &initial_response).await;
 
-        let mut last_saved_access_token = None;
-        if let Some(persist) = &persist {
-            last_saved_access_token =
-                repersist_if_token_changed(&client, persist, last_saved_access_token).await;
-        }
+        // Seeded from the client's own current session, not `None` — the
+        // caller (`routes::finish_login` / `main.rs`'s restore loop) always
+        // persists this exact token before spawning the loop (at login, or
+        // by definition of having just been restored from what was on
+        // disk), so treating the first iteration as "unknown, must save"
+        // would immediately rewrite `sessions.enc.json` with byte-identical
+        // content on every single login/restore.
+        let mut last_saved_access_token = client
+            .matrix_auth()
+            .session()
+            .map(|session| session.tokens.access_token);
 
         let mut consecutive_failures: u32 = 0;
         loop {

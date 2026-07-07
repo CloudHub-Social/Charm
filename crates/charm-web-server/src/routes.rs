@@ -1305,12 +1305,24 @@ async fn set_avatar(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Sniffs the real content type from the image bytes themselves (the `image`
+/// crate's own format-detection, not a hand-rolled magic-byte match — this
+/// crate already depends on it for `attachment_info_for`'s dimension
+/// probing) rather than defaulting to `image/png` for anything it doesn't
+/// recognize, which silently mislabeled every WebP/AVIF/BMP/etc. avatar
+/// upload as PNG. Falls back to `application/octet-stream` (not
+/// `image/png`) when the bytes aren't a recognized image format at all —
+/// `set_avatar_impl`'s caller has already decided this is meant to be an
+/// avatar, but mislabeling unrecognized bytes as a specific image type is
+/// worse than an honest "unknown" content type.
 fn infer_image_mime(bytes: &[u8]) -> mime::Mime {
-    match bytes {
-        [0x89, b'P', b'N', b'G', ..] => mime::IMAGE_PNG,
-        [0xFF, 0xD8, 0xFF, ..] => mime::IMAGE_JPEG,
-        [b'G', b'I', b'F', b'8', ..] => mime::IMAGE_GIF,
-        _ => mime::IMAGE_PNG,
+    match image::guess_format(bytes) {
+        Ok(image::ImageFormat::Png) => mime::IMAGE_PNG,
+        Ok(image::ImageFormat::Jpeg) => mime::IMAGE_JPEG,
+        Ok(image::ImageFormat::Gif) => mime::IMAGE_GIF,
+        Ok(image::ImageFormat::WebP) => "image/webp".parse().expect("valid mime"),
+        Ok(image::ImageFormat::Bmp) => mime::IMAGE_BMP,
+        Ok(_) | Err(_) => mime::APPLICATION_OCTET_STREAM,
     }
 }
 
