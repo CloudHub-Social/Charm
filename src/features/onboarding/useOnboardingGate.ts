@@ -116,16 +116,24 @@ export function useOnboardingGate(userId: string | null) {
         const accountDataReadFailed = accountData === ACCOUNT_DATA_READ_FAILED;
         const accountDataPresent = accountDataReadFailed || accountData !== null;
         const accountDataConfirmedPresent = !accountDataReadFailed && accountData !== null;
-        if (accountDataConfirmedPresent && activeUserIdRef.current === userId) {
+        if (accountDataConfirmedPresent) {
           // Backfill the local flag: `list_rooms` and the local flag are
           // both local-store reads, but this check needed the homeserver —
           // without this, a later offline/slow launch on this same device
           // (where the account-data round trip can't complete) would have
           // nothing local to short-circuit on and would re-show onboarding
-          // despite it already being done on another device. Guarded against
-          // an account switch during the `getAccountData` await, same
-          // rationale as the opportunistic write above.
-          void setLocalOnboardingFlag();
+          // despite it already being done on another device. Guarded the
+          // same way as `writeCompletionFlags`: `isStillActive()` is
+          // re-checked immediately before the write actually fires, not just
+          // once earlier in `evaluate`, so an account switch in the gap
+          // can't backfill this account's flag onto whoever is now signed
+          // in.
+          const isStillActive = () => activeUserIdRef.current === userId;
+          if (isStillActive()) {
+            void setLocalOnboardingFlag().catch((err: unknown) => {
+              console.error("useOnboardingGate: failed to backfill the local onboarding flag", err);
+            });
+          }
         }
 
         setStatus(

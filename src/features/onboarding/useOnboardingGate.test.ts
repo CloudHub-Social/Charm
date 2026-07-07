@@ -160,6 +160,41 @@ describe("useOnboardingGate", () => {
     await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
   });
 
+  it("guards the account-data backfill against a since-switched-away account", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    // Each call to `getAccountData` gets its own controllable deferred —
+    // resolving @user-a's only after switching accounts models a slow
+    // account-data fetch landing after the user has already logged out and
+    // back in as someone else.
+    const deferredResolvers: ((data: unknown) => void)[] = [];
+    getAccountData.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferredResolvers.push(resolve);
+        }),
+    );
+
+    const { rerender } = renderHook(({ userId }: { userId: string }) => useOnboardingGate(userId), {
+      initialProps: { userId: "@user-a:localhost" },
+    });
+
+    await waitFor(() => expect(deferredResolvers).toHaveLength(1));
+    rerender({ userId: "@user-b:localhost" });
+    await waitFor(() => expect(deferredResolvers).toHaveLength(2));
+
+    // Resolve @user-a's (now-stale) `getAccountData` call with a genuine
+    // confirmed flag — exactly the path that would backfill the local flag
+    // onto whoever is now signed in, before the fix.
+    deferredResolvers[0]({ completed_at: 1, version: 1 });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
   it("biases toward done (not pending) when the local-flag read fails", async () => {
     listRooms.mockResolvedValue([]);
     getLocalOnboardingFlag.mockRejectedValue(new Error("disk error"));
