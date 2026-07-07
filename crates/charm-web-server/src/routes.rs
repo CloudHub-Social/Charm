@@ -195,7 +195,18 @@ async fn register(
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        state.sessions.remove(cookie.value()).await;
+        if let Some(session) = state.sessions.remove(cookie.value()).await {
+            // Revoke the access token on the homeserver too — otherwise it
+            // stays valid indefinitely after "logout" only clears local
+            // server-side state, unlike the desktop app (which calls the
+            // same `matrix_auth().logout()`). Spawned rather than awaited
+            // inline so a slow/unreachable homeserver doesn't block the
+            // response to the browser; best-effort, same as desktop's other
+            // fire-and-forget homeserver calls (e.g. `set_presence_online`).
+            tokio::spawn(async move {
+                let _ = session.client.matrix_auth().logout().await;
+            });
+        }
     }
     // `remove` must be given a cookie matching the *original* cookie's
     // path — `Cookie::from(SESSION_COOKIE)` alone defaults to no path,
@@ -811,7 +822,19 @@ async fn get_own_profile(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let profile = get_own_profile_impl(&session.client, None, PresenceStateDto::default())
+    // Unlike desktop's `MatrixState::sync_presence` (updated by the
+    // background sync loop and reflecting whatever was last explicitly
+    // set), this crate has no such loop yet in sub-PR A — so query the
+    // homeserver directly for the actual current value instead of
+    // hardcoding `PresenceStateDto::default()` (always `Online`), which
+    // would misreport `unavailable`/`offline` accounts.
+    let presence = get_presence_impl(&session.client, &session.user_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|update| update.presence)
+        .unwrap_or_default();
+    let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(profile))

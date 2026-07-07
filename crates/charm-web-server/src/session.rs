@@ -71,7 +71,7 @@ impl SessionStore {
         self.inner.read().await.get(token).cloned()
     }
 
-    pub async fn remove(&self, token: &str) {
-        self.inner.write().await.remove(token);
+    pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
+        self.inner.write().await.remove(token)
     }
 }

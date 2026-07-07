@@ -3,7 +3,10 @@
 //! sessions don't survive a process restart in sub-PR A. See the crate
 //! README for the sub-PR B plan to add encrypted-at-rest storage.
 
-use charm_lib::matrix::auth::{LoginRequest, LoginResponse, RegisterRequest};
+use charm_lib::matrix::auth::{
+    register_with_dummy_auth, LoginRequest, LoginResponse, RegisterRequest,
+};
+use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 
 use crate::session::Session;
@@ -30,6 +33,18 @@ pub async fn login(request: LoginRequest) -> Result<(LoginResponse, Session), St
         .session()
         .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
 
+    // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
+    // room store, which only gets populated by a sync — without this, every
+    // room route 404s/empties out for a freshly logged-in session even
+    // though the account genuinely has rooms. A background sync loop is
+    // sub-PR B (alongside the WS push channel); this single `sync_once`
+    // just establishes that initial local state so sub-PR A's
+    // request/response routes have something to read.
+    client
+        .sync_once(SyncSettings::default())
+        .await
+        .map_err(|e| e.to_string())?;
+
     let user_id = session_meta.meta.user_id.to_string();
     let response = LoginResponse {
         user_id: user_id.clone(),
@@ -48,30 +63,21 @@ pub async fn register(request: RegisterRequest) -> Result<(LoginResponse, Sessio
         .await
         .map_err(|e| e.to_string())?;
 
-    // matrix-sdk's plain `register` helper handles the common dummy-auth
-    // flow (no UIAA stages beyond `m.login.dummy`) — the same one
-    // `charm_lib::matrix::auth::register` drives for the desktop app,
-    // reimplemented here rather than reused because that function is
-    // `AppHandle`-bound (it persists the resulting session to disk/keychain,
-    // which this ephemeral crate deliberately does not do).
-    use matrix_sdk::ruma::api::client::account::register as register_api;
-    use matrix_sdk::ruma::api::client::uiaa::{AuthData, Dummy};
-
-    let mut register_request = register_api::v3::Request::new();
-    register_request.username = Some(request.username.clone());
-    register_request.password = Some(request.password.clone());
-    register_request.auth = Some(AuthData::Dummy(Dummy::new()));
-
-    client
-        .matrix_auth()
-        .register(register_request)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Reuses `charm_lib`'s UIAA-session-aware dummy-auth flow directly
+    // (it's already `Client`-only, no `AppHandle` dependency) rather than
+    // sending a bare `Dummy::new()` with no server-issued UIAA session,
+    // which Synapse's normal `m.login.dummy` flow rejects.
+    register_with_dummy_auth(&client, &request.username, &request.password).await?;
 
     let session_meta = client
         .matrix_auth()
         .session()
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
+
+    client
+        .sync_once(SyncSettings::default())
+        .await
+        .map_err(|e| e.to_string())?;
 
     let user_id = session_meta.meta.user_id.to_string();
     let response = LoginResponse {
