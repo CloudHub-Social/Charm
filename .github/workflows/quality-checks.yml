@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  merge_group:
   workflow_dispatch:
 
 jobs:
@@ -36,6 +37,12 @@ jobs:
           zero_sha="0000000000000000000000000000000000000000"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            # A merge-queue run validates a synthetic commit combining the PR
+            # with the current tip of main — diff against the queue entry's
+            # own recorded base, not github.event.pull_request (which doesn't
+            # exist for this event type).
+            changed=$(git diff --name-only "${{ github.event.merge_group.base_sha }}" "${{ github.sha }}")
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
             # infra fix) always runs them — there's no "changed files" concept.
