@@ -14,7 +14,19 @@ use crate::session::Session;
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
 /// or full URL — matrix-rust-sdk's `.well-known` discovery handles both, same
 /// as `charm_lib::matrix::auth::build_client`) and logs in with a password.
-pub async fn login(request: LoginRequest) -> Result<(LoginResponse, Session), String> {
+///
+/// Also returns the `SyncResponse` from the initial `sync_once` below, so
+/// `sync_loop::spawn` can use it directly as its *own* "initial state"
+/// instead of performing a second `sync_once` immediately afterward. That
+/// second call was harmless correctness-wise (`ReusePrevious` just picks up
+/// from the token this one already advanced to) but is a real user-visible
+/// bug: with nothing new to report, a `/sync` long-polls up to its timeout
+/// (tens of seconds) before returning, so the frontend's first
+/// `sync:state`/`room_list:update` over the WebSocket was delayed by that
+/// whole long-poll for no reason on every fresh login.
+pub async fn login(
+    request: LoginRequest,
+) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
     let client = Client::builder()
         .server_name_or_homeserver_url(&request.homeserver_url)
         .build()
@@ -36,11 +48,9 @@ pub async fn login(request: LoginRequest) -> Result<(LoginResponse, Session), St
     // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
     // room store, which only gets populated by a sync — without this, every
     // room route 404s/empties out for a freshly logged-in session even
-    // though the account genuinely has rooms. A background sync loop is
-    // sub-PR B (alongside the WS push channel); this single `sync_once`
-    // just establishes that initial local state so sub-PR A's
-    // request/response routes have something to read.
-    client
+    // though the account genuinely has rooms. This also doubles as
+    // `sync_loop::spawn`'s initial sync — see this function's doc comment.
+    let initial_response = client
         .sync_once(SyncSettings::default())
         .await
         .map_err(|e| e.to_string())?;
@@ -51,12 +61,15 @@ pub async fn login(request: LoginRequest) -> Result<(LoginResponse, Session), St
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session::new(client, user_id)))
+    Ok((response, Session::new(client, user_id), initial_response))
 }
 
 /// Registers a new account and logs it in, same in-memory-client shape as
-/// [`login`].
-pub async fn register(request: RegisterRequest) -> Result<(LoginResponse, Session), String> {
+/// [`login`] (including the returned initial `SyncResponse` — see its doc
+/// comment for why).
+pub async fn register(
+    request: RegisterRequest,
+) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
     let client = Client::builder()
         .server_name_or_homeserver_url(&request.homeserver_url)
         .build()
@@ -74,7 +87,7 @@ pub async fn register(request: RegisterRequest) -> Result<(LoginResponse, Sessio
         .session()
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
 
-    client
+    let initial_response = client
         .sync_once(SyncSettings::default())
         .await
         .map_err(|e| e.to_string())?;
@@ -85,5 +98,5 @@ pub async fn register(request: RegisterRequest) -> Result<(LoginResponse, Sessio
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session::new(client, user_id)))
+    Ok((response, Session::new(client, user_id), initial_response))
 }

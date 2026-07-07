@@ -233,7 +233,12 @@ async fn discover_homeserver(
 /// surfaced to the caller, since the session itself is already fully usable
 /// in-memory (matches sub-PR A's behavior when no master key is configured
 /// at all).
-async fn finish_login(state: &AppState, session: Session, homeserver_url: &str) -> String {
+async fn finish_login(
+    state: &AppState,
+    session: Session,
+    homeserver_url: &str,
+    initial_response: matrix_sdk::sync::SyncResponse,
+) -> String {
     let matrix_session = session.client.matrix_auth().session();
     let token = state.sessions.create(session).await;
     // Re-fetch the now-stored `Arc<Session>` rather than holding onto the
@@ -269,6 +274,7 @@ async fn finish_login(state: &AppState, session: Session, homeserver_url: &str) 
         stored.events.clone(),
         stored.sync_presence.clone(),
         persist,
+        initial_response,
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -281,10 +287,10 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session) = crate::auth::login(request)
+    let (response, session, initial_response) = crate::auth::login(request)
         .await
         .map_err(ApiError::unauthorized)?;
-    let token = finish_login(&state, session, &homeserver_url).await;
+    let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 
@@ -294,10 +300,10 @@ async fn register(
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session) = crate::auth::register(request)
+    let (response, session, initial_response) = crate::auth::register(request)
         .await
         .map_err(ApiError::bad_request)?;
-    let token = finish_login(&state, session, &homeserver_url).await;
+    let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 

@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(persistence) = &persistence {
         let restored = persistence.restore_all().await;
         tracing::info!("restored {} persisted session(s)", restored.len());
-        for (token, homeserver_url, session) in restored {
+        for (token, homeserver_url, session, initial_response) in restored {
             let persist = Some(sync_loop::PersistHandle {
                 store: Arc::clone(persistence),
                 token: token.clone(),
@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 session.events.clone(),
                 session.sync_presence.clone(),
                 persist,
+                initial_response,
             );
             *session
                 .sync_handle

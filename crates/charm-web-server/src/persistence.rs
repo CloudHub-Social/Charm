@@ -258,11 +258,20 @@ impl PersistenceStore {
     /// is dropped rather than blocking startup; that browser's next request
     /// with the now-dead cookie gets an ordinary 401 and re-logs-in, same
     /// self-healing tradeoff desktop's `try_restore_session` makes.
-    pub async fn restore_all(&self) -> Vec<(String, String, crate::session::Session)> {
+    pub async fn restore_all(
+        &self,
+    ) -> Vec<(
+        String,
+        String,
+        crate::session::Session,
+        matrix_sdk::sync::SyncResponse,
+    )> {
         let mut restored = Vec::new();
         for entry in self.read_all().await {
             match restore_one(&entry).await {
-                Ok(session) => restored.push((entry.token, entry.homeserver_url, session)),
+                Ok((session, initial_response)) => {
+                    restored.push((entry.token, entry.homeserver_url, session, initial_response))
+                }
                 Err(e) => {
                     tracing::warn!(
                         "dropping persisted session for {}: failed to restore: {e}",
@@ -275,7 +284,9 @@ impl PersistenceStore {
     }
 }
 
-async fn restore_one(entry: &PersistedSession) -> Result<crate::session::Session, String> {
+async fn restore_one(
+    entry: &PersistedSession,
+) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
     let client = matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
         .build()
@@ -291,17 +302,17 @@ async fn restore_one(entry: &PersistedSession) -> Result<crate::session::Session
         .map_err(|e| e.to_string())?;
 
     // Re-establish local room-store state the same way a fresh login does
-    // (see `auth::login`'s doc comment) — a restored session with no sync
-    // since restart would otherwise 404/empty-out every room route until
-    // the sync loop's own first iteration completes.
-    client
+    // (see `auth::login`'s doc comment, including why the response is
+    // returned rather than discarded — `sync_loop::spawn` reuses it as its
+    // own initial state instead of long-polling a second, redundant sync).
+    let initial_response = client
         .sync_once(matrix_sdk::config::SyncSettings::default())
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok(crate::session::Session::new(
-        client,
-        entry.session.meta.user_id.to_string(),
+    Ok((
+        crate::session::Session::new(client, entry.session.meta.user_id.to_string()),
+        initial_response,
     ))
 }
 

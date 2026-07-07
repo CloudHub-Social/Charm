@@ -84,12 +84,24 @@ async fn repersist_if_token_changed(
 /// Registers this session's live event handlers and spawns its background
 /// sync loop. Called once per session, right after login/register/restore
 /// (mirrors desktop calling `spawn_sync_loop` from the same three places).
+///
+/// `initial_response` is the `SyncResponse` `auth::login`/`auth::register`/
+/// `persistence::restore_one` already obtained establishing local room-store
+/// state — **not** re-fetched here. An earlier version of this function did
+/// its own `sync_once` first thing, which was a real user-visible bug, not
+/// just redundant work: since the caller's sync already advanced the
+/// client's sync token, this second call would find nothing new and
+/// long-poll for its full timeout (tens of seconds) before returning,
+/// delaying the very first `sync:state`/`room_list:update` a freshly
+/// connected browser tab sees.
+///
 /// Returns the loop's `JoinHandle` so the caller can abort it on logout.
 pub fn spawn(
     client: Client,
     events: broadcast::Sender<ServerEvent>,
     sync_presence: std::sync::Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
     persist: Option<PersistHandle>,
+    initial_response: matrix_sdk::sync::SyncResponse,
 ) -> tokio::task::JoinHandle<()> {
     register_presence_handler(client.clone(), events.clone());
     register_self_profile_handler(client.clone(), events.clone());
@@ -104,16 +116,6 @@ pub fn spawn(
 
     tokio::spawn(async move {
         let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Syncing));
-
-        let initial_response = match client.sync_once(SyncSettings::default()).await {
-            Ok(response) => response,
-            Err(e) => {
-                let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Error {
-                    message: e.to_string(),
-                }));
-                return;
-            }
-        };
         let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Idle));
         emit_room_list_and_badge(&client, &events).await;
         emit_room_updates(&client, &events, &initial_response).await;
