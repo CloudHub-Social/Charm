@@ -50,6 +50,16 @@ test("settings: verifying another session opens the verification overlay", async
 
   await expect(page.getByText("Verify new sign-in")).toBeVisible();
   await captureSnapshot(page, "settings-verify-overlay");
+
+  // Settings (a Radix Dialog on desktop) must close once verification
+  // starts — Radix applies aria-hidden to everything outside its own portal
+  // while open, and traps focus there. Left open, the overlay would be
+  // invisible to assistive tech and unreachable by keyboard despite being
+  // visually on top; leaving it open isn't a fixable z-index/pointer-events
+  // problem, so this asserts the dialog is actually gone instead.
+  await expect(page.getByRole("dialog", { name: "Settings" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByText("Waiting for the other device…")).toBeVisible();
 });
 
 test("settings: shows a centered dialog on desktop widths", async ({ page }) => {

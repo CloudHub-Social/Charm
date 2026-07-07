@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import {
   acceptVerificationRequest,
   cancelVerification,
@@ -25,16 +26,26 @@ export function VerificationOverlay() {
   const [request, setRequest] = useState<VerificationRequestSummary | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "incoming" });
   const doneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { closeSettings } = useSettingsNavigation();
 
   useEffect(() => {
     const unlisten = onVerificationRequest((incoming) => {
       setRequest(incoming);
       setPhase({ kind: "incoming" });
+      // Radix's Dialog applies `aria-hidden` to everything outside its own
+      // portal while open (and traps focus there) — this overlay renders as
+      // a sibling of the settings dialog, not inside it, so a verification
+      // starting while settings is open would otherwise be invisible to
+      // assistive tech and unreachable by keyboard despite being visually on
+      // top. Closing settings removes that trap instead of trying to work
+      // around it (z-index/pointer-events alone don't fix the aria-hidden
+      // side of it).
+      closeSettings();
     });
     return () => {
       unlisten.then((fn) => fn()).catch(console.error);
     };
-  }, []);
+  }, [closeSettings]);
 
   useEffect(() => {
     if (!request) return undefined;
@@ -118,13 +129,7 @@ export function VerificationOverlay() {
   }
 
   return (
-    // z-[60], not z-50: the settings dialog (`components/ui/dialog.tsx`'s
-    // DialogOverlay/DialogContent) also uses z-50 and portals into
-    // `document.body` — verification starting while settings is open (e.g.
-    // from the Devices panel) must render above it, not get covered by it,
-    // so the SAS flow stays completable without the user having to close
-    // settings first.
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
       <div className="flex w-90 flex-col items-center gap-4 rounded-lg border border-border bg-card p-6 text-center">
         {phase.kind === "incoming" && (
           <>
