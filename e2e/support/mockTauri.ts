@@ -35,6 +35,13 @@ export function installMockTauri(seed: {
   members?: { user_id: string; display_name: string | null }[];
   otherDevices?: { device_id: string; display_name: string | null; is_verified: boolean }[];
   roomDetails?: Record<string, unknown>;
+  /**
+   * `false` for onboarding.spec.ts's "brand-new account" scenario — every
+   * other spec keeps the default (rooms present) so Spec 12's onboarding
+   * gate resolves straight to "done" and never mounts `OnboardingScreen`
+   * where it isn't the thing under test.
+   */
+  hasRooms?: boolean;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -83,6 +90,12 @@ export function installMockTauri(seed: {
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
   messagesByRoom.set(room.room_id, []);
 
+  // Spec 12 (onboarding): both persistence layers the gate hook checks,
+  // in-memory only — no reload-survives-relaunch simulation here, since a
+  // page reload re-runs this whole init script from scratch anyway.
+  const accountData = new Map<string, unknown>();
+  let localOnboardingFlag = false;
+
   // Spec 08 (settings): minimal in-memory state for the account/devices/
   // notifications commands — just enough to drive the logout and
   // verify-another-session e2e flows; not a full settings-panel fake.
@@ -92,6 +105,7 @@ export function installMockTauri(seed: {
     ...(seed.otherDevices ?? []),
   ];
   let crossSigningBootstrapped = true;
+  let autostartEnabled = false;
   const notificationSettings = {
     default_mode: "all_messages",
     keywords: [] as string[],
@@ -170,7 +184,24 @@ export function installMockTauri(seed: {
 
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
-    list_rooms: () => [room],
+    list_rooms: () => (seed.hasRooms === false ? [] : [room]),
+    get_own_profile: () => ({
+      user_id: profile.user_id,
+      display_name: profile.display_name,
+      avatar_url: profile.avatar_url,
+      avatar_path: null,
+      presence: "online",
+    }),
+    get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
+    set_account_data: (args) => {
+      accountData.set(args.eventType as string, args.content);
+      return undefined;
+    },
+    get_local_onboarding_flag: () => localOnboardingFlag,
+    set_local_onboarding_flag: () => {
+      localOnboardingFlag = true;
+      return undefined;
+    },
     resolve_room_alias: () => room.room_id,
     get_timeline_page: (args) => ({
       messages: messagesByRoom.get(args.roomId as string) ?? [],
@@ -246,6 +277,17 @@ export function installMockTauri(seed: {
     },
     set_sound_enabled: (args) => {
       notificationSettings.sound_enabled = args.enabled as boolean;
+      return undefined;
+    },
+
+    // Spec 10: native platform shell. No real tray/dock/taskbar to drive in
+    // e2e, so these just track enough in-memory state for the settings
+    // toggles/focus-tracking effects to round-trip.
+    set_focused_room: () => undefined,
+    set_badge_count: () => undefined,
+    get_autostart: () => autostartEnabled,
+    set_autostart: (args) => {
+      autostartEnabled = args.enabled as boolean;
       return undefined;
     },
 

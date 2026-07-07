@@ -12,7 +12,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::{media, profiles, MatrixState};
+use super::{media, profiles, shell, MatrixState};
+
+/// The fixed placeholder body used for an as-yet-undecrypted message (see
+/// `MsgLikeKind::UnableToDecrypt` below) — a single source of truth so the
+/// notification path can recognize and skip it instead of comparing against
+/// a duplicated literal.
+const UNABLE_TO_DECRYPT_BODY: &str = "Unable to decrypt message";
 
 /// Display metadata for a non-text `m.room.message` msgtype, additive
 /// alongside Spec 03's flat `RoomMessageSummary` fields — `None` for text
@@ -486,7 +492,7 @@ async fn timeline_item_to_summary(
             sender_display_name,
             sender_avatar_url,
             sender_avatar_path,
-            body: "Unable to decrypt message".to_string(),
+            body: UNABLE_TO_DECRYPT_BODY.to_string(),
             formatted_body: None,
             timestamp_ms,
             edited: false,
@@ -554,12 +560,39 @@ pub(crate) fn spawn_timeline_listener(
         // task otherwise only holds the `'static` `AppHandle`/`Client`.
         let state = app.state::<MatrixState>();
         let media_cache = state.require_media_cache(&app).await.ok();
+        let initial_summaries =
+            items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+        // Seed with every event id already present before this listener
+        // subscribed — the initial `timeline:update` for a room the user
+        // just opened is existing history, never a "new message" worth a
+        // notification. Additive only (never replaced/shrunk) — see
+        // `max_seen_timestamp_ms` below for why replacing it was a bug.
+        let mut seen_event_ids: std::collections::HashSet<String> = initial_summaries
+            .iter()
+            .map(|m| m.event_id.clone())
+            .collect();
+        // The other half of the "is this genuinely new" check: backward
+        // pagination (scrolling up to load older history) inserts messages
+        // at the *front* of `items` that were never in `seen_event_ids`
+        // either, since they'd never been loaded before — an id-membership
+        // check alone can't tell "message arrived at the tail just now" apart
+        // from "history revealed by scrolling up", and would fire a
+        // notification for old content the first time a room's history is
+        // paged into. Older-history messages always have a timestamp at or
+        // before everything already loaded, so gating on strictly-greater
+        // timestamp (in addition to the id check) correctly excludes them
+        // while still catching genuine new arrivals (always time-ordered
+        // after the newest thing loaded so far).
+        let mut max_seen_timestamp_ms: u64 = initial_summaries
+            .iter()
+            .map(|m| m.timestamp_ms)
+            .max()
+            .unwrap_or(0);
         let _ = app.emit(
             "timeline:update",
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
-                messages: items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache)
-                    .await,
+                messages: initial_summaries,
             },
         );
 
@@ -580,21 +613,105 @@ pub(crate) fn spawn_timeline_listener(
             }
             let state = app.state::<MatrixState>();
             let media_cache = state.require_media_cache(&app).await.ok();
+            let summaries =
+                items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+
+            let new_messages: Vec<&RoomMessageSummary> = summaries
+                .iter()
+                .filter(|m| {
+                    // `>=`, not `>`: two genuinely new messages can share the
+                    // same millisecond timestamp (e.g. back-to-back sends),
+                    // and a strict `>` would wrongly suppress the second one
+                    // just for tying the running max. `seen_event_ids` is
+                    // what actually guards against re-notifying a message
+                    // already accounted for, so this can safely admit ties.
+                    !seen_event_ids.contains(&m.event_id) && m.timestamp_ms >= max_seen_timestamp_ms
+                })
+                .collect();
+            for message in &new_messages {
+                maybe_notify_new_message(&app, &client, &room_id, own_user_id.as_deref(), message)
+                    .await;
+            }
+            seen_event_ids.extend(summaries.iter().map(|m| m.event_id.clone()));
+            max_seen_timestamp_ms = max_seen_timestamp_ms
+                .max(summaries.iter().map(|m| m.timestamp_ms).max().unwrap_or(0));
+
             let _ = app.emit(
                 "timeline:update",
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
-                    messages: items_to_summaries(
-                        &items,
-                        own_user_id.as_deref(),
-                        &client,
-                        media_cache,
-                    )
-                    .await,
+                    messages: summaries,
                 },
             );
         }
     });
+}
+
+/// Fires a local OS notification for `message` if it warrants one: not our
+/// own message, not redacted, not still a pending local echo, and not still
+/// an as-yet-undecrypted placeholder (its key can arrive any time after —
+/// see `Timeline::retry_decryption` — at which point this same event id
+/// reappears with a real body and gets its own, correctly-timed
+/// notification; notifying on the placeholder now would just be a spurious
+/// "Unable to decrypt message" toast ahead of the real one). The actual
+/// mute/mentions-only/focus decision and the notification fire itself are
+/// `shell::maybe_send_notification` — shared with the sync loop's
+/// unopened-room path (`sync::notify_unopened_room_messages`) so both agree.
+async fn maybe_notify_new_message(
+    app: &AppHandle,
+    client: &Client,
+    room_id: &matrix_sdk::ruma::RoomId,
+    own_user_id: Option<&UserId>,
+    message: &RoomMessageSummary,
+) {
+    if message.redacted
+        || !matches!(message.send_state, SendState::Sent)
+        || message.body == UNABLE_TO_DECRYPT_BODY
+    {
+        return;
+    }
+
+    let Some(room) = client.get_room(room_id) else {
+        return;
+    };
+
+    shell::maybe_send_notification(
+        app,
+        &room,
+        own_user_id,
+        shell::NewMessageNotification {
+            event_id: &message.event_id,
+            sender: &message.sender,
+            sender_display_name: message.sender_display_name.as_deref(),
+            body: &message.body,
+        },
+        || fetch_message_mentions(&room, &message.event_id),
+    )
+    .await;
+}
+
+/// Refetches the original event's raw content to read its `m.mentions`
+/// field — `RoomMessageSummary` doesn't carry it, so this is only called for
+/// mentions-and-keywords-only rooms (see `maybe_notify_new_message`), not on
+/// every message.
+async fn fetch_message_mentions(
+    room: &matrix_sdk::Room,
+    event_id: &str,
+) -> Option<matrix_sdk::ruma::events::Mentions> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let original = room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .ok()?;
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
+        original.kind.raw().deserialize().ok()?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return None;
+    };
+    msg.as_original()?.content.mentions.clone()
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

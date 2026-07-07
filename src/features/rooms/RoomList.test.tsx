@@ -1,17 +1,25 @@
 import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { createStore, Provider } from "jotai";
 import { describe, expect, it, vi } from "vitest";
+import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
 
 // RoomList's header now fetches the signed-in user's own profile via
 // `useOwnProfile` (TanStack Query), which needs a `QueryClientProvider`
 // ancestor — a fresh, retry-disabled client per render, same as
-// `useMediaSource.test.tsx`.
-function renderRoomList(ui: ReactElement) {
+// `useMediaSource.test.tsx`. Also wrap in a jotai `Provider` with a fresh
+// `store` so tests can preload `badgeAtom` without leaking state between
+// cases (same pattern as `useBadgeListener.test.ts`).
+function renderRoomList(ui: ReactElement, store = createStore()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  return render(
+    <Provider store={store}>
+      <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+    </Provider>,
+  );
 }
 
 // RoomList wires context-menu actions and drag-reorder straight to Tauri IPC
@@ -117,6 +125,25 @@ describe("RoomList", () => {
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Mark as unread"));
     expect(setRoomMarkedUnread).toHaveBeenCalledWith(room.room_id, true);
+  });
+
+  it("shows no badge when badgeAtom is null or total_unread is zero", () => {
+    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
+    expect(screen.queryByLabelText(/unread rooms/)).not.toBeInTheDocument();
+  });
+
+  it("shows the total_unread count in the header badge", () => {
+    const store = createStore();
+    store.set(badgeAtom, { total_unread: 3, total_highlight: 0 });
+    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
+    expect(screen.getByLabelText("3 unread rooms")).toHaveTextContent("3");
+  });
+
+  it("prefers the mention count when total_highlight is nonzero", () => {
+    const store = createStore();
+    store.set(badgeAtom, { total_unread: 5, total_highlight: 2 });
+    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
+    expect(screen.getByLabelText("5 unread rooms, 2 mentions")).toHaveTextContent("2");
   });
 
   it("opens the space browser when a space header is clicked", async () => {

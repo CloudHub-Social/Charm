@@ -5,10 +5,27 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:tray:default",
+    "core:menu:default",
+    "core:window:allow-set-badge-count",
+    "core:window:allow-set-overlay-icon",
+    "core:window:allow-set-focus",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "opener:allow-open-url",
     "opener:allow-default-urls",
     "updater:default",
     "process:default",
     "deep-link:default",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "notification:default",
+    "notification:allow-is-permission-granted",
+    "notification:allow-request-permission",
+    "notification:allow-notify",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "window-state:default",
+    "store:default"
   ]
 }

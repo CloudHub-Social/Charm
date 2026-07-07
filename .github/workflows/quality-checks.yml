@@ -29,6 +29,17 @@ jobs:
       - run: pnpm knip
       - run: pnpm build
 
+      # Charm 2.0 Spec 09: tokens.css's primitive+semantic tiers are generated
+      # from .design-sync/tokens/design-tokens.json (the Claude Design sync
+      # contract's interim system of record — see scripts/tokens-pull.mjs).
+      # Re-running the pull on a clean checkout must produce zero diff; a
+      # mismatch means either the JSON source or the generated CSS was
+      # hand-edited out of sync with the other.
+      - name: Design tokens are in sync (drift check)
+        run: |
+          pnpm tokens:pull
+          git diff --exit-code src/styles/tokens.css
+
   storybook-a11y:
     name: Storybook (build + axe a11y)
     runs-on: ubuntu-latest
