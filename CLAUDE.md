@@ -50,10 +50,13 @@ For a release backport, branch from `origin/release/X.Y.Z` instead of `origin/ma
 matching the branch rules above.
 
 `--no-track` matters: without it, the new branch's upstream is set to `origin/main`
-(confirmed via `git branch -vv`), and a later bare `git push` fails — with an error
-whose first suggested fix, `git push origin HEAD:main`, would push your feature
-branch's commits straight onto `main` if followed blindly. Always push explicitly
-instead:
+(confirmed via `git branch -vv`). What a later bare `git push` does next depends on
+your `push.default` config: with `simple` (git's default since 2.0, and what's in
+effect if you haven't changed it) it fails outright — but its error message's first
+suggested fix, `git push origin HEAD:main`, would push your feature branch's commits
+straight onto `main` if followed blindly; with `push.default=upstream`/`tracking`
+configured instead, it pushes straight to the tracked branch with no error at all.
+Either way, don't rely on push.default — always push explicitly:
 
 ```
 git push -u origin <branch-name>
