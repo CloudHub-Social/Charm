@@ -21,6 +21,7 @@ use ts_rs::TS;
 use super::media;
 use super::persistence;
 use super::presence;
+use super::shell;
 use super::MatrixState;
 
 /// Square thumbnail size (px) requested when resolving a profile avatar's
@@ -99,11 +100,23 @@ where
 /// store — see Spec 08's "Logout store retention": this is a sign-out, not a
 /// device wipe, so a later re-login onto the same account reuses the
 /// existing store instead of starting cold.
-async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> Result<(), String> {
+async fn clear_local_session(
+    app: &AppHandle,
+    state: &State<'_, MatrixState>,
+    user_id: &str,
+) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
     *state.client.lock().await = None;
+
+    // The sync loop drives the native dock/taskbar/tray badge from its own
+    // snapshots (Spec 10) — aborting it below (a couple of lines down) stops
+    // it updating that badge, but doesn't itself zero it out. Without this, a
+    // sign-out with unread rooms leaves the last nonzero badge showing on the
+    // login screen, and potentially into the next signed-in account until its
+    // first sync.
+    let _ = shell::apply_native_badge(app, 0);
 
     // The background sync loop (`sync::spawn_sync_loop`) holds its own clone
     // of the `Client`, independent of the one just cleared above — without
@@ -147,7 +160,7 @@ async fn clear_local_session(state: &State<'_, MatrixState>, user_id: &str) -> R
 /// refusing), then unconditionally clears both keychain session entries and
 /// drops the client so a relaunch doesn't auto-restore.
 #[tauri::command]
-pub async fn logout(state: State<'_, MatrixState>) -> Result<(), String> {
+pub async fn logout(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -163,7 +176,7 @@ pub async fn logout(state: State<'_, MatrixState>) -> Result<(), String> {
         }
     });
 
-    clear_local_session(&state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str()).await
 }
 
 #[tauri::command]
@@ -332,6 +345,7 @@ pub async fn change_password(
 /// scope (see Spec 08 non-goals).
 #[tauri::command]
 pub async fn deactivate_account(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     password: Option<String>,
 ) -> Result<(), String> {
@@ -347,7 +361,7 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str()).await
 }
 
 #[cfg(test)]
