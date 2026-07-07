@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 
+use super::secret_store::{SecretEntry, SecretStoreError};
+
 /// Single fixed keychain service for this app. Every keychain *account name*
 /// below is `<kind>-<account_key>` — see [`account_key`] — so two Matrix
 /// accounts signed into the same Charm install never share a passphrase or
@@ -153,7 +155,7 @@ pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
 
 fn discard_temp_store(path: &Path, temp_key: &str) {
     let _ = std::fs::remove_dir_all(path);
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
+    if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
         let _ = entry.delete_credential();
     }
 }
@@ -198,7 +200,7 @@ pub fn migrate_legacy_single_account_store(app: &AppHandle) -> Result<(), String
     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
 
     for legacy_account in [PASSPHRASE_ACCOUNT, SESSION_ACCOUNT, OAUTH_SESSION_ACCOUNT] {
-        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, legacy_account) {
+        if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, legacy_account) {
             let _ = entry.delete_credential();
         }
     }
@@ -257,12 +259,12 @@ impl SavedOAuthSession {
 /// random one on first use. Never written to disk in plaintext and never
 /// stored in the same SQLite file it protects.
 pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(store_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(store_key))
         .map_err(|e| e.to_string())?;
 
     match entry.get_password() {
         Ok(passphrase) => Ok(passphrase),
-        Err(keyring::Error::NoEntry) => {
+        Err(SecretStoreError::NotFound) => {
             let passphrase: String = rand::rng()
                 .sample_iter(&Alphanumeric)
                 .take(32)
@@ -382,13 +384,13 @@ pub fn relocate_store_at(
     }
 
     let passphrase = get_or_create_passphrase(temp_key)?;
-    let account_entry = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+    let account_entry = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
         .map_err(|e| e.to_string())?;
     account_entry
         .set_password(&passphrase)
         .map_err(|e| e.to_string())?;
 
-    if let Ok(temp_entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
+    if let Ok(temp_entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
         let _ = temp_entry.delete_credential();
     }
 
@@ -407,7 +409,7 @@ pub fn save_session(
     homeserver_url: &str,
     session: &MatrixSession,
 ) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     let saved = SavedSession {
         homeserver_url: homeserver_url.to_string(),
@@ -418,13 +420,13 @@ pub fn save_session(
 }
 
 pub fn load_session(account_key: &str) -> Result<Option<SavedSession>, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.get_password() {
         Ok(json) => serde_json::from_str(&json)
             .map(Some)
             .map_err(|e| e.to_string()),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(SecretStoreError::NotFound) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -435,10 +437,10 @@ pub fn load_session(account_key: &str) -> Result<Option<SavedSession>, String> {
 /// that account's store (and passphrase) in place for a fast re-login; see
 /// Spec 08 (logout).
 pub fn clear_session(account_key: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -448,7 +450,7 @@ pub fn save_oauth_session(
     homeserver_url: &str,
     session: &OAuthSession,
 ) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     let saved = SavedOAuthSession::from_oauth_session(homeserver_url, session);
     let json = serde_json::to_string(&saved).map_err(|e| e.to_string())?;
@@ -456,24 +458,50 @@ pub fn save_oauth_session(
 }
 
 pub fn load_oauth_session(account_key: &str) -> Result<Option<SavedOAuthSession>, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.get_password() {
         Ok(json) => serde_json::from_str(&json)
             .map(Some)
             .map_err(|e| e.to_string()),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(SecretStoreError::NotFound) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
 
 pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &oauth_session_account(account_key))
         .map_err(|e| e.to_string())?;
     match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// Where the local first-run-onboarding marker for `account_key` lives — a
+/// bare empty file, not keychain-backed: unlike a session/passphrase this
+/// carries no secret, and it only exists as a fast-path so `useOnboardingGate`
+/// doesn't flash the onboarding screen for one frame while the account-data
+/// flag (the cross-device source of truth — see Spec 12) is still syncing.
+fn onboarding_flag_path(app: &AppHandle, account_key: &str) -> Result<PathBuf, String> {
+    onboarding_flag_path_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+    )
+}
+
+fn onboarding_flag_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> {
+    let dir = root.join("onboarding_flags");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(account_key))
+}
+
+pub fn save_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<(), String> {
+    std::fs::write(onboarding_flag_path(app, account_key)?, "").map_err(|e| e.to_string())
+}
+
+pub fn has_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<bool, String> {
+    Ok(onboarding_flag_path(app, account_key)?.exists())
 }
 
 #[cfg(test)]
@@ -754,5 +782,29 @@ mod tests {
             temp_entry.get_password(),
             Err(keyring::Error::NoEntry)
         ));
+    }
+
+    #[test]
+    fn onboarding_flag_is_absent_until_saved_and_isolated_per_account() {
+        let root = ScratchRoot::new("onboarding-flag");
+        let account_key_a = account_key("@charm-persistence-test-onboarding-a:localhost");
+        let account_key_b = account_key("@charm-persistence-test-onboarding-b:localhost");
+
+        assert!(!onboarding_flag_path_at(&root.0, &account_key_a)
+            .unwrap()
+            .exists());
+
+        std::fs::write(
+            onboarding_flag_path_at(&root.0, &account_key_a).unwrap(),
+            "",
+        )
+        .unwrap();
+
+        assert!(onboarding_flag_path_at(&root.0, &account_key_a)
+            .unwrap()
+            .exists());
+        assert!(!onboarding_flag_path_at(&root.0, &account_key_b)
+            .unwrap()
+            .exists());
     }
 }

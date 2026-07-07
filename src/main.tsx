@@ -10,6 +10,7 @@ import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
+import { ThemeProvider } from "./features/appearance/ThemeProvider";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
@@ -38,7 +39,9 @@ function Root() {
   return (
     <Sentry.ErrorBoundary fallback={ErrorBoundaryFallback}>
       <AppProviders store={jotaiStore}>
-        <App onLoggedOut={() => setJotaiStore(createStore())} />
+        <ThemeProvider>
+          <App onLoggedOut={() => setJotaiStore(createStore())} />
+        </ThemeProvider>
       </AppProviders>
     </Sentry.ErrorBoundary>
   );

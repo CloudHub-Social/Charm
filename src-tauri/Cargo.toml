@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -30,6 +30,9 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2.4.2", features = ["deep-link"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
 rand = "0.10.2"
 futures-util = "0.3.32"
 url = "2"
@@ -39,6 +42,7 @@ sha2 = "0.11.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 eyeball = "0.8.8"
 tauri-plugin-dialog = "2.7.1"
+tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
 lru = "0.12"
 imbl = "6.1.0"
@@ -60,11 +64,8 @@ libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 
 [dev-dependencies]
 matrix-sdk-test = "0.18.0"
-# Enables `matrix_sdk::test_utils::mocks::MatrixMockServer`, used by the
-# Timeline-mapping unit tests in `tests/timeline_mapping.rs` to build a real
-# `matrix-sdk-ui` `Timeline` against a mocked homeserver (no live Synapse
-# needed) instead of hand-fabricating `EventTimelineItem`s, which the crate
-# doesn't expose a public constructor for.
+# Provides `EventFactory`/room-builder fixtures used by the timeline-mapping
+# unit tests in `src/matrix/timeline.rs`.
 matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # For tests/sso_login.rs: drives the real Synapse<->Dex OIDC redirect chain
 # with a cookie jar, exactly like a browser would.
@@ -82,4 +83,12 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # used on any other platform. Surfaced by Spec 13's CI spike; needed for any
 # Android build of this app, not just that spike.
 openssl = { version = "0.10", features = ["vendored"] }
-
+# `keyring` has no Android backend (there's no OS-level "secret service"/
+# credential-manager API it wraps there — Android's equivalent is the
+# Keystore system, reached via JNI, not a native Rust crate). These back
+# `matrix::secret_store`'s Android implementation, which calls into a small
+# Kotlin helper (`SecureStorage.kt`, bundled in `gen/android`) wrapping
+# `androidx.security`'s `EncryptedSharedPreferences` — itself backed by an
+# AES key generated and held in the Android Keystore, not a plaintext file.
+jni = "0.21"
+ndk-context = "0.1"

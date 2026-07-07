@@ -26,6 +26,63 @@ store-visible.
   fork and no integration/dev branches. If that model is adopted later, update
   `ALLOWED_BASES` in `.claude/hooks/check-pr-base.py` and this section together.)
 
+## Parallel sessions — always isolate with a git worktree
+
+Multiple Claude Code sessions are routinely run in parallel against this same local
+clone (e.g. implementing several specs at once). **Set up an isolated git worktree
+for every implementation task — never work directly in the shared `~/git/Charm`
+checkout.** A session can't reliably tell whether another session is mid-turn in that
+same directory, and a plain `git checkout` there can land in the middle of another
+session's branch switch. This isn't hypothetical: on 2026-07-06, several parallel
+spec sessions rapidly switching branches in the shared checkout left it in a
+confusing (though ultimately recoverable — no git history was lost) state.
+
+At the start of any task that will edit files:
+
+```
+git fetch origin --quiet
+git worktree add -b <branch-name> ~/git/Charm-<short-suffix> origin/main --no-track
+cd ~/git/Charm-<short-suffix>
+pnpm install --frozen-lockfile   # node_modules isn't shared across worktrees
+```
+
+For a release backport, branch from `origin/release/X.Y.Z` instead of `origin/main`,
+matching the branch rules above.
+
+`--no-track` matters: without it, the new branch's upstream is set to `origin/main`
+(confirmed via `git branch -vv`). What a later bare `git push` does next depends on
+your `push.default` config: with `simple` (git's default since 2.0, and what's in
+effect if you haven't changed it) it fails outright — but its error message's first
+suggested fix, `git push origin HEAD:main`, would push your feature branch's commits
+straight onto `main` if followed blindly; with `push.default=upstream`/`tracking`
+configured instead, it pushes straight to the tracked branch with no error at all.
+Either way, don't rely on push.default — always push explicitly:
+
+```
+git push -u origin <branch-name>
+```
+
+Do all work — edits, tests, commits, that push, `gh pr create` — from inside the
+isolated directory. When done, remove the worktree **without `--force`**:
+
+```
+cd ~/git/Charm
+git worktree remove ~/git/Charm-<short-suffix>
+```
+
+`git worktree remove --force` deletes the directory outright, including any
+uncommitted changes inside it (confirmed empirically: nothing is trashed or
+recoverable) — exactly the loss this section exists to prevent. If the plain form
+refuses ("contains modified or untracked files"), that's git telling you something
+in there isn't committed or pushed yet — go commit/push it, don't force past the
+warning.
+
+If the shared `~/git/Charm` checkout itself has uncommitted changes (a session that
+didn't isolate), **do not stash, reset, or discard them** — that's someone else's
+in-progress work. Isolate your own task in a worktree regardless and leave the
+shared checkout exactly as you found it; flag it to the user rather than trying to
+clean it up yourself.
+
 ## Quality gate
 
 Run before committing and fix all failures. These mirror the `frontend` job in

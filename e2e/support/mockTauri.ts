@@ -35,6 +35,31 @@ export function installMockTauri(seed: {
   members?: { user_id: string; display_name: string | null }[];
   otherDevices?: { device_id: string; display_name: string | null; is_verified: boolean }[];
   roomDetails?: Record<string, unknown>;
+  /**
+   * `false` for onboarding.spec.ts's "brand-new account" scenario — every
+   * other spec keeps the default (rooms present) so Spec 12's onboarding
+   * gate resolves straight to "done" and never mounts `OnboardingScreen`
+   * where it isn't the thing under test.
+   */
+  hasRooms?: boolean;
+  /**
+   * Additional rooms beyond `room` — used by room-list-org.spec.ts to
+   * exercise sectioning (favourites/rooms/low-priority/spaces) across a
+   * small multi-room list. Each entry is layered onto the same default
+   * shape `room` gets, so a partial room object here is safe too.
+   */
+  extraRooms?: Record<string, unknown>[];
+  /**
+   * The local file path `plugin:dialog|open` resolves to, simulating the
+   * user picking a file in the native picker — media-attachments.spec.ts
+   * drives the attach-button flow this way since there's no real OS dialog
+   * to drive from a plain browser. `null`/omitted resolves to `null`
+   * (simulating the user cancelling the picker), matching the real
+   * `open()` contract `ChatShell.handleAttachClick` already guards on.
+   */
+  filePickerResult?: string | null;
+  /** `list_space_children` results, keyed by the space's `room_id`. */
+  spaceChildren?: Record<string, Record<string, unknown>[]>;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -58,6 +83,34 @@ export function installMockTauri(seed: {
     dm_peer_user_id: null,
     ...seed.room,
   };
+  const defaultRoomShape = {
+    unread_count: 0,
+    unread_messages: 0,
+    is_marked_unread: false,
+    is_muted: false,
+    notification_mode: "all_messages",
+    is_favourite: false,
+    is_low_priority: false,
+    manual_order: null,
+    is_space: false,
+    parent_space_ids: [],
+    is_direct: false,
+    has_unread: false,
+    avatar_url: null,
+    avatar_path: null,
+    dm_peer_user_id: null,
+  };
+  const extraRooms: Record<string, unknown>[] = (seed.extraRooms ?? []).map((extra) => {
+    const merged = { ...defaultRoomShape, ...extra };
+    const unreadCount = merged.unread_count ?? 0;
+    return {
+      ...merged,
+      unread_messages: extra.unread_messages ?? unreadCount,
+      has_unread: extra.has_unread ?? unreadCount > 0,
+    };
+  });
+  const allRooms: Record<string, unknown>[] = [room, ...extraRooms];
+  const spaceChildren = new Map(Object.entries(seed.spaceChildren ?? {}));
   type Listener = (payload: unknown) => void;
 
   const listenersByEvent = new Map<string, Set<number>>();
@@ -81,7 +134,15 @@ export function installMockTauri(seed: {
   let nextTxnId = 1;
   let nextEventId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
-  messagesByRoom.set(room.room_id, []);
+  for (const r of allRooms) {
+    messagesByRoom.set(r.room_id as string, []);
+  }
+
+  // Spec 12 (onboarding): both persistence layers the gate hook checks,
+  // in-memory only — no reload-survives-relaunch simulation here, since a
+  // page reload re-runs this whole init script from scratch anyway.
+  const accountData = new Map<string, unknown>();
+  let localOnboardingFlag = false;
 
   // Spec 08 (settings): minimal in-memory state for the account/devices/
   // notifications commands — just enough to drive the logout and
@@ -92,6 +153,7 @@ export function installMockTauri(seed: {
     ...(seed.otherDevices ?? []),
   ];
   let crossSigningBootstrapped = true;
+  let autostartEnabled = false;
   const notificationSettings = {
     default_mode: "all_messages",
     keywords: [] as string[],
@@ -168,19 +230,200 @@ export function installMockTauri(seed: {
     emit("room_details:update", { ...roomDetails });
   }
 
+  function findRoom(roomId: string): Record<string, unknown> | undefined {
+    return allRooms.find((r) => r.room_id === roomId);
+  }
+
+  function pushRoomListUpdate() {
+    emit("room_list:update", [...allRooms]);
+  }
+
+  // Spec 05: read receipts, typing, presence. Deliberately not modeling a
+  // second real user session — these commands just accept the send and
+  // clear the room's unread state; `__e2eEmit` is how a test simulates the
+  // *incoming* side (another user's receipt/typing/presence) since there's
+  // no second client in this fake to produce it organically.
+
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
-    list_rooms: () => [room],
+    list_rooms: () => (seed.hasRooms === false ? [] : allRooms),
+    get_own_profile: () => ({
+      user_id: profile.user_id,
+      display_name: profile.display_name,
+      avatar_url: profile.avatar_url,
+      avatar_path: null,
+      presence: "online",
+    }),
+    get_account_data: (args) => accountData.get(args.eventType as string) ?? null,
+    set_account_data: (args) => {
+      accountData.set(args.eventType as string, args.content);
+      return undefined;
+    },
+    get_local_onboarding_flag: () => localOnboardingFlag,
+    set_local_onboarding_flag: () => {
+      localOnboardingFlag = true;
+      return undefined;
+    },
     resolve_room_alias: () => room.room_id,
     get_timeline_page: (args) => ({
       messages: messagesByRoom.get(args.roomId as string) ?? [],
       next_cursor: null,
     }),
-    mark_room_read: () => undefined,
+    // Mirrors the real `mark_room_read` Rust command, which only sends a read
+    // receipt + fully-read marker — it does NOT touch the separate MSC2867
+    // `m.marked_unread` flag (that's `set_room_marked_unread`'s job). So this
+    // clears the numeric unread counters but leaves `is_marked_unread` alone.
+    // With both counters now zeroed, the `has_unread` invariant's other two
+    // clauses (`unread_messages > 0`, `unread_count > 0`) are unconditionally
+    // false, so the recompute reduces to just `is_marked_unread` — computing
+    // the full invariant here would wrongly read the counters *after*
+    // they'd already been cleared.
+    mark_room_read: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.unread_count = 0;
+        targetRoom.unread_messages = 0;
+        targetRoom.has_unread = Boolean(targetRoom.is_marked_unread);
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
     send_typing: () => undefined,
     can_redact: () => true,
     get_room_members: () => seed.members ?? [],
     run_command: () => ({ status: "success" }),
+
+    // Spec 02: media and attachments.
+    send_attachment: async (args) => {
+      const roomId = args.roomId as string;
+      const filePath = args.filePath as string;
+      const txnId = args.txnId as string;
+      const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+      const eventId = `\$${nextEventId++}`;
+      const isImage = /\.(png|jpe?g|gif|webp)$/i.test(filename);
+      const isVideo = /\.(mp4|webm|mov)$/i.test(filename);
+      const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(filename);
+      const media = isImage
+        ? {
+            type: "Image",
+            mime: "image/png",
+            size: 12345,
+            width: 800,
+            height: 600,
+            has_thumbnail: true,
+            blurhash: null,
+          }
+        : isVideo
+          ? {
+              type: "Video",
+              mime: "video/mp4",
+              size: 54321,
+              width: 1280,
+              height: 720,
+              duration_ms: 4200,
+              has_thumbnail: true,
+            }
+          : isAudio
+            ? { type: "Audio", mime: "audio/mpeg", size: 22222, duration_ms: 3000 }
+            : { type: "File", filename, mime: "application/octet-stream", size: 99999 };
+      // Emits upload:progress twice (partial then complete) before the sent
+      // message lands, so a test can assert the progress bar both appears
+      // and clears — mirroring the real send-queue's incremental progress
+      // events (see `UploadProgress`'s doc comment). The `setTimeout` between
+      // them is deliberate: without it, both events fire synchronously within
+      // this one command invocation and React batches add -> partial ->
+      // remove before ever painting, so a test could never observe the
+      // in-flight state (and a regression that stopped rendering the upload
+      // row entirely would still pass).
+      emit("upload:progress", { txn_id: txnId, room_id: roomId, sent: 50, total: 100 });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const sent = {
+        event_id: eventId,
+        sender: seed.userId,
+        sender_display_name: null,
+        sender_avatar_url: null,
+        sender_avatar_path: null,
+        body: filename,
+        formatted_body: null,
+        timestamp_ms: Date.now(),
+        edited: false,
+        redacted: false,
+        reactions: [],
+        in_reply_to: null,
+        transaction_id: txnId,
+        send_state: { state: "sent" },
+        media,
+      };
+      messagesByRoom.get(roomId)?.push(sent);
+      emit("upload:progress", { txn_id: txnId, room_id: roomId, sent: 100, total: 100 });
+      pushTimelineUpdate(roomId);
+      return undefined;
+    },
+    resolve_media: () =>
+      // A tiny same-origin placeholder path — `convertFileSrc` is a no-op in
+      // this mock (`installMockTauri`'s own `convertFileSrc: (p) => p`
+      // below), so whatever this returns is used directly as an `<img>`/
+      // `<video>`/`<a href>` src. A data URI keeps the lightbox/thumbnail
+      // actually renderable without needing a real static asset on disk.
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+
+    // Spec 05: read receipts, typing, presence.
+    send_read_receipt: () => undefined,
+    set_presence: () => undefined,
+    get_presence: () => null,
+
+    // Spec 06: room-list organization (favourite/low-priority/mute/mark-
+    // unread/manual-order) and spaces (list children + join/knock).
+    set_room_favourite: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.is_favourite = args.favourite;
+        if (args.favourite) targetRoom.is_low_priority = false;
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
+    set_room_low_priority: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.is_low_priority = args.lowPriority;
+        if (args.lowPriority) targetRoom.is_favourite = false;
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
+    set_room_muted: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.is_muted = args.muted;
+        targetRoom.notification_mode = args.muted ? "mute" : "all_messages";
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
+    set_room_marked_unread: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.is_marked_unread = args.unread;
+        targetRoom.has_unread =
+          Boolean(args.unread) ||
+          (!targetRoom.is_muted && (targetRoom.unread_messages as number) > 0) ||
+          (targetRoom.unread_count as number) > 0;
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
+    set_room_manual_order: (args) => {
+      const targetRoom = findRoom(args.roomId as string);
+      if (targetRoom) {
+        targetRoom.manual_order = args.order;
+        pushRoomListUpdate();
+      }
+      return undefined;
+    },
+    list_space_children: (args) => spaceChildren.get(args.spaceId as string) ?? [],
+    join_room: () => undefined,
+    knock_room: () => undefined,
 
     // Spec 08: account/devices/notifications settings commands.
     logout: () => undefined,
@@ -249,6 +492,17 @@ export function installMockTauri(seed: {
       return undefined;
     },
 
+    // Spec 10: native platform shell. No real tray/dock/taskbar to drive in
+    // e2e, so these just track enough in-memory state for the settings
+    // toggles/focus-tracking effects to round-trip.
+    set_focused_room: () => undefined,
+    set_badge_count: () => undefined,
+    get_autostart: () => autostartEnabled,
+    set_autostart: (args) => {
+      autostartEnabled = args.enabled as boolean;
+      return undefined;
+    },
+
     get_room_details: () => ({ ...roomDetails }),
     get_room_member_list: () => [...memberList],
     set_room_name: (args) => {
@@ -259,7 +513,7 @@ export function installMockTauri(seed: {
       // the chat header and `RoomList` both read the room's name from
       // `RoomSummary`, not `RoomDetails`, so this keeps them in sync too
       // (see Spec 07 acceptance criteria 2).
-      emit("room_list:update", [room]);
+      pushRoomListUpdate();
       return undefined;
     },
     set_room_topic: (args) => {
@@ -477,6 +731,13 @@ export function installMockTauri(seed: {
         const event = args?.event as string;
         listenersByEvent.get(event)?.delete(args?.eventId as number);
         return Promise.resolve(undefined);
+      }
+      // Spec 02: `@tauri-apps/plugin-dialog`'s `open()` goes through this
+      // same IPC layer rather than a separate mock — `ChatShell`'s attach
+      // button calls it directly, so media-attachments.spec.ts drives the
+      // "user picked a file" step by seeding `filePickerResult`.
+      if (cmd === "plugin:dialog|open") {
+        return Promise.resolve(seed.filePickerResult ?? null);
       }
       const handler = handlers[cmd];
       return Promise.resolve(handler ? handler(args ?? {}) : undefined);

@@ -2,9 +2,76 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Charm</title>
+    <script>
+      // Flash-free theme boot (Charm 2.0 Spec 09). Runs synchronously before
+      // the module bundle, reading the localStorage mirror that
+      // `src/features/appearance/persistence.ts` write-throughs on every
+      // change (the async `tauri-plugin-store` value is reconciled after
+      // mount by `ThemeProvider`). Keep the attribute names AND the allowed
+      // value lists below in sync by hand with
+      // `src/features/appearance/atoms.ts`'s `VALID_THEMES`/etc. and
+      // `dom.ts`'s `applyAppearanceToDom` — this script can't import those
+      // modules since it must run before any bundle.
+      (function () {
+        var DEFAULTS = { theme: "dark", fontSize: "md", density: "cozy", reducedMotion: "system" };
+        var VALID = {
+          theme: ["dark", "light", "midnight", "system"],
+          fontSize: ["sm", "md", "lg", "xl"],
+          density: ["compact", "cozy"],
+          reducedMotion: ["system", "on", "off"],
+        };
+        // Validates a field against its allowed value list rather than a
+        // bare `||`/`??` fallback — localStorage is unschemed JSON, so a
+        // corrupted-but-parseable value (e.g. a hand-edited
+        // `theme: "banana"`) would otherwise be accepted verbatim and set
+        // as `data-theme="banana"`, which matches no CSS override and
+        // silently breaks theming. Matches `mergeAppearance`'s validation
+        // in persistence.ts.
+        function pick(value, key) {
+          return VALID[key].indexOf(value) !== -1 ? value : DEFAULTS[key];
+        }
+        var state = DEFAULTS;
+        try {
+          var raw = localStorage.getItem("charm:appearance");
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            // The mirror is a `{ state, updatedAt }` envelope (see
+            // persistence.ts's `PersistedEnvelope`) so ThemeProvider's
+            // reconciliation can last-write-wins against the async store.
+            // Fall back to treating `parsed` itself as the state for a
+            // mirror written by a pre-envelope build.
+            var innerState = parsed && typeof parsed.state === "object" ? parsed.state : parsed;
+            state = {
+              theme: pick(innerState.theme, "theme"),
+              fontSize: pick(innerState.fontSize, "fontSize"),
+              density: pick(innerState.density, "density"),
+              reducedMotion: pick(innerState.reducedMotion, "reducedMotion"),
+            };
+          }
+        } catch (e) {
+          // Corrupt/inaccessible localStorage — fall back to defaults rather
+          // than blocking boot.
+        }
+        var effectiveTheme = state.theme;
+        if (effectiveTheme === "system") {
+          try {
+            effectiveTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          } catch (e) {
+            effectiveTheme = "dark";
+          }
+        }
+        var root = document.documentElement;
+        root.setAttribute("data-theme", effectiveTheme);
+        root.setAttribute("data-density", state.density);
+        root.setAttribute("data-font-size", state.fontSize);
+        root.setAttribute("data-reduced-motion", state.reducedMotion);
+      })();
+    </script>
   </head>
 
   <body>

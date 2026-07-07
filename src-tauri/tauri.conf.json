@@ -39,6 +39,10 @@
         "enable": true,
         "scope": ["$APPDATA/media/**"]
       }
+    },
+    "trayIcon": {
+      "iconPath": "icons/32x32.png",
+      "iconAsTemplate": true
     }
   },
   "bundle": {
