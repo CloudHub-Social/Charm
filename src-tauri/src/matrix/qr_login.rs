@@ -206,6 +206,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 let state = app.state::<MatrixState>();
                 let _completion_guard = state.login_completion_lock.lock().await;
 
+                // See auth.rs's identical capture-and-restore-on-failure
+                // rationale.
+                let previous_client = state.client.lock().await.clone();
+
                 // Stop any sync loop already running for this account
                 // before relocating its store — same rationale as the
                 // identical step in auth.rs's login/register/
@@ -218,6 +222,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     &homeserver_url,
                     &session,
                 ) {
+                    if let Some(previous_client) = previous_client {
+                        *state.client.lock().await = Some(previous_client.clone());
+                        spawn_sync_loop(app.clone(), previous_client);
+                    }
                     let _ = app.emit(
                         "qr_login:progress",
                         QrLoginProgressEvent::Error { message: e },

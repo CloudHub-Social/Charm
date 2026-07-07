@@ -591,6 +591,20 @@ fn relocate_store_at_locked_with(
     let account_path = root.join(account_key);
     let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
     let backup_path = root.join(&backup_key);
+
+    // A leftover backup from a *previous* relocation attempt that never
+    // fully cleaned up (e.g. its rollback couldn't remove the just-installed
+    // store because the caller's `Client` still had it open) might be the
+    // account's only genuinely valid store — resolve that ambiguity the
+    // same way the startup sweep would, before this attempt's own logic
+    // (below) discards it. Not just an optimization: without this, a
+    // same-process retry could permanently discard the one store still
+    // paired with whatever session is currently saved, before ever giving
+    // `sweep_orphan_temp_stores` a chance to recover it.
+    if backup_path.exists() {
+        recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path);
+    }
+
     let account_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
             .map_err(|e| e.to_string())?;
@@ -625,37 +639,31 @@ fn relocate_store_at_locked_with(
             None
         };
     if existed {
+        // Written *before* the directory move below, not after: this way a
+        // crash between the two can never land in a gap where the backup
+        // directory exists but its durable passphrase doesn't yet — either
+        // the write hasn't happened and neither has the rename (nothing to
+        // recover, the account's original store is exactly where it always
+        // was), or both have happened (the durable entry is guaranteed
+        // present for anything `recover_or_discard_stale_backup` might find
+        // afterward). A *hard* requirement, not best-effort: if this write
+        // fails, bail before touching anything else — no rollback machinery
+        // needed for a step this early, since nothing has moved yet.
+        if let Some(ref passphrase) = original_passphrase {
+            backup_passphrase_entry.set_password(passphrase).map_err(|e| {
+                format!("failed to durably save the existing store's passphrase for {account_key}: {e}")
+            })?;
+        }
+
         if backup_path.exists() {
             let _ = std::fs::remove_dir_all(&backup_path);
         }
-        std::fs::rename(&account_path, &backup_path).map_err(|e| {
-            format!(
+        if let Err(e) = std::fs::rename(&account_path, &backup_path) {
+            let _ = backup_passphrase_entry.delete_credential();
+            return Err(format!(
                 "failed to back up stale store for {account_key} at {}: {e}",
                 account_path.display()
-            )
-        })?;
-        // Persisted durably — not just held in `original_passphrase` above
-        // — so a *crash* (as opposed to a clean `Err` return, which the
-        // in-process rollback below already handles) after this point is
-        // still recoverable: `sweep_orphan_temp_stores` finds this backup
-        // directory on the next startup and, if the relocation never
-        // reached its final commit, restores both it and this passphrase
-        // together rather than discarding the account's only surviving
-        // store. A *hard* requirement, not best-effort: if this write fails
-        // and a later step still overwrites the account's own passphrase
-        // entry, the backup would become durably unrecoverable — the
-        // in-process `original_passphrase` is gone once this function
-        // returns, and `recover_or_discard_stale_backup` requires this
-        // entry to restore anything. Nothing else has been touched yet at
-        // this point, so on failure just undo the directory move and bail —
-        // no rollback machinery needed for a step this early.
-        if let Some(ref passphrase) = original_passphrase {
-            if let Err(e) = backup_passphrase_entry.set_password(passphrase) {
-                let _ = std::fs::rename(&backup_path, &account_path);
-                return Err(format!(
-                    "failed to durably save the existing store's passphrase for {account_key}: {e}"
-                ));
-            }
+            ));
         }
     }
 

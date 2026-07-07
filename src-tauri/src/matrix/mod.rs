@@ -131,6 +131,15 @@ pub struct MatrixState {
     /// aborts it and it polls `/sync` indefinitely. `spawn_sync_loop` aborts
     /// whatever's here before storing its own new handle.
     pub(crate) sync_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The detached one-shot task `spawn_sync_loop` fires to report presence
+    /// as online (see its own doc comment for why that's separate from
+    /// `sync_loop_handle`'s long-running loop). Tracked for the same reason
+    /// as `sync_loop_handle`: it holds its own `Client` clone, so
+    /// `sync::abort_current_sync_loop` needs to abort and await this too —
+    /// otherwise a slow presence request could still be holding the old
+    /// store's SQLite files open when a login supersedes it, same hazard,
+    /// different task.
+    pub(crate) presence_task_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// The room currently open/focused in the frontend, set by
     /// `shell::set_focused_room` — read by each room's timeline listener to
     /// suppress local notifications for whatever room the user is already
@@ -176,6 +185,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             sync_loop_handle: std::sync::Mutex::default(),
+            presence_task_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
             notified_event_ids: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(MAX_NOTIFIED_EVENT_IDS)
@@ -234,10 +244,18 @@ impl MatrixState {
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
-        timelines.push(
+        // `push` returns the LRU-evicted entry (if any capacity eviction
+        // happened) rather than just dropping it — a dropped `JoinHandle`
+        // detaches its task instead of stopping it, which would leave that
+        // room's listener (and its own `Client` clone) running for up to
+        // `LIVENESS_CHECK_INTERVAL` after eviction, the same open-handle
+        // hazard `clear_timelines` exists to avoid on logout/relocation.
+        if let Some((_, (_, evicted_handle))) = timelines.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle),
-        );
+        ) {
+            evicted_handle.abort();
+        }
 
         Ok(timeline)
     }

@@ -253,15 +253,28 @@ async fn notify_unopened_room_messages(
 /// microseconds. `MatrixState::clear_timelines` applies the same rigor to
 /// the timeline listeners.
 pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
-    let previous = app
+    let previous_sync = app
         .state::<MatrixState>()
         .sync_loop_handle
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .take();
-    if let Some(previous) = previous {
-        previous.abort();
-        let _ = previous.await;
+    if let Some(previous_sync) = previous_sync {
+        previous_sync.abort();
+        let _ = previous_sync.await;
+    }
+    // The detached presence-report task also holds its own `Client` clone
+    // (see `spawn_sync_loop`'s doc comment) — same handle-safety rationale
+    // as the sync loop above, just a second, separate task to stop.
+    let previous_presence = app
+        .state::<MatrixState>()
+        .presence_task_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(previous_presence) = previous_presence {
+        previous_presence.abort();
+        let _ = previous_presence.await;
     }
     app.state::<MatrixState>().clear_timelines().await;
     *app.state::<MatrixState>().client.lock().await = None;
@@ -278,9 +291,18 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     // here shouldn't ever block or fail login/session-restore.
     {
         let client = client.clone();
-        tokio::spawn(async move {
+        let presence_task = tokio::spawn(async move {
             let _ = presence::set_presence_online(&client).await;
         });
+        let previous = app_for_handle
+            .state::<MatrixState>()
+            .presence_task_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(presence_task);
+        if let Some(previous) = previous {
+            previous.abort();
+        }
     }
 
     let handle = tokio::spawn(async move {
