@@ -126,6 +126,17 @@ pub struct Session {
     /// slot like `last_snapshot`) since more than one room can be open at
     /// once and each has its own independent history.
     pub room_snapshots: Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    /// The latest `room_details:update` per room, the `room_details:update`
+    /// counterpart to `room_snapshots` above — `sync_loop::emit_room_updates`
+    /// updates this whenever a synced state event changes a room's details,
+    /// and `crate::routes::ws_handler` replays it alongside `room_snapshots`
+    /// on every new connection. Same gap this closes: `useRoomDetails` on
+    /// the frontend expects this push to keep its query cache current rather
+    /// than polling, so a disconnect/reconnect gap while a room's
+    /// name/power-levels/membership changed would otherwise leave the
+    /// details panel and member list stale until the room is remounted.
+    pub room_details_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
 }
 
 /// See `Session::pending_verification_events`'s doc comment.
@@ -148,6 +159,7 @@ impl Session {
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            room_details_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             events,
         }
     }

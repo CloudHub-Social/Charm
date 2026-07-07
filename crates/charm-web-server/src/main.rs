@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 store: Arc::clone(persistence),
                 token: token.clone(),
                 homeserver_url,
-                initial_access_token,
+                initial_access_token: Some(initial_access_token),
             });
             let handle = sync_loop::spawn(
                 session.client.clone(),
@@ -38,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 persist,
                 initial_response,
                 session.last_snapshot.clone(),
+                session.room_details_snapshots.clone(),
             );
             *session
                 .sync_handle

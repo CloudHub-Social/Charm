@@ -70,7 +70,18 @@ pub struct PersistHandle {
     /// like "no change from what's saved", so it would never get persisted
     /// — a session restored once, silently carrying a token now stale on
     /// disk, would fail to restore again on the *next* restart.
-    pub initial_access_token: String,
+    ///
+    /// `None` means "nothing is actually on disk for this session yet" —
+    /// `finish_login`'s own initial `persistence.save` failed (a transient
+    /// disk/lock error). Seeding `last_saved_access_token` with `None` in
+    /// that case (rather than the live token, which an earlier version of
+    /// this did) makes `spawn`'s very first `repersist_if_token_changed`
+    /// check compare against nothing-saved and immediately retry the write,
+    /// instead of mistaking "the live token happens to match what I was
+    /// told is saved" for "this session is actually safely on disk" — which
+    /// would otherwise leave it persisted nowhere until the token later
+    /// happened to rotate.
+    pub initial_access_token: Option<String>,
 }
 
 /// Re-saves the session if (and only if) its access token has changed since
@@ -209,6 +220,9 @@ pub fn spawn(
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
     last_snapshot: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    room_details_snapshots: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>,
+    >,
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
@@ -229,7 +243,7 @@ pub fn spawn(
             ServerEvent::SyncState(SyncStateEvent::Idle),
         );
         emit_room_list_and_badge(&client, &events, &last_snapshot).await;
-        emit_room_updates(&client, &events, &initial_response).await;
+        emit_room_updates(&client, &events, &initial_response, &room_details_snapshots).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
         // actually saved on disk right now — not `None` and not the
@@ -238,7 +252,9 @@ pub fn spawn(
         // content on every login/restore, the latter can miss a token
         // refresh that already happened during restore's own initial
         // sync).
-        let mut last_saved_access_token = persist.as_ref().map(|p| p.initial_access_token.clone());
+        let mut last_saved_access_token = persist
+            .as_ref()
+            .and_then(|p| p.initial_access_token.clone());
         // Check immediately, not just from the loop's first iteration below:
         // `restore_one`'s own initial sync (run before `spawn` is ever
         // called) can itself refresh an expiring token, so the client's
@@ -265,7 +281,7 @@ pub fn spawn(
                 Ok(response) => {
                     consecutive_failures = 0;
                     emit_room_list_and_badge(&client, &events, &last_snapshot).await;
-                    emit_room_updates(&client, &events, &response).await;
+                    emit_room_updates(&client, &events, &response, &room_details_snapshots).await;
                     if let Some(persist) = &persist {
                         last_saved_access_token =
                             repersist_if_token_changed(&client, persist, last_saved_access_token)
@@ -338,6 +354,9 @@ async fn emit_room_updates(
     client: &Client,
     events: &broadcast::Sender<ServerEvent>,
     response: &matrix_sdk::sync::SyncResponse,
+    room_details_snapshots: &std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>,
+    >,
 ) {
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
@@ -384,7 +403,12 @@ async fn emit_room_updates(
         });
         if state_events_present {
             if let Ok(details) = room_admin::build_room_details(client, room_id.as_str()).await {
-                let _ = events.send(ServerEvent::RoomDetails(details));
+                let event = ServerEvent::RoomDetails(details);
+                room_details_snapshots
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(room_id.clone(), event.clone());
+                let _ = events.send(event);
             }
         }
     }

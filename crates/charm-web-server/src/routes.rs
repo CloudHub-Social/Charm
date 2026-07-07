@@ -276,12 +276,19 @@ async fn finish_login(
         .await
         .expect("session was just created under this token");
 
+    // `initial_save_succeeded` tracks whether the save below actually
+    // landed on disk — `PersistHandle::initial_access_token` must reflect
+    // that, not just assume it, so a transient failure here doesn't leave
+    // `sync_loop::spawn` believing this session is already safely
+    // persisted (see that field's doc comment).
+    let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
-        if let Err(e) = persistence
+        match persistence
             .save(&token, homeserver_url, matrix_session)
             .await
         {
-            tracing::warn!("failed to persist session: {e}");
+            Ok(()) => initial_save_succeeded = true,
+            Err(e) => tracing::warn!("failed to persist session: {e}"),
         }
     }
 
@@ -291,7 +298,8 @@ async fn finish_login(
             store: store.clone(),
             token: token.clone(),
             homeserver_url: homeserver_url.to_string(),
-            initial_access_token: matrix_session.tokens.access_token.clone(),
+            initial_access_token: initial_save_succeeded
+                .then(|| matrix_session.tokens.access_token.clone()),
         })
     } else {
         None
@@ -303,6 +311,7 @@ async fn finish_login(
         persist,
         initial_response,
         stored.last_snapshot.clone(),
+        stored.room_details_snapshots.clone(),
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -2014,6 +2023,28 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .cloned()
         .collect();
     for event in room_snapshots {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
+    // Replay each room's latest `room_details:update` too — see
+    // `Session::room_details_snapshots`'s doc comment. The frontend's
+    // `useRoomDetails` expects this push to keep its cache current rather
+    // than polling, so without this a disconnect/reconnect gap during a
+    // room-name/power-level/membership change would leave the details
+    // panel and member list stale.
+    let room_details_snapshots: Vec<_> = session
+        .room_details_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    for event in room_details_snapshots {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
