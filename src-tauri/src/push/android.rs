@@ -88,18 +88,16 @@ impl super::NotificationTransport for UnifiedPushTransport {
         }
 
         if let Err(e) = with_env(|env, activity| {
-            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let new_string_result = env.new_string(INSTANCE_ID);
+            let instance = jni_result(env, "new_string(instance)", new_string_result)?;
             let class = push_bridge_class(env, activity)?;
-            jni_result(
-                env,
-                "PushBridge.register",
-                env.call_static_method(
-                    class,
-                    "register",
-                    "(Landroid/content/Context;Ljava/lang/String;)V",
-                    &[JValue::from(activity), JValue::from(&instance)],
-                ),
-            )?;
+            let result = env.call_static_method(
+                class,
+                "register",
+                "(Landroid/content/Context;Ljava/lang/String;)V",
+                &[JValue::from(activity), JValue::from(&instance)],
+            );
+            jni_result(env, "PushBridge.register", result)?;
             Ok(())
         }) {
             *PENDING_REGISTRATION
@@ -128,18 +126,16 @@ impl super::NotificationTransport for UnifiedPushTransport {
 
     async fn unregister(&self) -> Result<(), PushError> {
         with_env(|env, activity| {
-            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let new_string_result = env.new_string(INSTANCE_ID);
+            let instance = jni_result(env, "new_string(instance)", new_string_result)?;
             let class = push_bridge_class(env, activity)?;
-            jni_result(
-                env,
-                "PushBridge.unregister",
-                env.call_static_method(
-                    class,
-                    "unregister",
-                    "(Landroid/content/Context;Ljava/lang/String;)V",
-                    &[JValue::from(activity), JValue::from(&instance)],
-                ),
-            )?;
+            let result = env.call_static_method(
+                class,
+                "unregister",
+                "(Landroid/content/Context;Ljava/lang/String;)V",
+                &[JValue::from(activity), JValue::from(&instance)],
+            );
+            jni_result(env, "PushBridge.unregister", result)?;
             Ok(())
         })?;
         *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -201,11 +197,8 @@ fn push_bridge_class<'a>(
     activity: &JObject,
 ) -> Result<JClass<'a>, PushError> {
     if let Some(cached) = CLASS_REF.get() {
-        let local = jni_result(
-            env,
-            "new_local_ref(cached PushBridge class)",
-            env.new_local_ref(cached.as_obj()),
-        )?;
+        let result = env.new_local_ref(cached.as_obj());
+        let local = jni_result(env, "new_local_ref(cached PushBridge class)", result)?;
         return Ok(JClass::from(local));
     }
     let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
