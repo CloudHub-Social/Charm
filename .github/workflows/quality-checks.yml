@@ -4,8 +4,59 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
+  changes:
+    name: Detect platform-affecting changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      platform: ${{ steps.filter.outputs.platform }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      # Plain git/bash rather than a path-filter action — this repo's Actions
+      # permissions only allow a specific set of non-GitHub-owned actions
+      # (see Settings > Actions > Allow select actions), and adding a new one
+      # is a separate change from this CI job. Matches on:
+      #   - src-tauri/**  (covers src-tauri/gen/**, the iOS/Android scaffolding)
+      #   - package.json / pnpm-lock.yaml (every platform job runs `pnpm
+      #     install` then `pnpm tauri ...` — a lockfile or @tauri-apps/cli
+      #     bump can break these builds same as a src-tauri/** change)
+      #   - this workflow file itself (so edits to the platform jobs are
+      #     validated by their own PR instead of always reporting "skipped")
+      - name: Check whether src-tauri/** or its build inputs changed
+        id: filter
+        run: |
+          pattern='^(src-tauri/|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
+          zero_sha="0000000000000000000000000000000000000000"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual dispatch (e.g. re-running the platform jobs after a CI
+            # infra fix) always runs them — there's no "changed files" concept.
+            changed="src-tauri/"
+          elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
+            # New branch / force-push with no prior tip to diff against —
+            # `git diff` against the all-zeros SHA isn't meaningful, so run
+            # the platform jobs rather than silently skip them.
+            changed="src-tauri/"
+          else
+            # push to main: diff against the pre-push tip. Falls back to
+            # running the platform jobs (safe default) on any other
+            # unexpected git failure rather than silently skipping them.
+            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}") || changed="src-tauri/"
+          fi
+          if echo "$changed" | grep -qE "$pattern"; then
+            echo "platform=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "platform=false" >> "$GITHUB_OUTPUT"
+          fi
+
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
     runs-on: ubuntu-latest
@@ -348,3 +399,201 @@ jobs:
       - name: Stop synapse-mas, MAS, and mas-db
         if: always()
         run: docker rm -f synapse-mas charm-dev-mas mas-db
+
+  # Baseline platform build verification (macOS/iOS/Windows/Linux/Android):
+  # compile/bundle the app on every supported platform. Deliberately scoped to
+  # "does it build" only — no test suite, no capability harness. This is
+  # distinct from the Spec 13 WebRTC capability spike (spike/voice-video-platform
+  # branch only, never merged to main): that proves getUserMedia/RTCPeerConnection
+  # work at runtime; these jobs only prove the app compiles per platform. Gated
+  # on src-tauri/** changes (via the `changes` job above) since frontend/doc-only
+  # PRs don't need 5 extra native builds.
+  macos:
+    name: macOS (tauri build)
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
+      # the macOS .app/.dmg bundler. Not signed or notarized — that's a
+      # separate concern from "does it build".
+      - run: pnpm tauri build
+
+  windows:
+    name: Windows (tauri build)
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
+      # have no system sqlite3 on PATH, so this is the one platform where
+      # linking against the vendored copy is actually load-bearing.
+      - run: pnpm tauri build
+
+  linux:
+    name: Linux (tauri build)
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # rust-integration (above) already covers `cargo test` on Linux; this is
+      # the full app bundle (AppImage/deb via the Tauri bundler plus frontend
+      # asset embedding), a build path nothing else here exercises.
+      - run: pnpm tauri build
+
+  ios:
+    name: iOS (tauri ios build, simulator target)
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
+      # Silicon) rather than a device. This repo has no Apple Developer
+      # signing identity configured for CI, and simulator builds don't need
+      # one — compile verification only, not a distributable IPA.
+      - run: pnpm tauri ios build --target aarch64-sim --debug --ci
+
+  android:
+    name: Android (tauri android build)
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Single arch (aarch64) — this is a compile check, not a release
+      # artifact, so building all 4 ABIs would just burn CI time for no
+      # extra coverage. No release keystore is configured (build.gradle.kts
+      # has no signingConfig for the release build type), which is fine: an
+      # unsigned APK still proves the Rust/Kotlin/NDK toolchain compiles.
+      - name: Build
+        # ANDROID_HOME is set by android-actions/setup-android via
+        # $GITHUB_ENV, which only becomes a real shell variable in later
+        # steps' `run:` — it is NOT reflected in the `env` context, so
+        # `${{ env.ANDROID_HOME }}` here would resolve to an empty string.
+        # Deriving NDK_HOME/RANLIB/AR from $ANDROID_HOME inside the shell
+        # avoids that trap.
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          # openssl-sys vendors OpenSSL from source for the Android target
+          # (see Cargo.toml); NDK r23+ dropped the <triple>-ranlib/<triple>-ar
+          # wrapper scripts openssl-src's Makefile expects, keeping only
+          # llvm-ranlib/llvm-ar. Pointing RANLIB/AR at those directly avoids
+          # "ranlib: not found" (make error 127) — same fix as commit c69b5a8
+          # on the Spec 13 spike branch, for the same vendored-OpenSSL build.
+          export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+          export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          pnpm tauri android build --target aarch64 --ci
