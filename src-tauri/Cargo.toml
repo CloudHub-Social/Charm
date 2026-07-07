@@ -92,3 +92,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 # AES key generated and held in the Android Keystore, not a plaintext file.
 jni = "0.21"
 ndk-context = "0.1"
+# Same shape of issue as the Windows fix above: the Android NDK sysroot has
+# no libsqlite3.so to link `-lsqlite3` against. "bundled" compiles SQLite
+# from source instead, same as Windows.
+libsqlite3-sys = { version = "0.35", features = ["bundled"] }
