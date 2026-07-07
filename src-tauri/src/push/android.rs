@@ -90,16 +90,13 @@ impl super::NotificationTransport for UnifiedPushTransport {
         if let Err(e) = with_env(|env, activity| {
             let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
             let class = push_bridge_class(env, activity)?;
-            jni_result(
-                env,
-                "PushBridge.register",
-                env.call_static_method(
-                    class,
-                    "register",
-                    "(Landroid/content/Context;Ljava/lang/String;)V",
-                    &[JValue::from(activity), JValue::from(&instance)],
-                ),
-            )?;
+            let result = env.call_static_method(
+                class,
+                "register",
+                "(Landroid/content/Context;Ljava/lang/String;)V",
+                &[JValue::from(activity), JValue::from(&instance)],
+            );
+            jni_result(env, "PushBridge.register", result)?;
             Ok(())
         }) {
             *PENDING_REGISTRATION
@@ -130,16 +127,13 @@ impl super::NotificationTransport for UnifiedPushTransport {
         with_env(|env, activity| {
             let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
             let class = push_bridge_class(env, activity)?;
-            jni_result(
-                env,
-                "PushBridge.unregister",
-                env.call_static_method(
-                    class,
-                    "unregister",
-                    "(Landroid/content/Context;Ljava/lang/String;)V",
-                    &[JValue::from(activity), JValue::from(&instance)],
-                ),
-            )?;
+            let result = env.call_static_method(
+                class,
+                "unregister",
+                "(Landroid/content/Context;Ljava/lang/String;)V",
+                &[JValue::from(activity), JValue::from(&instance)],
+            );
+            jni_result(env, "PushBridge.unregister", result)?;
             Ok(())
         })?;
         *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
