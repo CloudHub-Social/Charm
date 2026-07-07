@@ -183,6 +183,11 @@ export function onBadgeUpdate(callback: (badge: BadgeState) => void): Promise<Un
   return listen<BadgeState>("badge:update", (e) => callback(e.payload));
 }
 
+/** Whether this build targets a desktop OS (macOS/Windows/Linux), not mobile — see the Rust command's doc comment. */
+export function isDesktopPlatform(): Promise<boolean> {
+  return invoke("is_desktop_platform");
+}
+
 export function getAutostart(): Promise<boolean> {
   return invoke("get_autostart");
 }

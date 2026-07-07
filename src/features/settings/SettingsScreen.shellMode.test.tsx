@@ -10,7 +10,10 @@ vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
 
+const isDesktopPlatform = vi.fn().mockResolvedValue(false);
+
 vi.mock("@/lib/matrix", () => ({
+  isDesktopPlatform: (...args: unknown[]) => isDesktopPlatform(...args),
   getProfile: vi.fn().mockResolvedValue({
     user_id: "@me:localhost",
     display_name: null,
@@ -65,6 +68,7 @@ function renderScreen(section: "account") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  isDesktopPlatform.mockResolvedValue(false);
   window.location.hash = "";
 });
 
@@ -116,6 +120,34 @@ describe("SettingsScreen shell mode", () => {
 
     await screen.findByRole("button", { name: "Close settings" });
     expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
+
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  it("hides the Desktop section on a Tauri *mobile* build even at a desktop-width viewport", async () => {
+    // The bug this guards against: viewport width alone (a Tauri mobile
+    // build at a tablet/landscape size can report `useAdaptiveLayout() ===
+    // "desktop"`) isn't the real signal — `isDesktopPlatform()` (Tauri's own
+    // compile-time desktop/mobile target) is.
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    isDesktopPlatform.mockResolvedValue(false);
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    renderScreen("account");
+
+    await screen.findByRole("dialog", { name: "Settings" });
+    await waitFor(() => expect(isDesktopPlatform).toHaveBeenCalled());
+    expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
+
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  it("shows the Desktop section on an actual Tauri desktop build", async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    isDesktopPlatform.mockResolvedValue(true);
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    renderScreen("account");
+
+    expect(await screen.findByRole("tab", { name: "Desktop" })).toBeInTheDocument();
 
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   });

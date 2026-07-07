@@ -8,6 +8,7 @@ import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
 const getAutostart = vi.fn().mockResolvedValue(false);
 
 vi.mock("@/lib/matrix", () => ({
+  isDesktopPlatform: vi.fn().mockResolvedValue(false),
   getProfile: vi.fn().mockResolvedValue({
     user_id: "@me:localhost",
     display_name: null,

@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
-import { isTauri } from "@/lib/platform";
 import { AboutPanel } from "./AboutPanel";
 import { AccountPanel } from "./AccountPanel";
 import { AppearancePanel } from "./AppearancePanel";
@@ -13,6 +12,7 @@ import { GeneralPanel } from "./GeneralPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { NotificationsPanel } from "./NotificationsPanel";
 import type { SettingsSection } from "./settingsAtoms";
+import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
 
 interface SettingsScreenProps {
@@ -41,12 +41,7 @@ function SettingsBody({
   onLoggedOut: () => void;
   mobile: boolean;
 }) {
-  // `isTauri()` alone is true for Tauri *mobile* builds too, not just
-  // desktop — `!mobile` (i.e. actually at the desktop breakpoint) is what
-  // distinguishes "a real desktop capability" from "a Tauri app that happens
-  // to be running on/at a phone-sized viewport", where autostart is neither
-  // supported nor meaningful.
-  const showDesktopSection = isTauri() && !mobile;
+  const showDesktopSection = useIsDesktopPlatform();
   const sections = SECTIONS.filter((s) => !s.desktopOnly || showDesktopSection);
 
   // A `#/settings/desktop` deep link (or a stale one from switching from

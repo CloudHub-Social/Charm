@@ -37,6 +37,13 @@ export function DevicesPanel() {
   const { data: resetUrl } = useCrossSigningResetUrl();
   const { revoke, verify, invalidateCrossSigning } = useDeviceActions();
   const usesOAuth = Boolean(profile?.uses_oauth);
+  // `profile` (and so `usesOAuth`) is undefined until its query resolves —
+  // without requiring it to have loaded, a deep-linked Devices panel could
+  // briefly render selection checkboxes for what turns out to be an OAuth
+  // account (whose devices can only be revoked via account management, not
+  // in-app), with selections surviving the moment `usesOAuth` flips to true.
+  // Treating "still loading" as non-selectable closes that window entirely.
+  const canBulkSelect = profile !== undefined && !usesOAuth;
   const [bootstrapping, setBootstrapping] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -188,6 +195,7 @@ export function DevicesPanel() {
         revoke={revoke}
         verify={verify}
         usesOAuth={usesOAuth}
+        canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
       />
@@ -197,6 +205,7 @@ export function DevicesPanel() {
         revoke={revoke}
         verify={verify}
         usesOAuth={usesOAuth}
+        canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
       />
@@ -206,6 +215,7 @@ export function DevicesPanel() {
         revoke={revoke}
         verify={verify}
         usesOAuth={usesOAuth}
+        canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
       />
@@ -290,6 +300,7 @@ function DeviceGroup({
   revoke,
   verify,
   usesOAuth,
+  canSelect,
   selectedIds,
   onToggleSelected,
 }: {
@@ -298,6 +309,7 @@ function DeviceGroup({
   revoke: ReturnType<typeof useDeviceActions>["revoke"];
   verify: ReturnType<typeof useDeviceActions>["verify"];
   usesOAuth: boolean;
+  canSelect: boolean;
   selectedIds: Set<string>;
   onToggleSelected: (deviceId: string) => void;
 }) {
@@ -313,7 +325,7 @@ function DeviceGroup({
           onVerify={() => verify.mutateAsync(device.device_id)}
           onRevoke={(password) => revoke.mutateAsync({ deviceId: device.device_id, password })}
           selection={
-            device.is_current || usesOAuth
+            device.is_current || !canSelect
               ? undefined
               : {
                   selected: selectedIds.has(device.device_id),

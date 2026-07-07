@@ -1,6 +1,7 @@
 import { useAtom } from "jotai";
 import { useCallback, useEffect } from "react";
 import {
+  clearSettingsHash,
   parseSettingsHash,
   settingsHash,
   settingsOpenAtom,
@@ -45,9 +46,7 @@ export function useSettingsNavigation() {
     // user was, not add a second entry that Back would land on before
     // reaching that. A push here would make Back reopen settings via
     // `useSettingsHashSync` instead of leaving the app where it was closed.
-    if (parseSettingsHash(window.location.hash)) {
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-    }
+    clearSettingsHash();
     setSection(null);
   }, [setSection]);
 

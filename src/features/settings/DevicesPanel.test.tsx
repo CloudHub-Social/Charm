@@ -203,6 +203,37 @@ describe("DevicesPanel", () => {
     expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
   });
 
+  it("offers no bulk-select checkboxes until the profile query resolves, even for a non-OAuth account", async () => {
+    // Devices can arrive before the profile does — without treating
+    // "profile still loading" as non-selectable, a deep-linked Devices
+    // panel could briefly offer checkboxes for what turns out to be an
+    // OAuth account.
+    let resolveProfile!: (profile: {
+      user_id: string;
+      display_name: string | null;
+      avatar_url: string | null;
+      uses_oauth: boolean;
+    }) => void;
+    getProfile.mockReturnValue(
+      new Promise((resolve) => {
+        resolveProfile = resolve;
+      }),
+    );
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Phone");
+
+    expect(screen.queryByRole("checkbox", { name: "Select Phone" })).not.toBeInTheDocument();
+
+    resolveProfile({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: false,
+    });
+
+    expect(await screen.findByRole("checkbox", { name: "Select Phone" })).toBeInTheDocument();
+  });
+
   it("lets a second device start verification while the first is still in flight", async () => {
     const devices: DeviceSummary[] = [
       ...DEVICES,

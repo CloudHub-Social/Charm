@@ -3,6 +3,7 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
 import { RoomsScreen } from "@/features/rooms/RoomsScreen";
+import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
@@ -74,6 +75,11 @@ function App({ onLoggedOut }: AppProps) {
         // a *different* account in the same app session never shows stale
         // data from this one before its own queries have refetched.
         queryClient.clear();
+        // Logout/deactivate unmount SettingsScreen directly rather than via
+        // closeSettings, so a lingering `#/settings/<section>` hash would
+        // otherwise make the next sign-in's `useSettingsHashSync` reopen
+        // settings straight away.
+        clearSettingsHash();
         onLoggedOut?.();
         setSession(null);
       }}

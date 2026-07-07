@@ -45,3 +45,17 @@ export function parseSettingsHash(hash: string): SettingsSection | null {
   const candidate = match[1];
   return isSettingsSection(candidate) ? candidate : null;
 }
+
+/**
+ * Clears a lingering `#/settings/<section>` hash without pushing a history
+ * entry — for sign-out/deactivate, which unmount `SettingsScreen` via
+ * `onLoggedOut` directly rather than through `closeSettings`. Without this,
+ * signing back in (as the same or a different account, in the same tab)
+ * re-mounts `useSettingsHashSync`, which reads the still-present hash from
+ * the previous session and immediately reopens settings.
+ */
+export function clearSettingsHash(): void {
+  if (parseSettingsHash(window.location.hash)) {
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+}

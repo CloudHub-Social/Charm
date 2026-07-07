@@ -307,6 +307,7 @@ pub fn run() {
             matrix::notifications::set_sound_enabled,
             matrix::shell::set_focused_room,
             matrix::shell::set_badge_count,
+            matrix::shell::is_desktop_platform,
             matrix::shell::get_autostart,
             matrix::shell::set_autostart,
             matrix::account_data::get_account_data,

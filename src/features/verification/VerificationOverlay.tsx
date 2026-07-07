@@ -118,7 +118,13 @@ export function VerificationOverlay() {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    // z-[60], not z-50: the settings dialog (`components/ui/dialog.tsx`'s
+    // DialogOverlay/DialogContent) also uses z-50 and portals into
+    // `document.body` — verification starting while settings is open (e.g.
+    // from the Devices panel) must render above it, not get covered by it,
+    // so the SAS flow stays completable without the user having to close
+    // settings first.
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
       <div className="flex w-90 flex-col items-center gap-4 rounded-lg border border-border bg-card p-6 text-center">
         {phase.kind === "incoming" && (
           <>
