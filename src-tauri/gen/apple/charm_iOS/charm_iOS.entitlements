@@ -1,5 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict/>
+<dict>
+	<!-- Spec 11: required for APNs registration to succeed at all;
+	     "development" until a real APNs certificate/provisioning profile
+	     exists (see push::ios's doc comment on the cert-blocked status),
+	     flip to "production" for release builds once it does. -->
+	<key>aps-environment</key>
+	<string>development</string>
+	<!-- Spec 11: shares the SQLCipher store + keychain-derived passphrase
+	     lookup with the Notification Service Extension target (a separate
+	     process/sandbox that can't otherwise see this app's container) —
+	     see `gen/apple/PushNotificationServiceExtension/NotificationService.swift`'s
+	     doc comment for what still needs wiring on the `persistence.rs` side
+	     to actually store the SQLCipher DB under this shared container on
+	     iOS specifically. Must be mirrored on the NSE target's own
+	     entitlements file once that target exists.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.social.cloudhub.charm</string>
+	</array>
+</dict>
 </plist>

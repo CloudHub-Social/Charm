@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy (pre-Android 12) counterpart to secure_store_backup_rules.xml, referenced via android:fullBackupContent for devices below API 31. Excludes matrix_store/ alongside the prefs file for the same reason — see that file's comment. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+    <exclude domain="file" path="matrix_store/" />
+</full-backup-content>

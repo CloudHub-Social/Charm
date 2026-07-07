@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/charm-web-server"]
+
+# `src-tauri` remains buildable standalone (`cd src-tauri && cargo build`) —
+# Tauri's CLI expects to run from that directory. This root manifest only
+# adds a shared `Cargo.lock` / build graph for the workspace as a whole; it
+# intentionally carries no `[workspace.dependencies]` yet so neither member's
+# existing dependency declarations need to change.

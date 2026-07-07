@@ -418,7 +418,16 @@ pub async fn set_room_favourite(
     favourite: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    set_room_favourite_impl(&client, &room_id, favourite).await
+}
+
+/// Core logic behind [`set_room_favourite`].
+pub async fn set_room_favourite_impl(
+    client: &Client,
+    room_id: &str,
+    favourite: bool,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
     let migrated_order = current_manual_order(&room).await;
 
     if favourite {
@@ -443,7 +452,16 @@ pub async fn set_room_low_priority(
     low_priority: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    set_room_low_priority_impl(&client, &room_id, low_priority).await
+}
+
+/// Core logic behind [`set_room_low_priority`].
+pub async fn set_room_low_priority_impl(
+    client: &Client,
+    room_id: &str,
+    low_priority: bool,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
     let migrated_order = current_manual_order(&room).await;
 
     if low_priority {
@@ -478,13 +496,27 @@ pub async fn set_room_muted(
     muted: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let mode = resolve_room_muted_mode_impl(&client, &room_id, muted).await?;
+    set_room_notification_mode(app, state, room_id, mode).await
+}
+
+/// Core logic behind [`set_room_muted`]'s mode resolution — the write itself
+/// still routes through `notifications::set_room_notification_mode` (needs
+/// `AppHandle`/`State` for the on-disk prefs it manages), so only the
+/// `Client`-only "what mode should this room end up in" computation is
+/// extracted here.
+pub async fn resolve_room_muted_mode_impl(
+    client: &Client,
+    room_id: &str,
+    muted: bool,
+) -> Result<super::notifications::RoomNotificationModeKind, String> {
+    let parsed_room_id = matrix_sdk::ruma::RoomId::parse(room_id).map_err(|e| e.to_string())?;
     let room = client
         .get_room(&parsed_room_id)
         .ok_or_else(|| format!("room {room_id} not found"))?;
 
-    let mode: super::notifications::RoomNotificationModeKind = if muted {
-        RoomNotificationMode::Mute.into()
+    if muted {
+        Ok(RoomNotificationMode::Mute.into())
     } else {
         // Unmuting restores this room's default (encrypted / DM-vs-not)
         // notification mode rather than hardcoding `AllMessages` — we can't
@@ -496,15 +528,13 @@ pub async fn set_room_muted(
             .map(|state| state.is_encrypted())
             .unwrap_or(false);
         let is_one_to_one = room.active_members_count() == 2;
-        client
+        Ok(client
             .notification_settings()
             .await
             .get_default_room_notification_mode(is_encrypted.into(), is_one_to_one.into())
             .await
-            .into()
-    };
-
-    set_room_notification_mode(app, state, room_id, mode).await
+            .into())
+    }
 }
 
 #[tauri::command]
@@ -514,7 +544,16 @@ pub async fn set_room_marked_unread(
     unread: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    set_room_marked_unread_impl(&client, &room_id, unread).await
+}
+
+/// Core logic behind [`set_room_marked_unread`].
+pub async fn set_room_marked_unread_impl(
+    client: &Client,
+    room_id: &str,
+    unread: bool,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
     room.set_unread_flag(unread)
         .await
         .map_err(|e| e.to_string())
@@ -531,7 +570,16 @@ pub async fn set_room_manual_order(
     order: f64,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    set_room_manual_order_impl(&client, &room_id, order).await
+}
+
+/// Core logic behind [`set_room_manual_order`].
+pub async fn set_room_manual_order_impl(
+    client: &Client,
+    room_id: &str,
+    order: f64,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
 
     let tag = order_tag_name(room.is_favourite(), room.is_low_priority());
     let mut tag_info = TagInfo::new();

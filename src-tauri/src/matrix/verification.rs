@@ -94,6 +94,14 @@ pub async fn bootstrap_cross_signing(
     password: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
+    bootstrap_cross_signing_impl(&client, password).await
+}
+
+/// Core logic behind [`bootstrap_cross_signing`].
+pub async fn bootstrap_cross_signing_impl(
+    client: &Client,
+    password: Option<String>,
+) -> Result<(), String> {
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -111,6 +119,13 @@ pub async fn cross_signing_status(
     state: State<'_, MatrixState>,
 ) -> Result<CrossSigningStatusSummary, String> {
     let client = state.require_client().await?;
+    cross_signing_status_impl(&client).await
+}
+
+/// Core logic behind [`cross_signing_status`].
+pub async fn cross_signing_status_impl(
+    client: &Client,
+) -> Result<CrossSigningStatusSummary, String> {
     let status = client.encryption().cross_signing_status().await;
 
     Ok(CrossSigningStatusSummary {
@@ -127,7 +142,16 @@ pub async fn accept_verification_request(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let request = get_request(&client, &other_user_id, &flow_id).await?;
+    accept_verification_request_impl(&client, &other_user_id, &flow_id).await
+}
+
+/// Core logic behind [`accept_verification_request`].
+pub async fn accept_verification_request_impl(
+    client: &Client,
+    other_user_id: &str,
+    flow_id: &str,
+) -> Result<(), String> {
+    let request = get_request(client, other_user_id, flow_id).await?;
     request.accept().await.map_err(|e| e.to_string())
 }
 
@@ -138,7 +162,16 @@ pub async fn cancel_verification(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let request = get_request(&client, &other_user_id, &flow_id).await?;
+    cancel_verification_impl(&client, &other_user_id, &flow_id).await
+}
+
+/// Core logic behind [`cancel_verification`].
+pub async fn cancel_verification_impl(
+    client: &Client,
+    other_user_id: &str,
+    flow_id: &str,
+) -> Result<(), String> {
+    let request = get_request(client, other_user_id, flow_id).await?;
     request.cancel().await.map_err(|e| e.to_string())
 }
 
@@ -154,13 +187,7 @@ pub async fn start_sas_verification(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let request = get_request(&client, &other_user_id, &flow_id).await?;
-
-    let sas = request
-        .start_sas()
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "the other side does not support SAS verification".to_string())?;
+    let sas = start_sas_verification_impl(&client, &other_user_id, &flow_id).await?;
 
     let flow_id = flow_id.clone();
     tokio::spawn(async move {
@@ -195,6 +222,26 @@ pub async fn start_sas_verification(
     Ok(())
 }
 
+/// Core logic behind [`start_sas_verification`]: accepts an already-accepted
+/// request into the SAS flow and returns the resulting `SasVerification` so
+/// the caller can drive/watch it. The state-change watcher loop itself stays
+/// in the command wrapper above since pushing each state as an event is
+/// transport-specific (`app.emit` today; a WebSocket push in the companion
+/// server later).
+pub async fn start_sas_verification_impl(
+    client: &Client,
+    other_user_id: &str,
+    flow_id: &str,
+) -> Result<matrix_sdk::encryption::verification::SasVerification, String> {
+    let request = get_request(client, other_user_id, flow_id).await?;
+
+    request
+        .start_sas()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "the other side does not support SAS verification".to_string())
+}
+
 #[tauri::command]
 pub async fn confirm_sas_verification(
     state: State<'_, MatrixState>,
@@ -202,7 +249,16 @@ pub async fn confirm_sas_verification(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let sas = get_sas(&client, &other_user_id, &flow_id).await?;
+    confirm_sas_verification_impl(&client, &other_user_id, &flow_id).await
+}
+
+/// Core logic behind [`confirm_sas_verification`].
+pub async fn confirm_sas_verification_impl(
+    client: &Client,
+    other_user_id: &str,
+    flow_id: &str,
+) -> Result<(), String> {
+    let sas = get_sas(client, other_user_id, flow_id).await?;
     sas.confirm().await.map_err(|e| e.to_string())
 }
 

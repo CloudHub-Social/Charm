@@ -1,15 +1,23 @@
 name: Sentry Snapshots
 
-# Captures a screenshot of every Storybook story and uploads them to Sentry's visual
-# snapshot system for review/diffing. Gated on the `SENTRY_SNAPSHOTS_ENABLED` repo
-# variable — until that's `true` (and the Sentry project has snapshot upload enabled),
-# the capture still runs and uploads a debug artifact, but the Sentry upload is skipped.
+# Captures a screenshot of every Storybook story, plus explicit capture points inside
+# the Playwright e2e suite, and uploads both to Sentry's visual snapshot system for
+# review/diffing — as two distinct app-ids (charm-storybook, charm-e2e) so Sentry
+# tracks them as separate baseline lineages rather than one shared bucket. Storybook
+# snapshots catch component-level regressions in isolation; e2e snapshots catch
+# composition/integration-level ones (multiple real components + real mocked data +
+# real interaction sequences) that Storybook structurally can't. Both are gated on the
+# `SENTRY_SNAPSHOTS_ENABLED` repo variable — until that's `true` (and the Sentry
+# project has snapshot upload enabled), capture still runs and uploads a debug
+# artifact, but the Sentry upload is skipped.
 
 on:
   pull_request:
     paths:
       - "src/**"
+      - "e2e/**"
       - ".storybook/**"
+      - "playwright.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/sentry-snapshots.yml"
@@ -17,7 +25,9 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "e2e/**"
       - ".storybook/**"
+      - "playwright.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/sentry-snapshots.yml"
@@ -41,11 +51,11 @@ jobs:
       SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
       SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           # 24, not 22 like the other jobs: @storybook/test-runner's Jest
           # loader `require()`s .storybook/test-runner.ts (an ES module)
@@ -70,7 +80,7 @@ jobs:
 
       - name: Upload snapshot artifact (debug)
         if: always() && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
           path: .artifacts/sentry-snapshots
@@ -102,5 +112,76 @@ jobs:
               echo "- Captured story screenshots and attempted upload, but the Sentry upload **failed** — see the \`Upload snapshots to Sentry\` step logs."
             else
               echo "- Captured story screenshots and uploaded them to Sentry."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  e2e-snapshots:
+    name: E2E visual snapshots
+    # Skip on fork PRs (no access to secrets) and Dependabot.
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SENTRY_SNAPSHOTS_ENABLED: ${{ vars.SENTRY_SNAPSHOTS_ENABLED }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # e2e/support/sentrySnapshot.ts's captureSnapshot() no-ops unless this is set —
+      # every other e2e run (local dev, the plain `e2e` CI job) is unaffected.
+      - name: Capture e2e snapshots
+        env:
+          SENTRY_SNAPSHOT_CAPTURE: "1"
+        run: pnpm test:e2e
+
+      - name: Upload snapshot artifact (debug)
+        if: always() && hashFiles('.artifacts/sentry-e2e-snapshots/**/*.png') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-e2e-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-e2e-snapshots
+          retention-days: 7
+
+      # Distinct --app-id from the Storybook job so Sentry keeps these as a separate
+      # baseline lineage, not diffed against Storybook's isolated-component captures.
+      # Non-blocking on PRs so an upload/Sentry-side hiccup can't fail a contributor's PR.
+      - name: Upload snapshots to Sentry
+        id: sentry_upload
+        if: env.SENTRY_SNAPSHOTS_ENABLED == 'true' && hashFiles('.artifacts/sentry-e2e-snapshots/**/*.png') != ''
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 snapshots upload
+          .artifacts/sentry-e2e-snapshots
+          --app-id charm-e2e
+          --diff-threshold 0.01
+          --log-level info
+
+      - name: Note snapshot status
+        if: always()
+        run: |
+          {
+            echo "### E2E Sentry Snapshots"
+            echo
+            if [ "${SENTRY_SNAPSHOTS_ENABLED:-}" != "true" ]; then
+              echo "- Captured e2e screenshots (see the debug artifact)."
+              echo "- Sentry upload is **disabled** — set the repo variable \`SENTRY_SNAPSHOTS_ENABLED=true\` (once the Sentry project has snapshot upload enabled) to turn it on."
+            elif [ "${{ steps.sentry_upload.outcome }}" = "failure" ]; then
+              echo "- Captured e2e screenshots and attempted upload, but the Sentry upload **failed** — see the \`Upload snapshots to Sentry\` step logs."
+            else
+              echo "- Captured e2e screenshots and uploaded them to Sentry."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
