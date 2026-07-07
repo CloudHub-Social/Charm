@@ -268,13 +268,20 @@ export function installMockTauri(seed: {
       messages: messagesByRoom.get(args.roomId as string) ?? [],
       next_cursor: null,
     }),
+    // Mirrors the real `mark_room_read` Rust command, which only sends a read
+    // receipt + fully-read marker — it does NOT touch the separate MSC2867
+    // `m.marked_unread` flag (that's `set_room_marked_unread`'s job). So this
+    // clears the numeric unread counters but leaves `is_marked_unread` alone,
+    // recomputing `has_unread` from the same invariant `snapshot_rooms` uses
+    // rather than force-setting it to `false`.
     mark_room_read: (args) => {
       const targetRoom = findRoom(args.roomId as string);
       if (targetRoom) {
         targetRoom.unread_count = 0;
         targetRoom.unread_messages = 0;
-        targetRoom.is_marked_unread = false;
-        targetRoom.has_unread = false;
+        targetRoom.has_unread =
+          targetRoom.is_marked_unread ||
+          (!targetRoom.is_muted && (targetRoom.unread_messages as number) > 0);
         pushRoomListUpdate();
       }
       return undefined;
@@ -285,7 +292,7 @@ export function installMockTauri(seed: {
     run_command: () => ({ status: "success" }),
 
     // Spec 02: media and attachments.
-    send_attachment: (args) => {
+    send_attachment: async (args) => {
       const roomId = args.roomId as string;
       const filePath = args.filePath as string;
       const txnId = args.txnId as string;
@@ -320,8 +327,14 @@ export function installMockTauri(seed: {
       // Emits upload:progress twice (partial then complete) before the sent
       // message lands, so a test can assert the progress bar both appears
       // and clears — mirroring the real send-queue's incremental progress
-      // events (see `UploadProgress`'s doc comment).
+      // events (see `UploadProgress`'s doc comment). The `setTimeout` between
+      // them is deliberate: without it, both events fire synchronously within
+      // this one command invocation and React batches add -> partial ->
+      // remove before ever painting, so a test could never observe the
+      // in-flight state (and a regression that stopped rendering the upload
+      // row entirely would still pass).
       emit("upload:progress", { txn_id: txnId, room_id: roomId, sent: 50, total: 100 });
+      await new Promise((resolve) => setTimeout(resolve, 100));
       const sent = {
         event_id: eventId,
         sender: seed.userId,

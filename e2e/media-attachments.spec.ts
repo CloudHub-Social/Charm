@@ -74,7 +74,9 @@ test("attaching a non-image file renders a download chip with filename and size"
   await expect(page.getByText("98 KB")).toBeVisible();
 });
 
-test("a video attachment lands without an upload-failed error", async ({ page }) => {
+test("upload progress shows while sending and clears once the attachment lands", async ({
+  page,
+}) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
@@ -87,11 +89,18 @@ test("a video attachment lands without an upload-failed error", async ({ page })
 
   await page.getByRole("button", { name: "Attach" }).click();
 
+  // mockTauri's `send_attachment` now yields to a macrotask between its
+  // partial (50%) and complete (100%) `upload:progress` ticks specifically
+  // so this in-flight state is observable — without that, both events fire
+  // within one command invocation and React batches add -> remove before
+  // ever painting, so a regression that stopped rendering the upload tray
+  // entirely would still pass this test.
+  await expect(page.getByText("big-video.mp4")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Play video big-video.mp4" })).toHaveCount(0);
+
   // The video msgtype renders a play-overlaid thumbnail once the attachment
-  // lands; that's sufficient signal the upload completed and the upload
-  // tray's transient entry is gone (mockTauri's `send_attachment` resolves
-  // synchronously after emitting both progress ticks, so there's no
-  // reliably-observable "still in flight" window to assert against here).
+  // lands, and the upload tray's transient entry is gone.
   await expect(page.getByRole("button", { name: "Play video big-video.mp4" })).toBeVisible();
+  await expect(page.getByText("big-video.mp4", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Upload failed")).toHaveCount(0);
 });
