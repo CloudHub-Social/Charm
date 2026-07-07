@@ -65,6 +65,16 @@ pub enum QrLoginProgressEvent {
 /// to completion (or failure) while pushing `qr_login:progress` events.
 /// Returns immediately — the frontend should render the login screen from
 /// those events, not from this command's (empty) return value.
+///
+/// Not `_impl`-extracted (see Spec 16 Phase 1): unlike this module's commands
+/// operating on an existing session, this one has no `&Client` to extract
+/// against — it builds one from `homeserver_url` — and its body is almost
+/// entirely `MatrixState`'s single-slot QR-attempt bookkeeping (the
+/// synchronous-with-spawn store/compare-and-clear races documented inline
+/// above), which a multi-tenant companion server would need to redesign
+/// around per-session slots rather than reuse verbatim. Left as a genuine
+/// Phase 2 (session store) concern rather than force-fitting a
+/// `_impl(client: &Client, ...)` signature that doesn't apply here.
 #[tauri::command]
 pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<(), String> {
     // Guards against a double-start (e.g. a double click) leaving two login
@@ -334,6 +344,10 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
 /// `login_with_qr_code` (unlike SSO login, which has nothing running in the
 /// background to abort — it just waits on a deep-link callback) and clears
 /// any pending check-code sender so a stale one can't be used later.
+///
+/// Not `_impl`-extracted, same rationale as [`start_qr_login`]: this is
+/// `MatrixState`'s single-slot QR bookkeeping end-to-end, with no `Client`
+/// to key an extraction on.
 #[tauri::command]
 pub async fn cancel_qr_login(app: AppHandle, state: State<'_, MatrixState>) -> Result<(), String> {
     let task = state
@@ -368,6 +382,19 @@ pub async fn submit_qr_check_code(state: State<'_, MatrixState>, code: u8) -> Re
         .await
         .take()
         .ok_or_else(|| "no QR login is waiting for a check code".to_string())?;
+    submit_qr_check_code_impl(sender, code).await
+}
+
+/// Core logic behind [`submit_qr_check_code`], taking the already-retrieved
+/// `CheckCodeSender` rather than `&MatrixState` — unlike this module's other
+/// two commands, this one has no `Client` at all to key an extraction on
+/// (`MatrixState.pending_qr_check_code` is single-slot bookkeeping for the
+/// one in-flight QR attempt); the plain-args boundary here is the sender
+/// itself, once the command wrapper has taken it out of that slot.
+pub async fn submit_qr_check_code_impl(
+    sender: matrix_sdk::authentication::oauth::qrcode::CheckCodeSender,
+    code: u8,
+) -> Result<(), String> {
     sender.send(code).await.map_err(|e| e.to_string())
 }
 
