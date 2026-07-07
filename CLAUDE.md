@@ -51,8 +51,7 @@ directory. When done:
 
 ```
 cd ~/git/Charm
-git worktree remove ~/git/Charm-<short-suffix> --force
-```
+git worktree remove ~/git/Charm-<short-suffix>  # add --force only if you're sure the worktree is clean / you intend to discard changes
 
 If the shared `~/git/Charm` checkout itself has uncommitted changes (a session that
 didn't isolate), **do not stash, reset, or discard them** — that's someone else's
