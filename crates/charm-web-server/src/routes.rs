@@ -1195,6 +1195,25 @@ async fn resolve_avatar(
     .await
     .ok_or_else(|| ApiError::not_found("avatar could not be resolved"))?;
 
+    // Same actual-bytes cap `resolve_message_media` applies below: the
+    // `size` query param only clamps the *requested* thumbnail dimensions,
+    // it doesn't bound what the homeserver/media repo actually hands back
+    // for them. A logged-in tab (or an untrusted same-site page riding the
+    // victim's cookie against this unauthenticated-by-body-size `GET`) could
+    // otherwise make this route buffer/cache/serve an oversized body for a
+    // single avatar URL.
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if metadata.len() > charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(ApiError::bad_request(format!(
+            "resolved avatar ({} bytes) exceeds the {} byte limit",
+            metadata.len(),
+            charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES
+        )));
+    }
+
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -1974,6 +1993,27 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     for event in snapshot {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
+    // Replay each open room's latest `timeline:update` too — see
+    // `Session::room_snapshots`'s doc comment. Otherwise a room already
+    // open before this connection (or before a reconnect) would show
+    // nothing new until its *next* live diff, silently missing whatever
+    // arrived during the gap.
+    let room_snapshots: Vec<_> = session
+        .room_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    for event in room_snapshots {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };

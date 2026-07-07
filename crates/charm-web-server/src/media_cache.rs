@@ -24,17 +24,32 @@
 
 use charm_lib::matrix::media::MediaCache;
 use charm_lib::matrix::persistence::account_key;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 static CACHES: RwLock<Option<HashMap<String, &'static MediaCache>>> = RwLock::const_new(None);
+
+/// Hashes a device ID before it's used as a filesystem path component. A
+/// device ID is a homeserver-controlled opaque identifier from an
+/// authenticated session's own `whoami`/login response, not sender-supplied
+/// like a room/event ID — but it's still an external string with no format
+/// the client actually enforces, so a compromised or misbehaving homeserver
+/// could hand back one containing path separators or `..` and reach outside
+/// the intended `data/media/<account>/` tree if interpolated raw. Hashing
+/// (matching how [`account_key`] already treats the user ID) rules that out
+/// entirely rather than trying to enumerate which characters are unsafe.
+fn device_key(device_id: &str) -> String {
+    let digest = Sha256::digest(device_id.as_bytes());
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
 
 /// Returns the calling session's own device-scoped media cache, building
 /// (and leaking — see below) one on first use. `device_id` should come from
 /// `Client::device_id()` for the session in question — never shared across
 /// devices, even devices of the same account.
 pub async fn for_session(user_id: &str, device_id: &str) -> Result<&'static MediaCache, String> {
-    let key = format!("{}/{device_id}", account_key(user_id));
+    let key = format!("{}/{}", account_key(user_id), device_key(device_id));
 
     if let Some(cache) = CACHES.read().await.as_ref().and_then(|m| m.get(&key)) {
         return Ok(cache);

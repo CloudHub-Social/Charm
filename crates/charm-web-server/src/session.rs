@@ -110,6 +110,22 @@ pub struct Session {
     /// until the *next* sync iteration happened to change something,
     /// leaving the room list/badge/sync-status blank in the meantime.
     pub last_snapshot: Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    /// The latest `timeline:update` per room this session has an open
+    /// `Timeline` for — the per-room counterpart to `last_snapshot` above,
+    /// replayed alongside it by `crate::routes::ws_handler` on every new
+    /// connection. Without this, a WebSocket that's disconnected (a
+    /// reconnecting tab, a brief network blip) while an already-open room
+    /// keeps receiving live diffs would miss every message/edit/reaction
+    /// that arrived during the gap: `spawn_timeline_listener`'s `events.send`
+    /// is best-effort broadcast with no receiver during that window, and
+    /// unlike `sync:state`/`room_list:update` (naturally resent by the
+    /// *next* sync iteration regardless of what changed), a room's next
+    /// `timeline:update` only fires on that room's next diff — which might
+    /// not happen again for a long time, or ever, if the missed message was
+    /// the last one sent. Keyed per room (not a single overwrite-in-place
+    /// slot like `last_snapshot`) since more than one room can be open at
+    /// once and each has its own independent history.
+    pub room_snapshots: Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
 }
 
 /// See `Session::pending_verification_events`'s doc comment.
@@ -131,6 +147,7 @@ impl Session {
             )),
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
+            room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             events,
         }
     }
@@ -170,6 +187,7 @@ impl Session {
             Arc::downgrade(&timeline),
             room_id.to_owned(),
             self.events.clone(),
+            self.room_snapshots.clone(),
         );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
@@ -200,6 +218,7 @@ fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     room_id: matrix_sdk::ruma::OwnedRoomId,
     events: broadcast::Sender<ServerEvent>,
+    room_snapshots: Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
 ) {
     use futures_util::StreamExt;
 
@@ -231,10 +250,15 @@ fn spawn_timeline_listener(
             None,
         )
         .await;
-        let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
+        let initial_event = ServerEvent::Timeline(RoomTimelineUpdate {
             room_id: room_id.to_string(),
             messages: initial_messages,
-        }));
+        });
+        room_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(room_id.clone(), initial_event.clone());
+        let _ = events.send(initial_event);
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         loop {
@@ -265,11 +289,26 @@ fn spawn_timeline_listener(
                 None,
             )
             .await;
-            let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
+            let event = ServerEvent::Timeline(RoomTimelineUpdate {
                 room_id: room_id.to_string(),
                 messages,
-            }));
+            });
+            room_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(room_id.clone(), event.clone());
+            let _ = events.send(event);
         }
+        // The `Timeline` is gone (evicted, or the session itself is gone) —
+        // drop this room's cached snapshot too, so a stale, possibly very
+        // old room state doesn't keep getting replayed to every future
+        // connection for a room this session no longer has open. If the
+        // room is reopened later, `get_or_create_timeline` spawns a fresh
+        // listener that repopulates this from a fresh subscribe.
+        room_snapshots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&room_id);
     });
 }
 
