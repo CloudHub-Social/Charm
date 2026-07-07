@@ -19,3 +19,40 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
   globalThis.IntersectionObserver =
     MockIntersectionObserver as unknown as typeof IntersectionObserver;
 }
+
+// jsdom's `localStorage` needs `--localstorage-file` to actually persist and
+// is otherwise `undefined` in this project's config — but Charm 2.0 Spec 09's
+// appearance persistence write-throughs to `localStorage` as a synchronous
+// mirror for the flash-free boot script, so tests need a real (in-memory)
+// implementation, not just a no-op stub.
+if (typeof globalThis.localStorage === "undefined") {
+  class MemoryStorage implements Storage {
+    #store = new Map<string, string>();
+
+    get length(): number {
+      return this.#store.size;
+    }
+
+    clear(): void {
+      this.#store.clear();
+    }
+
+    getItem(key: string): string | null {
+      return this.#store.has(key) ? this.#store.get(key)! : null;
+    }
+
+    key(index: number): string | null {
+      return Array.from(this.#store.keys())[index] ?? null;
+    }
+
+    removeItem(key: string): void {
+      this.#store.delete(key);
+    }
+
+    setItem(key: string, value: string): void {
+      this.#store.set(key, value);
+    }
+  }
+
+  globalThis.localStorage = new MemoryStorage();
+}

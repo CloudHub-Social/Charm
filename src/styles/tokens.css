@@ -1,85 +1,132 @@
 @import "tailwindcss";
 
-/* Primitive tier — raw color/scale values, no semantic meaning */
+/*
+ * Redefines Tailwind's `dark:` variant to key off `[data-theme]` instead of
+ * its v4 default (`@media (prefers-color-scheme: dark)`).
+ *
+ * Charm 2.0 Spec 09 added runtime theme selection (`dark`/`light`/
+ * `midnight`/`system`) that's independent of the OS preference — but every
+ * shadcn/Radix component (button.tsx, input.tsx, tabs.tsx, context-menu.tsx,
+ * dropdown-menu.tsx, ...) was authored against Tailwind's stock `dark:`
+ * variant. Without this override, selecting "Light" on a dark-OS machine
+ * still applies `dark:` styles (wrong colors on a light canvas), and
+ * selecting "Midnight" on a light-OS machine misses them entirely (falls
+ * back to light-mode styles on what should be an OLED-black canvas).
+ *
+ * `dark` AND `midnight` both count as "dark" for this variant — midnight is
+ * a darker/higher-contrast sibling of dark, not a fourth independent mode,
+ * and the shadcn dark: overrides (bg-input/30, border-input, etc.) are
+ * exactly as appropriate there as under dark.
+ *
+ * Matches on `[data-theme="dark"]`/`[data-theme="midnight"]` themselves (the
+ * attribute lives on <html>, so `&` matches there directly) as well as `*`
+ * descendants, since `@custom-variant` compiles each selector as its own
+ * rule rather than implicitly cascading like a plain CSS custom property
+ * would.
+ */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="midnight"], [data-theme="dark"] *, [data-theme="midnight"] *));
+
+/* ============================================================
+   Primitive tier — raw color/scale values, no semantic meaning.
+   GENERATED — edit .design-sync/tokens/design-tokens.json (or a live
+   Claude Design export), then run `pnpm tokens:pull`. Hand-edits to this
+   region are overwritten by the next pull, and CI's drift-check
+   (`pnpm tokens:pull` then `git diff --exit-code src/styles/tokens.css`)
+   fails if it no longer matches the source-of-record.
+   ============================================================ */
+/* GENERATED:PRIMITIVE:START */
 :root {
   --gray-950: #0a0a0b;
   --gray-900: #121214;
   --gray-800: #1c1c1f;
   --gray-700: #2a2a2e;
   --gray-600: #3d3d42;
-  --gray-500: #5c5c63;
-  --gray-400: #86868f;
+  --gray-500: #5a5a60;
+  --gray-400: #92929a;
   --gray-300: #b0b0b8;
   --gray-200: #d4d4d9;
   --gray-100: #ececef;
   --gray-50: #f7f7f8;
-
+  --black-pure: #000000;
   --accent-500: #6d5ef8;
   --accent-400: #8a7ffa;
   --accent-600: #5847e0;
-
   --danger-500: #ef4444;
   --success-500: #22c55e;
   --warning-500: #f59e0b;
-
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
-
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --duration-slow: 280ms;
-
   --touch-target-min: 44px;
-
   --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
 }
+/* GENERATED:PRIMITIVE:END */
 
-/* Semantic tier — dark-first (default theme) */
+/* ============================================================
+   Semantic tier — dark-first (default theme).
+   GENERATED — edit .design-sync/tokens/design-tokens.json (or a live
+   Claude Design export), then run `pnpm tokens:pull`.
+   ============================================================ */
+/* GENERATED:SEMANTIC:START */
 :root {
   --color-bg-base: var(--gray-950);
   --color-bg-surface: var(--gray-900);
   --color-bg-raised: var(--gray-800);
   --color-bg-overlay: var(--gray-700);
-
   --color-border-subtle: var(--gray-700);
   --color-border-default: var(--gray-600);
-
   --color-text-primary: var(--gray-50);
   --color-text-secondary: var(--gray-300);
   --color-text-muted: var(--gray-400);
-
-  --color-accent: var(--accent-500);
+  --color-accent: #8174f9;
   --color-accent-hover: var(--accent-400);
   --color-accent-active: var(--accent-600);
-
   --color-danger: var(--danger-500);
   --color-success: var(--success-500);
   --color-warning: var(--warning-500);
 }
 
-/* Light theme override */
 [data-theme="light"] {
   --color-bg-base: var(--gray-50);
   --color-bg-surface: #ffffff;
   --color-bg-raised: var(--gray-100);
   --color-bg-overlay: var(--gray-200);
-
   --color-border-subtle: var(--gray-200);
   --color-border-default: var(--gray-300);
-
   --color-text-primary: var(--gray-950);
   --color-text-secondary: var(--gray-700);
   --color-text-muted: var(--gray-500);
+  --color-danger: #e21313;
+  --color-success: #167f3d;
+  --color-warning: #9e6506;
+  --color-accent: #5d4df7;
 }
+
+[data-theme="midnight"] {
+  --color-bg-base: var(--black-pure);
+  --color-bg-surface: var(--gray-950);
+  --color-bg-raised: var(--gray-900);
+  --color-bg-overlay: var(--gray-800);
+  --color-border-subtle: var(--gray-800);
+  --color-border-default: var(--gray-700);
+  --color-text-primary: #ffffff;
+  --color-text-secondary: var(--gray-200);
+  --color-text-muted: var(--gray-300);
+  --color-accent: var(--accent-400);
+  --color-accent-hover: #a396fb;
+  --color-accent-active: var(--accent-500);
+}
+/* GENERATED:SEMANTIC:END */
 
 /* Component tier — element-specific, composed from semantic tokens */
 :root {
@@ -87,6 +134,113 @@
     --radius-md
   ); /* 8px, per design-doc convention for contained-bg elements */
   --message-group-window-ms: 300000; /* 5 minutes */
+
+  /* Density — driven by [data-density] on <html>. "cozy" is the default
+     shape (current spacing); "compact" tightens message row padding. */
+  --message-row-padding-y: var(--space-2);
+
+  /* Font scale — driven by [data-font-size] on <html>. Multiplies the root
+     rem base so both Tailwind text utilities and hand-authored rem values
+     scale together. 1 = M (default). */
+  --font-scale: 1;
+}
+
+[data-density="compact"] {
+  --message-row-padding-y: var(--space-1);
+}
+
+[data-font-size="sm"] {
+  --font-scale: 0.9;
+}
+[data-font-size="lg"] {
+  --font-scale: 1.15;
+}
+[data-font-size="xl"] {
+  --font-scale: 1.3;
+}
+
+:root {
+  font-size: calc(16px * var(--font-scale));
+}
+
+/* Reduced motion — honors both the OS preference and an explicit override.
+   [data-reduced-motion="on"] always zeroes durations (independent of OS).
+   "system" is the default choice, but `applyAppearanceToDom`/the inline
+   boot script always set the attribute explicitly (typically to
+   `data-reduced-motion="system"`, not omitted) — the prefers-reduced-motion
+   media query below is what actually implements the "system" behavior by
+   deferring to the OS setting; there is no [data-reduced-motion="system"]
+   selector because that choice intentionally falls through to the media
+   query instead of a data-attribute override. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}
+
+[data-reduced-motion="on"] {
+  --duration-fast: 0ms;
+  --duration-base: 0ms;
+  --duration-slow: 0ms;
+}
+
+[data-reduced-motion="off"] {
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 280ms;
+}
+
+/*
+ * Global reduced-motion kill switch.
+ *
+ * Zeroing --duration-* above does nothing on its own: shadcn/Radix
+ * components (dialog.tsx, dropdown-menu.tsx, popover.tsx, tooltip.tsx,
+ * tabs.tsx, context-menu.tsx, button.tsx, input.tsx) and several
+ * hand-authored ones (RoomListItem.tsx, SpaceSection.tsx, UploadTray.tsx,
+ * MessageRow.tsx) animate via Tailwind/tw-animate-css UTILITY classes —
+ * `duration-200`, `transition-*`, `animate-in`/`animate-out` and its
+ * `fade-in-0`/`zoom-in-95`/etc. modifiers — which compile to fixed
+ * declarations at build time and never reference a CSS custom property.
+ * Retrofitting every one of those call sites to read `--duration-*`
+ * individually is exactly the kind of thing that's easy to get most of but
+ * not all of, and silently regresses the next time someone adds a new
+ * animated component without knowing about this contract.
+ *
+ * Instead, when motion should be reduced (either the explicit
+ * `[data-reduced-motion="on"]` override, or the OS `prefers-reduced-motion`
+ * media query while the choice is "system"), force every element's
+ * transition/animation duration to ~0 directly — overriding whatever
+ * utility classes set, regardless of which mechanism (Tailwind's
+ * `transition-*`/`duration-*`, tw-animate-css's `animate-in`/`animate-out`,
+ * or a plain CSS `@keyframes`) produced them. `!important` is deliberate
+ * here: this is a global accessibility override, not a themeable token, and
+ * needs to win over component-authored utility classes without every one of
+ * those call sites having to cooperate.
+ *
+ * `animation-iteration-count: 1` (not 0) preserves *one* iteration so an
+ * animation still reaches its end state (e.g. `fade-in-0` still ends
+ * opaque) rather than never running and leaving content invisible/mid-state.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+[data-reduced-motion="on"] *,
+[data-reduced-motion="on"] *::before,
+[data-reduced-motion="on"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }
 
 /* shadcn/Radix naming convention, aliased onto our semantic tokens so
@@ -100,6 +254,21 @@
   --popover-foreground: var(--color-text-primary);
   --primary: var(--color-accent);
   --primary-foreground: var(--gray-50);
+  /* Dedicated solid-fill accent value for near-white-text-on-background
+     contexts (Button's default variant, Avatar's badge, RoomListItem's
+     unread badge/dot, ChatShell's own-message icon, MessageRow's
+     own-message bubble). `--primary`/`--color-accent` are tuned for accent
+     TEXT/border/ring/link on the canvas (`text-primary`/`border-primary` in
+     button.tsx's link variant, ReplyPreview.tsx, ReactionBar.tsx) — a
+     different, lighter-in-dark/darker-in-light constraint than "readable as
+     near-white text on a solid fill", so one shared value can't satisfy
+     both (tried; #6454f8 clears 4.5:1 as a fill but drops to 3.7-3.9:1 as
+     text on the dark canvas — worse than the original problem). Components
+     that render a SOLID fill under `--primary-foreground` should use
+     `bg-primary-solid` instead of `bg-primary` — see button.tsx, avatar.tsx,
+     RoomListItem.tsx, ChatShell.tsx, MessageRow.tsx. #6454f8 clears 4.5:1
+     against `--primary-foreground` in every theme. */
+  --primary-solid: #6454f8;
   --secondary: var(--color-bg-raised);
   --secondary-foreground: var(--color-text-primary);
   --muted: var(--color-bg-raised);
@@ -107,6 +276,27 @@
   --accent: var(--color-bg-overlay);
   --accent-foreground: var(--color-text-primary);
   --destructive: var(--color-danger);
+  /* Dedicated solid-fill danger value for white-text-on-background contexts
+     (the destructive Button variant's `bg-destructive text-white`) —
+     theme-invariant and darker than `--color-danger`/`--destructive` (which
+     stay tuned for danger TEXT on the canvas, not a filled background).
+     #ef4444 (danger-500) only reaches 3.51:1 against white text — below
+     the 4.5:1 AA floor for normal text — in every theme, since white text
+     doesn't get lighter/darker per theme the way canvas-relative text does.
+     #e21313 clears 4.5:1 against white text everywhere. */
+  --destructive-solid: #e21313;
+  /* Same fill-vs-text split for success/warning as danger/accent above —
+     `avatarColor()` (roomDisplay.ts) fills an Avatar's fallback background
+     with one of --color-accent/-warning/-success/-danger under fixed white
+     initials text; the canvas-tuned success-500/warning-500 only reach
+     2.13-2.27:1 against white, far under 4.5:1. */
+  --success-solid: #178640;
+  --warning-solid: #a06707;
+  /* Same reasoning — `avatarColor()`'s 5th palette entry is
+     --color-text-muted, which is 2.15-3.09:1 against white in dark/
+     midnight (gray-400/gray-300 are tuned to read as muted TEXT on the
+     canvas, not as a fill under white initials). */
+  --muted-solid: #74747d;
   --border: var(--color-border-subtle);
   --input: var(--color-border-default);
   --ring: var(--color-accent);
@@ -122,6 +312,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-solid: var(--primary-solid);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -129,11 +320,15 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-solid: var(--destructive-solid);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-success: var(--color-success);
   --color-warning: var(--color-warning);
+  --color-success-solid: var(--success-solid);
+  --color-warning-solid: var(--warning-solid);
+  --color-muted-solid: var(--muted-solid);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

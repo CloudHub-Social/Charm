@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 const PRESENCE_COLORS: Record<PresenceStateDto, string> = {
   online: "var(--color-success)",
   unavailable: "var(--color-warning)",
-  offline: "var(--gray-500)",
+  offline: "var(--color-text-muted)",
 };
 
 const PRESENCE_LABELS: Record<PresenceStateDto, string> = {
