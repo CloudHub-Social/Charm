@@ -16,7 +16,7 @@ interface MembersDrawerProps {
  * implementation, per Spec 17's design notes.
  */
 export function MembersDrawer({ roomId, currentUserId, onClose }: MembersDrawerProps) {
-  const { data: details, isLoading } = useRoomDetails(roomId);
+  const { data: details, isLoading, isError } = useRoomDetails(roomId);
 
   return (
     <div className="flex w-80 shrink-0 flex-col border-l border-border bg-card">
@@ -33,6 +33,8 @@ export function MembersDrawer({ roomId, currentUserId, onClose }: MembersDrawerP
       </div>
 
       {isLoading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
+
+      {isError && <p className="p-4 text-sm text-destructive">Couldn't load members.</p>}
 
       {details && (
         <TooltipProvider>

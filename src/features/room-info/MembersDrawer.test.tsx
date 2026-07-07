@@ -42,4 +42,21 @@ describe("MembersDrawer", () => {
     screen.getByRole("button", { name: "Close members" }).click();
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it("shows an error message when the details fetch fails, without a blank body", async () => {
+    getRoomDetails.mockRejectedValue(new Error("network error"));
+
+    renderWithProviders(
+      <MembersDrawer
+        roomId="!fails:localhost"
+        currentUserId="@evie:localhost"
+        onClose={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("Couldn't load members.")).toBeInTheDocument();
+    // The close button remains reachable regardless of fetch outcome — it's
+    // rendered unconditionally in the header, not gated on `details`.
+    expect(screen.getByRole("button", { name: "Close members" })).toBeInTheDocument();
+  });
 });
