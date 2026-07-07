@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Info, Paperclip, Send, Settings, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
@@ -143,7 +143,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
   const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(membersDrawerOpenAtomFamily(roomId));
+  const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
+  // Room settings is a full modal covering the chat — messages arriving (or
+  // already at the bottom) behind it shouldn't be silently marked read, same
+  // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
+  const roomSettingsOpen = roomSettingsTarget !== null;
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
 
@@ -251,19 +256,28 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // (not event id) so this still fires the first time even before any
   // messages have loaded. Reset the dedup key when navigating away so
   // returning to the same room later (e.g. with newly-arrived unread
-  // messages) fires mark-read again instead of silently no-oping.
+  // messages) fires mark-read again instead of silently no-oping. Skipped
+  // (without consuming the dedup key) while room settings covers the chat —
+  // re-running this effect once the modal closes, with `roomSettingsOpen` in
+  // the deps, fires it then instead.
   useEffect(() => {
     if (!room) {
       lastMarkedReadRoomId.current = null;
       return;
     }
+    if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
     markRoomRead(room.room_id).catch(console.error);
-  }, [room]);
+  }, [room, roomSettingsOpen]);
 
   useEffect(() => {
     if (!room || !latestEventId) return undefined;
+    // Same reasoning as above: don't mark read while the modal covers the
+    // chat. `roomSettingsOpen` in the deps re-creates the observer on close,
+    // which fires its callback immediately with the sentinel's current
+    // intersection state — no need to wait for it to re-intersect.
+    if (roomSettingsOpen) return undefined;
     const sentinel = bottomSentinelRef.current;
     if (!sentinel) return undefined;
 
@@ -279,7 +293,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [room, latestEventId]);
+  }, [room, latestEventId, roomSettingsOpen]);
 
   // Keyed to the room id, not the `room` object — RoomsScreen rebuilds
   // `activeRoom` from every `room_list:update`, so a plain `[room]` dep would

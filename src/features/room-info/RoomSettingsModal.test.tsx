@@ -71,6 +71,22 @@ describe("RoomSettingsModal", () => {
     expect(screen.getByRole("tab", { name: "Permissions", selected: true })).toBeInTheDocument();
   });
 
+  it("does not fetch the member list until the Members tab is opened", async () => {
+    const details = makeRoomDetails({ name: "Design Team" });
+    getRoomDetails.mockResolvedValue(details);
+    getRoomMemberList.mockClear();
+
+    renderModal({ roomId: details.room_id, section: "general" });
+    await screen.findByDisplayValue("Design Team");
+    expect(getRoomMemberList).not.toHaveBeenCalled();
+
+    const membersTab = screen.getByRole("tab", { name: "Members" });
+    membersTab.focus();
+    fireEvent.click(membersTab);
+
+    await waitFor(() => expect(getRoomMemberList).toHaveBeenCalledWith(details.room_id));
+  });
+
   it("switches sections via the left-nav tabs", async () => {
     const details = makeRoomDetails({ name: "Design Team" });
     getRoomDetails.mockResolvedValue(details);

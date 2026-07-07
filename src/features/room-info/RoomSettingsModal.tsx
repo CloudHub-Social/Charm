@@ -121,16 +121,22 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto">
-                {/* `forceMount` + `data-[state=inactive]:hidden` keeps every
-                    section mounted rather than letting Radix unmount the
-                    inactive `TabsContent` — without this, switching away
-                    from General and back reset any unsaved name/topic edit,
-                    since `RoomSettingsForm`'s draft state lives in local
-                    `useState` seeded from `details` on mount. */}
+                {/* `forceMount` + `data-[state=inactive]:hidden` keeps
+                    General/Permissions mounted rather than letting Radix
+                    unmount the inactive `TabsContent` — without this,
+                    switching away and back reset any unsaved name/topic/
+                    power-level edit, since that draft state lives in local
+                    `useState` seeded from `details` on mount. Members is
+                    deliberately excluded: it has no local draft to lose
+                    (search/sort/filter are just UI state, not data at risk),
+                    and `MemberList` eagerly calls `useRoomMembers` on mount
+                    — forcing it whenever settings opens to General or
+                    Permissions would fetch the full member roster before
+                    the user ever asks for it. */}
                 <TabsContent value="general" forceMount className="data-[state=inactive]:hidden">
                   <RoomSettingsForm details={details} />
                 </TabsContent>
-                <TabsContent value="members" forceMount className="data-[state=inactive]:hidden">
+                <TabsContent value="members">
                   <MemberList details={details} currentUserId={currentUserId} />
                 </TabsContent>
                 <TabsContent
