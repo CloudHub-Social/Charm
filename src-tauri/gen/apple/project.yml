@@ -79,6 +79,16 @@ targets:
       - sdk: Security.framework
       - sdk: UIKit.framework
       - sdk: WebKit.framework
+      # matrix-sdk's "sqlite" feature (via rusqlite/libsqlite3-sys) links
+      # against the system libsqlite3 on iOS. `cargo build`'s own standalone
+      # link step resolves that fine, but the static archive it produces
+      # (libapp.a) doesn't carry that dependency forward into Xcode's final
+      # app-binary link — Xcode needs it declared explicitly here too, or the
+      # final `Ld` step fails with "symbol(s) not found" for every
+      # sqlite3_* symbol. Missing since matrix-sdk's sqlite feature was first
+      # added; surfaced by Spec 11's CI run, the first to actually build the
+      # full charm_lib for iOS.
+      - sdk: libsqlite3.tbd
     preBuildScripts:
       - script: pnpm tauri ios xcode-script -v --platform ${PLATFORM_DISPLAY_NAME:?} --sdk-root ${SDKROOT:?} --framework-search-paths "${FRAMEWORK_SEARCH_PATHS:?}" --header-search-paths "${HEADER_SEARCH_PATHS:?}" --gcc-preprocessor-definitions "${GCC_PREPROCESSOR_DEFINITIONS:-}" --configuration ${CONFIGURATION:?} ${FORCE_COLOR} ${ARCHS:?}
         name: Build Rust Code
