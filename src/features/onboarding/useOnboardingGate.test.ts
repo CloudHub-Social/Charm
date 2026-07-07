@@ -96,6 +96,54 @@ describe("useOnboardingGate", () => {
     await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
   });
 
+  it("skips the opportunistic write-back for a returning user whose local flag is already set", async () => {
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    getLocalOnboardingFlag.mockResolvedValue(true);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@already-flagged:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // A redundant PUT to the homeserver on every single launch would be
+    // wasted work — the local flag alone already short-circuits future
+    // launches, so there's nothing new to persist.
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
+  it("backfills the local flag when the account-data flag is present but the local flag isn't", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue({ completed_at: 1, version: 1 });
+
+    const { result } = renderHook(() => useOnboardingGate("@account-data-only-backfill:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // So a later launch where the account-data round trip can't complete
+    // (offline, slow homeserver) still has a local flag to short-circuit on.
+    await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
+  });
+
+  it("biases toward done (not pending) when the local-flag read fails", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockRejectedValue(new Error("disk error"));
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@local-flag-read-error:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("biases toward done (not pending) when the account-data read fails", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockRejectedValue(new Error("network error"));
+
+    const { result } = renderHook(() => useOnboardingGate("@account-data-read-error:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
   it("stays loading until a session (user id) is available", () => {
     const { result } = renderHook(() => useOnboardingGate(null));
     expect(result.current.status).toBe("loading");
@@ -126,6 +174,24 @@ describe("useOnboardingGate", () => {
       "social.cloudhub.charm.onboarding",
       expect.objectContaining({ version: 1 }),
     );
+    expect(setLocalOnboardingFlag).toHaveBeenCalled();
+    expect(result.current.status).toBe("done");
+  });
+
+  it("complete() resolves on the local write alone, without waiting on a slow/hung account-data write", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+    // Never resolves — models an offline/hung homeserver request.
+    setAccountData.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useOnboardingGate("@offline-completing:localhost"));
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+
+    await act(async () => {
+      await result.current.complete();
+    });
+
     expect(setLocalOnboardingFlag).toHaveBeenCalled();
     expect(result.current.status).toBe("done");
   });

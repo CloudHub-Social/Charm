@@ -10,6 +10,7 @@ const bootstrapCrossSigning = vi.fn();
 const getOwnProfile = vi.fn();
 const onSelfProfileUpdate = vi.fn();
 const setDisplayName = vi.fn();
+const listDevices = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   crossSigningStatus: (...args: unknown[]) => crossSigningStatus(...args),
@@ -21,7 +22,19 @@ vi.mock("@/lib/matrix", () => ({
     return Promise.resolve(() => {});
   },
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
+  listDevices: (...args: unknown[]) => listDevices(...args),
 }));
+
+const VERIFIED_CURRENT_DEVICE = {
+  device_id: "THIS_DEVICE",
+  display_name: "This device",
+  last_seen_ip: null,
+  last_seen_ts: null,
+  is_current: true,
+  is_verified: true,
+};
+
+const UNVERIFIED_CURRENT_DEVICE = { ...VERIFIED_CURRENT_DEVICE, is_verified: false };
 
 function renderWithProviders(children: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -64,6 +77,7 @@ beforeEach(() => {
     presence: "online",
   });
   setDisplayName.mockReset().mockResolvedValue(undefined);
+  listDevices.mockReset().mockResolvedValue([VERIFIED_CURRENT_DEVICE]);
 });
 
 describe("OnboardingScreen", () => {
@@ -97,7 +111,7 @@ describe("OnboardingScreen", () => {
     await waitFor(() => expect(continueButton).toBeEnabled());
   });
 
-  it("omits the verify pane entirely when the session is already cross-signing-verified", async () => {
+  it("omits the verify pane entirely when the account has cross-signing keys and this device is already trusted", async () => {
     crossSigningStatus.mockResolvedValue(VERIFIED_STATUS);
     const onDone = vi.fn();
     renderWithProviders(<OnboardingScreen onDone={onDone} />);
@@ -108,6 +122,22 @@ describe("OnboardingScreen", () => {
 
     expect(await screen.findByText("Say hello")).toBeInTheDocument();
     expect(screen.queryByText("Verify this device")).not.toBeInTheDocument();
+  });
+
+  it("still shows the verify pane when the account has cross-signing keys but this device isn't trusted yet", async () => {
+    // A brand-new device on an account that already set up cross-signing
+    // elsewhere: account-level keys exist, but *this* session hasn't been
+    // verified — `crossSigningStatus` alone would wrongly say "verified".
+    crossSigningStatus.mockResolvedValue(VERIFIED_STATUS);
+    listDevices.mockResolvedValue([UNVERIFIED_CURRENT_DEVICE]);
+    const onDone = vi.fn();
+    renderWithProviders(<OnboardingScreen onDone={onDone} />);
+
+    expect(await screen.findByText("Welcome to Charm")).toBeInTheDocument();
+
+    await clickContinue();
+
+    expect(await screen.findByRole("heading", { name: "Verify this device" })).toBeInTheDocument();
   });
 
   it("the top-level Skip control completes onboarding from any pane", async () => {

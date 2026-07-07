@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { useCrossSigningStatus } from "@/features/settings/useDevices";
+import { useCrossSigningStatus, useDevices } from "@/features/settings/useDevices";
 import { OrientationPane } from "./OrientationPane";
 import { ProfilePane } from "./ProfilePane";
 import { VerifyDevicePane } from "./VerifyDevicePane";
@@ -19,21 +19,30 @@ type PaneKey = "orientation" | "verify" | "profile";
  *
  * Max 3 panes, every one skippable (Spec 12's R2 guard rail against scope
  * creep into a wizard): the verify pane is entirely omitted — not just
- * hidden — once cross-signing is already set up, so a returning-ish account
- * that still happens to have zero rooms doesn't see a pane with nothing to
- * do. `crossSigningStatusPending` briefly disables the orientation pane's
- * Continue button — this is a local, near-instant IPC call, not a network
- * round trip — so a user can't click through to a "verify" pane the query
- * would have omitted a moment later had it resolved first.
+ * hidden — once *this device* is verified, so a returning-ish account that
+ * still happens to have zero rooms doesn't see a pane with nothing to do.
+ * Account-level cross-signing keys existing isn't enough on their own — a
+ * brand-new device on an account that already set up cross-signing
+ * elsewhere is still untrusted until *this* session verifies — so this also
+ * checks the current device's own `DeviceSummary.is_verified` (the same
+ * per-device trust signal `DevicesPanel` uses), not just
+ * `crossSigningStatus`. `pending` briefly disables the orientation pane's
+ * Continue button while both queries resolve — local, near-instant IPC
+ * calls, not network round trips — so a user can't click through to a
+ * "verify" pane either query would have omitted a moment later.
  */
 export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
   const { data: crossSigningStatus, isPending: crossSigningStatusPending } =
     useCrossSigningStatus();
+  const { data: devices, isPending: devicesPending } = useDevices();
+  const currentDevice = devices?.find((device) => device.is_current);
   const isVerified = Boolean(
     crossSigningStatus?.has_master_key &&
     crossSigningStatus.has_self_signing_key &&
-    crossSigningStatus.has_user_signing_key,
+    crossSigningStatus.has_user_signing_key &&
+    currentDevice?.is_verified,
   );
+  const verificationStatusPending = crossSigningStatusPending || devicesPending;
 
   const panes = useMemo<PaneKey[]>(() => {
     const list: PaneKey[] = ["orientation"];
@@ -67,7 +76,7 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
       </div>
       <div className="motion-safe:transition-opacity motion-safe:duration-200 flex flex-1 items-center justify-center p-6">
         {pane === "orientation" && (
-          <OrientationPane onNext={next} nextDisabled={crossSigningStatusPending} />
+          <OrientationPane onNext={next} nextDisabled={verificationStatusPending} />
         )}
         {pane === "verify" && <VerifyDevicePane onNext={next} onSkip={onDone} />}
         {pane === "profile" && <ProfilePane onNext={next} onSkip={onDone} />}

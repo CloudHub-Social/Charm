@@ -60,27 +60,56 @@ export function useOnboardingGate(userId: string | null) {
     async function evaluate() {
       setStatus("loading");
       try {
-        const rooms = await listRooms();
+        const [rooms, localFlag] = await Promise.all([
+          listRooms(),
+          // A failed read here must bias toward `done`, same as the outer
+          // catch below — coercing it to `false` would instead bias toward
+          // `pending` (re-showing onboarding) on a transient filesystem
+          // error, exactly backwards from Spec 12's fail-safe intent.
+          getLocalOnboardingFlag().catch(() => true),
+        ]);
+        if (cancelled) return;
+
         if (rooms.length > 0) {
-          if (!cancelled) setStatus("done");
+          setStatus("done");
           // Opportunistic write so a later launch (e.g. after this account's
           // rooms are later left) short-circuits on the flag alone, without
-          // re-deriving from room count.
-          void writeCompletionFlags();
+          // re-deriving from room count — but skip it when the local flag is
+          // already set, so a returning user's every launch doesn't perform
+          // a redundant account-data PUT to the homeserver.
+          if (!localFlag) void writeCompletionFlags();
           return;
         }
 
-        const [localFlag, accountData] = await Promise.all([
-          getLocalOnboardingFlag().catch(() => false),
-          getAccountData(ONBOARDING_ACCOUNT_DATA_TYPE).catch(() => null),
-        ]);
+        if (localFlag) {
+          setStatus("done");
+          return;
+        }
 
+        const accountData = await getAccountData(ONBOARDING_ACCOUNT_DATA_TYPE).catch(
+          // Same fail-safe bias as the local-flag read above: a failed
+          // account-data fetch is treated as "present" (any non-null value
+          // works — `deriveOnboardingStatus` only checks for `null`).
+          () => true,
+        );
         if (cancelled) return;
+
+        const accountDataPresent = accountData !== null;
+        if (accountDataPresent) {
+          // Backfill the local flag: `list_rooms` and the local flag are
+          // both local-store reads, but this check needed the homeserver —
+          // without this, a later offline/slow launch on this same device
+          // (where the account-data round trip can't complete) would have
+          // nothing local to short-circuit on and would re-show onboarding
+          // despite it already being done on another device.
+          void setLocalOnboardingFlag();
+        }
+
         setStatus(
           deriveOnboardingStatus({
             roomCount: rooms.length,
             localFlag,
-            accountDataPresent: accountData !== null,
+            accountDataPresent,
           }),
         );
       } catch (err) {
@@ -112,15 +141,22 @@ export function useOnboardingGate(userId: string | null) {
 }
 
 /**
- * Writes both persistence layers per Spec 12's acceptance criterion 9: the
- * local flag is written even if the account-data write fails (network,
- * homeserver rejecting it, etc.) so the app never re-onboards this device on
- * next launch regardless.
+ * Writes both persistence layers per Spec 12's acceptance criterion 9 — but
+ * only *waits* on the local flag, a fast local file write. The account-data
+ * write is a homeserver round trip that can be slow or fail outright while
+ * offline; firing it in the background rather than awaiting it means
+ * `complete()`'s caller (`OnboardingScreen`'s skip/finish handlers) isn't
+ * stranded on the onboarding surface for as long as that request takes. A
+ * background failure is still fine: the local flag alone already satisfies
+ * "don't re-onboard this device," and if this device also has this account
+ * signed in elsewhere, the flag re-derives from account data anyway.
  */
 async function writeCompletionFlags(): Promise<void> {
   const content: OnboardingAccountData = { completed_at: Date.now(), version: 1 };
-  await Promise.allSettled([
-    setAccountData(ONBOARDING_ACCOUNT_DATA_TYPE, content),
-    setLocalOnboardingFlag(),
-  ]);
+  setAccountData(ONBOARDING_ACCOUNT_DATA_TYPE, content).catch((err: unknown) => {
+    console.error("useOnboardingGate: failed to write the onboarding account-data flag", err);
+  });
+  await setLocalOnboardingFlag().catch((err: unknown) => {
+    console.error("useOnboardingGate: failed to write the local onboarding flag", err);
+  });
 }

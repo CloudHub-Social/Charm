@@ -16,10 +16,15 @@ interface ProfilePaneProps {
  * Thin entry point onto Spec 01's `get_own_profile`/`set_display_name` — no
  * avatar upload here (that's Settings' `AccountPanel`, a non-goal for
  * onboarding per Spec 12).
+ *
+ * Save is disabled while the profile is still loading: `displayName` reads
+ * `""` until `profile` resolves, so a click landing before then would call
+ * `setDisplayName(null)` and clear an existing name rather than genuinely
+ * saving a blank one.
  */
 export function ProfilePane({ onNext, onSkip }: ProfilePaneProps) {
   const queryClient = useQueryClient();
-  const { data: profile } = useOwnProfile();
+  const { data: profile, isPending: profilePending } = useOwnProfile();
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +66,7 @@ export function ProfilePane({ onNext, onSkip }: ProfilePaneProps) {
         />
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <Button className="h-11 w-full" onClick={handleSave} disabled={saving}>
+      <Button className="h-11 w-full" onClick={handleSave} disabled={saving || profilePending}>
         {saving ? "Saving…" : "Save and finish"}
       </Button>
       <Button variant="ghost" className="h-11 w-full" onClick={onSkip}>
