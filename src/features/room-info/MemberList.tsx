@@ -58,7 +58,12 @@ export function MemberList({ details, currentUserId }: MemberListProps) {
     const q = query.trim().toLowerCase();
     return members
       .filter((member) => matchesFilter(member.membership, filter))
-      .filter((member) => (q === "" ? true : memberLabel(member).toLowerCase().includes(q)))
+      .filter((member) =>
+        q === ""
+          ? true
+          : memberLabel(member).toLowerCase().includes(q) ||
+            member.user_id.toLowerCase().includes(q),
+      )
       .toSorted((a, b) =>
         sort === "name"
           ? memberLabel(a).localeCompare(memberLabel(b))

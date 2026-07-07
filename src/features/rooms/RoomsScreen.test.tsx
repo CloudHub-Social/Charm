@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
-import { membersDrawerOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
@@ -187,6 +187,30 @@ describe("RoomsScreen", () => {
     unmount();
 
     expect(setFocusedRoom).toHaveBeenCalledWith(null);
+  });
+
+  it("clears focus while the room settings modal is open", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith("!a:example.org"));
+    setFocusedRoom.mockClear();
+
+    store.set(roomSettingsAtom, { roomId: "!a:example.org", section: "general" });
+    fireEvent(window, new Event("focus"));
+
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith(null));
+    hasFocus.mockRestore();
   });
 
   it("selecting a room updates the active room and its chat content", async () => {

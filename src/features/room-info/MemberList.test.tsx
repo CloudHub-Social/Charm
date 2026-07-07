@@ -78,6 +78,20 @@ describe("MemberList", () => {
     await waitFor(() => expect(screen.getByText("No members match.")).toBeInTheDocument());
   });
 
+  it("matches by Matrix ID even when the member has a display name", async () => {
+    getRoomMemberList.mockResolvedValue(MEMBERS);
+    const details = makeRoomDetails({ member_count: 3 });
+
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
+    await screen.findByText("Alice");
+
+    fireEvent.change(screen.getByLabelText("Search members"), {
+      target: { value: "@alice:example.org" },
+    });
+
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+  });
+
   it("disables the Invite trigger when can.invite is false", async () => {
     getRoomMemberList.mockResolvedValue([]);
     const details = makeRoomDetails({ can: { ...makeRoomDetails().can, invite: false } });

@@ -18,7 +18,7 @@ import {
 } from "@/lib/matrix";
 import { MembersDrawer } from "@/features/room-info/MembersDrawer";
 import { RoomSettingsModal } from "@/features/room-info/RoomSettingsModal";
-import { membersDrawerOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 
 interface RoomsScreenProps {
@@ -67,12 +67,14 @@ export function RoomsScreen({
   // Tells the Rust side which room has focus so it can suppress a local
   // notification for whatever the user is already looking at (Spec 10). Not
   // just a function of `activeRoomId`: the active room isn't actually
-  // "focused" while the settings overlay covers the chat, or while the OS
-  // window itself is blurred/minimized — in either case the room should read
-  // as unfocused so a background notification for it still fires. Re-synced
-  // (not just set once) on window focus/blur so switching back to the app
-  // restores tracking without needing `activeRoomId` to change.
+  // "focused" while the settings overlay or the room settings modal covers
+  // the chat, or while the OS window itself is blurred/minimized — in any of
+  // those cases the room should read as unfocused so a background
+  // notification for it still fires. Re-synced (not just set once) on window
+  // focus/blur so switching back to the app restores tracking without
+  // needing `activeRoomId` to change.
   const settingsSection = useAtomValue(settingsOpenAtom);
+  const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const layout = useAdaptiveLayout();
   // On mobile, the active room is only actually on-screen while `AppShell`
   // is showing its detail view — the Chats/People tabs show a list instead,
@@ -85,6 +87,7 @@ export function RoomsScreen({
     function syncFocusedRoom() {
       const isShowingChat =
         !settingsSection &&
+        !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
       setFocusedRoom(isShowingChat ? activeRoomId : null).catch(console.error);
@@ -96,7 +99,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [activeRoomId, settingsSection, layout, mobileView]);
+  }, [activeRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
