@@ -338,23 +338,32 @@ impl RelocateOutcome {
 /// against the temp store remains valid and needs no rebuild — regardless
 /// of which [`RelocateOutcome`] variant is returned.
 ///
-/// Sequenced for crash safety: any stale existing store is removed first,
-/// then the new account passphrase entry (a copy of the temp one's value) is
-/// written, the temp passphrase entry is deleted next, and the directory
-/// rename comes *last*. A crash after removing the stale store but before
-/// the rename leaves the account path empty with the temp store and its
-/// keychain entry intact — the next relocation attempt (e.g. a retried
-/// login) finds no existing store and proceeds via the plain first-time
-/// path. A crash after writing the account entry but before deleting the
-/// temp one leaves two valid entries pointing at the same (still
-/// temp-located) store — never an undecryptable one. A crash after deleting
-/// the temp entry but before the rename leaves the temp directory in place
-/// with no keychain entry pointing at it; [`sweep_orphan_temp_stores`] finds
-/// and discards that directory on the next startup (its `discard_temp_store`
-/// no-ops on the already-gone keychain entry), so nothing is orphaned in the
-/// keychain. Deliberately *not* the reverse order (rename, then delete the
-/// temp entry): a crash in that gap left the *directory* gone but the temp
-/// keychain entry still present with nothing left to associate it with —
+/// Sequenced for crash safety, and for rollback safety if a later fallible
+/// step fails: any stale existing store is first *moved aside* to a backup
+/// path (not deleted) — this doubles as the same-volume `rename` that also
+/// guarantees `account_path` is clear for the final rename below. Only once
+/// the new account passphrase entry is written, the temp passphrase entry is
+/// deleted, and the temp store is renamed into `account_path` — i.e. the new
+/// store is fully committed — is the backup actually discarded. If any of
+/// those steps fails first, the backup is left on disk untouched: the
+/// account's prior store isn't gone, just relocated to a recoverable path,
+/// so a fallible keychain write or an interrupted rename never leaves the
+/// user with neither store. A crash after the backup rename but before the
+/// final rename leaves `account_path` empty with both the backup and the
+/// temp store (plus its keychain entry) intact; the next relocation attempt
+/// finds no store at `account_path` and proceeds via the plain first-time
+/// path, leaking the backup directory (recoverable manually, never silently
+/// merged or overwritten) rather than losing data. A crash after writing the
+/// account entry but before deleting the temp one leaves two valid entries
+/// pointing at the same (still temp-located) store — never an undecryptable
+/// one. A crash after deleting the temp entry but before the final rename
+/// leaves the temp directory in place with no keychain entry pointing at it;
+/// [`sweep_orphan_temp_stores`] finds and discards that directory on the
+/// next startup (its `discard_temp_store` no-ops on the already-gone
+/// keychain entry), so nothing is orphaned in the keychain. Deliberately
+/// *not* the reverse order (final rename, then delete the temp entry): a
+/// crash in that gap left the *directory* gone but the temp keychain entry
+/// still present with nothing left to associate it with —
 /// `sweep_orphan_temp_stores` only scans directories by name, so that entry
 /// would accumulate in the keychain forever instead of ever being cleaned
 /// up.
@@ -363,23 +372,65 @@ pub fn relocate_store(
     temp_key: &str,
     account_key: &str,
 ) -> Result<RelocateOutcome, String> {
-    relocate_store_at(&matrix_store_root(app)?, temp_key, account_key)
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    relocate_store_at_locked(&matrix_store_root(app)?, temp_key, account_key)
 }
 
-/// Serializes [`relocate_store_at`] process-wide. Without this, two
-/// concurrent *first-time* relocations for the same `account_key` (e.g. a
-/// double-submitted password login) could both pass the `account_path`
-/// existence check before either has renamed its temp directory into
-/// place, and both then write the account's keychain passphrase entry —
-/// whichever writes last wins, leaving the *other* one's now-relocated (or
-/// about-to-be-relocated) store encrypted with a passphrase that's no
-/// longer what's saved in the keychain. Relocation isn't a hot path (it
-/// happens once per login), so a single global lock — rather than a
-/// per-account one — is the simplest correct fix.
+/// Runs `relocate_store_at`'s relocation and then `save_session` under the
+/// *same* [`RELOCATE_LOCK`] critical section — without this, a losing
+/// concurrent completion (e.g. a double-submitted login) could still write
+/// its session to the keychain after a winning completion has already
+/// superseded the store with a different one, leaving the saved session
+/// pointing at a store that no longer matches it (the exact crypto-mismatch
+/// this module exists to prevent, just relocated to the session/store
+/// pairing instead of the relocation itself).
+pub fn relocate_store_and_save_session(
+    app: &AppHandle,
+    temp_key: &str,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &MatrixSession,
+) -> Result<RelocateOutcome, String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let outcome = relocate_store_at_locked(&matrix_store_root(app)?, temp_key, account_key)?;
+    save_session(account_key, homeserver_url, session)?;
+    Ok(outcome)
+}
+
+/// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
+/// QR login flow (see [`OAUTH_SESSION_ACCOUNT`]'s doc comment for why the
+/// two session kinds are separate).
+pub fn relocate_store_and_save_oauth_session(
+    app: &AppHandle,
+    temp_key: &str,
+    account_key: &str,
+    homeserver_url: &str,
+    session: &OAuthSession,
+) -> Result<RelocateOutcome, String> {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let outcome = relocate_store_at_locked(&matrix_store_root(app)?, temp_key, account_key)?;
+    save_oauth_session(account_key, homeserver_url, session)?;
+    Ok(outcome)
+}
+
+/// Serializes [`relocate_store_at_locked`] (and, transitively, the session
+/// save that follows it — see [`relocate_store_and_save_session`]) process-
+/// wide. Without this, two concurrent *first-time* relocations for the same
+/// `account_key` (e.g. a double-submitted password login) could both pass
+/// the `account_path` existence check before either has renamed its temp
+/// directory into place, and both then write the account's keychain
+/// passphrase entry — whichever writes last wins, leaving the *other* one's
+/// now-relocated (or about-to-be-relocated) store encrypted with a
+/// passphrase that's no longer what's saved in the keychain. Relocation
+/// isn't a hot path (it happens once per login), so a single global lock —
+/// rather than a per-account one — is the simplest correct fix.
 static RELOCATE_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
-/// Pure, `AppHandle`-free variant of [`relocate_store`].
+/// Pure, `AppHandle`-free variant of [`relocate_store`]. Also acquires
+/// [`RELOCATE_LOCK`] — kept as a separate public entry point (rather than
+/// folded into [`relocate_store_at_locked`]) for the unit tests below, which
+/// exercise this function directly without going through an `AppHandle`.
 pub fn relocate_store_at(
     root: &Path,
     temp_key: &str,
@@ -390,28 +441,40 @@ pub fn relocate_store_at(
     // distrust if some *other* call panicked mid-lock, so a poisoned lock
     // shouldn't permanently wedge every future relocation.
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    relocate_store_at_locked(root, temp_key, account_key)
+}
 
+/// The guts of [`relocate_store_at`], assuming [`RELOCATE_LOCK`] is already
+/// held by the caller — split out so [`relocate_store_and_save_session`] and
+/// [`relocate_store_and_save_oauth_session`] can run the session save inside
+/// the same critical section without deadlocking on a non-reentrant mutex.
+fn relocate_store_at_locked(
+    root: &Path,
+    temp_key: &str,
+    account_key: &str,
+) -> Result<RelocateOutcome, String> {
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
+    let backup_path = root.join(format!("{account_key}.stale-backup"));
 
     // A stale store from an incomplete previous login/logout can never
     // correctly host the session that was just authenticated (see this
-    // function's doc comment) — discard it before relocating. If we crash
-    // right after this and before the rename below, the account path is
-    // simply empty and the next relocation attempt takes the plain
-    // first-time path.
+    // function's doc comment) — move it aside rather than deleting it
+    // outright, so a later fallible step (keychain write, the final rename)
+    // failing doesn't leave the account with neither store. Clear any
+    // leftover backup from a previous crashed attempt first — if we're here
+    // again, that backup is superseded by *this* attempt's stale store.
     let existed = account_path.exists();
     if existed {
-        std::fs::remove_dir_all(&account_path).map_err(|e| {
+        if backup_path.exists() {
+            let _ = std::fs::remove_dir_all(&backup_path);
+        }
+        std::fs::rename(&account_path, &backup_path).map_err(|e| {
             format!(
-                "failed to discard stale store for {account_key} at {}: {e}",
+                "failed to back up stale store for {account_key} at {}: {e}",
                 account_path.display()
             )
         })?;
-        eprintln!(
-            "relocate_store: discarded stale store for {account_key} at {} (superseded by a fresh login)",
-            account_path.display()
-        );
     }
 
     let passphrase = get_or_create_passphrase(temp_key)?;
@@ -428,9 +491,26 @@ pub fn relocate_store_at(
     // `fs::rename` on the same volume (both under `matrix_store/`) is
     // atomic and, on POSIX, fails with `ENOTEMPTY`/`EEXIST` rather than
     // silently merging if `account_path` was recreated concurrently between
-    // the removal above and here — surfacing as an `Err` rather than
+    // the backup rename above and here — surfacing as an `Err` rather than
     // silently losing data either way.
     std::fs::rename(&temp_path, &account_path).map_err(|e| e.to_string())?;
+
+    if existed {
+        // The new store is fully committed at this point, so the backup is
+        // safe to discard. Best-effort: failing to reclaim disk space
+        // shouldn't turn an otherwise-successful login into an error.
+        if let Err(e) = std::fs::remove_dir_all(&backup_path) {
+            eprintln!(
+                "relocate_store: failed to remove backup of superseded store for {account_key} at {}: {e}",
+                backup_path.display()
+            );
+        } else {
+            eprintln!(
+                "relocate_store: discarded stale store for {account_key} at {} (superseded by a fresh login)",
+                account_path.display()
+            );
+        }
+    }
 
     Ok(if existed {
         RelocateOutcome::Superseded(account_path)

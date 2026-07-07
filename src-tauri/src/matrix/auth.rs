@@ -106,9 +106,13 @@ pub async fn login(
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
     let homeserver_url = client.homeserver().to_string();
-    persistence::relocate_store(&app, &temp_key, &account_key)?;
-
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    persistence::relocate_store_and_save_session(
+        &app,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -359,9 +363,13 @@ pub async fn register(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
-    persistence::relocate_store(&app, &temp_key, &account_key)?;
-
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    persistence::relocate_store_and_save_session(
+        &app,
+        &temp_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -580,9 +588,13 @@ pub async fn complete_sso_login(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
-    persistence::relocate_store(&app, &pending.store_key, &account_key)?;
-
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    persistence::relocate_store_and_save_session(
+        &app,
+        &pending.store_key,
+        &account_key,
+        &homeserver_url,
+        &session,
+    )?;
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.

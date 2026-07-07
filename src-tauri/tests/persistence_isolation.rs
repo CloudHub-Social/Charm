@@ -209,7 +209,11 @@ async fn same_account_logs_in_twice_supersedes_stale_store_without_crypto_mismat
     // login) — this is exactly the state that used to be kept and get a
     // mismatched session restored onto it. The fix instead discards it and
     // renames the second login's store into place (mirrors
-    // `RelocateOutcome::Superseded`).
+    // `RelocateOutcome::Superseded`). Drop `client_1` first: it still holds
+    // open handles onto the first store's SQLite files, and removing a
+    // directory out from under open handles is unreliable outside
+    // POSIX-with-unlink-on-open-file semantics (e.g. Windows file locking).
+    drop(client_1);
     assert!(account_path.exists());
     std::fs::remove_dir_all(&account_path).expect("discard the stale first store");
     std::fs::rename(root.0.join(&temp_key_2), &account_path)

@@ -183,24 +183,25 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     return;
                 };
                 let account_key = persistence::account_key(session.user.meta.user_id.as_str());
-                // `relocate_store` leaves `client` (already authenticated
-                // against the temp store) valid regardless of whether an
-                // account store already existed at this path — see its doc
-                // comment in persistence.rs. A fresh QR login always yields a
-                // new device_id, so an existing store there can never
-                // correctly host this session; `relocate_store` discards it
-                // and relocates the temp store in its place instead of
-                // trying to restore this session onto it.
-                if let Err(e) = persistence::relocate_store(&app, &temp_key, &account_key) {
-                    let _ = app.emit(
-                        "qr_login:progress",
-                        QrLoginProgressEvent::Error { message: e },
-                    );
-                    return;
-                }
-                if let Err(e) = persistence::save_oauth_session(
+                // `relocate_store_and_save_oauth_session` leaves `client`
+                // (already authenticated against the temp store) valid
+                // regardless of whether an account store already existed at
+                // this path — see its doc comment in persistence.rs. A fresh
+                // QR login always yields a new device_id, so an existing
+                // store there can never correctly host this session; the
+                // relocation discards it and relocates the temp store in its
+                // place instead of trying to restore this session onto it.
+                // Relocating and saving the session under the same critical
+                // section (rather than two separate calls) prevents a
+                // concurrent completion from saving a session that no
+                // longer matches the store a *different* completion just
+                // relocated.
+                let homeserver_url = client.homeserver().to_string();
+                if let Err(e) = persistence::relocate_store_and_save_oauth_session(
+                    &app,
+                    &temp_key,
                     &account_key,
-                    client.homeserver().as_ref(),
+                    &homeserver_url,
                     &session,
                 ) {
                     let _ = app.emit(
