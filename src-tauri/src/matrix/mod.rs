@@ -14,6 +14,7 @@ pub mod profiles;
 pub mod qr_login;
 pub mod room_admin;
 pub mod rooms;
+pub mod secret_store;
 pub mod send;
 pub mod shell;
 pub mod spaces;
