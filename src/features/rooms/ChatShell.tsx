@@ -616,10 +616,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             onTypingInput={() => handleTypingInput(room.room_id)}
             onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
           />
+          {/* `bg-primary-solid` (not `bg-primary`): solid fill under
+              near-white text/icon — see button.tsx's comment / tokens.css. */}
           <button
             aria-label="Send"
             onClick={() => composerRef.current?.submit()}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground"
+            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary-solid text-primary-foreground"
           >
             <Send size={16} />
           </button>
