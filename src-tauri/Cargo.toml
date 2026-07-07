@@ -53,12 +53,9 @@ keyring = { version = "3", features = ["windows-native"] }
 
 [dev-dependencies]
 matrix-sdk-test = "0.18.0"
-# Enables `matrix_sdk::test_utils::mocks::MatrixMockServer`, used by the
-# Timeline-mapping unit tests in `src/matrix/timeline.rs`'s own `#[cfg(test)]`
-# module (not a separate `tests/` file) to build a real
-# `matrix-sdk-ui` `Timeline` against a mocked homeserver (no live Synapse
-# needed) instead of hand-fabricating `EventTimelineItem`s, which the crate
-# doesn't expose a public constructor for.
+# Provides `EventFactory`/room-builder fixtures used by the timeline-mapping
+# unit tests in `src/matrix/timeline.rs`; `MatrixMockServer` itself is enabled
+# by `matrix-sdk`'s `testing` feature below.
 matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # For tests/sso_login.rs: drives the real Synapse<->Dex OIDC redirect chain
 # with a cookie jar, exactly like a browser would.
