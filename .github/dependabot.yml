@@ -1,0 +1,56 @@
+# Docs: <https://docs.github.com/en/code-security/supply-chain-security/keeping-your-dependencies-updated-automatically/customizing-dependency-updates>
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: main
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - internal
+    commit-message:
+      prefix: chore
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /
+    target-branch: main
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - internal
+    commit-message:
+      prefix: chore
+    groups:
+      npm-major:
+        update-types:
+          - major
+      npm-non-major:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    target-branch: main
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - internal
+    commit-message:
+      prefix: chore
+    groups:
+      cargo-major:
+        update-types:
+          - major
+      cargo-non-major:
+        update-types:
+          - minor
+          - patch
