@@ -47,23 +47,30 @@ matrix-sdk-ui = "0.18.0"
 lru = "0.12"
 imbl = "6.1.0"
 regex = "1"
+async-trait = "0.1"
 
+
+# `keyring`'s "apple-native" feature backs both macOS and iOS (same Keychain
+# Services API on both) — one dependency declaration covers both targets;
+# `secret_store.rs`'s `#[cfg(not(target_os = "android"))]` guard already
+# assumed iOS had `keyring` available like every other non-Android target.
+# (Independently fixed on `main` in #46 as well as here — same finding.)
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
-# "apple-native" backs the Keychain on both macOS and iOS (Apple's Security
-# framework keychain APIs are shared across the two), so one feature/target
-# selector covers both — see `matrix::secret_store`'s `not(target_os =
-# "android")` branch, which every non-Android platform including iOS falls
-# into.
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
-# matrix-sdk's "sqlite" feature pulls in libsqlite3-sys, which by default looks
-# for a system SQLite via pkg-config/vcpkg. macOS and Linux CI runners already
-# have one; a GitHub Actions Windows runner does not, so linking fails with
-# "cannot open input file 'sqlite3.lib'". "bundled" compiles SQLite from source
-# instead, scoped to Windows only so the already-working macOS/Linux link path
+
+# matrix-sdk's "sqlite" feature pulls in libsqlite3-sys, which by default
+# looks for a system SQLite via pkg-config/vcpkg. macOS and Linux CI runners
+# already have one; a GitHub Actions Windows runner does not (linking fails
+# with "cannot open input file 'sqlite3.lib'"), and the Android NDK sysroot
+# doesn't ship one either (linking fails with "unable to find library
+# -lsqlite3" — surfaced by Spec 11's CI run, the first to actually link
+# charm_lib for Android). "bundled" compiles SQLite from source instead,
+# scoped to these two targets so the already-working macOS/Linux link path
 # is untouched.
+[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
 libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 
 [dev-dependencies]

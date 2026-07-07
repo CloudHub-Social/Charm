@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { requestPermission } from "@tauri-apps/plugin-notification";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -9,8 +10,81 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { listRooms, type RoomNotificationModeKind, type RoomSummary } from "@/lib/matrix";
+import {
+  listRooms,
+  type PusherKind,
+  type RoomNotificationModeKind,
+  type RoomSummary,
+} from "@/lib/matrix";
+import { usePush } from "@/features/push/usePush";
 import { useNotificationSettings, useNotificationSettingsActions } from "./useNotificationSettings";
+
+const TRANSPORT_LABELS: Record<PusherKind, string> = {
+  unified_push: "UnifiedPush",
+  fcm: "Firebase Cloud Messaging",
+  apns: "Apple Push Notification service",
+  none: "Not registered yet",
+};
+
+function PushTransportSection() {
+  const { status, register, unregister } = usePush();
+  const transport = status?.transport ?? "none";
+
+  // The homeserver can only deliver a push if the OS has also granted the
+  // notification permission — without this, `register_push` can succeed
+  // while `app.notification().show()` still silently shows nothing (Android
+  // 13+/iOS both gate on it separately from push registration itself). Only
+  // proceed to register if the user actually granted it — registering a
+  // pusher the OS won't let us show anything for just generates server
+  // traffic with no visible result until they separately fix permissions.
+  async function handleEnable() {
+    const permission = await requestPermission();
+    if (permission !== "granted") return;
+    register.mutate();
+  }
+
+  return (
+    <section>
+      <h2 className="mb-2 text-lg font-bold text-foreground">Push notifications</h2>
+      <p className="mb-3 text-sm text-muted-foreground">
+        Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
+        {TRANSPORT_LABELS[transport]}.
+      </p>
+      {/* `status?.available` (not `transport === "none"`) is what actually
+          distinguishes "this platform can never do push" (desktop) from
+          "this is mobile, nothing has registered yet" — before the first
+          register, `transport` reads "none" in both cases. */}
+      {!status?.available ? (
+        <p className="text-sm text-muted-foreground">
+          Not available on this platform — desktop relies on the always-on sync loop instead.
+        </p>
+      ) : (
+        <div className="flex items-center gap-3">
+          {status?.registered ? (
+            <Button
+              variant="outline"
+              onClick={() => unregister.mutate()}
+              disabled={unregister.isPending}
+            >
+              Turn off push notifications
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              onClick={() => void handleEnable()}
+              disabled={register.isPending}
+            >
+              Turn on push notifications
+            </Button>
+          )}
+          {status?.last_error && (
+            <span className="text-sm text-destructive">{status.last_error}</span>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const MODE_LABELS: Record<RoomNotificationModeKind, string> = {
   all_messages: "All messages",
@@ -146,6 +220,8 @@ export function NotificationsPanel() {
 
   return (
     <div className="max-w-lg space-y-8">
+      <PushTransportSection />
+
       <section>
         <h2 className="mb-2 text-lg font-bold text-foreground">Default notification mode</h2>
         <p className="mb-3 text-sm text-muted-foreground">
