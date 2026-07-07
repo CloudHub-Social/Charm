@@ -10,7 +10,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,14 @@ pub const SESSION_COOKIE: &str = "charm_session";
 /// `MAX_ATTACHMENT_UPLOAD_BYTES`, so this gets its own, much smaller limit
 /// rather than reusing that one.
 const AVATAR_UPLOAD_MAX_BYTES: usize = 10 * 1024 * 1024;
+
+/// `MAX_ATTACHMENT_UPLOAD_BYTES` plus a fixed allowance for
+/// `multipart/form-data` framing overhead (boundary markers, per-part
+/// headers, the optional `caption` field) — see the `attachments` route's
+/// `DefaultBodyLimit` comment for why this can't just be
+/// `MAX_ATTACHMENT_UPLOAD_BYTES` itself.
+const MULTIPART_ATTACHMENT_BODY_LIMIT: usize =
+    charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES as usize + 64 * 1024;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -120,7 +128,12 @@ pub fn router(state: AppState) -> Router {
         // -- room admin --
         .route("/api/rooms/{room_id}/name", put(set_room_name))
         .route("/api/rooms/{room_id}/topic", put(set_room_topic))
-        .route("/api/rooms/{room_id}/avatar", delete(remove_room_avatar))
+        .route(
+            "/api/rooms/{room_id}/avatar",
+            put(set_room_avatar).delete(remove_room_avatar).layer(
+                axum::extract::DefaultBodyLimit::max(AVATAR_UPLOAD_MAX_BYTES),
+            ),
+        )
         .route("/api/rooms/{room_id}/join-rule", put(set_room_join_rule))
         .route(
             "/api/rooms/{room_id}/history-visibility",
@@ -168,10 +181,21 @@ pub fn router(state: AppState) -> Router {
             "/api/rooms/{room_id}/events/{event_id}/media",
             get(resolve_message_media),
         )
+        .route("/api/media/avatar", get(resolve_avatar))
         .route(
             "/api/rooms/{room_id}/attachments",
             post(send_attachment).layer(axum::extract::DefaultBodyLimit::max(
-                charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES as usize,
+                // `DefaultBodyLimit` is enforced on the *whole* request body
+                // before the `Multipart` extractor ever yields the `file`
+                // field, and multipart framing (boundary markers, per-part
+                // headers, the optional `caption` field) adds bytes on top
+                // of the file's own size — capping this at exactly
+                // `MAX_ATTACHMENT_UPLOAD_BYTES` would reject a file *at* the
+                // advertised limit purely because of that overhead, before
+                // this handler's own `bytes.len() >
+                // MAX_ATTACHMENT_UPLOAD_BYTES` check ever got a chance to
+                // apply the real, precise limit to just the file bytes.
+                MULTIPART_ATTACHMENT_BODY_LIMIT,
             )),
         )
         .route(
@@ -278,6 +302,7 @@ async fn finish_login(
         stored.sync_presence.clone(),
         persist,
         initial_response,
+        stored.last_snapshot.clone(),
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -815,11 +840,40 @@ async fn set_room_topic(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Reads the request body as raw room-avatar image bytes and uploads it in
+/// one step — the bytes-based web equivalent of desktop's file-path-based
+/// `room_admin::set_room_avatar` (`room_admin::set_room_avatar_impl` reads a
+/// local file path, which a browser has none of; this mirrors `set_avatar`'s
+/// own bytes-based approach instead).
+async fn set_room_avatar(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(room_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let parsed_room_id =
+        RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+    let mime = infer_image_mime(&body);
+    room.upload_avatar(&mime, body.to_vec(), None)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn remove_room_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     remove_room_avatar_impl(&session.client, &room_id)
         .await
@@ -1062,6 +1116,67 @@ async fn set_account_data(
 // ---------------------------------------------------------------------
 // Media / avatar upload
 // ---------------------------------------------------------------------
+
+/// Default square thumbnail size (px) for a resolved avatar — same value as
+/// desktop's own `profiles::AVATAR_THUMBNAIL_SIZE` (not reusable directly:
+/// it's `pub(crate)` there, and this is a plain literal rather than a
+/// dependency worth exposing across the crate boundary for).
+const DEFAULT_AVATAR_THUMBNAIL_SIZE: u32 = 96;
+
+/// Resolves a bare `mxc://` avatar URI (as carried, unresolved, by every
+/// room/profile/sender DTO this crate's routes already return) to its
+/// thumbnail bytes and streams them back — the room/profile-avatar
+/// counterpart to `resolve_message_media`, which only covers event-attached
+/// media. Reuses `resolve_avatar_thumbnail` against the same per-account
+/// `MediaCache` `resolve_message_media` uses.
+#[derive(Deserialize)]
+struct ResolveAvatarQuery {
+    mxc: String,
+    #[serde(default)]
+    size: Option<u32>,
+}
+
+async fn resolve_avatar(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<ResolveAvatarQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let cache = crate::media_cache::for_account(&session.user_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    let size = query.size.unwrap_or(DEFAULT_AVATAR_THUMBNAIL_SIZE);
+    let path = charm_lib::matrix::media::resolve_avatar_thumbnail(
+        cache,
+        &session.client,
+        &query.mxc,
+        size,
+    )
+    .await
+    .ok_or_else(|| ApiError::not_found("avatar could not be resolved"))?;
+
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    // Avatars are always bare (never encrypted) `mxc://` URIs resolved to a
+    // server-generated thumbnail, which is always a plain image — no
+    // declared-mimetype lookup or SVG exclusion needed here the way
+    // `resolve_message_media` needs for arbitrary sender-controlled
+    // attachments; sniffing is still worth it over guessing from
+    // `MediaCache`'s extensionless filename.
+    let content_type = sniff_content_type(&path)
+        .await
+        .unwrap_or_else(|| mime::IMAGE_PNG.to_string());
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    Ok((
+        [
+            ("content-type", content_type),
+            ("x-content-type-options", "nosniff".to_string()),
+            ("cross-origin-resource-policy", "same-origin".to_string()),
+        ],
+        body,
+    ))
+}
 
 /// Resolves an image/video/audio/file `m.room.message`'s attached media and
 /// streams the resolved file back. Unlike desktop's `media::resolve_media`
@@ -1776,6 +1891,28 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
             return;
         }
     }
+
+    // Replay the current `sync:state`/`room_list:update`/`badge:update`
+    // snapshot — see `Session::last_snapshot`'s doc comment. Login/restore's
+    // sync loop has almost always already produced these by the time a
+    // browser can open this socket, and `broadcast` never replays to a
+    // subscriber that joins after the fact, so without this a freshly
+    // connected tab would see a blank room list/badge until the *next* sync
+    // iteration happened to change something.
+    let snapshot = session
+        .last_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    for event in snapshot {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
     let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
     // The first `tick()` fires immediately, not after the first interval —
     // skip it so this doesn't send a redundant ping the instant a client

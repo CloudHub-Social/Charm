@@ -78,6 +78,13 @@ server.md`.
   out of header-size limits and browser history/access logs, and lets the
   `file` part's own `Content-Type` (the browser's real `File.type`) drive
   the sent event's mimetype instead of guessing from the filename alone.
+  `GET /api/media/avatar?mxc=...` resolves a bare room/profile/sender
+  avatar `mxc://` URI (every DTO this crate's routes return still carries
+  those unresolved) to its thumbnail bytes, the avatar counterpart to
+  `resolve_message_media`'s event-attached media. `PUT
+  /api/rooms/{room_id}/avatar` uploads a room avatar (bytes-based, same
+  shape as the account-avatar route) alongside the existing `DELETE` to
+  remove one.
 - **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm,
   cross-signing bootstrap/status, and outgoing self-verification
   (`POST /api/verification/devices/{device_id}/request`,
@@ -112,6 +119,13 @@ server.md`.
   `_impl`-reusing routes to add, same shape as the verification routes this
   sub-PR already has — left for a follow-up slice rather than growing this
   PR's already-large diff further.
+- **Verification event delivery isn't fully acknowledgement-guaranteed.**
+  `sync_loop::buffer_verification_event` buffers an event only when
+  `broadcast::send` finds zero subscribers — but "a subscriber exists"
+  isn't the same as "the frame actually reached the browser"; a connection
+  that's live-but-about-to-die exactly when an event fires can still lose
+  it. See that function's doc comment ("Known gap") for why closing this
+  fully needs real delivery-acknowledgement semantics, not a one-line fix.
 - **QR login.** Desktop's `qr_login::start_qr_login` is built around
   `MatrixState`'s single-client-per-process model (it drives an in-progress
   login to completion *before* any session/token exists to key it by) —

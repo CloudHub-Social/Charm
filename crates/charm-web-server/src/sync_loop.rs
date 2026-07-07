@@ -129,6 +129,21 @@ pub fn register_event_handlers(
 /// state is ever useful to resume from, and keeping every intermediate one
 /// would also make it easy for a single fast-moving flow to crowd out a
 /// genuinely separate flow's buffered request.
+///
+/// **Known gap:** `events.send(..).is_ok()` only proves a receiver was
+/// *subscribed* at this instant — not that the frame actually reached the
+/// browser. `crate::routes::handle_socket`'s own forwarding loop can still
+/// fail to write it (a slow/dying connection, or the receiver getting
+/// dropped for lagging) *after* this function already decided not to
+/// buffer. Closing that gap for real needs delivery-acknowledgement
+/// semantics (the client confirming receipt, or `handle_socket` re-queuing
+/// on its own send failure) rather than the fire-and-forget broadcast this
+/// crate uses everywhere else — a genuinely different design, not a
+/// one-line fix, so it's called out here rather than half-solved. In
+/// practice this only matters for the narrow window where a connection is
+/// live-but-about-to-die exactly when an event fires; the common cases
+/// (no connection at all, a healthy connection) are both already handled
+/// correctly.
 fn buffer_verification_event(
     events: &broadcast::Sender<ServerEvent>,
     pending: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
@@ -193,6 +208,7 @@ pub fn spawn(
     sync_presence: std::sync::Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
+    last_snapshot: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
@@ -202,9 +218,17 @@ pub fn spawn(
     }
 
     tokio::spawn(async move {
-        let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Syncing));
-        let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Idle));
-        emit_room_list_and_badge(&client, &events).await;
+        emit_snapshot(
+            &events,
+            &last_snapshot,
+            ServerEvent::SyncState(SyncStateEvent::Syncing),
+        );
+        emit_snapshot(
+            &events,
+            &last_snapshot,
+            ServerEvent::SyncState(SyncStateEvent::Idle),
+        );
+        emit_room_list_and_badge(&client, &events, &last_snapshot).await;
         emit_room_updates(&client, &events, &initial_response).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
@@ -227,7 +251,7 @@ pub fn spawn(
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    emit_room_list_and_badge(&client, &events).await;
+                    emit_room_list_and_badge(&client, &events, &last_snapshot).await;
                     emit_room_updates(&client, &events, &response).await;
                     if let Some(persist) = &persist {
                         last_saved_access_token =
@@ -238,9 +262,13 @@ pub fn spawn(
                 Err(e) => {
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
-                        let _ = events.send(ServerEvent::SyncState(SyncStateEvent::Error {
-                            message: e.to_string(),
-                        }));
+                        emit_snapshot(
+                            &events,
+                            &last_snapshot,
+                            ServerEvent::SyncState(SyncStateEvent::Error {
+                                message: e.to_string(),
+                            }),
+                        );
                         break;
                     }
                     let backoff_secs = 1u64 << (consecutive_failures - 1).min(4);
@@ -251,14 +279,36 @@ pub fn spawn(
     })
 }
 
-async fn emit_room_list_and_badge(client: &Client, events: &broadcast::Sender<ServerEvent>) {
+/// Sends `event` live (best-effort, same as every other broadcast in this
+/// module) and also overwrites `last_snapshot`'s entry for this same
+/// `ServerEvent` variant — see `Session::last_snapshot`'s doc comment.
+/// Unlike `buffer_verification_event`, this always updates the cache
+/// regardless of whether the live send had any receivers: the point isn't
+/// "deliver this exact event eventually", it's "always have *a* current
+/// value ready to hand a newly connecting socket".
+fn emit_snapshot(
+    events: &broadcast::Sender<ServerEvent>,
+    last_snapshot: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    event: ServerEvent,
+) {
+    let _ = events.send(event.clone());
+    let mut snapshot = last_snapshot.lock().unwrap_or_else(|e| e.into_inner());
+    snapshot.retain(|existing| std::mem::discriminant(existing) != std::mem::discriminant(&event));
+    snapshot.push(event);
+}
+
+async fn emit_room_list_and_badge(
+    client: &Client,
+    events: &broadcast::Sender<ServerEvent>,
+    last_snapshot: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+) {
     // No media cache in this crate yet (matches sub-PR A's `snapshot_rooms`
     // calls in `routes.rs`) — room avatars carry their bare `mxc://` url but
     // no locally resolved thumbnail path.
     let snapshot = rooms::snapshot_rooms(client, None).await;
     let badge = shell::compute_badge_state(&snapshot);
-    let _ = events.send(ServerEvent::RoomList(snapshot));
-    let _ = events.send(ServerEvent::Badge(badge));
+    emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
+    emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
 }
 
 async fn emit_room_updates(

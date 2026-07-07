@@ -95,6 +95,21 @@ pub struct Session {
     /// additionally dedupes `verification:sas_update` by flow id, since
     /// only the *latest* state per flow is ever worth resuming from.
     pub pending_verification_events: Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    /// The most recent `sync:state`/`room_list:update`/`badge:update` triple
+    /// `sync_loop`'s background loop produced, replayed by
+    /// `crate::routes::ws_handler` on every new connection *before* it
+    /// starts forwarding live events. Unlike the verification-event buffer
+    /// above, this isn't "delivery guaranteed once" bookkeeping — it's a
+    /// plain overwrite-in-place cache of "whatever's current", replayed
+    /// every time regardless of whether a previous connection already saw
+    /// it. Without this, a browser that opens its WebSocket any time after
+    /// the very first sync iteration (essentially always, in practice:
+    /// login/restore's own initial sync — and therefore the loop's first
+    /// emit — completes before `finish_login` can even return a session
+    /// cookie for a browser to open a socket with) would see nothing at all
+    /// until the *next* sync iteration happened to change something,
+    /// leaving the room list/badge/sync-status blank in the meantime.
+    pub last_snapshot: Arc<std::sync::Mutex<Vec<ServerEvent>>>,
 }
 
 /// See `Session::pending_verification_events`'s doc comment.
@@ -115,6 +130,7 @@ impl Session {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
+            last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             events,
         }
     }
