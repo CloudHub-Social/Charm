@@ -49,6 +49,7 @@ const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
 pub fn spawn(
     client: Client,
     events: broadcast::Sender<ServerEvent>,
+    sync_presence: std::sync::Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
 ) -> tokio::task::JoinHandle<()> {
     register_presence_handler(client.clone(), events.clone());
     register_self_profile_handler(client.clone(), events.clone());
@@ -79,7 +80,13 @@ pub fn spawn(
 
         let mut consecutive_failures: u32 = 0;
         loop {
-            match client.sync_once(SyncSettings::default()).await {
+            // Read fresh every iteration, not baked into one long-lived
+            // `SyncSettings` — see `Session::sync_presence`'s doc comment
+            // for why (an explicit `unavailable`/`offline` choice must
+            // survive past the very next long-poll).
+            let presence = *sync_presence.lock().unwrap_or_else(|e| e.into_inner());
+            let settings = SyncSettings::default().set_presence(presence.into());
+            match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
                     emit_room_list_and_badge(&client, &events).await;

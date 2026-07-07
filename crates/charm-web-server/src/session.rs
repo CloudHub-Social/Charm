@@ -60,6 +60,17 @@ pub struct Session {
     /// `tokio::sync::Mutex`: only ever touched synchronously (set once right
     /// after spawning, taken once on logout), never held across an `.await`.
     pub sync_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The presence state the *next* `/sync` request should report, mirrors
+    /// desktop's `MatrixState::sync_presence` — `sync_loop`'s steady-state
+    /// loop reads this fresh on every iteration rather than baking a single
+    /// `SyncSettings::default()` (always `Online`) into the whole loop, so
+    /// an explicit `unavailable`/`offline` choice via `PUT /api/presence`
+    /// actually sticks across syncs instead of being silently reverted to
+    /// online by the next long-poll. `Arc` (not just a plain field): shared
+    /// between this `Session` (routes.rs writes to it) and the sync-loop
+    /// task spawned before the session is wrapped in the `SessionStore`'s
+    /// own `Arc` (see `sync_loop::spawn`'s caller in `routes.rs`/`main.rs`).
+    pub sync_presence: Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
 }
 
 impl Session {
@@ -68,6 +79,9 @@ impl Session {
         Self {
             client,
             user_id,
+            sync_presence: Arc::new(std::sync::Mutex::new(
+                charm_lib::matrix::presence::PresenceStateDto::default(),
+            )),
             sync_handle: std::sync::Mutex::new(None),
             timelines: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)

@@ -27,6 +27,24 @@
 //! [`PersistenceStore::from_env`] returns `Ok(None)` and the server falls
 //! back to sub-PR A's in-memory-only behavior rather than refusing to start
 //! — this keeps local dev and the test suite working with zero setup.
+//!
+//! **Known gap: the Olm/Megolm crypto store is not persisted.** This only
+//! saves the `MatrixSession` (access/refresh tokens + device id) — on
+//! restart, [`restore_one`] rebuilds a fresh in-memory `Client` and restores
+//! just that token, so the *cookie* stays valid, but the crypto state that
+//! client had learned before the restart (room keys, device/cross-signing
+//! trust) is gone. Encrypted-room history a session had already decrypted,
+//! and any established verification, don't survive a restart even though
+//! the session nominally does. Desktop avoids this because its `Client` is
+//! always backed by matrix-sdk's encrypted SQLite store (see
+//! `src-tauri/src/matrix/persistence.rs`'s `matrix_store/` layout), which
+//! this crate doesn't yet provision per web session. Fixing this properly
+//! means giving each persisted session its own encrypted `matrix-sdk-sqlite`
+//! store directory (keyed the same way as [`crate::media_cache`], via
+//! `charm_lib::matrix::persistence::account_key`) and building the restored
+//! `Client` against that store instead of a bare in-memory one — a real
+//! slice of work in its own right, not a one-line fix, so it's called out
+//! here rather than silently shipped incomplete.
 
 use std::path::PathBuf;
 

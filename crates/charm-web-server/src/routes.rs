@@ -162,7 +162,12 @@ pub fn router(state: AppState) -> Router {
             "/api/rooms/{room_id}/events/{event_id}/media",
             get(resolve_message_media),
         )
-        .route("/api/rooms/{room_id}/attachments", post(send_attachment))
+        .route(
+            "/api/rooms/{room_id}/attachments",
+            post(send_attachment).layer(axum::extract::DefaultBodyLimit::max(
+                charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES as usize,
+            )),
+        )
         .route("/api/profile/avatar", put(set_avatar).delete(remove_avatar))
         // -- verification --
         .route(
@@ -212,7 +217,11 @@ async fn discover_homeserver(
 /// in-memory (matches sub-PR A's behavior when no master key is configured
 /// at all).
 async fn finish_login(state: &AppState, mut session: Session, homeserver_url: &str) -> String {
-    let handle = crate::sync_loop::spawn(session.client.clone(), session.events.clone());
+    let handle = crate::sync_loop::spawn(
+        session.client.clone(),
+        session.events.clone(),
+        session.sync_presence.clone(),
+    );
     *session
         .sync_handle
         .get_mut()
@@ -933,6 +942,14 @@ async fn set_presence(
     set_presence_impl(&session.client, request.presence, request.status_msg)
         .await
         .map_err(ApiError::bad_request)?;
+    // Record it on the session too — the running sync loop reads this fresh
+    // on every iteration (see `Session::sync_presence`'s doc comment) so
+    // this explicit choice actually sticks across syncs instead of being
+    // silently reverted to `Online` by the next long-poll.
+    *session
+        .sync_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = request.presence;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1026,9 +1043,15 @@ async fn resolve_message_media(
     Query(query): Query<ResolveMediaQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let cache = crate::media_cache::shared()
+    let cache = crate::media_cache::for_account(&session.user_id)
         .await
         .map_err(ApiError::bad_request)?;
+    // `resolve_media_impl` only returns a cache path — `MediaCache` stores
+    // files under extensionless SHA-256 names, so guessing the content type
+    // from that path (as an earlier version of this route did) always fell
+    // back to `application/octet-stream`. The event carries the real
+    // declared mimetype, so look it up directly instead.
+    let declared_mimetype = declared_media_mimetype(&session.client, &room_id, &event_id).await;
     let path = charm_lib::matrix::media::resolve_media_impl(
         &session.client,
         cache,
@@ -1042,11 +1065,44 @@ async fn resolve_message_media(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let content_type = mime_guess::from_path(&path)
-        .first_or_octet_stream()
-        .to_string();
+    let content_type = declared_mimetype.unwrap_or_else(|| {
+        mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string()
+    });
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     Ok(([("content-type", content_type)], body))
+}
+
+/// Best-effort lookup of an image/video/audio/file message's declared
+/// `mimetype`, `None` on any failure (unparsed ids, non-message event,
+/// missing `info`) — callers fall back to a filename-based guess rather than
+/// failing the whole media request over a missing/malformed content-type.
+async fn declared_media_mimetype(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_id: &str,
+) -> Option<String> {
+    use matrix_sdk::ruma::events::room::message::MessageType;
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+
+    let parsed_room_id = RoomId::parse(room_id).ok()?;
+    let room = client.get_room(&parsed_room_id)?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let event = room.event(&parsed_event_id, None).await.ok()?;
+    let deserialized: AnySyncTimelineEvent = event.kind.raw().deserialize().ok()?;
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) = deserialized
+    else {
+        return None;
+    };
+    let original = msg.as_original()?;
+    match &original.content.msgtype {
+        MessageType::Image(c) => c.info.as_ref()?.mimetype.clone(),
+        MessageType::Video(c) => c.info.as_ref()?.mimetype.clone(),
+        MessageType::Audio(c) => c.info.as_ref()?.mimetype.clone(),
+        MessageType::File(c) => c.info.as_ref()?.mimetype.clone(),
+        _ => None,
+    }
 }
 
 /// Uploads a room attachment straight from the request body (a browser has

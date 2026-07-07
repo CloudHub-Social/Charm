@@ -70,6 +70,13 @@ server.md`.
 
 ## Still deferred
 
+- **The Olm/Megolm crypto store isn't persisted, only the `MatrixSession`
+  token.** See `persistence.rs`'s module doc comment ("Known gap") for the
+  full explanation and what fixing it properly requires (a per-account
+  encrypted `matrix-sdk-sqlite` store, same shape as desktop's
+  `matrix_store/`). A restart currently keeps a browser's cookie/login
+  working but loses that session's previously-learned room keys and
+  verification/trust state.
 - **QR login.** Desktop's `qr_login::start_qr_login` is built around
   `MatrixState`'s single-client-per-process model (it drives an in-progress
   login to completion *before* any session/token exists to key it by) —

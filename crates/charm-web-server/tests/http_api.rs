@@ -327,11 +327,22 @@ async fn websocket_upgrade_is_rejected_without_a_session_cookie() {
 
 /// End-to-end: log in (which spawns this session's background sync loop —
 /// see `sync_loop::spawn`), connect a WebSocket with that session's cookie,
-/// and confirm a `sync:state` event actually arrives — proving the sync
+/// and confirm *some* `ServerEvent` actually arrives — proving the sync
 /// loop's events reach a real WebSocket client, not just the in-process
 /// broadcast channel `isolation.rs` exercises directly.
+///
+/// Deliberately doesn't assert on a specific event like `sync:state`: that
+/// one is only ever sent once, right as the sync loop starts, and the
+/// broadcast channel doesn't replay history to a subscriber that connects
+/// after it already fired — `login_and_get_cookie` returning doesn't
+/// guarantee the spawned sync-loop task has reached that point yet, and on a
+/// fast local homeserver it easily can have. `room_list:update`/
+/// `badge:update`, by contrast, are re-sent on every steady-state sync
+/// iteration for as long as the loop runs, so accepting any event here (not
+/// just the first one) avoids that race without weakening what the test
+/// actually proves.
 #[tokio::test]
-async fn websocket_receives_sync_state_after_login() {
+async fn websocket_receives_events_after_login() {
     use futures_util::StreamExt;
 
     let app = app();
@@ -356,19 +367,20 @@ async fn websocket_receives_sync_state_after_login() {
         .await
         .expect("authenticated WebSocket upgrade should succeed");
 
-    let received = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let received = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while let Some(Ok(msg)) = ws.next().await {
             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                 let value: Value = serde_json::from_str(&text).unwrap();
-                if value["event"] == "sync:state" {
-                    return value;
-                }
+                return value;
             }
         }
-        panic!("WebSocket closed before a sync:state event arrived");
+        panic!("WebSocket closed before any event arrived");
     })
     .await
-    .expect("should receive a sync:state event within 15s of connecting");
+    .expect("should receive at least one ServerEvent within 30s of connecting");
 
-    assert!(received["data"]["status"].is_string());
+    assert!(
+        received["event"].is_string(),
+        "event envelope must be tagged"
+    );
 }

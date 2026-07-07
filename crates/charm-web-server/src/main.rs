@@ -25,7 +25,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let restored = persistence.restore_all().await;
         tracing::info!("restored {} persisted session(s)", restored.len());
         for (token, session) in restored {
-            let handle = sync_loop::spawn(session.client.clone(), session.events.clone());
+            let handle = sync_loop::spawn(
+                session.client.clone(),
+                session.events.clone(),
+                session.sync_presence.clone(),
+            );
             *session
                 .sync_handle
                 .lock()
