@@ -5,7 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:allow-default-urls",
+    "opener:default",
     "updater:default",
     "process:default",
     "deep-link:default",
