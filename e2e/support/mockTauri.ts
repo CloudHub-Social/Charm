@@ -282,7 +282,8 @@ export function installMockTauri(seed: {
         targetRoom.unread_messages = 0;
         targetRoom.has_unread =
           targetRoom.is_marked_unread ||
-          (!targetRoom.is_muted && (targetRoom.unread_messages as number) > 0);
+          (!targetRoom.is_muted && (targetRoom.unread_messages as number) > 0) ||
+          (targetRoom.unread_count as number) > 0;
         pushRoomListUpdate();
       }
       return undefined;
