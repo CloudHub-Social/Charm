@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 06's context-menu room-organization actions
@@ -51,6 +52,7 @@ test("favouriting a room via its context menu moves it into the Favourites secti
   const favouritesHeader = page.getByRole("button", { name: /Favourites/ });
   await expect(favouritesHeader).toBeVisible();
   await expect(favouritesHeader.getByText("1", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "room-list-org-favourited");
 
   // Toggling back removes it from Favourites (label flips).
   await roomButton.click({ button: "right" });
@@ -74,6 +76,7 @@ test("marking a room low-priority moves it to the Low priority section and clear
   await roomButton.click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Add to Favourites" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Remove from Low priority" })).toBeVisible();
+  await captureSnapshot(page, "room-list-org-low-priority");
 });
 
 test("muting a room shows a muted indicator", async ({ page }) => {
@@ -83,6 +86,7 @@ test("muting a room shows a muted indicator", async ({ page }) => {
   await page.getByRole("menuitem", { name: "Mute" }).click();
 
   await expect(roomButton.getByLabel("Muted")).toBeVisible();
+  await captureSnapshot(page, "room-list-org-muted");
 
   await roomButton.click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Unmute" })).toBeVisible();
@@ -107,6 +111,7 @@ test("marking a room unread shows the mark-unread dot even with zero unread mess
   await page.getByRole("menuitem", { name: "Mark as read" }).click();
 
   await expect(roomButton.getByText("Marked unread")).toBeVisible();
+  await captureSnapshot(page, "room-list-org-marked-unread");
 });
 
 test("marking a room with an unread badge as read clears the badge", async ({ page }) => {
@@ -117,4 +122,5 @@ test("marking a room with an unread badge as read clears the badge", async ({ pa
   await page.getByRole("menuitem", { name: "Mark as read" }).click();
 
   await expect(roomButton.getByText("2", { exact: true })).toHaveCount(0);
+  await captureSnapshot(page, "room-list-org-marked-read");
 });

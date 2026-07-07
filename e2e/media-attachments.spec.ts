@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 02's acceptance flow: attach a file via the
@@ -42,10 +43,12 @@ test("attaching an image via the picker renders an inline thumbnail and opens in
 
   const thumbnail = page.getByRole("button", { name: "Open image photo.png" });
   await expect(thumbnail).toBeVisible();
+  await captureSnapshot(page, "media-attachments-image-thumbnail");
 
   await thumbnail.click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("img", { name: "photo.png" })).toBeVisible();
+  await captureSnapshot(page, "media-attachments-image-lightbox");
 
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -72,6 +75,7 @@ test("attaching a non-image file renders a download chip with filename and size"
   // mockTauri's `send_attachment` gives non-image/video/audio files a fixed
   // 99999-byte size; `humanFileSize` renders that as "98 KB".
   await expect(page.getByText("98 KB")).toBeVisible();
+  await captureSnapshot(page, "media-attachments-download-chip");
 });
 
 test("upload progress shows while sending and clears once the attachment lands", async ({
@@ -97,10 +101,12 @@ test("upload progress shows while sending and clears once the attachment lands",
   // entirely would still pass this test.
   await expect(page.getByText("big-video.mp4")).toBeVisible();
   await expect(page.getByRole("button", { name: "Play video big-video.mp4" })).toHaveCount(0);
+  await captureSnapshot(page, "media-attachments-upload-in-progress");
 
   // The video msgtype renders a play-overlaid thumbnail once the attachment
   // lands, and the upload tray's transient entry is gone.
   await expect(page.getByRole("button", { name: "Play video big-video.mp4" })).toBeVisible();
   await expect(page.getByText("big-video.mp4", { exact: true })).toHaveCount(0);
   await expect(page.getByText("Upload failed")).toHaveCount(0);
+  await captureSnapshot(page, "media-attachments-upload-complete");
 });

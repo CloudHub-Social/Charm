@@ -14,6 +14,10 @@ import { installMockTauri } from "./support/mockTauri";
  * session) and assert the attribute is present immediately on navigation —
  * proving the boot script ran ahead of the bundle rather than theme being
  * applied later by `ThemeProvider`'s reconcile effect.
+ *
+ * snapshot-exempt: asserts `data-theme`/`data-density`/etc attributes on `<html>`
+ * before paint, not visible pixel state — there is nothing a screenshot would
+ * meaningfully capture here that the attribute assertions don't already cover.
  */
 
 const ROOM = { room_id: "!e2e-appearance:localhost", name: "Appearance E2E Room", unread_count: 0 };

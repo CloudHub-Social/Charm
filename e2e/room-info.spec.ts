@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 07's golden path: open the right panel from
@@ -26,6 +27,7 @@ test("opens the room info panel from the chat header", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Room info" })).toBeVisible();
   await expect(page.getByLabel("Room name")).toHaveValue(ROOM.name);
+  await captureSnapshot(page, "room-info-panel-open");
 });
 
 test("renames a room end-to-end and reflects it in the header and room list", async ({ page }) => {
@@ -37,6 +39,7 @@ test("renames a room end-to-end and reflects it in the header and room list", as
 
   await expect(page.getByRole("button", { name: "Renamed via E2E" })).toBeVisible();
   await expect(page.getByText("Renamed via E2E", { exact: true }).first()).toBeVisible();
+  await captureSnapshot(page, "room-info-renamed");
 });
 
 test("invites a member and it appears in the member list", async ({ page }) => {
@@ -48,4 +51,5 @@ test("invites a member and it appears in the member list", async ({ page }) => {
   await page.getByRole("button", { name: "Send invite" }).click();
 
   await expect(page.getByText("@bob:example.org").first()).toBeVisible();
+  await captureSnapshot(page, "room-info-member-invited");
 });

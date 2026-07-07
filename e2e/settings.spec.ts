@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 08's two highest-priority flows: logging out
@@ -31,6 +32,7 @@ test("settings: logging out returns to the login screen", async ({ page }) => {
 
   await page.getByRole("button", { name: "Log out" }).first().click();
   await expect(page.getByRole("heading", { name: "Log out?" })).toBeVisible();
+  await captureSnapshot(page, "settings-logout-confirm");
 
   await page.getByRole("button", { name: "Log out" }).last().click();
 
@@ -47,4 +49,5 @@ test("settings: verifying another session opens the verification overlay", async
   await page.getByRole("menuitem", { name: "Verify" }).click();
 
   await expect(page.getByText("Verify new sign-in")).toBeVisible();
+  await captureSnapshot(page, "settings-verify-overlay");
 });

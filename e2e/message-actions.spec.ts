@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 03's acceptance flow (send -> react -> edit ->
@@ -50,6 +51,7 @@ test("sending a message shows exactly one bubble that goes pending -> sent, neve
   // sent, not stuck on "sending…" and not duplicated.
   await expect(page.getByText(/sending…/)).toHaveCount(0);
   await expect(bubble).toHaveCount(1);
+  await captureSnapshot(page, "message-actions-single-sent-bubble");
 });
 
 test("send, react, edit, reply, and delete a message", async ({ page }) => {
@@ -68,6 +70,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await page.getByRole("button", { name: "React with 👍" }).click();
   await expect(originalRow.getByText("👍", { exact: true })).toBeVisible();
   await expect(originalRow.getByText("1", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "message-actions-reacted");
 
   // --- edit ---
   await originalRow.getByRole("button", { name: "More actions" }).click();
@@ -77,6 +80,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await composer.press("Enter");
   await expect(page.getByText("hello there, edited", { exact: true })).toBeVisible();
   await expect(page.getByText("(edited)")).toBeVisible();
+  await captureSnapshot(page, "message-actions-edited");
 
   const editedRow = page
     .getByText("hello there, edited", { exact: true })
@@ -93,6 +97,7 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   const replyRow = replyBubble.locator("xpath=ancestor::*[contains(@class, 'group')][1]");
   // The reply's quoted preview renders the replied-to sender's id.
   await expect(replyRow.getByText(USER_ID, { exact: true })).toBeVisible();
+  await captureSnapshot(page, "message-actions-replied");
 
   // --- delete ---
   await replyRow.getByRole("button", { name: "More actions" }).click();
