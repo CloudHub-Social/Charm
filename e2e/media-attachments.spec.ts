@@ -25,10 +25,6 @@ import { installMockTauri } from "./support/mockTauri";
 const ROOM = { room_id: "!e2e-media:localhost", name: "Media E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
 
-test.beforeEach(async ({ page }) => {
-  await page.goto("/");
-});
-
 test("attaching an image via the picker renders an inline thumbnail and opens in a lightbox", async ({
   page,
 }) => {
@@ -38,7 +34,7 @@ test("attaching an image via the picker renders an inline thumbnail and opens in
     room: ROOM,
     filePickerResult: "/Users/e2e/photo.png",
   });
-  await page.reload();
+  await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
   await expect(page.getByText("No messages yet")).toBeVisible();
 
@@ -64,7 +60,7 @@ test("attaching a non-image file renders a download chip with filename and size"
     room: ROOM,
     filePickerResult: "/Users/e2e/quarterly-report.pdf",
   });
-  await page.reload();
+  await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
   await expect(page.getByText("No messages yet")).toBeVisible();
 
@@ -73,18 +69,19 @@ test("attaching a non-image file renders a download chip with filename and size"
   const chip = page.getByRole("link", { name: "Download quarterly-report.pdf" });
   await expect(chip).toBeVisible();
   await expect(page.getByText("quarterly-report.pdf")).toBeVisible();
+  // mockTauri's `send_attachment` gives non-image/video/audio files a fixed
+  // 99999-byte size; `humanFileSize` renders that as "98 KB".
+  await expect(page.getByText("98 KB")).toBeVisible();
 });
 
-test("upload progress shows while sending and clears once the attachment lands", async ({
-  page,
-}) => {
+test("a video attachment lands without an upload-failed error", async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
     room: ROOM,
     filePickerResult: "/Users/e2e/big-video.mp4",
   });
-  await page.reload();
+  await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
   await expect(page.getByText("No messages yet")).toBeVisible();
 

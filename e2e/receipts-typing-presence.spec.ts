@@ -121,6 +121,12 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
   });
   await page.goto("/");
 
+  // Wait for the room list (and with it, the root-mounted `usePresenceListener`
+  // subscription) to actually render before emitting — firing right after
+  // `goto()` resolves races the app's own mount and can drop the update.
+  const roomListItem = page.getByRole("button", { name: room.name });
+  await expect(roomListItem).toBeVisible();
+
   await page.evaluate(
     ({ otherUser }) => {
       window.__e2eEmit("presence:update", {
@@ -136,9 +142,14 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
   // `RoomListItem` renders a `PresenceDot` next to a DM's avatar; the dot
   // itself is `aria-hidden`, with a visually-hidden sibling carrying the
   // real label for assistive tech (see `PresenceDot.tsx`'s doc comment).
-  await expect(page.getByText("Online", { exact: true }).first()).toBeVisible();
+  // Scoped to the room-list button itself so this can't be satisfied by the
+  // chat header's own (not-yet-rendered) presence dot.
+  await expect(roomListItem.getByText("Online", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: room.name }).click();
-  // The chat header shows its own presence dot for the same peer.
-  await expect(page.getByText("Online", { exact: true }).first()).toBeVisible();
+  await roomListItem.click();
+  // The chat header shows its own presence dot for the same peer — scoped to
+  // the header (identified by the "Show room info" button next to it) so
+  // this can't be satisfied by the room-list item's presence label instead.
+  const chatHeader = page.getByRole("button", { name: "Show room info" }).locator("..");
+  await expect(chatHeader.getByText("Online", { exact: true })).toBeVisible();
 });

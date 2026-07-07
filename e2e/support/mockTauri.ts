@@ -100,10 +100,15 @@ export function installMockTauri(seed: {
     avatar_path: null,
     dm_peer_user_id: null,
   };
-  const extraRooms: Record<string, unknown>[] = (seed.extraRooms ?? []).map((extra) => ({
-    ...defaultRoomShape,
-    ...extra,
-  }));
+  const extraRooms: Record<string, unknown>[] = (seed.extraRooms ?? []).map((extra) => {
+    const merged = { ...defaultRoomShape, ...extra };
+    const unreadCount = merged.unread_count ?? 0;
+    return {
+      ...merged,
+      unread_messages: extra.unread_messages ?? unreadCount,
+      has_unread: extra.has_unread ?? unreadCount > 0,
+    };
+  });
   const allRooms: Record<string, unknown>[] = [room, ...extraRooms];
   const spaceChildren = new Map(Object.entries(seed.spaceChildren ?? {}));
   type Listener = (payload: unknown) => void;
