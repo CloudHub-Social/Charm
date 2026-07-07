@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AccountPanel } from "./AccountPanel";
 import { AppearancePanel } from "./AppearancePanel";
 import { DevicesPanel } from "./DevicesPanel";
+import { GeneralPanel } from "./GeneralPanel";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
 
@@ -14,6 +15,7 @@ interface SettingsScreenProps {
 
 const SECTIONS: { value: SettingsSection; label: string }[] = [
   { value: "account", label: "Account" },
+  { value: "general", label: "General" },
   { value: "notifications", label: "Notifications" },
   { value: "devices", label: "Devices" },
   { value: "appearance", label: "Appearance" },
@@ -59,6 +61,9 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
         <div className="flex-1 overflow-y-auto p-6">
           <TabsContent value="account">
             <AccountPanel onLoggedOut={onLoggedOut} />
+          </TabsContent>
+          <TabsContent value="general">
+            <GeneralPanel />
           </TabsContent>
           <TabsContent value="notifications">
             <NotificationsPanel />

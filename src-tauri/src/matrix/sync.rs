@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use super::{ephemeral, presence, profiles, room_admin, rooms, verification, MatrixState};
+use super::{ephemeral, presence, profiles, room_admin, rooms, shell, verification, MatrixState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -51,6 +51,21 @@ pub enum SyncStateEvent {
 /// panel: simple, and the frontend already filters by `room_id` the same way
 /// `timeline:update` is filtered — see Spec 07's design notes on revisiting
 /// if this proves too chatty.
+/// Snapshots the room list, emits `room_list:update`, and derives+emits
+/// `badge:update` from that same snapshot (Spec 10) — the two always travel
+/// together so the in-app rail counts and the native dock/taskbar/tray badge
+/// can never drift out of sync with each other or with the room list they're
+/// both computed from.
+async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
+    let state = app.state::<MatrixState>();
+    let media_cache = state.require_media_cache(app).await.ok();
+    let snapshot = rooms::snapshot_rooms(client, media_cache).await;
+    let badge = shell::compute_badge_state(&snapshot);
+    let _ = app.emit("room_list:update", snapshot);
+    let _ = app.emit("badge:update", badge);
+    let _ = shell::apply_native_badge(app, badge.total_unread);
+}
+
 async fn emit_room_updates(
     app: &AppHandle,
     client: &Client,
@@ -121,6 +136,95 @@ async fn emit_room_updates(
     }
 }
 
+/// Fires local notifications for new messages in rooms that do **not**
+/// currently have a live `Timeline` open — i.e. every room except whichever
+/// one the user has open right now, which `timeline::spawn_timeline_listener`
+/// already covers via its own `maybe_notify_new_message`. Without this, a
+/// message in any room the user hasn't opened this session never reached
+/// notification logic at all, since `emit_room_updates` above deliberately
+/// stopped driving per-message timeline state from raw sync events back in
+/// Spec 14 (opened rooms get theirs from `matrix-sdk-ui`'s `Timeline` diff
+/// stream instead) — this restores the room-independent path for the
+/// (usually much larger) set of rooms that aren't currently open.
+///
+/// Only called from the loop's steady-state iterations, never the initial
+/// `sync_once` — that response's timeline events are pre-existing history,
+/// not new messages, same reasoning as the opened-room listener skipping its
+/// own initial `timeline:update`.
+async fn notify_unopened_room_messages(
+    app: &AppHandle,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+
+    let state = app.state::<MatrixState>();
+    let own_user_id = client.user_id();
+
+    for (room_id, update) in &response.rooms.joined {
+        if state.is_timeline_open(room_id).await {
+            continue;
+        }
+        let Some(room) = client.get_room(room_id) else {
+            continue;
+        };
+
+        for raw_event in &update.timeline.events {
+            let deserialize_result: Result<AnySyncTimelineEvent, _> = raw_event.raw().deserialize();
+            let Ok(deserialized) = deserialize_result else {
+                continue;
+            };
+            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
+                deserialized
+            else {
+                continue;
+            };
+            let Some(original) = msg.as_original() else {
+                continue; // a redaction of an earlier event, not a new message
+            };
+            if own_user_id.is_some_and(|me| me == original.sender) {
+                continue;
+            }
+            // An edit: also an original `m.room.message`, carrying an
+            // `m.replace` relation to the event it edits. The opened-room
+            // path (matrix-sdk-ui's `Timeline`) collapses these onto the
+            // existing item rather than treating them as a new message; this
+            // unopened-room path has no such collapsing; so skip them here
+            // too, or editing an old message would notify with the edit's
+            // fallback body as if it were freshly sent.
+            if matches!(
+                original.content.relates_to,
+                Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(_))
+            ) {
+                continue;
+            }
+
+            let sender_display_name = room
+                .get_member_no_sync(&original.sender)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|member| member.display_name().map(ToOwned::to_owned));
+            let body = original.content.body().to_string();
+            let mentions = original.content.mentions.clone();
+
+            shell::maybe_send_notification(
+                app,
+                &room,
+                own_user_id,
+                shell::NewMessageNotification {
+                    event_id: original.event_id.as_str(),
+                    sender: original.sender.as_str(),
+                    sender_display_name: sender_display_name.as_deref(),
+                    body: &body,
+                },
+                || async move { mentions },
+            )
+            .await;
+        }
+    }
+}
+
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
@@ -154,14 +258,7 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
-        {
-            let state = app.state::<MatrixState>();
-            let media_cache = state.require_media_cache(&app).await.ok();
-            let _ = app.emit(
-                "room_list:update",
-                rooms::snapshot_rooms(&client, media_cache).await,
-            );
-        }
+        emit_room_list_and_badge(&app, &client).await;
         emit_room_updates(&app, &client, &initial_response).await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
@@ -193,13 +290,9 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    let state = app.state::<MatrixState>();
-                    let media_cache = state.require_media_cache(&app).await.ok();
-                    let _ = app.emit(
-                        "room_list:update",
-                        rooms::snapshot_rooms(&client, media_cache).await,
-                    );
+                    emit_room_list_and_badge(&app, &client).await;
                     emit_room_updates(&app, &client, &response).await;
+                    notify_unopened_room_messages(&app, &client, &response).await;
                 }
                 Err(e) => {
                     consecutive_failures += 1;

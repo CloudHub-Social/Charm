@@ -105,6 +105,7 @@ export function installMockTauri(seed: {
     ...(seed.otherDevices ?? []),
   ];
   let crossSigningBootstrapped = true;
+  let autostartEnabled = false;
   const notificationSettings = {
     default_mode: "all_messages",
     keywords: [] as string[],
@@ -276,6 +277,17 @@ export function installMockTauri(seed: {
     },
     set_sound_enabled: (args) => {
       notificationSettings.sound_enabled = args.enabled as boolean;
+      return undefined;
+    },
+
+    // Spec 10: native platform shell. No real tray/dock/taskbar to drive in
+    // e2e, so these just track enough in-memory state for the settings
+    // toggles/focus-tracking effects to round-trip.
+    set_focused_room: () => undefined,
+    set_badge_count: () => undefined,
+    get_autostart: () => autostartEnabled,
+    set_autostart: (args) => {
+      autostartEnabled = args.enabled as boolean;
       return undefined;
     },
 
