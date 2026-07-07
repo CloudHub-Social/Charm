@@ -1010,9 +1010,9 @@ async fn set_account_data(
 /// browser has no such filesystem path to receive — so this reuses the same
 /// `resolve_media_impl` (decryption, cache lookup/population, thumbnail vs.
 /// full-size selection all included) against `crate::media_cache`'s
-/// process-wide cache dir, then reads the resulting cached file back off
-/// disk and streams its bytes with a `Content-Type` guessed from its
-/// extension.
+/// process-wide cache dir, then streams the resulting cached file back off
+/// disk as the response body (never buffering the whole file into memory)
+/// with a `Content-Type` guessed from its extension.
 #[derive(Deserialize)]
 struct ResolveMediaQuery {
     #[serde(default)]
@@ -1039,19 +1039,22 @@ async fn resolve_message_media(
     .await
     .map_err(ApiError::bad_request)?;
 
-    let data = tokio::fs::read(&path)
+    let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let content_type = mime_guess::from_path(&path)
         .first_or_octet_stream()
         .to_string();
-    Ok(([("content-type", content_type)], data))
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
+    Ok(([("content-type", content_type)], body))
 }
 
 /// Uploads a room attachment straight from the request body (a browser has
 /// no local file path to hand over the way desktop's `send_attachment`
 /// takes one) and pushes `upload:progress` over this session's WebSocket
-/// channel as it goes.
+/// channel as the upload progresses — same `SharedObservable`-subscribing
+/// forwarder pattern as desktop's `send::spawn_progress_forwarder`, just
+/// pushing onto this session's broadcast channel instead of `app.emit`.
 #[derive(Debug, Deserialize)]
 struct AttachmentQuery {
     filename: String,
@@ -1095,10 +1098,30 @@ async fn send_attachment(
         ));
     }
 
-    room.send_attachment(query.filename, &mime, data, config)
-        .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let progress =
+        eyeball::SharedObservable::<matrix_sdk::TransmissionProgress>::new(Default::default());
+    let forwarder = spawn_progress_forwarder(
+        session.events.clone(),
+        progress.clone(),
+        query.txn_id.clone(),
+        room_id.clone(),
+        total_bytes,
+    );
 
+    let send = room
+        .send_attachment(query.filename, &mime, data, config)
+        .with_send_progress_observable(progress);
+    let result = send.await;
+    // The forwarder holds its own clone of `progress`, so it doesn't close
+    // on its own when this function's binding is dropped — abort it
+    // explicitly once the upload settles, same as desktop's
+    // `send_attachment` does with its own forwarder handle.
+    forwarder.abort();
+    result.map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    // A terminal 100% event, in case the observable's last tick didn't land
+    // exactly on completion — lets the frontend's progress bar clear
+    // deterministically, same as desktop's post-upload emit.
     let _ = session
         .events
         .send(crate::events::ServerEvent::UploadProgress(
@@ -1111,6 +1134,36 @@ async fn send_attachment(
         ));
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Subscribes to `progress` and forwards each update as an `upload:progress`
+/// `ServerEvent`, for as long as the upload is in flight — see desktop's
+/// `send::spawn_progress_forwarder` for the equivalent `app.emit` version
+/// this mirrors.
+fn spawn_progress_forwarder(
+    events: tokio::sync::broadcast::Sender<crate::events::ServerEvent>,
+    progress: eyeball::SharedObservable<matrix_sdk::TransmissionProgress>,
+    txn_id: String,
+    room_id: String,
+    total_bytes: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut subscriber = progress.subscribe();
+        while let Some(update) = subscriber.next().await {
+            let _ = events.send(crate::events::ServerEvent::UploadProgress(
+                charm_lib::matrix::send::UploadProgress {
+                    txn_id: txn_id.clone(),
+                    room_id: room_id.clone(),
+                    sent: update.current as u64,
+                    total: if update.total > 0 {
+                        update.total as u64
+                    } else {
+                        total_bytes
+                    },
+                },
+            ));
+        }
+    })
 }
 
 /// Reads the request body as raw avatar image bytes and uploads it as the
@@ -1285,11 +1338,19 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                 }
             }
             incoming = socket.recv() => {
-                // This channel is server-push only; a client message (or a
-                // close frame, or the connection dropping) both just mean
-                // "stop streaming" — nothing sent by the client is consumed.
+                // This channel is server-push only — no client message
+                // carries any meaning to this handler — except a `Ping`,
+                // which axum surfaces here rather than answering
+                // automatically; skipping it would let proxies/clients that
+                // rely on a timely `Pong` decide the connection is dead and
+                // close it out from under us.
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
                     Some(Ok(_)) => continue,
                     Some(Err(_)) => break,
                 }

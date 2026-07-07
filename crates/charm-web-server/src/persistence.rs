@@ -139,6 +139,17 @@ impl PersistenceStore {
 
     fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
+        // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
+        // exactly 12 bytes — a corrupt/truncated on-disk entry must not be
+        // able to take the whole process down via that panic, so validate
+        // the length ourselves and return an `Err` instead, which
+        // `read_all` already treats as "drop this one entry, keep going".
+        if nonce_bytes.len() != 12 {
+            return Err(format!(
+                "corrupt session entry: nonce is {} bytes, expected 12",
+                nonce_bytes.len()
+            ));
+        }
         let ciphertext = BASE64.decode(&blob.ciphertext).map_err(|e| e.to_string())?;
         let plaintext = self
             .key
@@ -201,9 +212,23 @@ impl PersistenceStore {
         tokio::fs::write(&tmp_path, &json)
             .await
             .map_err(|e| e.to_string())?;
-        tokio::fs::rename(&tmp_path, &self.path)
-            .await
-            .map_err(|e| e.to_string())
+        // Unlike POSIX, `rename` on Windows fails with `AlreadyExists`
+        // rather than atomically replacing an existing destination — this
+        // deploys to Linux (`matrix-vps`) in practice, but falling back to
+        // remove-then-rename keeps this correct cross-platform rather than
+        // silently relying on a POSIX-only guarantee.
+        match tokio::fs::rename(&tmp_path, &self.path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                tokio::fs::remove_file(&self.path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                tokio::fs::rename(&tmp_path, &self.path)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Rebuilds a live `Client` (and runs an initial sync, same as
@@ -403,5 +428,45 @@ mod tests {
         let all = store.read_all().await;
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].homeserver_url, "https://new.example.invalid");
+    }
+
+    /// Regression test: a corrupt entry whose decoded nonce isn't exactly 12
+    /// bytes must be dropped as unreadable (see `decrypt`'s length check),
+    /// not panic `Nonce::from_slice` and take the whole read down with it —
+    /// `read_all` must still return every *other* valid entry.
+    #[tokio::test]
+    async fn a_malformed_nonce_is_dropped_not_panicked_on() {
+        let dir = scratch_dir("malformed-nonce");
+        let store = PersistenceStore::new_for_test(&dir, [4u8; 32]);
+        store
+            .save(
+                "tok-good",
+                "https://example.invalid",
+                &dummy_session("@grace:example.invalid"),
+            )
+            .await
+            .unwrap();
+
+        // Splice in a second, corrupt entry with a too-short nonce, bypassing
+        // `save`/`encrypt` (which would never produce one) to simulate a
+        // truncated/bit-rotted on-disk write.
+        let raw = tokio::fs::read_to_string(dir.join("sessions.enc.json"))
+            .await
+            .unwrap();
+        let mut blobs: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        blobs.push(serde_json::json!({
+            "nonce": BASE64.encode([0u8; 4]),
+            "ciphertext": BASE64.encode([0u8; 16]),
+        }));
+        tokio::fs::write(
+            dir.join("sessions.enc.json"),
+            serde_json::to_vec(&blobs).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let all = store.read_all().await;
+        assert_eq!(all.len(), 1, "the corrupt entry must be dropped, not panic");
+        assert_eq!(all[0].token, "tok-good");
     }
 }

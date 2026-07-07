@@ -14,7 +14,14 @@ description = "Companion HTTP server exposing matrix-rust-sdk over the network f
 charm_lib = { package = "charm", path = "../../src-tauri" }
 matrix-sdk = { version = "0.18.0", features = ["e2e-encryption", "sso-login"] }
 matrix-sdk-ui = "0.18.0"
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
+tokio = { version = "1.52.3", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "signal",
+  "fs",
+] }
 axum = { version = "0.8", features = ["ws"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 tower = "0.5"
@@ -31,7 +38,12 @@ mime_guess = "2"
 image = "0.25"
 aes-gcm = "0.10"
 base64 = "0.22"
+eyeball = "0.8.8"
+tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "cookies"] }
-tokio-tungstenite = "0.24"
+# Pinned to match the version axum/tungstenite already pull in transitively
+# (see Cargo.lock) so the dev-only WebSocket test client doesn't drag in a
+# second, differently-versioned copy of tokio-tungstenite.
+tokio-tungstenite = "0.29"
