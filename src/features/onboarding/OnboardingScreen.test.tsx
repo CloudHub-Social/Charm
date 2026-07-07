@@ -28,6 +28,18 @@ function renderWithProviders(children: ReactNode) {
   return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
 }
 
+/**
+ * The orientation pane's "Continue" is disabled until `crossSigningStatus`
+ * resolves (see `OnboardingScreen`'s doc comment) — waiting for it to become
+ * enabled here mirrors the real near-instant IPC round trip these tests fake
+ * with an already-resolved mock.
+ */
+async function clickContinue() {
+  const button = await screen.findByRole("button", { name: "Continue" });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+}
+
 const UNVERIFIED_STATUS = {
   has_master_key: false,
   has_self_signing_key: false,
@@ -61,11 +73,28 @@ describe("OnboardingScreen", () => {
 
     expect(await screen.findByText("Welcome to Charm")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await clickContinue();
     expect(await screen.findByRole("heading", { name: "Verify this device" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Continue until cross-signing status resolves, so an already-verified user can't click through to a stale verify pane", async () => {
+    let resolveStatus!: (value: typeof VERIFIED_STATUS) => void;
+    crossSigningStatus.mockReset().mockReturnValue(
+      new Promise((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+    const onDone = vi.fn();
+    renderWithProviders(<OnboardingScreen onDone={onDone} />);
+
+    const continueButton = await screen.findByRole("button", { name: "Continue" });
+    expect(continueButton).toBeDisabled();
+
+    resolveStatus(VERIFIED_STATUS);
+    await waitFor(() => expect(continueButton).toBeEnabled());
   });
 
   it("omits the verify pane entirely when the session is already cross-signing-verified", async () => {
@@ -75,7 +104,7 @@ describe("OnboardingScreen", () => {
 
     expect(await screen.findByText("Welcome to Charm")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await clickContinue();
 
     expect(await screen.findByText("Say hello")).toBeInTheDocument();
     expect(screen.queryByText("Verify this device")).not.toBeInTheDocument();
@@ -96,7 +125,7 @@ describe("OnboardingScreen", () => {
     const onDone = vi.fn();
     renderWithProviders(<OnboardingScreen onDone={onDone} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await clickContinue();
     expect(await screen.findByText("Say hello")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Save and finish" }));
@@ -111,7 +140,7 @@ describe("OnboardingScreen", () => {
     const onDone = vi.fn();
     renderWithProviders(<OnboardingScreen onDone={onDone} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Continue" }));
+    await clickContinue();
     expect(await screen.findByText("Say hello")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Save and finish" }));

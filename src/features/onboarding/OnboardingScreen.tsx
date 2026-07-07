@@ -21,10 +21,14 @@ type PaneKey = "orientation" | "verify" | "profile";
  * creep into a wizard): the verify pane is entirely omitted — not just
  * hidden — once cross-signing is already set up, so a returning-ish account
  * that still happens to have zero rooms doesn't see a pane with nothing to
- * do.
+ * do. `crossSigningStatusPending` briefly disables the orientation pane's
+ * Continue button — this is a local, near-instant IPC call, not a network
+ * round trip — so a user can't click through to a "verify" pane the query
+ * would have omitted a moment later had it resolved first.
  */
 export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
-  const { data: crossSigningStatus } = useCrossSigningStatus();
+  const { data: crossSigningStatus, isPending: crossSigningStatusPending } =
+    useCrossSigningStatus();
   const isVerified = Boolean(
     crossSigningStatus?.has_master_key &&
     crossSigningStatus.has_self_signing_key &&
@@ -62,7 +66,9 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
         </Button>
       </div>
       <div className="motion-safe:transition-opacity motion-safe:duration-200 flex flex-1 items-center justify-center p-6">
-        {pane === "orientation" && <OrientationPane onNext={next} />}
+        {pane === "orientation" && (
+          <OrientationPane onNext={next} nextDisabled={crossSigningStatusPending} />
+        )}
         {pane === "verify" && <VerifyDevicePane onNext={next} onSkip={onDone} />}
         {pane === "profile" && <ProfilePane onNext={next} onSkip={onDone} />}
       </div>

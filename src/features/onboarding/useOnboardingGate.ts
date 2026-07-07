@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getAccountData,
   getLocalOnboardingFlag,
@@ -37,8 +37,19 @@ export function deriveOnboardingStatus(input: {
  */
 export function useOnboardingGate(userId: string | null) {
   const [status, setStatus] = useState<OnboardingStatus>("loading");
+  // The single source of truth for "which signed-in account is this hook
+  // instance currently evaluating" — read by `complete` (below) so a write
+  // triggered for one account can't land against a *different* one if the
+  // user logs out and back in again while that write is still in flight
+  // (`complete` is memoized on `userId`, but its promise chain, once
+  // started, keeps running after this component re-renders for a new
+  // account; only checking this ref, not the closed-over `userId`, catches
+  // that).
+  const activeUserIdRef = useRef(userId);
 
   useEffect(() => {
+    activeUserIdRef.current = userId;
+
     if (!userId) {
       setStatus("loading");
       return undefined;
@@ -91,9 +102,11 @@ export function useOnboardingGate(userId: string | null) {
   }, [userId]);
 
   const complete = useCallback(async () => {
+    if (activeUserIdRef.current !== userId) return;
     await writeCompletionFlags();
+    if (activeUserIdRef.current !== userId) return;
     setStatus("done");
-  }, []);
+  }, [userId]);
 
   return { status, complete };
 }

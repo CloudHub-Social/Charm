@@ -3,9 +3,11 @@ import { Button } from "@/components/ui/button";
 
 interface OrientationPaneProps {
   onNext: () => void;
+  /** True while `OnboardingScreen` hasn't yet resolved cross-signing status — see its doc comment for why Continue waits on it. */
+  nextDisabled?: boolean;
 }
 
-export function OrientationPane({ onNext }: OrientationPaneProps) {
+export function OrientationPane({ onNext, nextDisabled }: OrientationPaneProps) {
   return (
     <div className="flex w-full max-w-sm flex-col items-center gap-6 text-center">
       <h1 className="text-xl font-bold text-foreground">Welcome to Charm</h1>
@@ -26,7 +28,7 @@ export function OrientationPane({ onNext }: OrientationPaneProps) {
           Settings — devices, notifications, appearance — are one click away.
         </li>
       </ul>
-      <Button className="h-11 w-full" onClick={onNext}>
+      <Button className="h-11 w-full" onClick={onNext} disabled={nextDisabled}>
         Continue
       </Button>
     </div>

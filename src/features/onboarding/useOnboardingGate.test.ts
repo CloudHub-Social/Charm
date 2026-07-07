@@ -129,4 +129,33 @@ describe("useOnboardingGate", () => {
     expect(setLocalOnboardingFlag).toHaveBeenCalled();
     expect(result.current.status).toBe("done");
   });
+
+  it("a stale complete() call from a since-switched-away account doesn't write or flip status", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) => useOnboardingGate(userId),
+      { initialProps: { userId: "@user-a:localhost" } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+    const staleComplete = result.current.complete;
+
+    // Switch the signed-in account before the stale `complete` (captured
+    // above, for @user-a) resolves — e.g. the user logged out and back in
+    // as someone else while an onboarding-completion write was in flight.
+    rerender({ userId: "@user-b:localhost" });
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+
+    setAccountData.mockClear();
+    setLocalOnboardingFlag.mockClear();
+
+    await act(async () => {
+      await staleComplete();
+    });
+
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
 });

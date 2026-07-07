@@ -51,6 +51,14 @@ function App({ onLoggedOut }: AppProps) {
     return <LoginScreen onSignedIn={setSession} />;
   }
 
+  if (onboarding.status === "loading") {
+    // Blank rather than `RoomsScreen`: showing rooms here would fire
+    // `listRooms()`/mount its listeners only to immediately unmount once the
+    // gate resolves to "pending" — a flicker plus wasted IPC calls on every
+    // login, not just new accounts.
+    return <div className="flex min-h-screen items-center justify-center bg-background" />;
+  }
+
   if (onboarding.status === "pending") {
     return <OnboardingScreen onDone={onboarding.complete} />;
   }
