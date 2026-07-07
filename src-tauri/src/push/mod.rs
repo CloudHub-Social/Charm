@@ -165,12 +165,14 @@ pub struct PushStatus {
     pub registered: bool,
     pub endpoint_present: bool,
     pub last_error: Option<String>,
-}
-
-impl PushStatus {
-    fn none() -> Self {
-        Self::default()
-    }
+    /// Whether *some* platform transport exists on this device at all
+    /// (`active_transport(&app).is_some()`), independent of whether it's
+    /// currently registered. Distinguishes "this is desktop, push will never
+    /// be available" from "this is mobile, but nothing has registered yet" —
+    /// before the first `register_push` call, `transport` reads `none` in
+    /// both cases, and the settings panel needs to tell them apart to know
+    /// whether to offer a "turn on" button at all.
+    pub available: bool,
 }
 
 impl From<&PushStatus> for PushRegistration {
@@ -183,8 +185,68 @@ impl From<&PushStatus> for PushRegistration {
     }
 }
 
-fn emit_push_status(app: &AppHandle, status: &PushStatus) {
+/// Freshly recomputes `available` (never trusted from a stored/cached
+/// `PushStatus` — see that field's doc comment) and emits `push:status`.
+fn finalize_and_emit(app: &AppHandle, mut status: PushStatus) -> PushStatus {
+    status.available = active_transport(app).is_some();
     let _ = app.emit("push:status", status.clone());
+    status
+}
+
+/// On-disk record of the last endpoint successfully registered with the
+/// homeserver — plain JSON (a pushkey/app_id pair isn't secret, unlike
+/// `persistence`'s keychain-backed session material), one file per account,
+/// mirroring `notifications.rs`'s `notification_prefs` shape. Exists so
+/// `unregister_push` can still find and delete the homeserver pusher after
+/// an app restart, when `MatrixState::push_transport`'s in-memory `Arc` is
+/// gone — see that command's doc comment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedPushEndpoint {
+    url_or_token: String,
+    app_id: String,
+}
+
+impl From<&PushEndpoint> for PersistedPushEndpoint {
+    fn from(endpoint: &PushEndpoint) -> Self {
+        Self {
+            url_or_token: endpoint.url_or_token.clone(),
+            app_id: endpoint.app_id.clone(),
+        }
+    }
+}
+
+fn persisted_endpoint_path(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("push_endpoint");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{account_key}.json")))
+}
+
+fn save_persisted_endpoint(app: &AppHandle, account_key: &str, endpoint: &PushEndpoint) {
+    let Ok(path) = persisted_endpoint_path(app, account_key) else {
+        return;
+    };
+    if let Ok(json) = serde_json::to_string(&PersistedPushEndpoint::from(endpoint)) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn load_persisted_endpoint(app: &AppHandle, account_key: &str) -> Option<PersistedPushEndpoint> {
+    let path = persisted_endpoint_path(app, account_key).ok()?;
+    let json = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&json).ok()
+}
+
+fn clear_persisted_endpoint(app: &AppHandle, account_key: &str) {
+    if let Ok(path) = persisted_endpoint_path(app, account_key) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Builds the `PusherInit` every platform's registration converges on: an
@@ -216,10 +278,13 @@ pub async fn register_push(
     state: State<'_, MatrixState>,
 ) -> Result<PushRegistration, PushError> {
     let client = state.require_client().await?;
+    let account_key = client
+        .user_id()
+        .map(|id| persistence::account_key(id.as_str()));
 
     let Some(transport) = active_transport(&app) else {
-        let status = PushStatus::none();
-        emit_push_status(&app, &status);
+        let status = finalize_and_emit(&app, PushStatus::default());
+        *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
         return Ok((&status).into());
     };
 
@@ -236,19 +301,33 @@ pub async fn register_push(
                         .push_transport
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&transport));
+                    if let Some(account_key) = &account_key {
+                        save_persisted_endpoint(&app, account_key, &endpoint);
+                    }
                     PushStatus {
                         transport: endpoint.kind,
                         registered: true,
                         endpoint_present: true,
                         last_error: None,
+                        available: false, // set fresh by finalize_and_emit
                     }
                 }
-                Err(e) => PushStatus {
-                    transport: endpoint.kind,
-                    registered: false,
-                    endpoint_present: true,
-                    last_error: Some(e.to_string()),
-                },
+                Err(e) => {
+                    // The OS/distributor already registered this endpoint —
+                    // it's the homeserver call that failed, so roll the
+                    // platform-level registration back too rather than
+                    // leaving a stray registration the user can neither see
+                    // nor clean up (there's nothing in `push_transport` for
+                    // `unregister_push` to act on otherwise).
+                    let _ = transport.unregister().await;
+                    PushStatus {
+                        transport: endpoint.kind,
+                        registered: false,
+                        endpoint_present: false,
+                        last_error: Some(e.to_string()),
+                        available: false,
+                    }
+                }
             }
         }
         Err(e) => PushStatus {
@@ -256,11 +335,12 @@ pub async fn register_push(
             registered: false,
             endpoint_present: false,
             last_error: Some(e),
+            available: false,
         },
     };
 
+    let status = finalize_and_emit(&app, status);
     *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
-    emit_push_status(&app, &status);
     Ok((&status).into())
 }
 
@@ -268,50 +348,146 @@ pub async fn register_push(
 /// endpoint/token and removes the corresponding pusher from the homeserver
 /// (`pushkey`/`app_id` — a delete is a no-op if the homeserver already has no
 /// matching pusher, e.g. it was never registered).
+///
+/// Falls back to the on-disk [`PersistedPushEndpoint`] when
+/// `state.push_transport` is empty (e.g. this is a fresh process since the
+/// last `register_push`, so the in-memory `Arc` from that call is gone) —
+/// without this, turning push off after an app restart would silently do
+/// nothing and leave both the homeserver pusher and the platform
+/// registration active. Every step here is best-effort: a homeserver/network
+/// failure must not block the user from turning push off locally, since
+/// that's often exactly when they'd want to (see PR review).
 #[tauri::command]
 pub async fn unregister_push(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<(), PushError> {
     let client = state.require_client().await?;
+    let account_key = client
+        .user_id()
+        .map(|id| persistence::account_key(id.as_str()));
 
-    let existing_endpoint = state
+    let existing_transport = state
         .push_transport
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
 
-    if let Some(transport) = existing_endpoint.clone() {
-        if let Some(endpoint) = transport.endpoint() {
-            let ids = PusherIds::new(endpoint.url_or_token, endpoint.app_id);
-            client
-                .pusher()
-                .delete(ids)
-                .await
-                .map_err(|e| e.to_string())?;
+    let endpoint_ids = existing_transport
+        .as_ref()
+        .and_then(|t| t.endpoint())
+        .map(|e| PusherIds::new(e.url_or_token, e.app_id))
+        .or_else(|| {
+            account_key
+                .as_ref()
+                .and_then(|key| load_persisted_endpoint(&app, key))
+                .map(|e| PusherIds::new(e.url_or_token, e.app_id))
+        });
+
+    if let Some(ids) = endpoint_ids {
+        if let Err(e) = client.pusher().delete(ids).await {
+            eprintln!("failed to delete homeserver pusher during unregister_push: {e}");
         }
-        transport.unregister().await?;
+    }
+
+    let transport = existing_transport.or_else(|| active_transport(&app));
+    if let Some(transport) = transport {
+        let _ = transport.unregister().await;
+    }
+
+    if let Some(account_key) = &account_key {
+        clear_persisted_endpoint(&app, account_key);
     }
 
     *state
         .push_transport
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = None;
-    let status = PushStatus::none();
-    *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
-    emit_push_status(&app, &status);
+    let status = finalize_and_emit(&app, PushStatus::default());
+    *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
     Ok(())
 }
 
+/// Re-registers `endpoint` with the homeserver directly, bypassing
+/// `NotificationTransport::register()` — used when a transport hands over a
+/// *new* endpoint unprompted (e.g. `push::android`'s JNI bridge observing a
+/// UnifiedPush/FCM token rotation with no `register_push` call waiting on
+/// it), rather than in response to a user action. Best-effort: there's no
+/// command invocation here for a caller to propagate an error back to, so
+/// failures are just logged.
+#[cfg(target_os = "android")]
+pub(crate) async fn reregister_endpoint(app: &AppHandle, endpoint: PushEndpoint) {
+    let state = app.state::<MatrixState>();
+    let client = match state.require_client().await {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("cannot re-register rotated push endpoint, not logged in: {e}");
+            return;
+        }
+    };
+
+    let device_display_name = client
+        .device_id()
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "Charm".to_string());
+    let pusher: Pusher = build_pusher_init(&endpoint, &device_display_name).into();
+
+    let status = match client.pusher().set(pusher, false).await {
+        Ok(()) => {
+            if let Some(account_key) = client
+                .user_id()
+                .map(|id| persistence::account_key(id.as_str()))
+            {
+                save_persisted_endpoint(app, &account_key, &endpoint);
+            }
+            PushStatus {
+                transport: endpoint.kind,
+                registered: true,
+                endpoint_present: true,
+                last_error: None,
+                available: false,
+            }
+        }
+        Err(e) => {
+            eprintln!("failed to re-register rotated push endpoint: {e}");
+            PushStatus {
+                transport: endpoint.kind,
+                registered: false,
+                endpoint_present: true,
+                last_error: Some(e.to_string()),
+                available: false,
+            }
+        }
+    };
+
+    let status = finalize_and_emit(app, status);
+    *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+}
+
 /// Current push registration state, for the settings panel to read on mount
-/// without waiting for a `push:status` event.
+/// without waiting for a `push:status` event. `available` is always
+/// recomputed fresh (see its doc comment), never read from the cached
+/// `last_error`/`registered`/etc. snapshot.
 #[tauri::command]
-pub fn get_push_status(state: State<'_, MatrixState>) -> PushStatus {
-    state
+pub fn get_push_status(app: AppHandle, state: State<'_, MatrixState>) -> PushStatus {
+    let mut status = state
         .push_status
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone()
+        .clone();
+    status.available = active_transport(&app).is_some();
+    status
+}
+
+/// A short, non-reversible correlation id for `room_id` safe to send to
+/// Sentry — a full Matrix room id embeds the homeserver's server name and,
+/// combined with other breadcrumbs, can be identifying; this still lets
+/// repeated UTD failures in the *same* room be correlated in Sentry without
+/// exposing which room that is.
+fn hash_room_id(room_id: &RoomId) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(room_id.as_str().as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Extracts a plaintext `(sender, body)` preview from a (possibly decrypted)
@@ -365,6 +541,16 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         return Err(format!("room {room_id} not found in local store"));
     };
 
+    // Dedup as early as possible, unconditionally — a UTD/generic-fallback
+    // notification needs the same guard a successfully-decrypted one gets
+    // (this event's `mark_notified` slot is what a later successful sync-
+    // path decrypt, or a redelivered push, checks against), so this can't be
+    // gated on whether a preview was extractable the way an earlier version
+    // of this function had it.
+    if !app.state::<MatrixState>().mark_notified(&message.event_id) {
+        return Ok(());
+    }
+
     let mode = room.notification_mode().await;
     if matches!(
         mode,
@@ -372,11 +558,17 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     ) {
         return Ok(());
     }
-    let mentions_only = matches!(
-        mode,
-        Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly)
-    );
 
+    // No further notify/suppress re-derivation here beyond the mute check
+    // above (a client-side safety net against a stale/racy local push-rules
+    // cache): the homeserver only sent this push because one of its own
+    // `m.push_rules` already matched and decided to notify — including
+    // keyword rules, which don't populate `m.mentions` and so can't be
+    // independently re-verified client-side. An earlier version of this
+    // function re-checked `m.mentions` for a `MentionsAndKeywordsOnly` room
+    // and suppressed anything that wasn't a direct mention, which silently
+    // dropped every keyword-triggered push — trusting the server's decision
+    // instead of re-deriving it fixes that.
     let timeline_event = room
         .event(&event_id, None)
         .await
@@ -384,47 +576,40 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     let is_utd = timeline_event.kind.is_utd();
     let own_user_id = client.user_id().map(|id| id.as_str().to_string());
 
-    let (sender, body, is_highlighted) = match message_preview(timeline_event.kind.raw()) {
+    let (sender, body) = match message_preview(timeline_event.kind.raw()) {
         Some((sender, body)) => {
             if own_user_id.as_deref() == Some(sender.as_str()) {
                 return Ok(());
             }
-            let mentions = if mentions_only {
-                match timeline_event.kind.raw().deserialize() {
-                    Ok(AnySyncTimelineEvent::MessageLike(
-                        AnySyncMessageLikeEvent::RoomMessage(SyncMessageLikeEvent::Original(
-                            original,
-                        )),
-                    )) => original.content.mentions.clone(),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let highlighted = own_user_id
-                .as_deref()
-                .is_some_and(|me| shell::is_highlighted_mentions(mentions.as_ref(), me));
-            (sender, body, highlighted)
+            (sender, body)
         }
         None => {
             if is_utd {
                 sentry::capture_message(
-                    &format!("push decrypt failed: unable to decrypt event in room {room_id}"),
+                    &format!(
+                        "push decrypt failed: unable to decrypt event in room {}",
+                        hash_room_id(&room_id)
+                    ),
                     sentry::Level::Warning,
                 );
             }
             // Never leak ciphertext (acceptance criterion #4): a UTD or any
             // non-message event falls back to a generic body rather than
             // formatting whatever raw content was fetched.
-            (String::new(), "New message".to_string(), false)
+            (String::new(), "New message".to_string())
         }
     };
 
-    if mentions_only && !is_highlighted && !sender.is_empty() {
-        return Ok(());
-    }
-
-    if !sender.is_empty() && !app.state::<MatrixState>().mark_notified(&message.event_id) {
+    // Suppress only for whichever room the user is already looking at right
+    // now — the same signal `shell::should_notify` uses for Spec 10's local
+    // notifications (a push can still arrive while the app is foregrounded).
+    let focused_room_id = app
+        .state::<MatrixState>()
+        .focused_room_id
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if focused_room_id.as_deref() == Some(room_id.as_str()) {
         return Ok(());
     }
 
@@ -552,6 +737,7 @@ mod tests {
             registered: true,
             endpoint_present: true,
             last_error: Some("ignored".to_string()),
+            available: true,
         };
         let registration: PushRegistration = (&status).into();
         assert_eq!(registration.transport, PusherKind::Apns);

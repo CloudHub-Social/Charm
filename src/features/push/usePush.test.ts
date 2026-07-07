@@ -27,6 +27,7 @@ function noneStatus(overrides: Partial<PushStatus> = {}): PushStatus {
     registered: false,
     endpoint_present: false,
     last_error: null,
+    available: false,
     ...overrides,
   };
 }

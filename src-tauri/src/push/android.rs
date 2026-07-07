@@ -75,19 +75,31 @@ impl super::NotificationTransport for UnifiedPushTransport {
             let mut pending = PENDING_REGISTRATION
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            // A second concurrent `register()` call (e.g. a double-tapped
+            // "turn on" button) would otherwise silently orphan whichever
+            // sender was here first — its `rx` never gets resolved by a
+            // real callback (only the newest sender is fed the next
+            // `onNewEndpoint`/`onRegistrationFailed`) and just times out
+            // 20s later instead of returning a prompt, clear error now.
+            if pending.is_some() {
+                return Err("a push registration is already in progress".to_string());
+            }
             *pending = Some(tx);
         }
 
         if let Err(e) = with_env(|env, activity| {
-            let instance = env.new_string(INSTANCE_ID).map_err(jni_err)?;
-            let class = push_bridge_class(env, activity).map_err(jni_err)?;
-            env.call_static_method(
-                class,
-                "register",
-                "(Landroid/content/Context;Ljava/lang/String;)V",
-                &[JValue::from(activity), JValue::from(&instance)],
-            )
-            .map_err(jni_err)?;
+            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let class = push_bridge_class(env, activity)?;
+            jni_result(
+                env,
+                "PushBridge.register",
+                env.call_static_method(
+                    class,
+                    "register",
+                    "(Landroid/content/Context;Ljava/lang/String;)V",
+                    &[JValue::from(activity), JValue::from(&instance)],
+                ),
+            )?;
             Ok(())
         }) {
             *PENDING_REGISTRATION
@@ -116,15 +128,18 @@ impl super::NotificationTransport for UnifiedPushTransport {
 
     async fn unregister(&self) -> Result<(), PushError> {
         with_env(|env, activity| {
-            let instance = env.new_string(INSTANCE_ID).map_err(jni_err)?;
-            let class = push_bridge_class(env, activity).map_err(jni_err)?;
-            env.call_static_method(
-                class,
-                "unregister",
-                "(Landroid/content/Context;Ljava/lang/String;)V",
-                &[JValue::from(activity), JValue::from(&instance)],
-            )
-            .map_err(jni_err)?;
+            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let class = push_bridge_class(env, activity)?;
+            jni_result(
+                env,
+                "PushBridge.unregister",
+                env.call_static_method(
+                    class,
+                    "unregister",
+                    "(Landroid/content/Context;Ljava/lang/String;)V",
+                    &[JValue::from(activity), JValue::from(&instance)],
+                ),
+            )?;
             Ok(())
         })?;
         *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -139,8 +154,23 @@ impl super::NotificationTransport for UnifiedPushTransport {
     }
 }
 
-fn jni_err(e: jni::errors::Error) -> PushError {
-    e.to_string()
+/// Maps a JNI call's result to [`PushError`], and — if it failed — clears
+/// any pending Java exception first. Same rationale as
+/// `secret_store::android::jni_result` (which this mirrors): the `jni`
+/// crate's `call_method`/`call_static_method`/etc. surface a pending
+/// exception as `Err(Error::JavaException)` but never clear it themselves,
+/// and per the JNI spec almost no JNI call is valid with one still pending
+/// — including implicitly on thread detach — so leaving it set here could
+/// crash the JVM the next time this (or another) call reuses the thread.
+fn jni_result<T>(
+    env: &mut JNIEnv,
+    context: &str,
+    result: Result<T, jni::errors::Error>,
+) -> Result<T, PushError> {
+    result.map_err(|e| {
+        let _ = env.exception_clear();
+        format!("{context}: {e}")
+    })
 }
 
 /// Attaches the calling thread to the JVM and hands back the app's
@@ -160,42 +190,63 @@ fn with_env<T>(
     f(&mut env, &activity)
 }
 
+/// Resolves the `PushBridge` class via the Activity's own classloader —
+/// same rationale as `secret_store::android::secure_storage_class`'s doc
+/// comment: a thread attached to the JVM from native code (as every call
+/// here is, since these run on Tokio worker threads) resolves plain
+/// class-name lookups against the *system* classloader, which doesn't know
+/// app-defined classes like this one.
 fn push_bridge_class<'a>(
     env: &mut JNIEnv<'a>,
     activity: &JObject,
-) -> Result<JClass<'a>, jni::errors::Error> {
+) -> Result<JClass<'a>, PushError> {
     if let Some(cached) = CLASS_REF.get() {
-        let local = env.new_local_ref(cached.as_obj())?;
+        let local = jni_result(
+            env,
+            "new_local_ref(cached PushBridge class)",
+            env.new_local_ref(cached.as_obj()),
+        )?;
         return Ok(JClass::from(local));
     }
-    let class_loader = env
-        .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?
-        .l()?;
-    let class_name = env.new_string(PUSH_BRIDGE_CLASS.replace('/', "."))?;
-    let class_obj = env
-        .call_method(
-            &class_loader,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
-            &[JValue::from(&class_name)],
-        )?
-        .l()?;
-    let global = env.new_global_ref(&class_obj)?;
+    let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
+    let class_loader = jni_result(env, "activity.getClassLoader()", result)?;
+    let result = class_loader.l();
+    let class_loader = jni_result(env, "getClassLoader() return value", result)?;
+    let result = env.new_string(PUSH_BRIDGE_CLASS.replace('/', "."));
+    let class_name = jni_result(env, "new_string(class name)", result)?;
+    let result = env.call_method(
+        &class_loader,
+        "loadClass",
+        "(Ljava/lang/String;)Ljava/lang/Class;",
+        &[JValue::from(&class_name)],
+    );
+    let class_obj = jni_result(env, "classLoader.loadClass(PushBridge)", result)?;
+    let result = class_obj.l();
+    let class_obj = jni_result(env, "loadClass() return value", result)?;
+    let result = env.new_global_ref(&class_obj);
+    let global = jni_result(env, "new_global_ref(PushBridge class)", result)?;
     let cached = CLASS_REF.get_or_init(|| global);
-    let local = env.new_local_ref(cached.as_obj())?;
+    let result = env.new_local_ref(cached.as_obj());
+    let local = jni_result(env, "new_local_ref(cached PushBridge class)", result)?;
     Ok(JClass::from(local))
 }
 
 /// Whichever pending [`PENDING_REGISTRATION`] sender is waiting, resolved
 /// with `result` and cleared — shared by every JNI callback entrypoint below
 /// so "deliver this result and stop waiting" isn't duplicated four times.
-fn resolve_pending(result: Result<PushEndpoint, PushError>) {
+/// Returns whether a sender was actually waiting, so
+/// `nativeOnNewEndpoint` can tell a user-initiated `register()` completing
+/// apart from an unprompted endpoint rotation with nothing waiting on it.
+fn resolve_pending(result: Result<PushEndpoint, PushError>) -> bool {
     if let Some(tx) = PENDING_REGISTRATION
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .take()
     {
         let _ = tx.send(result);
+        true
+    } else {
+        false
     }
 }
 
@@ -207,12 +258,18 @@ fn jstring_to_string(env: &mut JNIEnv, s: &JString) -> String {
 /// embedded FCM fallback distributor) has an endpoint for `instance`. `via_fcm`
 /// distinguishes which Sygnal `app_id` this endpoint should be registered
 /// under (see this spec's two Android app ids).
+///
+/// This is an *instance* method on `PushMessagingReceiver` (declared as a
+/// bare `external fun` inside the class body, not in a `companion object`),
+/// so the JVM passes a `this` reference as the second native argument, not a
+/// `jclass` — the parameter here must be `JObject`, matching that calling
+/// convention, or every call from Kotlin is undefined behavior.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnNewEndpoint<
     'local,
 >(
     mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
+    _this: JObject<'local>,
     endpoint: JString<'local>,
     via_fcm: jni::sys::jboolean,
 ) {
@@ -227,20 +284,43 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     } else {
         PusherKind::UnifiedPush
     };
-    resolve_pending(Ok(PushEndpoint {
+    let push_endpoint = PushEndpoint {
         url_or_token: endpoint_str,
         app_id: app_id.to_string(),
         kind,
-    }));
+    };
+
+    // Always keep this current — a rotation (the distributor issuing a
+    // replacement endpoint) can arrive with no `register()` waiting on it
+    // at all (see below), and `endpoint()` (what `unregister_push` deletes
+    // from the homeserver) must never read a stale value in that case.
+    *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = Some(push_endpoint.clone());
+
+    if !resolve_pending(Ok(push_endpoint.clone())) {
+        // Nothing was waiting: this wasn't a response to a user-initiated
+        // `register()` call, so the homeserver still has the *old* pushkey
+        // on file. Re-register the new one directly — without this, a
+        // rotation silently breaks push delivery until the user happens to
+        // manually toggle it off and back on.
+        let Some(app) = super::global_app_handle() else {
+            eprintln!("endpoint rotation received before the app handle was initialized; dropping");
+            return;
+        };
+        tauri::async_runtime::spawn(async move {
+            super::reregister_endpoint(&app, push_endpoint).await;
+        });
+    }
 }
 
-/// Called from `PushMessagingReceiver.onRegistrationFailed`.
+/// Called from `PushMessagingReceiver.onRegistrationFailed`. See
+/// `nativeOnNewEndpoint`'s doc comment for why this takes `JObject`, not
+/// `JClass`.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnRegistrationFailed<
     'local,
 >(
     mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
+    _this: JObject<'local>,
     reason: JString<'local>,
 ) {
     let reason = jstring_to_string(&mut env, &reason);
@@ -251,12 +331,14 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 /// state cleanup; the Rust-side `unregister()` call path already clears
 /// `CURRENT_ENDPOINT` itself, but the distributor can also unregister this
 /// app out-of-band (e.g. the user removed it from the distributor's own UI).
+/// See `nativeOnNewEndpoint`'s doc comment for why this takes `JObject`, not
+/// `JClass`.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnUnregistered<
     'local,
 >(
     _env: JNIEnv<'local>,
-    _class: JClass<'local>,
+    _this: JObject<'local>,
 ) {
     *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
@@ -265,11 +347,19 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 /// (an `event_id_only` Sygnal payload's JSON body) — parses `room_id`/
 /// `event_id` and hands off to [`super::handle_push`] on a spawned task, since
 /// JNI callbacks run synchronously on whatever thread Android delivers them
-/// on and must return quickly.
+/// on and must return quickly. See `nativeOnNewEndpoint`'s doc comment for
+/// why this takes `JObject`, not `JClass`.
+///
+/// If Android cold-started this process purely to deliver this broadcast
+/// (the app was fully killed), `lib.rs`'s `setup()` hasn't run yet and
+/// `global_app_handle()` is empty — this push is dropped rather than
+/// handled. Making the killed-app path work fully requires a headless
+/// bootstrap that doesn't depend on Tauri's own `setup()` lifecycle; that's
+/// a larger follow-up, not attempted here.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnMessage<'local>(
     mut env: JNIEnv<'local>,
-    _class: JClass<'local>,
+    _this: JObject<'local>,
     payload_json: JString<'local>,
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);

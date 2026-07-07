@@ -148,6 +148,19 @@ async fn clear_local_session(
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = presence::PresenceStateDto::default();
 
+    // Neither is tied to any particular client either — without resetting
+    // them, signing into a different account in the same process would have
+    // `get_push_status` report the previous account's registration as still
+    // active, and `unregister_push` would try to delete the new account's
+    // (nonexistent) pusher using the old account's endpoint instead of
+    // registering its own.
+    *state
+        .push_transport
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
+    *state.push_status.lock().unwrap_or_else(|e| e.into_inner()) =
+        crate::push::PushStatus::default();
+
     Ok(())
 }
 

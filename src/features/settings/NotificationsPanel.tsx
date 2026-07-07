@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { requestPermission } from "@tauri-apps/plugin-notification";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -22,12 +23,21 @@ const TRANSPORT_LABELS: Record<PusherKind, string> = {
   unified_push: "UnifiedPush",
   fcm: "Firebase Cloud Messaging",
   apns: "Apple Push Notification service",
-  none: "Not available on this platform",
+  none: "Not registered yet",
 };
 
 function PushTransportSection() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
+
+  // The homeserver can only deliver a push if the OS has also granted the
+  // notification permission — without this, `register_push` can succeed
+  // while `app.notification().show()` still silently shows nothing (Android
+  // 13+/iOS both gate on it separately from push registration itself).
+  async function handleEnable() {
+    await requestPermission();
+    register.mutate();
+  }
 
   return (
     <section>
@@ -36,7 +46,11 @@ function PushTransportSection() {
         Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
         {TRANSPORT_LABELS[transport]}.
       </p>
-      {transport === "none" ? (
+      {/* `status?.available` (not `transport === "none"`) is what actually
+          distinguishes "this platform can never do push" (desktop) from
+          "this is mobile, nothing has registered yet" — before the first
+          register, `transport` reads "none" in both cases. */}
+      {!status?.available ? (
         <p className="text-sm text-muted-foreground">
           Not available on this platform — desktop relies on the always-on sync loop instead.
         </p>
@@ -53,7 +67,7 @@ function PushTransportSection() {
           ) : (
             <Button
               variant="outline"
-              onClick={() => register.mutate()}
+              onClick={() => void handleEnable()}
               disabled={register.isPending}
             >
               Turn on push notifications

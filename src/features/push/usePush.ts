@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getPushStatus,
@@ -24,9 +24,16 @@ const PUSH_STATUS_QUERY_KEY = ["pushStatus"] as const;
  */
 export function usePush() {
   const queryClient = useQueryClient();
+  // Set by the `push:status` listener while a `getPushStatus` fetch is
+  // in flight (e.g. a concurrent `register_push` call, or an Android
+  // endpoint-rotation re-registration racing the initial mount fetch) —
+  // that push is strictly more current than this fetch's own result, so
+  // the queryFn below must not let it clobber what the listener just wrote.
+  const pushedWhileFetchingRef = useRef(false);
 
   useEffect(() => {
     const unlisten = onPushStatus((status: PushStatus) => {
+      pushedWhileFetchingRef.current = true;
       queryClient.setQueryData(PUSH_STATUS_QUERY_KEY, status);
     });
     return () => {
@@ -36,7 +43,14 @@ export function usePush() {
 
   const status = useQuery({
     queryKey: PUSH_STATUS_QUERY_KEY,
-    queryFn: getPushStatus,
+    queryFn: async () => {
+      pushedWhileFetchingRef.current = false;
+      const fetched = await getPushStatus();
+      if (pushedWhileFetchingRef.current) {
+        return queryClient.getQueryData<PushStatus>(PUSH_STATUS_QUERY_KEY) ?? fetched;
+      }
+      return fetched;
+    },
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: PUSH_STATUS_QUERY_KEY });

@@ -58,12 +58,18 @@
         <!-- Spec 11: receives every UnifiedPush event (new endpoint,
              registration failure, unregistration, incoming message) and
              forwards each to the Rust core over JNI — see
-             `PushMessagingReceiver.kt`. Not exported: only the distributor
-             this app itself registered with should be able to deliver these
-             (matches the connector library's own manifest snippet). -->
+             `PushMessagingReceiver.kt`. Must be exported: the distributor
+             delivering these broadcasts (when it's an external UnifiedPush
+             app, not the embedded FCM fallback) is a *different* app, and
+             Android only allows a non-exported component to receive
+             broadcasts from within the same app — matches the connector
+             library's own manifest snippet
+             (org.unifiedpush.android.connector.MessagingReceiver's kdoc).
+             Fixed after PR review: this was wrongly `false` and would have
+             silently dropped every push from an external distributor. -->
         <receiver
             android:name=".PushMessagingReceiver"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="org.unifiedpush.android.connector.MESSAGE" />
                 <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
