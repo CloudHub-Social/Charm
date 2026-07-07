@@ -49,15 +49,23 @@ export function RoomsScreen({
   }, []);
 
   // Tells the Rust side which room has focus so it can suppress a local
-  // notification for whatever the user is already looking at (Spec 10).
-  // Cleared on unmount (e.g. sign-out) so a stale focused room never
-  // survives past this screen.
+  // notification for whatever the user is already looking at (Spec 10). No
+  // cleanup on this effect: React runs an effect's cleanup before re-running
+  // it on every dependency change, and clearing focus to `null` there would
+  // open a brief "nothing focused" window on every room switch during which
+  // a notification for the room being switched away from could slip through.
   useEffect(() => {
     setFocusedRoom(activeRoomId).catch(console.error);
+  }, [activeRoomId]);
+
+  // Clears focus only on unmount (e.g. sign-out) so a stale focused room
+  // never survives past this screen — separate from the effect above so
+  // this doesn't fire on every `activeRoomId` change.
+  useEffect(() => {
     return () => {
       setFocusedRoom(null).catch(console.error);
     };
-  }, [activeRoomId]);
+  }, []);
 
   useEffect(() => {
     // Resolve once per new deep-link target, independent of room-list churn —

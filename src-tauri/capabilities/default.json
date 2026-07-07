@@ -12,6 +12,7 @@
     "core:window:allow-set-focus",
     "core:window:allow-show",
     "core:window:allow-hide",
+    "opener:allow-open-url",
     "opener:allow-default-urls",
     "updater:default",
     "process:default",

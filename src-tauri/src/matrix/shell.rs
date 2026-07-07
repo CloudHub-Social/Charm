@@ -150,19 +150,54 @@ pub fn set_badge_count(app: AppHandle, count: u32) -> Result<(), String> {
 /// sync loop's per-iteration `badge:update` emit.
 pub fn apply_native_badge(app: &AppHandle, count: u32) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("main") {
-        let badge = (count > 0).then_some(count as i64);
         #[cfg(target_os = "macos")]
         {
+            let badge = (count > 0).then_some(count as i64);
             let _ = window.set_badge_count(badge);
         }
         #[cfg(target_os = "windows")]
         {
-            let _ = window.set_overlay_icon(None);
-            let _ = badge;
+            // A pre-baked dot rather than rendering the actual digits — a
+            // numeric taskbar overlay is a much bigger lift (real text
+            // rasterization) for a signal that's already coarse ("you have
+            // unread" vs. an exact count, which the in-app rail already
+            // shows); this matches the spec's own call to prefer a
+            // pre-baked/simple badge over per-count icon generation.
+            let _ = window.set_overlay_icon(windows_overlay_icon(count));
         }
         let _ = window;
+        let _ = count;
     }
     Ok(())
+}
+
+/// Builds a small solid-red-dot RGBA icon for the Windows taskbar overlay
+/// when `count > 0`, or `None` (clearing any existing overlay) at 0.
+#[cfg(target_os = "windows")]
+fn windows_overlay_icon(count: u32) -> Option<tauri::image::Image<'static>> {
+    if count == 0 {
+        return None;
+    }
+    const SIZE: u32 = 32;
+    const RADIUS: f32 = (SIZE as f32) / 2.0 - 1.0;
+    const CENTER: f32 = (SIZE as f32) / 2.0;
+
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = x as f32 + 0.5 - CENTER;
+            let dy = y as f32 + 0.5 - CENTER;
+            let inside = dx * dx + dy * dy <= RADIUS * RADIUS;
+            let idx = ((y * SIZE + x) * 4) as usize;
+            if inside {
+                rgba[idx] = 220; // R
+                rgba[idx + 1] = 38; // G
+                rgba[idx + 2] = 38; // B
+                rgba[idx + 3] = 255; // A
+            }
+        }
+    }
+    Some(tauri::image::Image::new_owned(rgba, SIZE, SIZE))
 }
 
 /// Whether the app is currently registered to launch on login.

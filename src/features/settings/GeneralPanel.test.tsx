@@ -47,7 +47,11 @@ describe("GeneralPanel", () => {
 
     fireEvent.click(checkbox);
 
-    await waitFor(() => expect(setAutostart).toHaveBeenCalledWith(true, expect.anything()));
+    // react-query's `mutationFn` is called with the mutation variable as its
+    // first argument plus an internal context object as a second — assert
+    // only the variable we actually care about, not react-query's internals.
+    await waitFor(() => expect(setAutostart).toHaveBeenCalled());
+    expect(setAutostart.mock.calls[0][0]).toBe(true);
   });
 
   it("shows an Enable button when notifications aren't granted", async () => {
