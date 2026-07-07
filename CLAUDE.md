@@ -26,6 +26,40 @@ store-visible.
   fork and no integration/dev branches. If that model is adopted later, update
   `ALLOWED_BASES` in `.claude/hooks/check-pr-base.py` and this section together.)
 
+## Parallel sessions — always isolate with a git worktree
+
+Multiple Claude Code sessions are routinely run in parallel against this same local
+clone (e.g. implementing several specs at once). **Set up an isolated git worktree
+for every implementation task — never work directly in the shared `~/git/Charm`
+checkout.** A session can't reliably tell whether another session is mid-turn in that
+same directory, and a plain `git checkout` there can land in the middle of another
+session's branch switch. This isn't hypothetical: on 2026-07-06, several parallel
+spec sessions rapidly switching branches in the shared checkout left it in a
+confusing (though ultimately recoverable — no git history was lost) state.
+
+At the start of any task that will edit files:
+
+```
+git fetch origin --quiet
+git worktree add -b <branch-name> ~/git/Charm-<short-suffix> origin/main
+cd ~/git/Charm-<short-suffix>
+pnpm install --frozen-lockfile   # node_modules isn't shared across worktrees
+```
+
+Do all work — edits, tests, commits, `gh pr create` — from inside that isolated
+directory. When done:
+
+```
+cd ~/git/Charm
+git worktree remove ~/git/Charm-<short-suffix> --force
+```
+
+If the shared `~/git/Charm` checkout itself has uncommitted changes (a session that
+didn't isolate), **do not stash, reset, or discard them** — that's someone else's
+in-progress work. Isolate your own task in a worktree regardless and leave the
+shared checkout exactly as you found it; flag it to the user rather than trying to
+clean it up yourself.
+
 ## Quality gate
 
 Run before committing and fix all failures. These mirror the `frontend` job in
