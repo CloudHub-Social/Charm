@@ -14,6 +14,7 @@ pub mod qr_login;
 pub mod room_admin;
 pub mod rooms;
 pub mod send;
+pub mod shell;
 pub mod spaces;
 pub mod sync;
 pub mod timeline;
@@ -92,6 +93,12 @@ pub struct MatrixState {
     /// aborts it and it polls `/sync` indefinitely. `spawn_sync_loop` aborts
     /// whatever's here before storing its own new handle.
     pub(crate) sync_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The room currently open/focused in the frontend, set by
+    /// `shell::set_focused_room` — read by each room's timeline listener to
+    /// suppress local notifications for whatever room the user is already
+    /// looking at (Spec 10). `None` when no room has focus (e.g. the room
+    /// list, settings, or another window has it).
+    pub(crate) focused_room_id: std::sync::Mutex<Option<String>>,
 }
 
 impl Default for MatrixState {
@@ -109,6 +116,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             sync_loop_handle: std::sync::Mutex::default(),
+            focused_room_id: std::sync::Mutex::default(),
         }
     }
 }

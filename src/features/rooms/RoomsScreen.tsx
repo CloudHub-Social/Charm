@@ -5,7 +5,15 @@ import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
-import { listRooms, onRoomListUpdate, resolveRoomAlias, type RoomSummary } from "@/lib/matrix";
+import { AppShell } from "@/features/shell/AppShell";
+import { useBadgeListener } from "@/features/shell/useBadgeListener";
+import {
+  listRooms,
+  onRoomListUpdate,
+  resolveRoomAlias,
+  setFocusedRoom,
+  type RoomSummary,
+} from "@/lib/matrix";
 import { RoomInfoPanel } from "@/features/room-info/RoomInfoPanel";
 import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 
@@ -30,6 +38,7 @@ export function RoomsScreen({
   // app; consumers (the DM header/room-list presence dot) read the atoms
   // directly via `usePresence` — see ChatShell/RoomListItem.
   usePresenceListener();
+  useBadgeListener();
 
   useEffect(() => {
     listRooms().then(setRooms).catch(console.error);
@@ -38,6 +47,17 @@ export function RoomsScreen({
       unlisten.then((fn) => fn()).catch(console.error);
     };
   }, []);
+
+  // Tells the Rust side which room has focus so it can suppress a local
+  // notification for whatever the user is already looking at (Spec 10).
+  // Cleared on unmount (e.g. sign-out) so a stale focused room never
+  // survives past this screen.
+  useEffect(() => {
+    setFocusedRoom(activeRoomId).catch(console.error);
+    return () => {
+      setFocusedRoom(null).catch(console.error);
+    };
+  }, [activeRoomId]);
 
   useEffect(() => {
     // Resolve once per new deep-link target, independent of room-list churn —
@@ -78,18 +98,32 @@ export function RoomsScreen({
   );
 
   return (
-    <div className="flex h-screen">
-      <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
-      <ChatShell room={activeRoom} currentUserId={currentUserId} />
-      {activeRoom && rightPanelOpen && (
-        <RoomInfoPanel
-          roomId={activeRoom.room_id}
-          currentUserId={currentUserId}
-          onClose={() => setRightPanelOpen(false)}
-        />
-      )}
+    <>
+      <AppShell
+        activeRoomId={activeRoomId}
+        roomList={
+          <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
+        }
+        peopleList={
+          <RoomList
+            rooms={rooms.filter((room) => room.is_direct)}
+            activeRoomId={activeRoomId}
+            onSelectRoom={setActiveRoomId}
+          />
+        }
+        content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
+        rightPanel={
+          activeRoom && rightPanelOpen ? (
+            <RoomInfoPanel
+              roomId={activeRoom.room_id}
+              currentUserId={currentUserId}
+              onClose={() => setRightPanelOpen(false)}
+            />
+          ) : null
+        }
+      />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
-    </div>
+    </>
   );
 }

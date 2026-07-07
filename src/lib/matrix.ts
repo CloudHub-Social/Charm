@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { BadgeState } from "@bindings/BadgeState";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DeviceSummary } from "@bindings/DeviceSummary";
@@ -52,6 +53,7 @@ import type { VerificationRequestSummary } from "@bindings/VerificationRequestSu
  * do not redefine them by hand.
  */
 export type {
+  BadgeState,
   CommandResult,
   CrossSigningStatusSummary,
   DeviceSummary,
@@ -158,6 +160,28 @@ export function getRoomMembers(roomId: string): Promise<RoomMemberSummary[]> {
 
 export function onSyncState(callback: (event: SyncStateEvent) => void): Promise<UnlistenFn> {
   return listen<SyncStateEvent>("sync:state", (e) => callback(e.payload));
+}
+
+/** Tells the Rust side which room (if any) currently has focus, so the timeline listener can suppress a local notification for whatever room the user is already looking at (Spec 10). Pass `null` when no room is focused (e.g. the room list or settings has focus). */
+export function setFocusedRoom(roomId: string | null): Promise<void> {
+  return invoke("set_focused_room", { roomId });
+}
+
+/** Forces an immediate refresh of the native dock/taskbar/tray badge (Spec 10) — the sync loop already keeps it current every sync iteration, so this is only needed for an instant local update (e.g. right after marking a room read). */
+export function setBadgeCount(count: number): Promise<void> {
+  return invoke("set_badge_count", { count });
+}
+
+export function onBadgeUpdate(callback: (badge: BadgeState) => void): Promise<UnlistenFn> {
+  return listen<BadgeState>("badge:update", (e) => callback(e.payload));
+}
+
+export function getAutostart(): Promise<boolean> {
+  return invoke("get_autostart");
+}
+
+export function setAutostart(enabled: boolean): Promise<void> {
+  return invoke("set_autostart", { enabled });
 }
 
 export function onRoomListUpdate(callback: (rooms: RoomSummary[]) => void): Promise<UnlistenFn> {

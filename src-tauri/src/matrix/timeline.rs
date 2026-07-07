@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::{media, profiles, MatrixState};
+use super::{media, profiles, shell, MatrixState};
 
 /// Display metadata for a non-text `m.room.message` msgtype, additive
 /// alongside Spec 03's flat `RoomMessageSummary` fields — `None` for text
@@ -554,12 +554,21 @@ pub(crate) fn spawn_timeline_listener(
         // task otherwise only holds the `'static` `AppHandle`/`Client`.
         let state = app.state::<MatrixState>();
         let media_cache = state.require_media_cache(&app).await.ok();
+        let initial_summaries =
+            items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+        // Seed with every event id already present before this listener
+        // subscribed — the initial `timeline:update` for a room the user
+        // just opened is existing history, never a "new message" worth a
+        // notification.
+        let mut seen_event_ids: std::collections::HashSet<String> = initial_summaries
+            .iter()
+            .map(|m| m.event_id.clone())
+            .collect();
         let _ = app.emit(
             "timeline:update",
             RoomTimelineUpdate {
                 room_id: room_id.to_string(),
-                messages: items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache)
-                    .await,
+                messages: initial_summaries,
             },
         );
 
@@ -580,21 +589,90 @@ pub(crate) fn spawn_timeline_listener(
             }
             let state = app.state::<MatrixState>();
             let media_cache = state.require_media_cache(&app).await.ok();
+            let summaries =
+                items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
+
+            let new_messages: Vec<&RoomMessageSummary> = summaries
+                .iter()
+                .filter(|m| !seen_event_ids.contains(&m.event_id))
+                .collect();
+            for message in &new_messages {
+                maybe_notify_new_message(&app, &client, &room_id, own_user_id.as_deref(), message)
+                    .await;
+            }
+            seen_event_ids = summaries.iter().map(|m| m.event_id.clone()).collect();
+
             let _ = app.emit(
                 "timeline:update",
                 RoomTimelineUpdate {
                     room_id: room_id.to_string(),
-                    messages: items_to_summaries(
-                        &items,
-                        own_user_id.as_deref(),
-                        &client,
-                        media_cache,
-                    )
-                    .await,
+                    messages: summaries,
                 },
             );
         }
     });
+}
+
+/// Fires a local OS notification for `message` if it warrants one: not our
+/// own message, not redacted, not still a pending local echo, the target
+/// room isn't muted, and the target room doesn't currently have focus
+/// (`shell::should_notify`). Title/body come from `shell::build_notification`
+/// so Spec 11's push-decrypt path can reuse the exact same shaping.
+async fn maybe_notify_new_message(
+    app: &AppHandle,
+    client: &Client,
+    room_id: &matrix_sdk::ruma::RoomId,
+    own_user_id: Option<&UserId>,
+    message: &RoomMessageSummary,
+) {
+    use tauri::Manager;
+    use tauri_plugin_notification::NotificationExt;
+
+    if message.redacted || !matches!(message.send_state, SendState::Sent) {
+        return;
+    }
+    if own_user_id.is_some_and(|me| me.as_str() == message.sender) {
+        return;
+    }
+
+    let Some(room) = client.get_room(room_id) else {
+        return;
+    };
+    let is_muted = matches!(
+        room.notification_mode().await,
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+    );
+
+    let focused_room_id = app
+        .state::<MatrixState>()
+        .focused_room_id
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !shell::should_notify(focused_room_id.as_deref(), room_id.as_str(), is_muted) {
+        return;
+    }
+
+    let display_name = match room.cached_display_name() {
+        Some(name) => name,
+        None => room
+            .display_name()
+            .await
+            .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
+    };
+    let room_name = match display_name {
+        matrix_sdk::RoomDisplayName::Empty => None,
+        other => Some(other.to_string()),
+    };
+
+    let (title, body) = shell::build_notification(
+        room_name.as_deref(),
+        message.sender_display_name.as_deref(),
+        &message.sender,
+        &message.body,
+    );
+
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

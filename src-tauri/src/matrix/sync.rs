@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use super::{ephemeral, presence, profiles, room_admin, rooms, verification, MatrixState};
+use super::{ephemeral, presence, profiles, room_admin, rooms, shell, verification, MatrixState};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -51,6 +51,21 @@ pub enum SyncStateEvent {
 /// panel: simple, and the frontend already filters by `room_id` the same way
 /// `timeline:update` is filtered — see Spec 07's design notes on revisiting
 /// if this proves too chatty.
+/// Snapshots the room list, emits `room_list:update`, and derives+emits
+/// `badge:update` from that same snapshot (Spec 10) — the two always travel
+/// together so the in-app rail counts and the native dock/taskbar/tray badge
+/// can never drift out of sync with each other or with the room list they're
+/// both computed from.
+async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
+    let state = app.state::<MatrixState>();
+    let media_cache = state.require_media_cache(app).await.ok();
+    let snapshot = rooms::snapshot_rooms(client, media_cache).await;
+    let badge = shell::compute_badge_state(&snapshot);
+    let _ = app.emit("room_list:update", snapshot);
+    let _ = app.emit("badge:update", badge);
+    let _ = shell::apply_native_badge(app, badge.total_unread);
+}
+
 async fn emit_room_updates(
     app: &AppHandle,
     client: &Client,
@@ -154,14 +169,7 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             }
         };
         let _ = app.emit("sync:state", SyncStateEvent::Idle);
-        {
-            let state = app.state::<MatrixState>();
-            let media_cache = state.require_media_cache(&app).await.ok();
-            let _ = app.emit(
-                "room_list:update",
-                rooms::snapshot_rooms(&client, media_cache).await,
-            );
-        }
+        emit_room_list_and_badge(&app, &client).await;
         emit_room_updates(&app, &client, &initial_response).await;
 
         // A manual loop, not `sync_with_callback` — that method only honors
@@ -193,12 +201,7 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    let state = app.state::<MatrixState>();
-                    let media_cache = state.require_media_cache(&app).await.ok();
-                    let _ = app.emit(
-                        "room_list:update",
-                        rooms::snapshot_rooms(&client, media_cache).await,
-                    );
+                    emit_room_list_and_badge(&app, &client).await;
                     emit_room_updates(&app, &client, &response).await;
                 }
                 Err(e) => {
