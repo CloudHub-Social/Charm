@@ -736,7 +736,23 @@ pub async fn get_timeline_page(
     let timeline = state
         .get_or_create_timeline(&app, &client, &parsed_room_id)
         .await?;
+    let media_cache = state.require_media_cache(&app).await.ok();
 
+    get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+}
+
+/// Core logic behind [`get_timeline_page`], taking an already-resolved
+/// `&Timeline`/`&MediaCache` rather than `&MatrixState` — building/caching
+/// the live `Timeline` (see `MatrixState::get_or_create_timeline`) is
+/// inherently tied to how the caller multiplexes sessions (one process-wide
+/// LRU on desktop; per-session on the companion server), so that part stays
+/// in the Tauri wrapper rather than being duplicated here.
+pub async fn get_timeline_page_impl(
+    client: &Client,
+    timeline: &matrix_sdk_ui::Timeline,
+    media_cache: Option<&media::MediaCache>,
+    limit: Option<u32>,
+) -> Result<TimelinePage, String> {
     // 200 is well over any real UI need (the documented default is 30) —
     // reject rather than silently clamp, so a caller passing a bogus/huge
     // value gets an error instead of quietly triggering a 65535-event
@@ -760,10 +776,9 @@ pub async fn get_timeline_page(
     // is already owned by the listener task `get_or_create_timeline` spawned;
     // this second subscription's stream half is dropped immediately below.
     let (items, _stream) = timeline.subscribe().await;
-    let media_cache = state.require_media_cache(&app).await.ok();
 
     Ok(TimelinePage {
-        messages: items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await,
+        messages: items_to_summaries(&items, own_user_id.as_deref(), client, media_cache).await,
         next_cursor: if hit_start {
             None
         } else {

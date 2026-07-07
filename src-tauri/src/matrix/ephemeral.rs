@@ -131,7 +131,17 @@ pub async fn send_read_receipt(
     private: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    send_read_receipt_impl(&client, &room_id, event_id, private).await
+}
+
+/// Core logic behind [`send_read_receipt`].
+pub async fn send_read_receipt_impl(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_id: String,
+    private: bool,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
     let parsed_event_id = OwnedEventId::try_from(event_id).map_err(|e| e.to_string())?;
 
     let mut receipts = Receipts::new().fully_read_marker(parsed_event_id.clone());
@@ -156,7 +166,16 @@ pub async fn send_typing(
     typing: bool,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    send_typing_impl(&client, &room_id, typing).await
+}
+
+/// Core logic behind [`send_typing`].
+pub async fn send_typing_impl(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    typing: bool,
+) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
     room.typing_notice(typing).await.map_err(|e| e.to_string())
 }
 
@@ -166,7 +185,12 @@ pub async fn send_typing(
 #[tauri::command]
 pub async fn mark_room_read(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = parse_room(&client, &room_id)?;
+    mark_room_read_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`mark_room_read`].
+pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
 
     let Some(latest_event_id) = room.latest_event().event_id() else {
         // Nothing synced yet for this room — nothing to mark read.
