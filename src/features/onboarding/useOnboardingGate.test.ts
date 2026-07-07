@@ -170,7 +170,7 @@ describe("useOnboardingGate", () => {
     await waitFor(() => expect(result.current.status).toBe("done"));
   });
 
-  it("biases toward done (not pending) when the account-data read fails", async () => {
+  it("biases toward done (not pending) when the account-data read fails, but does NOT persist that as a local flag", async () => {
     listRooms.mockResolvedValue([]);
     getLocalOnboardingFlag.mockResolvedValue(false);
     getAccountData.mockRejectedValue(new Error("network error"));
@@ -178,6 +178,11 @@ describe("useOnboardingGate", () => {
     const { result } = renderHook(() => useOnboardingGate("@account-data-read-error:localhost"));
 
     await waitFor(() => expect(result.current.status).toBe("done"));
+    // A transient read failure biasing this one evaluation toward "done" is
+    // fine and recoverable (it just re-evaluates next launch); but backfilling
+    // the local flag here would permanently skip onboarding on this device
+    // even if it never actually completed — that's not recoverable.
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
   });
 
   it("stays loading until a session (user id) is available", () => {

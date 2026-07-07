@@ -11,6 +11,13 @@ import { ONBOARDING_ACCOUNT_DATA_TYPE, type OnboardingAccountData } from "./onbo
 export type OnboardingStatus = "loading" | "pending" | "done";
 
 /**
+ * Distinct from any real `getAccountData` response (which is `null` or a
+ * JSON object) so a failed read can be told apart from a genuine "no flag
+ * set yet" `null` — see its one use in `evaluate`, below.
+ */
+const ACCOUNT_DATA_READ_FAILED = Symbol("account-data-read-failed");
+
+/**
  * Pure precedence rule from Spec 12: `done` if the account has any joined
  * room, or either persistence layer already recorded completion — `pending`
  * only when all three say "new". Biased fail-safe toward *not* re-showing
@@ -93,15 +100,23 @@ export function useOnboardingGate(userId: string | null) {
         }
 
         const accountData = await getAccountData(ONBOARDING_ACCOUNT_DATA_TYPE).catch(
-          // Same fail-safe bias as the local-flag read above: a failed
-          // account-data fetch is treated as "present" (any non-null value
-          // works — `deriveOnboardingStatus` only checks for `null`).
-          () => true,
+          () => ACCOUNT_DATA_READ_FAILED,
         );
         if (cancelled) return;
 
-        const accountDataPresent = accountData !== null;
-        if (accountDataPresent && activeUserIdRef.current === userId) {
+        // Same fail-safe bias as the local-flag read above for the *status*
+        // this evaluation resolves to: a failed account-data fetch is
+        // treated as "present" so this one evaluation doesn't wrongly show
+        // onboarding. But that bias must not leak into a *persistent* write:
+        // only a genuine, confirmed non-null response backfills the local
+        // flag — writing it on a transient network error would permanently
+        // (and wrongly) skip onboarding on this device forever after,
+        // trading a recoverable one-time false "pending" for an
+        // unrecoverable false "done".
+        const accountDataReadFailed = accountData === ACCOUNT_DATA_READ_FAILED;
+        const accountDataPresent = accountDataReadFailed || accountData !== null;
+        const accountDataConfirmedPresent = !accountDataReadFailed && accountData !== null;
+        if (accountDataConfirmedPresent && activeUserIdRef.current === userId) {
           // Backfill the local flag: `list_rooms` and the local flag are
           // both local-store reads, but this check needed the homeserver —
           // without this, a later offline/slow launch on this same device
