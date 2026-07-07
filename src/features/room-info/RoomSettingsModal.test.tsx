@@ -8,6 +8,11 @@ import { AppProviders } from "@/providers";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient } from "@tanstack/react-query";
 
+const mockUseAdaptiveLayout = vi.fn(() => "desktop");
+vi.mock("@/features/shell/useAdaptiveLayout", () => ({
+  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
+
 const getRoomDetails = vi.fn();
 const getRoomMemberList = vi.fn().mockResolvedValue([]);
 
@@ -93,6 +98,18 @@ describe("RoomSettingsModal", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close room settings" }));
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("switches the nav to a horizontal top bar on mobile widths", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const details = makeRoomDetails({ name: "Design Team" });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+    await screen.findByDisplayValue("Design Team");
+
+    expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "horizontal");
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
   });
 
   it("closes and clears the target when dismissed", async () => {

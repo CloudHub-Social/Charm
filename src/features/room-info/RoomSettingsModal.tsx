@@ -3,6 +3,8 @@ import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
+import { cn } from "@/lib/utils";
 import { roomSettingsAtom, type RoomSettingsSection } from "./roomInfoAtoms";
 import { useRoomDetails } from "./useRoomDetails";
 import { RoomSettingsForm } from "./RoomSettingsForm";
@@ -31,6 +33,13 @@ interface RoomSettingsModalProps {
 export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
   const { data: details, isLoading, isError } = useRoomDetails(target?.roomId ?? null);
+  // Below `sm`, `DialogContent` becomes a full-screen sheet but is still
+  // only ~320-375px wide — a fixed `w-48` side nav left too little room for
+  // the settings pane (Room name/topic, Members search/sort) to be usable.
+  // Switch to a horizontal top nav + stacked content on mobile instead,
+  // matching `AppShell`'s existing sidebar-vs-bottom-nav breakpoint.
+  const layout = useAdaptiveLayout();
+  const isMobile = layout === "mobile";
 
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -71,14 +80,19 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
         {details && target && (
           <TooltipProvider>
             <Tabs
-              orientation="vertical"
+              orientation={isMobile ? "horizontal" : "vertical"}
               value={target.section}
               onValueChange={(value) =>
                 setTarget({ roomId: target.roomId, section: value as RoomSettingsSection })
               }
-              className="min-h-0 flex-1 flex-row"
+              className={cn("min-h-0 flex-1", isMobile ? "flex-col" : "flex-row")}
             >
-              <div className="flex w-48 shrink-0 flex-col border-r border-border p-4">
+              <div
+                className={cn(
+                  "flex shrink-0 flex-col p-4",
+                  isMobile ? "w-full border-b border-border" : "w-48 border-r border-border",
+                )}
+              >
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <span className="truncate text-base font-bold text-foreground">
                     {details.name ?? details.room_id}
@@ -92,7 +106,12 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
                     <X className="size-4" />
                   </button>
                 </div>
-                <TabsList className="h-fit flex-col items-stretch bg-transparent p-0">
+                <TabsList
+                  className={cn(
+                    "h-fit items-stretch bg-transparent p-0",
+                    isMobile ? "flex-row" : "flex-col",
+                  )}
+                >
                   {SECTIONS.map((section) => (
                     <TabsTrigger key={section.value} value={section.value}>
                       {section.label}
