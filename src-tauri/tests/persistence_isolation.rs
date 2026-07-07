@@ -133,6 +133,134 @@ async fn two_distinct_accounts_login_sequentially_without_crypto_mismatch() {
     assert!(root.0.join(&key_b).is_dir());
 }
 
+/// The exact real-world repro: the *same* account logging in twice in a
+/// row (e.g. a user re-submitting the login form, or retrying after a
+/// session the app couldn't restore) — each login mints a brand-new
+/// `device_id` from the homeserver, so the second attempt's relocation finds
+/// the first attempt's store already at `account_key`'s path. Before the
+/// fix, that store was kept and the second login's session was force-onto
+/// it, which matrix-sdk-crypto correctly rejected with "the account in the
+/// store doesn't match the account in the constructor". The fix supersedes
+/// the stale first store with the second login's instead.
+///
+/// Deliberately keychain-free like the rest of this file: this mirrors what
+/// `persistence::relocate_store_at` now does (discard a stale existing store,
+/// then rename the new one into place) using plain directory operations and
+/// locally-generated passphrases, since `relocate_store_at` itself touches
+/// the real OS keychain and CI's Linux `rust-integration` runner has no
+/// secret-service backend. The keychain-backed plumbing has its own coverage
+/// in `persistence::tests` on macOS (see `relocate_store_supersedes_stale_existing_account_store_with_temp`).
+#[tokio::test]
+async fn same_account_logs_in_twice_supersedes_stale_store_without_crypto_mismatch() {
+    let root = ScratchRoot::new("repeat-login");
+    let account_key = persistence::account_key(&format!("@{}:localhost", test_username()));
+    let account_path = root.0.join(&account_key);
+
+    let temp_key_1 = persistence::temp_store_key();
+    let passphrase_1 = random_passphrase();
+    let client_1 = build_and_login(
+        &root.0,
+        &temp_key_1,
+        &passphrase_1,
+        &test_username(),
+        &test_password(),
+    )
+    .await;
+    let session_1 = client_1
+        .matrix_auth()
+        .session()
+        .expect("first login session");
+
+    // First relocation: no existing store, so a plain rename (mirrors
+    // `RelocateOutcome::Relocated`).
+    assert!(!account_path.exists());
+    std::fs::rename(root.0.join(&temp_key_1), &account_path)
+        .expect("first relocation (plain rename)");
+    client_1
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("first client still works against the relocated store");
+
+    // The second login — same account, same homeserver — gets a genuinely
+    // different device_id, so this reproduces the real bug condition rather
+    // than an artificial one.
+    let temp_key_2 = persistence::temp_store_key();
+    assert_ne!(temp_key_1, temp_key_2);
+    let passphrase_2 = random_passphrase();
+    let client_2 = build_and_login(
+        &root.0,
+        &temp_key_2,
+        &passphrase_2,
+        &test_username(),
+        &test_password(),
+    )
+    .await;
+    let session_2 = client_2
+        .matrix_auth()
+        .session()
+        .expect("second login session");
+    assert_ne!(
+        session_1.meta.device_id, session_2.meta.device_id,
+        "a fresh interactive login must mint a new device_id — this is what makes \
+         keeping the first store and restoring the second session onto it impossible"
+    );
+
+    // Second relocation: an existing store is now present (from the first
+    // login) — this is exactly the state that used to be kept and get a
+    // mismatched session restored onto it. The fix instead discards it and
+    // renames the second login's store into place (mirrors
+    // `RelocateOutcome::Superseded`).
+    assert!(account_path.exists());
+    std::fs::remove_dir_all(&account_path).expect("discard the stale first store");
+    std::fs::rename(root.0.join(&temp_key_2), &account_path)
+        .expect("second relocation (plain rename)");
+    client_2
+        .sync_once(SyncSettings::default())
+        .await
+        .expect("second client works against the store it superseded the first with");
+
+    // The store now on disk genuinely belongs to the second device: a fresh
+    // client restoring the second session against it succeeds...
+    let restored = Client::builder()
+        .homeserver_url(HOMESERVER)
+        .sqlite_store(&account_path, Some(&passphrase_2))
+        .build()
+        .await
+        .expect("build client against the superseded store");
+    restored
+        .matrix_auth()
+        .restore_session(
+            session_2.clone(),
+            matrix_sdk::store::RoomLoadSettings::default(),
+        )
+        .await
+        .expect("second device's session restores against the store it now owns");
+
+    // ...while the first device's session can no longer restore against it —
+    // proving the first store's data (bound to a different device) is
+    // genuinely gone, not just shadowed. This is the exact failure mode the
+    // bug produced ("the account in the store doesn't match the account in
+    // the constructor") when the *old*, pre-fix code tried to restore a new
+    // device's session onto an old device's store.
+    let mismatched = Client::builder()
+        .homeserver_url(HOMESERVER)
+        .sqlite_store(&account_path, Some(&passphrase_2))
+        .build()
+        .await
+        .expect("build client against the superseded store");
+    assert!(
+        mismatched
+            .matrix_auth()
+            .restore_session(
+                session_1.clone(),
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .is_err(),
+        "the first device's session must not restore against the store the second device now owns"
+    );
+}
+
 /// `try_restore_session`'s per-account routing: after "restarting the app"
 /// (dropping and rebuilding the client), each account restores against its
 /// own store and only its own store.

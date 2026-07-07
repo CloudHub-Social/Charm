@@ -284,13 +284,14 @@ pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
     }
 }
 
-/// What [`relocate_store`] actually did — callers that were using a
-/// temp-backed `Client` need this to decide whether that client is still
-/// usable ([`Relocated`](RelocateOutcome::Relocated), the common case: the
-/// temp directory just got renamed in place, same inode, same open file
-/// handles) or not ([`Reused`](RelocateOutcome::Reused): the temp directory
-/// was deleted out from under it, so the client must be rebuilt against the
-/// existing store and have its session restored onto that instead).
+/// What [`relocate_store`] actually did. Both variants leave the temp-backed
+/// `Client` that was already using it valid — a fresh interactive login
+/// (password/SSO/QR) always mints a brand-new `device_id` from the
+/// homeserver, and matrix-sdk-crypto binds a crypto store to whichever
+/// device first opened it, so the just-authenticated session can never
+/// correctly bind to a *different*, pre-existing store. There is no case
+/// where restoring the new session onto an old store is the right move —
+/// see [`Superseded`](RelocateOutcome::Superseded).
 ///
 /// Deliberately the *only* source of truth for this — a caller checking
 /// whether the account store exists itself beforehand and separately
@@ -300,44 +301,53 @@ pub fn get_or_create_passphrase(store_key: &str) -> Result<String, String> {
 /// actually did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelocateOutcome {
-    /// The temp store was renamed to `account_key`'s path — the `Client`
-    /// that was already using it is still valid.
+    /// No store existed at `account_key`'s path yet — the temp store was
+    /// renamed there.
     Relocated(PathBuf),
-    /// `account_key` already had a store; the temp one was discarded and
-    /// this is the existing store's path — any `Client` built against the
-    /// temp store must be rebuilt against this path instead.
-    Reused(PathBuf),
+    /// `account_key` already had a store (orphaned by an incomplete previous
+    /// login/logout, or a previous device's now-stale session) — it was
+    /// discarded and the temp store was renamed into its place instead.
+    Superseded(PathBuf),
 }
 
 impl RelocateOutcome {
     pub fn path(&self) -> &Path {
         match self {
-            RelocateOutcome::Relocated(path) | RelocateOutcome::Reused(path) => path,
+            RelocateOutcome::Relocated(path) | RelocateOutcome::Superseded(path) => path,
         }
     }
 }
 
-/// Atomically relocates a completed SSO/QR login's temp store to its real
+/// Atomically relocates a completed login's temp store to its real
 /// per-account path, once the flow has yielded a `user_id` and its
 /// `account_key` can finally be computed. If a store for that account
-/// already exists (a re-login), the existing store is kept and the temp one
-/// is discarded instead — matrix-rust-sdk binds a store to whichever
-/// account first opened it, so relocating on top of a differently-bound
-/// existing store would just recreate the very collision this feature
-/// fixes.
+/// already exists, it is treated as stale and discarded, and the temp store
+/// (bound to the session that was *just* authenticated) is relocated in its
+/// place instead — matrix-rust-sdk binds a crypto store to whichever device
+/// first opened it, and an interactive login always yields a new device, so
+/// keeping the old store and trying to restore the new session onto it
+/// would fail with "the account in the store doesn't match the account in
+/// the constructor" (matrix-sdk-crypto correctly refusing to bind a second
+/// device to an already-bound store). The client already authenticated
+/// against the temp store remains valid and needs no rebuild — regardless
+/// of which [`RelocateOutcome`] variant is returned.
 ///
-/// Sequenced for crash safety: the new account passphrase entry (a copy of
-/// the temp one's value) is written first, the temp passphrase entry is
-/// deleted next, and the directory rename comes *last*. A crash after
-/// writing the account entry but before deleting the temp one leaves two
-/// valid entries pointing at the same (still temp-located) store — never an
-/// undecryptable one. A crash after deleting the temp entry but before the
-/// rename leaves the temp directory in place with no keychain entry
-/// pointing at it; [`sweep_orphan_temp_stores`] finds and discards that
-/// directory on the next startup (its `discard_temp_store` no-ops on the
-/// already-gone keychain entry), so nothing is orphaned in the keychain.
-/// Deliberately *not* the reverse order (rename, then delete the temp
-/// entry): a crash in that gap left the *directory* gone but the temp
+/// Sequenced for crash safety: any stale existing store is removed first,
+/// then the new account passphrase entry (a copy of the temp one's value) is
+/// written, the temp passphrase entry is deleted next, and the directory
+/// rename comes *last*. A crash after removing the stale store but before
+/// the rename leaves the account path empty with the temp store and its
+/// keychain entry intact — the next relocation attempt (e.g. a retried
+/// login) finds no existing store and proceeds via the plain first-time
+/// path. A crash after writing the account entry but before deleting the
+/// temp one leaves two valid entries pointing at the same (still
+/// temp-located) store — never an undecryptable one. A crash after deleting
+/// the temp entry but before the rename leaves the temp directory in place
+/// with no keychain entry pointing at it; [`sweep_orphan_temp_stores`] finds
+/// and discards that directory on the next startup (its `discard_temp_store`
+/// no-ops on the already-gone keychain entry), so nothing is orphaned in the
+/// keychain. Deliberately *not* the reverse order (rename, then delete the
+/// temp entry): a crash in that gap left the *directory* gone but the temp
 /// keychain entry still present with nothing left to associate it with —
 /// `sweep_orphan_temp_stores` only scans directories by name, so that entry
 /// would accumulate in the keychain forever instead of ever being cleaned
@@ -378,9 +388,15 @@ pub fn relocate_store_at(
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
 
-    if account_path.exists() {
-        discard_temp_store(&temp_path, temp_key);
-        return Ok(RelocateOutcome::Reused(account_path));
+    // A stale store from an incomplete previous login/logout can never
+    // correctly host the session that was just authenticated (see this
+    // function's doc comment) — discard it before relocating. If we crash
+    // right after this and before the rename below, the account path is
+    // simply empty and the next relocation attempt takes the plain
+    // first-time path.
+    let existed = account_path.exists();
+    if existed {
+        std::fs::remove_dir_all(&account_path).map_err(|e| e.to_string())?;
     }
 
     let passphrase = get_or_create_passphrase(temp_key)?;
@@ -396,12 +412,16 @@ pub fn relocate_store_at(
 
     // `fs::rename` on the same volume (both under `matrix_store/`) is
     // atomic and, on POSIX, fails with `ENOTEMPTY`/`EEXIST` rather than
-    // silently merging if `account_path` was created concurrently between
-    // the `exists()` check above and here — surfacing as an `Err` rather
-    // than silently losing data either way.
+    // silently merging if `account_path` was recreated concurrently between
+    // the removal above and here — surfacing as an `Err` rather than
+    // silently losing data either way.
     std::fs::rename(&temp_path, &account_path).map_err(|e| e.to_string())?;
 
-    Ok(RelocateOutcome::Relocated(account_path))
+    Ok(if existed {
+        RelocateOutcome::Superseded(account_path)
+    } else {
+        RelocateOutcome::Relocated(account_path)
+    })
 }
 
 pub fn save_session(
@@ -708,32 +728,37 @@ mod tests {
     }
 
     #[test]
-    fn relocate_store_reuses_existing_account_store_and_discards_temp() {
-        let root = ScratchRoot::new("relocate-reuse");
+    fn relocate_store_supersedes_stale_existing_account_store_with_temp() {
+        let root = ScratchRoot::new("relocate-supersede");
         let account_key = account_key(TEST_MXID_RELOCATE_REUSE);
 
-        // Simulate an account that already has a store from a prior login.
+        // Simulate a stale store orphaned by an incomplete previous
+        // login/logout — a fresh interactive login always mints a new
+        // device_id, so this store can never correctly host the session
+        // that's about to relocate on top of it.
         let existing_path = store_path_at(&root.0, &account_key).unwrap();
         std::fs::write(existing_path.join("existing.txt"), b"pre-existing").unwrap();
-        let existing_passphrase = get_or_create_passphrase(&account_key).unwrap();
+        let _ = get_or_create_passphrase(&account_key).unwrap();
 
         let temp_key = temp_store_key();
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         std::fs::write(temp_path.join("marker.txt"), b"temp").unwrap();
-        let _ = get_or_create_passphrase(&temp_key).unwrap();
+        let temp_passphrase = get_or_create_passphrase(&temp_key).unwrap();
 
         let outcome = relocate_store_at(&root.0, &temp_key, &account_key).unwrap();
 
-        let RelocateOutcome::Reused(relocated) = outcome else {
-            panic!("expected Reused, got {outcome:?}");
+        let RelocateOutcome::Superseded(relocated) = outcome else {
+            panic!("expected Superseded, got {outcome:?}");
         };
         assert_eq!(relocated, existing_path);
-        assert!(relocated.join("existing.txt").exists());
-        assert!(!relocated.join("marker.txt").exists());
+        // The stale store is gone; the temp store (the just-authenticated
+        // session's) is what's actually at the account path now.
+        assert!(!relocated.join("existing.txt").exists());
+        assert!(relocated.join("marker.txt").exists());
         assert!(!temp_path.exists());
         assert_eq!(
             get_or_create_passphrase(&account_key).unwrap(),
-            existing_passphrase
+            temp_passphrase
         );
         let temp_entry =
             keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
