@@ -129,7 +129,9 @@ export function installMockTauri(seed: {
   let nextTxnId = 1;
   let nextEventId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
-  messagesByRoom.set(room.room_id, []);
+  for (const r of allRooms) {
+    messagesByRoom.set(r.room_id as string, []);
+  }
 
   // Spec 12 (onboarding): both persistence layers the gate hook checks,
   // in-memory only — no reload-survives-relaunch simulation here, since a
