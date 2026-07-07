@@ -179,7 +179,11 @@ pub fn run() {
             matrix::notifications::add_notification_keyword,
             matrix::notifications::remove_notification_keyword,
             matrix::notifications::set_global_mute,
-            matrix::notifications::set_sound_enabled
+            matrix::notifications::set_sound_enabled,
+            matrix::account_data::get_account_data,
+            matrix::account_data::set_account_data,
+            matrix::account_data::get_local_onboarding_flag,
+            matrix::account_data::set_local_onboarding_flag
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

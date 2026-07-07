@@ -357,6 +357,28 @@ export function setRoomFavourite(roomId: string, favourite: boolean): Promise<vo
   return invoke("set_room_favourite", { roomId, favourite });
 }
 
+/**
+ * Reads a global Matrix account-data event by type, straight from the
+ * server (not the local sync store) — see the Rust command's doc comment
+ * for why. `null` when the event has never been set.
+ */
+export function getAccountData(eventType: string): Promise<unknown> {
+  return invoke("get_account_data", { eventType });
+}
+
+export function setAccountData(eventType: string, content: unknown): Promise<void> {
+  return invoke("set_account_data", { eventType, content });
+}
+
+/** Local (non-account-data) fast-path onboarding flag — see Spec 12's gate precedence. */
+export function getLocalOnboardingFlag(): Promise<boolean> {
+  return invoke("get_local_onboarding_flag");
+}
+
+export function setLocalOnboardingFlag(): Promise<void> {
+  return invoke("set_local_onboarding_flag");
+}
+
 export function setRoomLowPriority(roomId: string, lowPriority: boolean): Promise<void> {
   return invoke("set_room_low_priority", { roomId, lowPriority });
 }
