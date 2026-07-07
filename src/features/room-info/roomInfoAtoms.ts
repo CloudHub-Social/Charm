@@ -1,13 +1,29 @@
 import { atom } from "jotai";
 import { atomFamily } from "jotai/utils";
 
+export type RoomSettingsSection = "general" | "members" | "permissions";
+
+export interface RoomSettingsTarget {
+  roomId: string;
+  section: RoomSettingsSection;
+}
+
 /**
- * Whether the right panel (`RoomInfoPanel`) is open for a given room, keyed
- * by `room_id` via `atomFamily` so switching rooms doesn't leak the panel's
- * open/closed state between them — same convention as
- * `messageActionAtoms.ts`'s per-room atoms.
+ * Which room's settings modal is open, and which left-nav section it should
+ * land on — a single global atom (not per-room) since only one room's
+ * settings modal can be open at a time, mirroring Charm 1.0's
+ * `roomSettingsAtom` (`useOpenRoomSettings()`), which can deep-link straight
+ * to a page like `RoomSettingsPage.MembersPage`.
  */
-export const rightPanelOpenAtomFamily = atomFamily((_roomId: string) => {
+export const roomSettingsAtom = atom<RoomSettingsTarget | null>(null);
+
+/**
+ * Whether the lightweight always-on member-browse drawer (mirroring Charm
+ * 1.0's `MembersDrawer.tsx`) is open for a given room, keyed by `room_id` via
+ * `atomFamily` so switching rooms doesn't leak the drawer's open/closed state
+ * between them — same convention as `messageActionAtoms.ts`'s per-room atoms.
+ */
+export const membersDrawerOpenAtomFamily = atomFamily((_roomId: string) => {
   void _roomId;
   return atom(false);
 });

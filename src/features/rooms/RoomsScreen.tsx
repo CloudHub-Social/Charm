@@ -17,8 +17,10 @@ import {
   setFocusedRoom,
   type RoomSummary,
 } from "@/lib/matrix";
-import { RoomInfoPanel } from "@/features/room-info/RoomInfoPanel";
-import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { MembersDrawer } from "@/features/room-info/MembersDrawer";
+import { RoomSettingsModal } from "@/features/room-info/RoomSettingsModal";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 
 interface RoomsScreenProps {
   currentUserId: string;
@@ -67,12 +69,14 @@ export function RoomsScreen({
   // Tells the Rust side which room has focus so it can suppress a local
   // notification for whatever the user is already looking at (Spec 10). Not
   // just a function of `activeRoomId`: the active room isn't actually
-  // "focused" while the settings overlay covers the chat, or while the OS
-  // window itself is blurred/minimized — in either case the room should read
-  // as unfocused so a background notification for it still fires. Re-synced
-  // (not just set once) on window focus/blur so switching back to the app
-  // restores tracking without needing `activeRoomId` to change.
+  // "focused" while the settings overlay or the room settings modal covers
+  // the chat, or while the OS window itself is blurred/minimized — in any of
+  // those cases the room should read as unfocused so a background
+  // notification for it still fires. Re-synced (not just set once) on window
+  // focus/blur so switching back to the app restores tracking without
+  // needing `activeRoomId` to change.
   const settingsSection = useAtomValue(settingsOpenAtom);
+  const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const layout = useAdaptiveLayout();
   // On mobile, the active room is only actually on-screen while `AppShell`
   // is showing its detail view — the Chats/People tabs show a list instead,
@@ -85,6 +89,7 @@ export function RoomsScreen({
     function syncFocusedRoom() {
       const isShowingChat =
         !settingsSection &&
+        !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
       setFocusedRoom(isShowingChat ? activeRoomId : null).catch(console.error);
@@ -96,7 +101,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [activeRoomId, settingsSection, layout, mobileView]);
+  }, [activeRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -148,28 +153,35 @@ export function RoomsScreen({
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
-  const [rightPanelOpen, setRightPanelOpen] = useAtom(
-    rightPanelOpenAtomFamily(activeRoom?.room_id ?? ""),
+  // Keeps `useRoomDetails`' `room_details:update` listener alive for the
+  // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
+  // are open — those now mount `useRoomDetails` independently and only
+  // while visible, so without this always-on subscription here a remote
+  // membership change while both are closed would go un-invalidated,
+  // leaving `useRoomMembers`' cache stale until it naturally expires.
+  useRoomDetails(activeRoom?.room_id ?? null);
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    membersDrawerOpenAtomFamily(activeRoom?.room_id ?? ""),
   );
 
-  // The right panel is desktop-only (mobile has no room besides the active
-  // one to show it alongside — see `AppShell`'s non-goals). Reset only on
-  // the desktop -> mobile *transition* (tracked via `prevLayoutRef`), not
-  // whenever `rightPanelOpen` is true while already mobile — the latter
-  // would fire every time the panel opens on mobile (via `ChatShell`'s
-  // "Show room info" button) and immediately close it again before it's
-  // ever visible, defeating mobile's own ability to show it. The transition
-  // check still catches opening it on desktop and then narrowing the
-  // window, which would otherwise leave `rightPanelOpen` stuck `true` and
-  // the mobile detail view showing a panel for a layout it was never opened
-  // in.
+  // The members drawer is desktop-only (mobile has no room besides the
+  // active one to show it alongside — see `AppShell`'s non-goals). Reset
+  // only on the desktop -> mobile *transition* (tracked via
+  // `prevLayoutRef`), not whenever `membersDrawerOpen` is true while already
+  // mobile — the latter would fire every time the drawer opens on mobile
+  // (via `ChatShell`'s "Show members" button) and immediately close it again
+  // before it's ever visible, defeating mobile's own ability to show it. The
+  // transition check still catches opening it on desktop and then narrowing
+  // the window, which would otherwise leave `membersDrawerOpen` stuck `true`
+  // and the mobile detail view showing a panel for a layout it was never
+  // opened in.
   const prevLayoutRef = useRef(layout);
   useEffect(() => {
-    if (prevLayoutRef.current === "desktop" && layout === "mobile" && rightPanelOpen) {
-      setRightPanelOpen(false);
+    if (prevLayoutRef.current === "desktop" && layout === "mobile" && membersDrawerOpen) {
+      setMembersDrawerOpen(false);
     }
     prevLayoutRef.current = layout;
-  }, [layout, rightPanelOpen, setRightPanelOpen]);
+  }, [layout, membersDrawerOpen, setMembersDrawerOpen]);
 
   return (
     <>
@@ -188,15 +200,16 @@ export function RoomsScreen({
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
         rightPanel={
-          activeRoom && rightPanelOpen ? (
-            <RoomInfoPanel
+          activeRoom && membersDrawerOpen ? (
+            <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
-              onClose={() => setRightPanelOpen(false)}
+              onClose={() => setMembersDrawerOpen(false)}
             />
           ) : null
         }
       />
+      <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
     </>
