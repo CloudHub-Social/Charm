@@ -13,6 +13,10 @@ const setDefaultNotificationMode = vi.fn();
 const setRoomNotificationMode = vi.fn();
 const setGlobalMute = vi.fn();
 const setSoundEnabled = vi.fn();
+const getPushStatus = vi.fn();
+const onPushStatus = vi.fn();
+const registerPush = vi.fn();
+const unregisterPush = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getNotificationSettings: (...args: unknown[]) => getNotificationSettings(...args),
@@ -23,6 +27,10 @@ vi.mock("@/lib/matrix", () => ({
   setRoomNotificationMode: (...args: unknown[]) => setRoomNotificationMode(...args),
   setGlobalMute: (...args: unknown[]) => setGlobalMute(...args),
   setSoundEnabled: (...args: unknown[]) => setSoundEnabled(...args),
+  getPushStatus: (...args: unknown[]) => getPushStatus(...args),
+  onPushStatus: (...args: unknown[]) => onPushStatus(...args),
+  registerPush: (...args: unknown[]) => registerPush(...args),
+  unregisterPush: (...args: unknown[]) => unregisterPush(...args),
 }));
 
 function renderWithProviders(children: ReactNode) {
@@ -43,6 +51,19 @@ beforeEach(() => {
   setDefaultNotificationMode.mockReset().mockResolvedValue(undefined);
   setGlobalMute.mockReset().mockResolvedValue(undefined);
   setSoundEnabled.mockReset().mockResolvedValue(undefined);
+  getPushStatus.mockReset().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+    last_error: null,
+  });
+  onPushStatus.mockReset().mockReturnValue(Promise.resolve(() => {}));
+  registerPush.mockReset().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+  });
+  unregisterPush.mockReset().mockResolvedValue(undefined);
 });
 
 describe("NotificationsPanel", () => {

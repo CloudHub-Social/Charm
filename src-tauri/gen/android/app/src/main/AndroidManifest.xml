@@ -1,9 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Spec 11: required on API 33+ to actually show a push-triggered
+         notification; requested from the frontend's notifications settings
+         panel, same as the local-notification permission Spec 10 already
+         requests. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <!-- Spec 11: lets UnifiedPush.getDistributors() see installed external
+         distributor apps despite Android 11+'s package-visibility
+         restrictions — without this, every external distributor query comes
+         back empty and this app would always fall back to the embedded FCM
+         distributor even when the user has a real one installed. -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+        </intent>
+    </queries>
 
     <application
         android:icon="@mipmap/ic_launcher"
@@ -35,5 +54,22 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Spec 11: receives every UnifiedPush event (new endpoint,
+             registration failure, unregistration, incoming message) and
+             forwards each to the Rust core over JNI — see
+             `PushMessagingReceiver.kt`. Not exported: only the distributor
+             this app itself registered with should be able to deliver these
+             (matches the connector library's own manifest snippet). -->
+        <receiver
+            android:name=".PushMessagingReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

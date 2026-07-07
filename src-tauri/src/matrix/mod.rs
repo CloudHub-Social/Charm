@@ -118,6 +118,15 @@ pub struct MatrixState {
     /// every 30s). Bounded the same way `timelines` is — an unbounded set
     /// would grow for the life of the process.
     pub(crate) notified_event_ids: std::sync::Mutex<lru::LruCache<String, ()>>,
+    /// The transport (if any) `push::register_push` last successfully
+    /// registered — held so `push::unregister_push` can tell it to drop its
+    /// endpoint/token without re-deriving which platform impl is active.
+    pub(crate) push_transport:
+        std::sync::Mutex<Option<std::sync::Arc<dyn crate::push::NotificationTransport>>>,
+    /// Last-known push registration state, mirrored to every `push:status`
+    /// emit — lets `push::get_push_status` answer synchronously on settings
+    /// panel mount without waiting for the next event.
+    pub(crate) push_status: std::sync::Mutex<crate::push::PushStatus>,
 }
 
 impl Default for MatrixState {
@@ -140,6 +149,8 @@ impl Default for MatrixState {
                 std::num::NonZeroUsize::new(MAX_NOTIFIED_EVENT_IDS)
                     .expect("MAX_NOTIFIED_EVENT_IDS is a nonzero constant"),
             )),
+            push_transport: std::sync::Mutex::default(),
+            push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
         }
     }
 }

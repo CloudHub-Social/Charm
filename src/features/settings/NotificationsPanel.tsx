@@ -9,8 +9,51 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { listRooms, type RoomNotificationModeKind, type RoomSummary } from "@/lib/matrix";
+import { listRooms, type PusherKind, type RoomNotificationModeKind, type RoomSummary } from "@/lib/matrix";
+import { usePush } from "@/features/push/usePush";
 import { useNotificationSettings, useNotificationSettingsActions } from "./useNotificationSettings";
+
+const TRANSPORT_LABELS: Record<PusherKind, string> = {
+  unified_push: "UnifiedPush",
+  fcm: "Firebase Cloud Messaging",
+  apns: "Apple Push Notification service",
+  none: "Not available on this platform",
+};
+
+function PushTransportSection() {
+  const { status, register, unregister } = usePush();
+  const transport = status?.transport ?? "none";
+
+  return (
+    <section>
+      <h2 className="mb-2 text-lg font-bold text-foreground">Push notifications</h2>
+      <p className="mb-3 text-sm text-muted-foreground">
+        Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
+        {TRANSPORT_LABELS[transport]}.
+      </p>
+      {transport === "none" ? (
+        <p className="text-sm text-muted-foreground">
+          Not available on this platform — desktop relies on the always-on sync loop instead.
+        </p>
+      ) : (
+        <div className="flex items-center gap-3">
+          {status?.registered ? (
+            <Button variant="outline" onClick={() => unregister.mutate()} disabled={unregister.isPending}>
+              Turn off push notifications
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => register.mutate()} disabled={register.isPending}>
+              Turn on push notifications
+            </Button>
+          )}
+          {status?.last_error && (
+            <span className="text-sm text-destructive">{status.last_error}</span>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
 
 const MODE_LABELS: Record<RoomNotificationModeKind, string> = {
   all_messages: "All messages",
@@ -146,6 +189,8 @@ export function NotificationsPanel() {
 
   return (
     <div className="max-w-lg space-y-8">
+      <PushTransportSection />
+
       <section>
         <h2 className="mb-2 text-lg font-bold text-foreground">Default notification mode</h2>
         <p className="mb-3 text-sm text-muted-foreground">

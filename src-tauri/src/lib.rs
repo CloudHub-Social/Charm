@@ -6,6 +6,7 @@
 #![recursion_limit = "512"]
 
 pub mod matrix;
+pub mod push;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -160,6 +161,9 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_window_state::Builder::new().build());
 
+    #[cfg(target_os = "ios")]
+    let builder = builder.plugin(push::ios::init());
+
     builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -171,6 +175,13 @@ pub fn run() {
         .manage(matrix::MatrixState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            // Stashed for platform push callbacks (Android's JNI
+            // `onMessage`; iOS's Notification Service Extension runs as a
+            // separate process and doesn't use this) that arrive with no
+            // Tauri command context to pull an `AppHandle` from — see
+            // `push::global_app_handle`'s doc comment.
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            push::set_global_app_handle(handle.clone());
             // One-time dev wipe of the pre-Spec-15 single-account store
             // layout (see its doc comment) — debug-build-only. A release
             // build reaching a real user's machine with the legacy layout
@@ -297,7 +308,10 @@ pub fn run() {
             matrix::account_data::get_account_data,
             matrix::account_data::set_account_data,
             matrix::account_data::get_local_onboarding_flag,
-            matrix::account_data::set_local_onboarding_flag
+            matrix::account_data::set_local_onboarding_flag,
+            push::register_push,
+            push::unregister_push,
+            push::get_push_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -28,6 +28,19 @@ vi.mock("@/lib/matrix", () => ({
     sound_enabled: true,
   }),
   listRooms: vi.fn().mockResolvedValue([]),
+  getPushStatus: vi.fn().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+    last_error: null,
+  }),
+  onPushStatus: vi.fn().mockReturnValue(Promise.resolve(() => {})),
+  registerPush: vi.fn().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+  }),
+  unregisterPush: vi.fn().mockResolvedValue(undefined),
 }));
 
 function renderScreen(section: "account" | "notifications" | "devices" | "appearance" | null) {
