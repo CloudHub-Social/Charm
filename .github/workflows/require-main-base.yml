@@ -7,6 +7,12 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
 
+# Cancel a PR's in-flight run when a new push supersedes it — see
+# quality-checks.yml's identical block for the full rationale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   check-base:
     runs-on: ubuntu-latest
