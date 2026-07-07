@@ -39,6 +39,14 @@ const MAX_LIVE_TIMELINES: usize = 20;
 /// opened-room/unopened-room notification race window at once.
 const MAX_NOTIFIED_EVENT_IDS: usize = 200;
 
+/// A live per-room `Timeline` paired with its listener task's `JoinHandle` —
+/// see `MatrixState::timelines`'s doc comment for why the handle is kept
+/// alongside the `Arc`.
+type TimelineEntry = (
+    std::sync::Arc<matrix_sdk_ui::Timeline>,
+    tokio::task::JoinHandle<()>,
+);
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing (multiple
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
@@ -104,10 +112,15 @@ pub struct MatrixState {
     pub(crate) sync_presence: std::sync::Mutex<presence::PresenceStateDto>,
     /// Live per-room `matrix-sdk-ui` `Timeline`s, built lazily the first time
     /// a room is opened (`get_timeline_page`) and bounded to
-    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`.
-    timelines: Mutex<
-        lru::LruCache<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<matrix_sdk_ui::Timeline>>,
-    >,
+    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`. Each entry also
+    /// carries its listener task's `JoinHandle` (see
+    /// `timeline::spawn_timeline_listener`) so [`clear_timelines`] can abort
+    /// and *await* every listener — not just drop the cache's own `Arc`
+    /// references — genuinely guaranteeing no listener is still holding its
+    /// own `Client` clone (and the store's open file handles under it) by
+    /// the time it returns, the same rigor `sync::abort_current_sync_loop`
+    /// applies to the main sync loop.
+    timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, TimelineEntry>>,
     /// The task driving the current background sync loop (see
     /// `sync::spawn_sync_loop`). Login/session-restore has several independent
     /// success paths (password, SSO, QR, restored-session) and none of them
@@ -196,7 +209,7 @@ impl MatrixState {
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if let Some(existing) = self.timelines.lock().await.get(room_id) {
+        if let Some((existing, _)) = self.timelines.lock().await.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
@@ -210,18 +223,21 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        if let Some(existing) = timelines.get(room_id) {
+        if let Some((existing, _)) = timelines.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
-        timeline::spawn_timeline_listener(
+        let handle = timeline::spawn_timeline_listener(
             app.clone(),
             room_id.to_owned(),
             std::sync::Arc::downgrade(&timeline),
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
-        timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));
+        timelines.push(
+            room_id.to_owned(),
+            (std::sync::Arc::clone(&timeline), handle),
+        );
 
         Ok(timeline)
     }
@@ -263,8 +279,28 @@ impl MatrixState {
         true
     }
 
+    /// Aborts and *awaits* every live timeline listener before dropping the
+    /// cache's own `Arc<Timeline>` references — not just `clear()`, which
+    /// would drop this method's own references but leave each listener task
+    /// running (and holding its own `Client` clone, hence the store's open
+    /// file handles under it) until it next happens to notice its
+    /// `Timeline` was evicted, up to `TIMELINE_LIVENESS_CHECK_INTERVAL`
+    /// (30s) later. Callers relying on "nothing is touching the old
+    /// client/store anymore" once this returns — e.g.
+    /// `sync::abort_current_sync_loop`, immediately before a login
+    /// supersedes the account's store — need that guarantee now, not up to
+    /// 30 seconds from now.
     pub(crate) async fn clear_timelines(&self) {
-        self.timelines.lock().await.clear();
+        let mut timelines = self.timelines.lock().await;
+        let mut handles = Vec::new();
+        while let Some((_, (_, handle))) = timelines.pop_lru() {
+            handle.abort();
+            handles.push(handle);
+        }
+        drop(timelines);
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,

@@ -199,7 +199,14 @@ pub async fn try_restore_session(
                 Ok(None) => {}
                 Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
             }
-            continue;
+            // Deliberately *not* `continue` here: an OAuth session that
+            // exists but didn't yield a live restore isn't proof this
+            // account has no restorable session at all — a crash between a
+            // password/SSO login's store-swap commit and its follow-up
+            // `clear_oauth_session` call can leave a stale OAuth entry
+            // sitting alongside a perfectly valid, freshly-committed Matrix
+            // session for this same account. Fall through to check that
+            // before moving on to the next account.
         }
 
         let saved = match persistence::load_session(&account_key) {
@@ -307,11 +314,14 @@ pub(crate) async fn restore_session_for_push(
             .oauth()
             .restore_session(session, RoomLoadSettings::default())
             .await
-            .is_err()
+            .is_ok()
         {
-            return Ok(None);
+            return Ok(Some(client));
         }
-        return Ok(Some(client));
+        // Deliberately not returning here: see `try_restore_session`'s
+        // identical fall-through for why a stale OAuth entry that fails to
+        // restore isn't proof this account has no restorable session —
+        // fall through to check the Matrix session too.
     }
 
     let Some(saved) = persistence::load_session(account_key)? else {

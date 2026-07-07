@@ -227,15 +227,25 @@ fn recover_or_discard_stale_backup(
     // Not (fully) committed — discard whatever's at `account_path` (it
     // might not exist at all, or might be an uncommitted store whose
     // session was never saved) before restoring the backup into its place.
+    // If this fails and leaves stale content behind, the rename below will
+    // itself fail (POSIX `rename` onto a non-empty directory returns
+    // `ENOTEMPTY` rather than merging) — nothing downstream proceeds on a
+    // false assumption that this succeeded.
     let _ = std::fs::remove_dir_all(&account_path);
 
     let restored = (|| -> Option<()> {
         let backup_entry = backup_passphrase_entry.ok()?;
         let passphrase = backup_entry.get_password().ok()?;
+        // Directory swap *first*, account passphrase entry only *after* —
+        // overwriting the account's keychain entry before confirming the
+        // rename actually succeeded would risk pairing the backup's
+        // passphrase with whatever (if anything) is still sitting at
+        // `account_path`, exactly the kind of mismatch this whole recovery
+        // path exists to avoid.
+        std::fs::rename(backup_path, &account_path).ok()?;
         let account_entry =
             SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key)).ok()?;
         account_entry.set_password(&passphrase).ok()?;
-        std::fs::rename(backup_path, &account_path).ok()?;
         let _ = backup_entry.delete_credential();
         Some(())
     })();
@@ -731,15 +741,37 @@ fn relocate_store_at_locked_with(
     // unconditionally (not just when `existed`) for consistency, though it's
     // only load-bearing in the supersede case — a first-time relocation has
     // no backup for `recover_or_discard_stale_backup` to make a decision
-    // about in the first place. Best-effort: if this write fails, the
-    // relocation itself already fully succeeded (the marker is only
-    // consulted by the startup sweep, not by this function's own return
-    // value), so it shouldn't turn an otherwise-successful login into an
-    // error — worst case, a crash immediately after this point looks
-    // uncommitted to the sweep and the backup gets restored over a store
-    // that was actually fine, which is exactly the safe-by-default behavior
-    // the marker exists to fall back to when things are ambiguous.
-    let _ = std::fs::write(account_path.join(COMMIT_MARKER_FILENAME), []);
+    // about in the first place.
+    //
+    // Retried rather than a single best-effort attempt: `on_commit` has
+    // already durably succeeded (e.g. the new session is already saved to
+    // the keychain) by this point, so a transient write failure here is a
+    // real gap — without the marker, a crash before it's retried and the
+    // backup gets discarded below would make the *next* startup wrongly
+    // restore the backup over this now-correctly-committed store, pairing
+    // the just-saved new session with the *old* device's crypto store
+    // (exactly the mismatch this module exists to prevent, just reached via
+    // a different path than the one this PR originally fixed). Not a hard
+    // failure even after retries exhaust, though: rolling back at this
+    // point — after `on_commit` already succeeded — would strand the
+    // just-saved new session against the *old* store instead, which is
+    // strictly worse than the narrow, already-logged risk of proceeding.
+    let mut marker_written = false;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if std::fs::write(account_path.join(COMMIT_MARKER_FILENAME), []).is_ok() {
+            marker_written = true;
+            break;
+        }
+    }
+    if !marker_written {
+        eprintln!(
+            "relocate_store: failed to write commit marker for {account_key} at {} after retries — a crash before the next successful startup sweep could incorrectly restore the superseded backup",
+            account_path.display()
+        );
+    }
 
     if existed {
         // Everything is fully committed at this point, so the backup (both

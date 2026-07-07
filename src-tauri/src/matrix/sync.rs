@@ -225,18 +225,23 @@ async fn notify_unopened_room_messages(
     }
 }
 
-/// Stops the currently-running sync loop and drops the active `Client` (if
-/// any) without starting a replacement — call this and *await* it just
-/// before a login flow is about to supersede the current account's on-disk
-/// store (see `persistence::relocate_store_and_save_session`), so nothing is
-/// still mid-`/sync` or holding the store's SQLite files open when the
-/// directory gets renamed out from under it. `spawn_sync_loop` already does
-/// its own version of the abort when it starts a *new* loop, but that
-/// happens *after* the store swap on a re-login for an already-active
-/// account — too late to prevent the old loop from touching the directory
-/// during the rename itself.
+/// Stops the currently-running sync loop, every live per-room timeline
+/// listener, and drops the active `Client` (if any) without starting
+/// replacements — call this and *await* it just before a login flow is
+/// about to supersede the current account's on-disk store (see
+/// `persistence::relocate_store_and_save_session`), so nothing is still
+/// mid-`/sync`, mid-timeline-diff-stream, or holding the store's SQLite
+/// files open when the directory gets renamed out from under it.
+/// `spawn_sync_loop` already does its own version of the sync-loop abort
+/// when it starts a *new* loop, but that happens *after* the store swap on
+/// a re-login for an already-active account — too late to prevent the old
+/// loop from touching the directory during the rename itself. Each opened
+/// room's `Timeline` has its own listener task holding its own `Client`
+/// clone (see `timeline::spawn_timeline_listener`) — stopping the sync loop
+/// and clearing `MatrixState::client` alone would still leave those running
+/// against the old store.
 ///
-/// Genuinely waits for the aborted task to stop (not just requests
+/// Genuinely waits for every aborted task to stop (not just requests
 /// cancellation and moves on): `JoinHandle::abort` only requests
 /// cancellation at the task's next `.await` point, so a task using
 /// `spawn_blocking`-free async I/O like this one's `sync_once`/`sync_with_callback`
@@ -245,7 +250,8 @@ async fn notify_unopened_room_messages(
 /// the expected outcome of a deliberate abort) is what actually blocks until
 /// that's happened, rather than racing ahead while the task might still hold
 /// its `Client` (and the SQLite handles under it) for a few more
-/// microseconds.
+/// microseconds. `MatrixState::clear_timelines` applies the same rigor to
+/// the timeline listeners.
 pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     let previous = app
         .state::<MatrixState>()
@@ -257,6 +263,7 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         previous.abort();
         let _ = previous.await;
     }
+    app.state::<MatrixState>().clear_timelines().await;
     *app.state::<MatrixState>().client.lock().await = None;
 }
 
