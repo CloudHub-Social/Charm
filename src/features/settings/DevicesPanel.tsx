@@ -83,16 +83,27 @@ export function DevicesPanel() {
     setBulkSubmitting(true);
     setBulkError(null);
     const revokePassword = bulkNeedsPassword ? bulkPassword : undefined;
+    const succeeded = new Set<string>();
     const remaining: string[] = [];
     let sawUiaChallenge = false;
     for (const deviceId of selectedIds) {
       try {
         await revoke.mutateAsync({ deviceId, password: revokePassword });
+        succeeded.add(deviceId);
       } catch (err) {
         if (!bulkNeedsPassword) {
           sawUiaChallenge = true;
           remaining.push(deviceId);
         } else {
+          // Devices already revoked earlier in this loop must drop out of
+          // the selection even though the batch as a whole failed here —
+          // otherwise the dialog reopens still showing them as selected
+          // (and a retry would try to revoke them a second time).
+          setSelectedIds((prev) => {
+            const next = new Set(prev);
+            for (const id of succeeded) next.delete(id);
+            return next;
+          });
           setBulkError(String(err));
           setBulkSubmitting(false);
           return;

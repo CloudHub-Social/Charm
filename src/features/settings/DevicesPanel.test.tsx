@@ -333,6 +333,53 @@ describe("DevicesPanel", () => {
     await waitFor(() => expect(deleteDevice).toHaveBeenLastCalledWith("OTHER", "current-password"));
   });
 
+  it("drops a device from the selection once it's actually revoked, even if a later device in the same batch fails", async () => {
+    const devices: DeviceSummary[] = [
+      ...DEVICES,
+      {
+        device_id: "TABLET",
+        display_name: "Tablet",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+    listDevices.mockResolvedValue(devices);
+    // First pass (no password): both hit the UIA challenge.
+    // Second pass (with password): OTHER succeeds, TABLET hits a real error.
+    deleteDevice.mockImplementation((deviceId: string, password?: string) => {
+      if (!password) return Promise.reject(new Error("uia"));
+      if (deviceId === "OTHER") return Promise.resolve(undefined);
+      return Promise.reject(new Error("server is temporarily unavailable"));
+    });
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Tablet");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Tablet" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    fireEvent.change(await screen.findByLabelText("Current password"), {
+      target: { value: "current-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await screen.findByText("Error: server is temporarily unavailable");
+    // Close the dialog to inspect the panel underneath — Radix's Dialog
+    // aria-hides everything outside its own portal while open, so the
+    // panel's checkboxes aren't queryable by role until it's closed.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    // OTHER was actually revoked before TABLET failed — it must drop out of
+    // the selection instead of staying stuck as "still selected", which
+    // would both misreport the count and re-attempt revoking it on retry.
+    expect(screen.getByText("1 device selected")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select Phone" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select Tablet" })).toBeChecked();
+  });
+
   it("clears the password-prompt state after a successful bulk sign-out, so the next one starts fresh", async () => {
     const devices: DeviceSummary[] = [
       ...DEVICES,
