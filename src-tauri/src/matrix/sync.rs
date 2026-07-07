@@ -225,17 +225,28 @@ async fn notify_unopened_room_messages(
     }
 }
 
-/// Aborts the currently-running sync loop (if any) without starting a
-/// replacement — call this just before a login flow is about to supersede
-/// the current account's on-disk store (see
-/// `persistence::relocate_store_and_save_session`), so nothing is still
-/// mid-`/sync` and writing to the SQLite files in the directory that's about
-/// to be renamed out from under it. `spawn_sync_loop` already does its own
-/// version of this abort when it starts a *new* loop, but that happens
-/// *after* the store swap on a re-login for an already-active account — too
-/// late to prevent the old loop from touching the directory during the
-/// rename itself.
-pub(crate) fn abort_current_sync_loop(app: &AppHandle) {
+/// Stops the currently-running sync loop and drops the active `Client` (if
+/// any) without starting a replacement — call this and *await* it just
+/// before a login flow is about to supersede the current account's on-disk
+/// store (see `persistence::relocate_store_and_save_session`), so nothing is
+/// still mid-`/sync` or holding the store's SQLite files open when the
+/// directory gets renamed out from under it. `spawn_sync_loop` already does
+/// its own version of the abort when it starts a *new* loop, but that
+/// happens *after* the store swap on a re-login for an already-active
+/// account — too late to prevent the old loop from touching the directory
+/// during the rename itself.
+///
+/// Genuinely waits for the aborted task to stop (not just requests
+/// cancellation and moves on): `JoinHandle::abort` only requests
+/// cancellation at the task's next `.await` point, so a task using
+/// `spawn_blocking`-free async I/O like this one's `sync_once`/`sync_with_callback`
+/// calls does stop promptly, but only once actually polled again — awaiting
+/// the handle here (and ignoring the resulting `Cancelled` error, which is
+/// the expected outcome of a deliberate abort) is what actually blocks until
+/// that's happened, rather than racing ahead while the task might still hold
+/// its `Client` (and the SQLite handles under it) for a few more
+/// microseconds.
+pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
     let previous = app
         .state::<MatrixState>()
         .sync_loop_handle
@@ -244,7 +255,9 @@ pub(crate) fn abort_current_sync_loop(app: &AppHandle) {
         .take();
     if let Some(previous) = previous {
         previous.abort();
+        let _ = previous.await;
     }
+    *app.state::<MatrixState>().client.lock().await = None;
 }
 
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {

@@ -619,12 +619,32 @@ fn relocate_store_at_locked_with(
     // stores.
     let roll_back = |err: String| -> String {
         if existed {
-            let _ = std::fs::remove_dir_all(&account_path);
-            let _ = std::fs::rename(&backup_path, &account_path);
-            if let Some(ref passphrase) = original_passphrase {
-                let _ = account_passphrase_entry.set_password(passphrase);
+            // The just-authenticated `Client` the caller is still holding
+            // is (at the OS level) whatever's currently at `account_path` —
+            // the earlier rename made that so — and this function has no
+            // way to know if it's still open. Deliberately gate restoring
+            // the *passphrase* on the *directory* rollback actually
+            // succeeding, rather than doing both unconditionally: if
+            // `remove_dir_all` fails (e.g. the new store's files are still
+            // open and this is a platform where that blocks removal), the
+            // real new store is still sitting at `account_path` — resetting
+            // the keychain entry back to the *old* passphrase in that case
+            // would leave a real store on disk that its own saved passphrase
+            // can no longer decrypt. Leaving the entry as the new
+            // passphrase instead keeps it consistent with whatever's
+            // actually still on disk either way. If the removal succeeds
+            // but the rename-back fails, `account_path` ends up empty with
+            // the backup (and its durable passphrase entry) intact —
+            // `sweep_orphan_temp_stores` recovers that combination on the
+            // next startup exactly like an interrupted crash would.
+            let dir_restored = std::fs::remove_dir_all(&account_path).is_ok()
+                && std::fs::rename(&backup_path, &account_path).is_ok();
+            if dir_restored {
+                if let Some(ref passphrase) = original_passphrase {
+                    let _ = account_passphrase_entry.set_password(passphrase);
+                }
+                let _ = backup_passphrase_entry.delete_credential();
             }
-            let _ = backup_passphrase_entry.delete_credential();
         }
         err
     };

@@ -110,7 +110,7 @@ pub async fn login(
     // relocating its store — otherwise a live client from an earlier login
     // (e.g. a double-submitted login button) could still be mid-`/sync` and
     // writing to the directory this is about to rename out from under it.
-    sync::abort_current_sync_loop(&app);
+    sync::abort_current_sync_loop(&app).await;
     persistence::relocate_store_and_save_session(
         &app,
         &temp_key,
@@ -119,24 +119,33 @@ pub async fn login(
         &session,
     )?;
 
-    let response = LoginResponse {
-        user_id: session.meta.user_id.to_string(),
-        device_id: session.meta.device_id.to_string(),
-    };
-
     // A concurrent completion for the same account (e.g. another
     // double-submitted login) could have superseded what was just saved
-    // above between that call returning and here — if so, step aside rather
-    // than clear a session kind or publish a client for a store that's no
-    // longer current; the completion that won already did its own version
-    // of this.
+    // above between that call returning and here — if so, this device's own
+    // login *did* succeed against the homeserver, but it lost the race
+    // locally: don't clear a session kind or publish a client for a store
+    // that's no longer current (the completion that won already did its own
+    // version of this), and don't report success either — `LoginScreen`
+    // treats any `Ok` response as signed-in-and-adopted, and returning this
+    // device's response here would let a double-submit advance the UI with
+    // a session Rust never actually published (and, if this promise
+    // resolves after the winner's, overwrite the frontend's already-correct
+    // device id with this losing one).
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
-        return Ok(response);
+        return Err(
+            "login succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
     }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
 
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
@@ -380,7 +389,7 @@ pub async fn register(
     let homeserver_url = client.homeserver().to_string();
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app);
+    sync::abort_current_sync_loop(&app).await;
     persistence::relocate_store_and_save_session(
         &app,
         &temp_key,
@@ -389,20 +398,24 @@ pub async fn register(
         &session,
     )?;
 
-    let response = LoginResponse {
-        user_id: session.meta.user_id.to_string(),
-        device_id: session.meta.device_id.to_string(),
-    };
-
-    // See `login`'s identical check: a concurrent completion for the same
+    // See `login`'s identical check and rationale for returning `Err` rather
+    // than a losing `Ok` response: a concurrent completion for the same
     // account may have superseded what was just saved.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
-        return Ok(response);
+        return Err(
+            "registration succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
     }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
 
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);
@@ -614,7 +627,7 @@ pub async fn complete_sso_login(
     let homeserver_url = client.homeserver().to_string();
     // See `login`'s identical step: stop any sync loop already running for
     // this account before its store gets relocated out from under it.
-    sync::abort_current_sync_loop(&app);
+    sync::abort_current_sync_loop(&app).await;
     persistence::relocate_store_and_save_session(
         &app,
         &pending.store_key,
@@ -623,20 +636,24 @@ pub async fn complete_sso_login(
         &session,
     )?;
 
-    let response = LoginResponse {
-        user_id: session.meta.user_id.to_string(),
-        device_id: session.meta.device_id.to_string(),
-    };
-
-    // See `login`'s identical check: a concurrent completion for the same
+    // See `login`'s identical check and rationale for returning `Err` rather
+    // than a losing `Ok` response: a concurrent completion for the same
     // account may have superseded what was just saved.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
-        return Ok(response);
+        return Err(
+            "SSO login succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
     }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
     let _ = persistence::clear_oauth_session(&account_key);
+
+    let response = LoginResponse {
+        user_id: session.meta.user_id.to_string(),
+        device_id: session.meta.device_id.to_string(),
+    };
 
     *state.client.lock().await = Some(client.clone());
     sync::spawn_sync_loop(app, client);

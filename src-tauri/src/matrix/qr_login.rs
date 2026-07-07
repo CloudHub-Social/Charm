@@ -201,7 +201,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // before relocating its store — same rationale as the
                 // identical step in auth.rs's login/register/
                 // complete_sso_login.
-                super::sync::abort_current_sync_loop(&app);
+                super::sync::abort_current_sync_loop(&app).await;
                 if let Err(e) = persistence::relocate_store_and_save_oauth_session(
                     &app,
                     &temp_key,
@@ -248,19 +248,23 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // here — if so, step aside rather than clear the other
                 // session kind or publish a client for a store that's no
                 // longer current; the completion that won already did its
-                // own version of this.
+                // own version of this. Deliberately *not* `Done` here even
+                // though this device's login did succeed on the homeserver:
+                // `QrLoginScreen` treats `Done` as "Rust adopted this exact
+                // session" and immediately calls `onSignedIn` with it, which
+                // would advance the UI past login with a session/client this
+                // backend never actually published.
                 if !persistence::oauth_session_is_current(
                     &account_key,
                     session.user.meta.device_id.as_str(),
                 ) {
-                    // This device's login *did* succeed on the homeserver —
-                    // only the local adoption lost the race — so still emit
-                    // completion (mirrors the success path below) rather
-                    // than leaving the caller waiting on a progress event
-                    // that never arrives.
                     let _ = app.emit(
                         "qr_login:progress",
-                        QrLoginProgressEvent::Done { session: response },
+                        QrLoginProgressEvent::Error {
+                            message:
+                                "QR login succeeded but was superseded by a concurrent login for the same account"
+                                    .to_string(),
+                        },
                     );
                     return;
                 }
