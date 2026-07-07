@@ -239,6 +239,19 @@ pub fn spawn(
         // refresh that already happened during restore's own initial
         // sync).
         let mut last_saved_access_token = persist.as_ref().map(|p| p.initial_access_token.clone());
+        // Check immediately, not just from the loop's first iteration below:
+        // `restore_one`'s own initial sync (run before `spawn` is ever
+        // called) can itself refresh an expiring token, so the client's
+        // live session may already differ from `initial_access_token` right
+        // now. The loop's first `sync_once` can long-poll for tens of
+        // seconds, exhaust its retry budget, or the process can restart
+        // before that first iteration ever completes — any of which would
+        // otherwise leave `sessions.enc.json` holding the stale,
+        // already-invalidated token for that whole window.
+        if let Some(persist) = &persist {
+            last_saved_access_token =
+                repersist_if_token_changed(&client, persist, last_saved_access_token).await;
+        }
 
         let mut consecutive_failures: u32 = 0;
         loop {

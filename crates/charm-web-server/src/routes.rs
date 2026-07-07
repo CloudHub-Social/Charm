@@ -338,6 +338,22 @@ async fn register(
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
+        // Removed unconditionally, whether or not a live in-memory session
+        // exists for this token — not nested inside the `if let Some(session)`
+        // below. A persisted entry can outlive its `SessionStore` entry
+        // (e.g. `restore_all` timed out or failed on it at startup — see
+        // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
+        // can still hold a cookie for a token this process never actually
+        // loaded a `Session` for. Skipping this removal in that case would
+        // leave the cookie's session persisted indefinitely: a later restart
+        // (once the homeserver/network issue that caused the earlier
+        // restore failure has cleared) would restore and start syncing an
+        // account the user believes they already logged out of.
+        if let Some(persistence) = &state.persistence {
+            if let Err(e) = persistence.remove(&token).await {
+                tracing::warn!("failed to remove persisted session on logout: {e}");
+            }
+        }
         if let Some(session) = state.sessions.remove(&token).await {
             if let Some(handle) = session
                 .sync_handle
@@ -346,11 +362,6 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoRespo
                 .take()
             {
                 handle.abort();
-            }
-            if let Some(persistence) = &state.persistence {
-                if let Err(e) = persistence.remove(&token).await {
-                    tracing::warn!("failed to remove persisted session on logout: {e}");
-                }
             }
             // Revoke the access token on the homeserver too — otherwise it
             // stays valid indefinitely after "logout" only clears local
@@ -1123,6 +1134,17 @@ async fn set_account_data(
 /// dependency worth exposing across the crate boundary for).
 const DEFAULT_AVATAR_THUMBNAIL_SIZE: u32 = 96;
 
+/// Upper bound on a caller-supplied `?size=` — an avatar has no legitimate
+/// reason to be requested at more than a modest thumbnail resolution, and
+/// this endpoint only requires a session cookie (not an Origin check the
+/// way the state-changing raw-body routes have), so an untrusted same-site
+/// page that can trigger this `GET` with a victim's cookie could otherwise
+/// request an arbitrarily large dimension and make the server (and the
+/// homeserver behind it) do expensive thumbnail work — buffering the full
+/// result in memory before `MediaCache` ever gets to write it to disk — on
+/// every request.
+const MAX_AVATAR_THUMBNAIL_SIZE: u32 = 512;
+
 /// Resolves a bare `mxc://` avatar URI (as carried, unresolved, by every
 /// room/profile/sender DTO this crate's routes already return) to its
 /// thumbnail bytes and streams them back — the room/profile-avatar
@@ -1145,7 +1167,10 @@ async fn resolve_avatar(
     let cache = crate::media_cache::for_account(&session.user_id)
         .await
         .map_err(ApiError::bad_request)?;
-    let size = query.size.unwrap_or(DEFAULT_AVATAR_THUMBNAIL_SIZE);
+    let size = query
+        .size
+        .unwrap_or(DEFAULT_AVATAR_THUMBNAIL_SIZE)
+        .clamp(1, MAX_AVATAR_THUMBNAIL_SIZE);
     let path = charm_lib::matrix::media::resolve_avatar_thumbnail(
         cache,
         &session.client,
