@@ -116,7 +116,9 @@
           const tracks = localStream
             .getTracks()
             .map((t) => `${t.kind}:${t.readyState}:enabled=${t.enabled}`);
-          const allLive = localStream.getTracks().every((t) => t.readyState === "live" && t.enabled);
+          const allLive = localStream
+            .getTracks()
+            .every((t) => t.readyState === "live" && t.enabled);
           log(`A: ${allLive ? "PASS" : "FAIL"} — granted, tracks = [${tracks.join(", ")}]`);
           return { status: allLive ? "PASS" : "FAIL", detail: tracks.join(", ") };
         } catch (err) {
@@ -180,7 +182,10 @@
           await new Promise((r) => setTimeout(r, 200));
         }
         log(`B: FAIL — timed out, pcA=${pcA.connectionState} pcB=${pcB.connectionState}`);
-        return { status: "FAIL", detail: `timed out: pcA=${pcA.connectionState} pcB=${pcB.connectionState}` };
+        return {
+          status: "FAIL",
+          detail: `timed out: pcA=${pcA.connectionState} pcB=${pcB.connectionState}`,
+        };
       }
 
       async function runC() {
