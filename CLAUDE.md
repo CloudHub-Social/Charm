@@ -128,6 +128,30 @@ re-exported through `src/lib/matrix.ts`; the frontend imports them via the
 rather than the default `bigint`), regenerate, and commit. CI fails if the committed
 bindings drift from the Rust source.
 
+## macOS local dev code-signing
+
+`src-tauri/tauri.conf.json` has no `bundle.macOS.signingIdentity` set — CI and a
+default local build both get the OS's implicit ad-hoc-equivalent signing, which
+hashes the binary itself. That hash changes on every rebuild, so a locally-stored
+Keychain item's ACL (e.g. `keyring`'s entries from Spec 15) stops matching the app's
+signature each time you rebuild, and macOS re-prompts for Keychain access even after
+choosing "Always Allow" on a previous build.
+
+Fix it locally with a **stable, self-signed Code Signing certificate** (no Apple
+Developer account needed): Keychain Access → **Certificate Assistant → Create a
+Certificate…** → Identity Type **Self-Signed Root**, Certificate Type **Code
+Signing**, name it something specific (e.g. `Charm Dev Self-Signed`). Then export
+`APPLE_SIGNING_IDENTITY="Charm Dev Self-Signed"` in your shell before `pnpm tauri
+dev` / `pnpm tauri build` — Tauri's env var overrides `tauri.conf.json` regardless of
+what's committed there. Because the identity is now your certificate's stable hash
+instead of a fresh ad-hoc hash per build, the Keychain ACL keeps matching across
+rebuilds.
+
+Do not hardcode a personal certificate name into the committed `tauri.conf.json` —
+it only exists in the machine's own keychain that created it, so CI's macOS/iOS
+platform-build jobs (and any other contributor's machine) would fail to find it.
+Keep this override local-only, via the env var.
+
 ## Code navigation (graphify)
 
 Build a local graphify graph with `graphify update .` (it lands in `graphify-out/`,
