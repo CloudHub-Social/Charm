@@ -125,6 +125,13 @@ jobs:
       - name: "Build debug APK (CI window config: auto-run harness on launch)"
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
+          # openssl-sys vendors OpenSSL from source (see Cargo.toml), whose
+          # Configure/Makefile expects a `<triple>-ranlib`/`<triple>-ar` on
+          # PATH — NDK r23+ stopped shipping those GNU-binutils-style wrapper
+          # names and only provides the generic llvm-* tools. Pointing RANLIB/AR
+          # at those directly avoids "ranlib: not found" (make error 127).
+          RANLIB: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
+          AR: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
         run: pnpm tauri android build --debug --target x86_64 --config src-tauri/tauri.ci.conf.json
 
       - name: Enable KVM for the emulator
