@@ -1466,10 +1466,31 @@ async fn ws_handler(
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
 }
 
+/// How often the server sends an unsolicited `Ping` to keep this connection
+/// alive. Without this, a room the user hasn't touched in a while can go
+/// long stretches with nothing to push (`sync:state`/`room_list:update`
+/// only fire on an actual sync response, and matrix-sdk's long-poll can
+/// itself run tens of seconds between them) — well within the idle timeout
+/// window most reverse proxies/load balancers enforce (commonly 30-90s),
+/// which would otherwise silently drop the TCP connection out from under a
+/// perfectly healthy WebSocket, leaving the browser unaware it's no longer
+/// receiving live updates until it next tries to send something.
+const WS_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let mut receiver = session.events.subscribe();
+    let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
+    // The first `tick()` fires immediately, not after the first interval —
+    // skip it so this doesn't send a redundant ping the instant a client
+    // connects, on top of whatever event traffic is already flowing.
+    keepalive.tick().await;
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                if socket.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
             event = receiver.recv() => {
                 match event {
                     Ok(event) => {

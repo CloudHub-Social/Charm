@@ -67,12 +67,36 @@ struct PersistedSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedBlob {
+    /// SHA-256 hex digest of the plaintext token this blob was saved under
+    /// — plaintext on disk (unlike everything else in the blob), but
+    /// one-way: it lets [`PersistenceStore::save`]/[`PersistenceStore::
+    /// remove`] find *which* blob corresponds to a given token by hashing
+    /// that token and comparing, without ever decrypting it (or any other
+    /// entry) first. That matters for entries this deployment can no longer
+    /// decrypt at all (wrong key after a rotation, bit rot, a truncated
+    /// write): without this, `save`/`remove` would have to fall back to
+    /// silently dropping every entry they can't read while rewriting the
+    /// file for an unrelated token — real, unrecoverable data loss for
+    /// every *other* account, just because someone else logged in or out.
+    /// Storing the raw token itself here instead (skipping the hash) would
+    /// avoid that same problem more simply, but the token *is* the bearer
+    /// credential a restored session's cookie carries — reusing it, in
+    /// plaintext, as this blob's own index would hand out that same bearer
+    /// credential to anyone who can merely read this file, without needing
+    /// the master key at all.
+    token_hash: String,
     /// base64-encoded 12-byte AES-GCM nonce, fresh per encryption (see
     /// [`PersistenceStore::encrypt`]) — never reused across saves, even for
     /// the same session, which is why the whole blob (not just changed
     /// fields) is re-encrypted on every [`PersistenceStore::save`].
     nonce: String,
     ciphertext: String,
+}
+
+fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub struct PersistenceStore {
@@ -131,23 +155,44 @@ impl PersistenceStore {
         }
     }
 
-    async fn read_all(&self) -> Vec<PersistedSession> {
+    /// Every blob on disk, undecrypted — the only representation `save`/
+    /// `remove` ever read or write, so an entry neither of them touches
+    /// (any token but the one being saved/removed) round-trips byte-for-byte
+    /// even if this deployment could no longer decrypt it at all.
+    async fn read_all_raw(&self) -> Vec<EncryptedBlob> {
         let Ok(bytes) = tokio::fs::read(&self.path).await else {
             return Vec::new();
         };
-        let Ok(blobs) = serde_json::from_slice::<Vec<EncryptedBlob>>(&bytes) else {
+        // Per-entry, not per-file: deserializing the whole array in one
+        // shot means a single entry missing/mistyping a field (an old file
+        // format, a hand-edited/bit-rotted byte) would fail the *entire*
+        // array and silently return nothing — every other account's still-
+        // perfectly-good blob along with it. Parsing into loosely-typed
+        // `Value`s first and converting each independently keeps that
+        // failure scoped to the one bad entry, same as `read_all`'s
+        // per-entry decrypt failures below.
+        let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
             return Vec::new();
         };
-        blobs
+        values
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect()
+    }
+
+    /// Decrypts every blob, for the startup-only restore path
+    /// ([`Self::restore_all`]) that actually needs live `PersistedSession`
+    /// values — an entry that fails to decrypt here is dropped with a
+    /// warning (see [`Self::restore_all`]'s doc comment for why that
+    /// particular tradeoff, unlike `save`/`remove`, is fine: it only ever
+    /// *reads*, never rewrites the file other entries live in).
+    async fn read_all(&self) -> Vec<PersistedSession> {
+        self.read_all_raw()
+            .await
             .iter()
             .filter_map(|blob| match self.decrypt(blob) {
                 Ok(session) => Some(session),
                 Err(e) => {
-                    // A corrupt/undecryptable entry (wrong key, truncated
-                    // write, bit rot) shouldn't take down every *other*
-                    // account's persisted session — skip it, same
-                    // fail-open-per-entry tradeoff as desktop's
-                    // `try_restore_session` dropping a single dead session.
                     tracing::warn!("dropping unreadable persisted session entry: {e}");
                     None
                 }
@@ -176,7 +221,7 @@ impl PersistenceStore {
         serde_json::from_slice(&plaintext).map_err(|e| e.to_string())
     }
 
-    fn encrypt(&self, session: &PersistedSession) -> Result<EncryptedBlob, String> {
+    fn encrypt(&self, token: &str, session: &PersistedSession) -> Result<EncryptedBlob, String> {
         let plaintext = serde_json::to_vec(session).map_err(|e| e.to_string())?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self
@@ -184,12 +229,17 @@ impl PersistenceStore {
             .encrypt(&nonce, plaintext.as_ref())
             .map_err(|e| e.to_string())?;
         Ok(EncryptedBlob {
+            token_hash: token_hash(token),
             nonce: BASE64.encode(nonce),
             ciphertext: BASE64.encode(ciphertext),
         })
     }
 
-    /// Persists (or replaces, on re-login) `token`'s session.
+    /// Persists (or replaces, on re-login) `token`'s session. Only ever
+    /// touches the one blob whose `token_hash` matches — every other entry
+    /// is carried through untouched (not decrypted, not re-encrypted), so a
+    /// blob this deployment can no longer decrypt at all still survives a
+    /// concurrent login/logout for a completely different account.
     pub async fn save(
         &self,
         token: &str,
@@ -197,32 +247,34 @@ impl PersistenceStore {
         session: &MatrixSession,
     ) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        let mut all = self.read_all().await;
-        all.retain(|s| s.token != token);
-        all.push(PersistedSession {
-            token: token.to_string(),
-            homeserver_url: homeserver_url.to_string(),
-            session: session.clone(),
-        });
-        self.write_all(&all).await
+        let hash = token_hash(token);
+        let mut blobs = self.read_all_raw().await;
+        blobs.retain(|b| b.token_hash != hash);
+        blobs.push(self.encrypt(
+            token,
+            &PersistedSession {
+                token: token.to_string(),
+                homeserver_url: homeserver_url.to_string(),
+                session: session.clone(),
+            },
+        )?);
+        self.write_all_raw(&blobs).await
     }
 
     /// Removes `token`'s persisted session (logout) — a no-op, not an error,
     /// if it was never persisted (e.g. persistence was enabled after this
-    /// session logged in).
+    /// session logged in). Same untouched-unless-matching-hash guarantee as
+    /// [`Self::save`].
     pub async fn remove(&self, token: &str) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        let mut all = self.read_all().await;
-        all.retain(|s| s.token != token);
-        self.write_all(&all).await
+        let hash = token_hash(token);
+        let mut blobs = self.read_all_raw().await;
+        blobs.retain(|b| b.token_hash != hash);
+        self.write_all_raw(&blobs).await
     }
 
-    async fn write_all(&self, all: &[PersistedSession]) -> Result<(), String> {
-        let blobs: Vec<EncryptedBlob> = all
-            .iter()
-            .map(|s| self.encrypt(s))
-            .collect::<Result<_, _>>()?;
-        let json = serde_json::to_vec(&blobs).map_err(|e| e.to_string())?;
+    async fn write_all_raw(&self, blobs: &[EncryptedBlob]) -> Result<(), String> {
+        let json = serde_json::to_vec(blobs).map_err(|e| e.to_string())?;
         // Write-then-rename (same-volume, atomic on every platform this
         // deploys to) so a crash mid-write never leaves the real file
         // truncated/corrupt for the next startup to choke on.
@@ -484,6 +536,7 @@ mod tests {
             .unwrap();
         let mut blobs: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
         blobs.push(serde_json::json!({
+            "token_hash": token_hash("tok-corrupt"),
             "nonce": BASE64.encode([0u8; 4]),
             "ciphertext": BASE64.encode([0u8; 16]),
         }));
@@ -497,5 +550,75 @@ mod tests {
         let all = store.read_all().await;
         assert_eq!(all.len(), 1, "the corrupt entry must be dropped, not panic");
         assert_eq!(all[0].token, "tok-good");
+    }
+
+    /// Regression test for the actual data-loss bug: `save`/`remove` used
+    /// to go through `read_all` (decrypt-everything, drop what fails) and
+    /// write back only what survived — so an entry this deployment could no
+    /// longer decrypt at all (wrong key after rotation, bit rot) was
+    /// permanently deleted the next time *any* unrelated account logged in
+    /// or out. `save`/`remove` now key off a plaintext `token_hash` and
+    /// never decrypt/rewrite an entry they're not targeting — an
+    /// undecryptable blob must round-trip through both operations
+    /// byte-for-byte.
+    #[tokio::test]
+    async fn save_and_remove_never_drop_an_undecryptable_unrelated_entry() {
+        let dir = scratch_dir("undecryptable-survives");
+        let store = PersistenceStore::new_for_test(&dir, [6u8; 32]);
+        store
+            .save(
+                "tok-real",
+                "https://example.invalid",
+                &dummy_session("@henry:example.invalid"),
+            )
+            .await
+            .unwrap();
+
+        // Splice in a blob this store can never decrypt (wrong-key
+        // ciphertext, correct-length nonce) under its own token — simulates
+        // a master-key rotation that left one old entry undecryptable
+        // rather than a length-corrupt one.
+        let corrupt_blob = serde_json::json!({
+            "token_hash": token_hash("tok-undecryptable"),
+            "nonce": BASE64.encode([1u8; 12]),
+            "ciphertext": BASE64.encode([2u8; 32]),
+        });
+        let raw = tokio::fs::read_to_string(dir.join("sessions.enc.json"))
+            .await
+            .unwrap();
+        let mut blobs: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        blobs.push(corrupt_blob.clone());
+        tokio::fs::write(
+            dir.join("sessions.enc.json"),
+            serde_json::to_vec(&blobs).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // A totally unrelated login...
+        store
+            .save(
+                "tok-other",
+                "https://example.invalid",
+                &dummy_session("@iris:example.invalid"),
+            )
+            .await
+            .unwrap();
+        // ...and an unrelated logout...
+        store.remove("tok-other").await.unwrap();
+
+        // ...must never have touched the undecryptable entry.
+        let raw_after = tokio::fs::read_to_string(dir.join("sessions.enc.json"))
+            .await
+            .unwrap();
+        let blobs_after: Vec<serde_json::Value> = serde_json::from_str(&raw_after).unwrap();
+        assert!(
+            blobs_after.contains(&corrupt_blob),
+            "the undecryptable entry must survive unrelated save/remove calls untouched"
+        );
+
+        // The real, decryptable entry must also still be there.
+        let all = store.read_all().await;
+        assert!(all.iter().any(|s| s.token == "tok-real"));
     }
 }
