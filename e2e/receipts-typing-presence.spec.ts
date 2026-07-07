@@ -155,9 +155,9 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
 
   await roomListItem.click();
   // The chat header shows its own presence dot for the same peer — scoped to
-  // the header (identified by the "Show room info" button next to it) so
+  // the header (identified by the "Show members" button next to it) so
   // this can't be satisfied by the room-list item's presence label instead.
-  const chatHeader = page.getByRole("button", { name: "Show room info" }).locator("..");
+  const chatHeader = page.getByRole("button", { name: "Show members" }).locator("../..");
   await expect(chatHeader.getByText("Online", { exact: true })).toBeVisible();
   await captureSnapshot(page, "receipts-presence-dot-chat-header");
 });
