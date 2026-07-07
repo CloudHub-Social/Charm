@@ -49,6 +49,13 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+# matrix-sdk's "sqlite" feature pulls in libsqlite3-sys, which by default looks
+# for a system SQLite via pkg-config/vcpkg. macOS and Linux CI runners already
+# have one; a GitHub Actions Windows runner does not, so linking fails with
+# "cannot open input file 'sqlite3.lib'". "bundled" compiles SQLite from source
+# instead, scoped to Windows only so the already-working macOS/Linux link path
+# is untouched.
+libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 
 [dev-dependencies]
 matrix-sdk-test = "0.18.0"
