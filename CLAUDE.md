@@ -41,17 +41,38 @@ At the start of any task that will edit files:
 
 ```
 git fetch origin --quiet
-git worktree add -b <branch-name> ~/git/Charm-<short-suffix> origin/main
+git worktree add -b <branch-name> ~/git/Charm-<short-suffix> origin/main --no-track
 cd ~/git/Charm-<short-suffix>
 pnpm install --frozen-lockfile   # node_modules isn't shared across worktrees
 ```
 
-Do all work — edits, tests, commits, `gh pr create` — from inside that isolated
-directory. When done:
+For a release backport, branch from `origin/release/X.Y.Z` instead of `origin/main`,
+matching the branch rules above.
+
+`--no-track` matters: without it, the new branch's upstream is set to `origin/main`
+(confirmed via `git branch -vv`), and a later bare `git push` fails — with an error
+whose first suggested fix, `git push origin HEAD:main`, would push your feature
+branch's commits straight onto `main` if followed blindly. Always push explicitly
+instead:
+
+```
+git push -u origin <branch-name>
+```
+
+Do all work — edits, tests, commits, that push, `gh pr create` — from inside the
+isolated directory. When done, remove the worktree **without `--force`**:
 
 ```
 cd ~/git/Charm
-git worktree remove ~/git/Charm-<short-suffix>  # add --force only if you're sure the worktree is clean / you intend to discard changes
+git worktree remove ~/git/Charm-<short-suffix>
+```
+
+`git worktree remove --force` deletes the directory outright, including any
+uncommitted changes inside it (confirmed empirically: nothing is trashed or
+recoverable) — exactly the loss this section exists to prevent. If the plain form
+refuses ("contains modified or untracked files"), that's git telling you something
+in there isn't committed or pushed yet — go commit/push it, don't force past the
+warning.
 
 If the shared `~/git/Charm` checkout itself has uncommitted changes (a session that
 didn't isolate), **do not stash, reset, or discard them** — that's someone else's
