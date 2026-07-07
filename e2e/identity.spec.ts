@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 01's acceptance criteria: the room list and an
@@ -25,6 +26,7 @@ test.beforeEach(async ({ page }) => {
 test("shows the room's human name, not its room id, in the room list", async ({ page }) => {
   await expect(page.getByRole("button", { name: ROOM.name })).toBeVisible();
   await expect(page.getByText(ROOM.room_id)).toHaveCount(0);
+  await captureSnapshot(page, "identity-room-list-name");
 });
 
 test("renders a message sender's resolved display name, not the raw MXID", async ({ page }) => {
@@ -68,4 +70,5 @@ test("renders a message sender's resolved display name, not the raw MXID", async
 
   await expect(page.getByText("Alice Anderson")).toBeVisible();
   await expect(page.getByText(ALICE)).toHaveCount(0);
+  await captureSnapshot(page, "identity-resolved-sender-name");
 });

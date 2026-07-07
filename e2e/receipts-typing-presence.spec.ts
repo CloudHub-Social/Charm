@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 05's acceptance flow: opening a room with
@@ -43,6 +44,7 @@ test("opening a room with unread messages clears the unread badge", async ({ pag
 
   const roomButton = page.getByRole("button", { name: room.name });
   await expect(roomButton.getByText("3", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "receipts-unread-badge-visible");
 
   await roomButton.click();
 
@@ -51,6 +53,7 @@ test("opening a room with unread messages clears the unread badge", async ({ pag
   // real sync loop's next-sync-after-receipt-send flow described in the
   // spec.
   await expect(roomButton.getByText("3", { exact: true })).toHaveCount(0);
+  await captureSnapshot(page, "receipts-unread-badge-cleared");
 });
 
 test("a typing indicator appears when another user is typing and disappears when they stop", async ({
@@ -74,6 +77,7 @@ test("a typing indicator appears when another user is typing and disappears when
   );
 
   await expect(page.getByText(`${OTHER_USER} is typing…`)).toBeVisible();
+  await captureSnapshot(page, "receipts-typing-indicator-visible");
 
   await page.evaluate(
     ({ roomId }) => {
@@ -83,6 +87,7 @@ test("a typing indicator appears when another user is typing and disappears when
   );
 
   await expect(page.getByText(`${OTHER_USER} is typing…`)).toHaveCount(0);
+  await captureSnapshot(page, "receipts-typing-indicator-cleared");
 });
 
 test("our own typing is never rendered in the typing row", async ({ page }) => {
@@ -104,6 +109,7 @@ test("our own typing is never rendered in the typing row", async ({ page }) => {
   );
 
   await expect(page.getByText(/is typing…/)).toHaveCount(0);
+  await captureSnapshot(page, "receipts-own-typing-not-rendered");
 });
 
 test("a presence dot renders for a DM room's peer", async ({ page }) => {
@@ -145,6 +151,7 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
   // Scoped to the room-list button itself so this can't be satisfied by the
   // chat header's own (not-yet-rendered) presence dot.
   await expect(roomListItem.getByText("Online", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "receipts-presence-dot-room-list");
 
   await roomListItem.click();
   // The chat header shows its own presence dot for the same peer — scoped to
@@ -152,4 +159,5 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
   // this can't be satisfied by the room-list item's presence label instead.
   const chatHeader = page.getByRole("button", { name: "Show room info" }).locator("..");
   await expect(chatHeader.getByText("Online", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "receipts-presence-dot-chat-header");
 });

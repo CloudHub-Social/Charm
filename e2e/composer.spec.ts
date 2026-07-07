@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 04's acceptance flow — formatted text,
@@ -32,6 +33,7 @@ test("sends bolded text as formatted_body rendered with <strong>", async ({ page
 
   const bubble = page.locator("strong", { hasText: "bold text" });
   await expect(bubble).toBeVisible();
+  await captureSnapshot(page, "composer-bold-text");
 });
 
 test("resolves a :shortcode: to its emoji glyph on send", async ({ page }) => {
@@ -40,6 +42,7 @@ test("resolves a :shortcode: to its emoji glyph on send", async ({ page }) => {
   await composer.press("Enter");
 
   await expect(page.getByText("hi 😄", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "composer-emoji-shortcode");
 });
 
 test("runs /me without sending it as literal text", async ({ page }) => {
@@ -50,6 +53,7 @@ test("runs /me without sending it as literal text", async ({ page }) => {
   // run_command's mock resolves success — no error banner, and the literal
   // "/me waves" text never lands as a plain message bubble.
   await expect(page.getByText("/me waves", { exact: true })).toHaveCount(0);
+  await captureSnapshot(page, "composer-slash-me");
 });
 
 test("inserts an @ mention pill from the autocomplete menu", async ({ page }) => {
@@ -62,4 +66,5 @@ test("inserts an @ mention pill from the autocomplete menu", async ({ page }) =>
   await composer.press("Enter");
 
   await expect(page.getByText("hey @Alice", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "composer-mention-pill");
 });
