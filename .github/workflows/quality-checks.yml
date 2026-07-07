@@ -13,16 +13,30 @@ jobs:
       platform: ${{ steps.filter.outputs.platform }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: dorny/paths-filter@d1c1ffe0248fe513906c8e24db8ea791d46f8590 # v3
-        id: filter
         with:
-          # src-tauri/** already covers src-tauri/gen/** (the platform
-          # scaffolding for iOS/Android) — listed separately for clarity.
-          filters: |
-            platform:
-              - 'src-tauri/**'
-              - 'src-tauri/gen/**'
+          fetch-depth: 0
+
+      # Plain git/bash rather than a path-filter action — this repo's Actions
+      # permissions only allow a specific set of non-GitHub-owned actions
+      # (see Settings > Actions > Allow select actions), and adding a new one
+      # is a separate change from this CI job. src-tauri/** already covers
+      # src-tauri/gen/** (the iOS/Android platform scaffolding).
+      - name: Check whether src-tauri/** changed
+        id: filter
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          else
+            # push to main: diff against the pre-push tip. Falls back to
+            # running the platform jobs (safe default) if `before` isn't a
+            # valid ref, e.g. the branch's first push.
+            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" 2>/dev/null || echo "src-tauri/")
+          fi
+          if echo "$changed" | grep -q '^src-tauri/'; then
+            echo "platform=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "platform=false" >> "$GITHUB_OUTPUT"
+          fi
 
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
