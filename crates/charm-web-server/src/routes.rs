@@ -1468,11 +1468,19 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
 /// through to a filename-based guess from there.
 fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
     // MP4-family containers (mp4/mov/m4a/3gp/heic, ...): a 4-byte size
-    // field, then the literal ASCII `ftyp` box type at offset 4 — the size
-    // varies per file, so this can't be a fixed-offset prefix match against
-    // the whole box like the others below.
-    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        return Some("video/mp4".to_string());
+    // field, then the literal ASCII `ftyp` box type at offset 4, then a
+    // 4-byte "major brand" at offset 8 — the size varies per file, so this
+    // can't be a fixed-offset prefix match against the whole box like the
+    // others below. `M4A `/`M4B ` are audio-only brands (a plain audio
+    // track in an MP4 container, e.g. iTunes/podcast downloads) — labeling
+    // them `video/mp4` would have a browser render a black video player for
+    // audio-only content. Every other brand (`isom`, `mp41`/`mp42`, `qt  `,
+    // `3gp*`, ...) does carry video, so that's still the reasonable default.
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        return Some(match &bytes[8..12] {
+            b"M4A " | b"M4B " => "audio/mp4".to_string(),
+            _ => "video/mp4".to_string(),
+        });
     }
     match bytes {
         [0x1A, 0x45, 0xDF, 0xA3, ..] => Some("video/webm".to_string()),
