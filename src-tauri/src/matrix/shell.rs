@@ -336,13 +336,26 @@ pub async fn maybe_send_notification<F, Fut>(
 }
 
 /// Whether the app is currently registered to launch on login.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
     app.autolaunch().is_enabled().map_err(|e| e.to_string())
 }
 
+/// Launch-on-login isn't a concept mobile OSes expose to apps — the
+/// `tauri-plugin-autostart` crate only implements `ManagerExt` for desktop,
+/// so referencing it at all fails to compile for Android/iOS. Mirrors the
+/// tray/menu desktop-only split in `lib.rs`; the frontend command still
+/// exists on every platform, it's just always "off" on mobile.
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn get_autostart(_app: AppHandle) -> Result<bool, String> {
+    Ok(false)
+}
+
 /// Enables/disables launch-on-login.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -352,6 +365,12 @@ pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     } else {
         autostart.disable().map_err(|e| e.to_string())
     }
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn set_autostart(_app: AppHandle, _enabled: bool) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
