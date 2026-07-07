@@ -250,11 +250,23 @@ impl MatrixState {
         // room's listener (and its own `Client` clone) running for up to
         // `LIVENESS_CHECK_INTERVAL` after eviction, the same open-handle
         // hazard `clear_timelines` exists to avoid on logout/relocation.
-        if let Some((_, (_, evicted_handle))) = timelines.push(
+        let evicted = timelines.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle),
-        ) {
+        );
+        // Dropped before awaiting the evicted handle below: holding the
+        // cache's own lock while awaiting an unrelated task's abort would
+        // block every other `get_or_create_timeline`/`is_timeline_open`
+        // caller for however long that task takes to unwind, for no reason.
+        drop(timelines);
+        if let Some((_, (_, evicted_handle))) = evicted {
             evicted_handle.abort();
+            // Genuinely wait for it to stop (see `abort_current_sync_loop`'s
+            // identical rationale) — otherwise a caller relying on eviction
+            // meaning "quiesced" (e.g. a login about to relocate the store)
+            // gets a false guarantee: the task can still be mid-unwind,
+            // holding its own `Client` clone, when this returns.
+            let _ = evicted_handle.await;
         }
 
         Ok(timeline)

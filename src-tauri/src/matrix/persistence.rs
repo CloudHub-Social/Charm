@@ -189,7 +189,8 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
 }
 
 /// Handles a leftover `[account_key].stale-backup` directory found at
-/// startup. Three ways it can exist: (1) [`relocate_store_at_locked_with`]
+/// startup, or found by a fresh relocation attempt about to reuse the same
+/// `backup_key`. Three ways it can exist: (1) [`relocate_store_at_locked_with`]
 /// fully committed a relocation (rename *and* `on_commit` both succeeded,
 /// marked by [`COMMIT_MARKER_FILENAME`]) but its own final best-effort
 /// backup removal failed — `account_key`'s path has a real, current,
@@ -206,12 +207,22 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
 /// didn't" half of case (2) — both leave a directory at `account_key`'s
 /// path, but only one of them is actually paired with what's in the
 /// keychain.
+///
+/// Returns whether the leftover was actually resolved (discarded or
+/// restored) — `false` means it's still sitting there unresolved (e.g. a
+/// transient keychain failure mid-recovery). Callers about to reuse the
+/// same `backup_key` themselves (a fresh relocation superseding this same
+/// account) must check this and bail rather than proceed: an unresolved
+/// leftover backup is the account's only copy of *something* (either the
+/// data or the credential needed to read it), and blindly overwriting
+/// `backup_path` out from under it would destroy that before it was ever
+/// actually recovered.
 fn recover_or_discard_stale_backup(
     root: &Path,
     account_key: &str,
     backup_key: &str,
     backup_path: &Path,
-) {
+) -> bool {
     let account_path = root.join(account_key);
     let backup_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(backup_key));
@@ -221,31 +232,35 @@ fn recover_or_discard_stale_backup(
         if let Ok(entry) = backup_passphrase_entry {
             let _ = entry.delete_credential();
         }
-        return;
+        return true;
     }
 
-    // Not (fully) committed — discard whatever's at `account_path` (it
-    // might not exist at all, or might be an uncommitted store whose
-    // session was never saved) before restoring the backup into its place.
-    // If this fails and leaves stale content behind, the rename below will
-    // itself fail (POSIX `rename` onto a non-empty directory returns
-    // `ENOTEMPTY` rather than merging) — nothing downstream proceeds on a
-    // false assumption that this succeeded.
-    let _ = std::fs::remove_dir_all(&account_path);
-
     let restored = (|| -> Option<()> {
+        // Not (fully) committed — discard whatever's at `account_path` (it
+        // might not exist at all, or might be an uncommitted store whose
+        // session was never saved) before doing anything else. Checked here
+        // (not `let _ =` best-effort), and the whole recovery bails if it
+        // doesn't actually succeed: proceeding to write the account's
+        // keychain passphrase to the *backup's* value while stale content
+        // is still sitting at `account_path` would pair that passphrase
+        // with the wrong store — the uncommitted one, not the backup.
+        match std::fs::remove_dir_all(&account_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
+
         let backup_entry = backup_passphrase_entry.ok()?;
         let passphrase = backup_entry.get_password().ok()?;
         // Account passphrase entry *first*, directory swap only *after* —
         // if the keychain write fails transiently, `backup_path` is still
         // untouched and the next startup sweep can retry this whole
         // recovery from scratch. The reverse order would leave nothing to
-        // retry: `account_path` was already emptied above, so if the
-        // rename ran first and *then* the passphrase write failed,
-        // `backup_path` would already be gone with no directory left for a
-        // future sweep to find. Safe either way for `account_path` itself:
-        // it's empty right up until the rename below succeeds, so there's
-        // no window where a mismatched passphrase pairs with real data.
+        // retry: if the rename ran first and *then* the passphrase write
+        // failed, `backup_path` would already be gone with no directory
+        // left for a future sweep to find. Safe either way for
+        // `account_path` itself: it's confirmed empty above, so there's no
+        // window where a mismatched passphrase pairs with real data.
         let account_entry =
             SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key)).ok()?;
         account_entry.set_password(&passphrase).ok()?;
@@ -260,6 +275,7 @@ fn recover_or_discard_stale_backup(
             backup_path.display()
         );
     }
+    restored.is_some()
 }
 
 /// Discards an in-progress login's temp store (dir + passphrase entry),
@@ -601,12 +617,20 @@ fn relocate_store_at_locked_with(
     // store because the caller's `Client` still had it open) might be the
     // account's only genuinely valid store — resolve that ambiguity the
     // same way the startup sweep would, before this attempt's own logic
-    // (below) discards it. Not just an optimization: without this, a
-    // same-process retry could permanently discard the one store still
-    // paired with whatever session is currently saved, before ever giving
-    // `sweep_orphan_temp_stores` a chance to recover it.
-    if backup_path.exists() {
-        recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path);
+    // (below) reuses (and would otherwise overwrite) the same `backup_key`.
+    // Not just an optimization: without this, a same-process retry could
+    // permanently discard the one store still paired with whatever session
+    // is currently saved, before ever giving `sweep_orphan_temp_stores` a
+    // chance to recover it. If recovery itself couldn't finish (e.g. a
+    // transient keychain failure), abort here rather than proceed — this
+    // attempt overwriting the still-unresolved leftover would destroy it
+    // for good.
+    if backup_path.exists()
+        && !recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path)
+    {
+        return Err(format!(
+            "a leftover stale-backup for {account_key} could not be resolved — aborting rather than risk overwriting it"
+        ));
     }
 
     let account_passphrase_entry =
@@ -707,22 +731,22 @@ fn relocate_store_at_locked_with(
                 Ok(()) => true,
                 Err(e) => e.kind() == std::io::ErrorKind::NotFound,
             };
-            let dir_restored =
-                removed_or_absent && std::fs::rename(&backup_path, &account_path).is_ok();
-            if dir_restored {
-                // Only discard the durable backup-passphrase entry once the
-                // account's own entry is confirmed restored too — if that
-                // keychain write fails transiently, the directory rollback
-                // already succeeded (the old store is back at
-                // `account_path`) but the account entry may still hold the
-                // new store's passphrase; deleting the backup entry here
-                // regardless would remove the only remaining way to repair
-                // that mismatch.
+            if removed_or_absent {
+                // Passphrase restore *first*, directory rename only *after*
+                // — if the keychain write fails transiently, `backup_path`
+                // (and its still-intact durable passphrase entry) are left
+                // completely untouched, so the next startup sweep can
+                // retry this whole rollback from scratch. The reverse order
+                // would leave nothing to retry: once the rename consumes
+                // `backup_path`, only the durable `<account>.stale-backup`
+                // *credential* remains, but the startup sweep only scans
+                // for `.stale-backup` *directories* — an orphaned credential
+                // with no directory is invisible to it forever.
                 let passphrase_restored = match &original_passphrase {
                     Some(passphrase) => account_passphrase_entry.set_password(passphrase).is_ok(),
                     None => true,
                 };
-                if passphrase_restored {
+                if passphrase_restored && std::fs::rename(&backup_path, &account_path).is_ok() {
                     let _ = backup_passphrase_entry.delete_credential();
                 }
             }
