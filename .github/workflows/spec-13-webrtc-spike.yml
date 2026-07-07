@@ -20,6 +20,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -44,7 +48,11 @@ jobs:
         run: |
           Remove-Item -ErrorAction SilentlyContinue $env:SPIKE_CI_REPORT_PATH
           $proc = Start-Process -FilePath "pnpm" -ArgumentList "tauri","dev","--config","src-tauri/tauri.ci.conf.json" -PassThru -NoNewWindow -RedirectStandardOutput "tauri-dev-stdout.log" -RedirectStandardError "tauri-dev-stderr.log"
-          $deadline = (Get-Date).AddMinutes(5)
+          # First run on a cold cache is a full matrix-sdk + Tauri debug build,
+          # which alone took ~2.5 min on macOS and didn't even finish within 5
+          # min on a fresh Windows runner (rust-cache above should make repeat
+          # runs much faster) — 15 min covers a genuinely cold build.
+          $deadline = (Get-Date).AddMinutes(15)
           while (-not (Test-Path $env:SPIKE_CI_REPORT_PATH) -and (Get-Date) -lt $deadline -and -not $proc.HasExited) {
             Start-Sleep -Seconds 3
           }
