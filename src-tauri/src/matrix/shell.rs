@@ -63,20 +63,44 @@ pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
 }
 
 /// Whether a new message in `event_room_id` should produce a local
-/// notification, given which room (if any) currently has focus and whether
-/// the target room is muted.
+/// notification, given which room (if any) currently has focus, whether the
+/// target room is muted or set to mentions-and-keywords-only, and whether
+/// this particular message is a highlight (mention/keyword match) in that
+/// room.
 ///
 /// A muted room never notifies regardless of focus (matches `has_unread`'s
-/// treatment of ambient unread in muted rooms — only an explicit mention
-/// still surfaces there, and mentions are Day-2 for notification routing;
-/// Day-1 suppression is the coarser mute+focus check the acceptance criteria
-/// call for). The focused room never notifies for its own new messages,
-/// since the user is already looking at it.
-pub fn should_notify(focused_room_id: Option<&str>, event_room_id: &str, is_muted: bool) -> bool {
+/// treatment of ambient unread in muted rooms). A mentions-and-keywords-only
+/// room only notifies for messages that actually are a highlight — an
+/// ambient (non-mention) message there is suppressed the same as it would be
+/// in the in-app unread rail. The focused room never notifies for its own
+/// new messages, since the user is already looking at it.
+pub fn should_notify(
+    focused_room_id: Option<&str>,
+    event_room_id: &str,
+    is_muted: bool,
+    mentions_only: bool,
+    is_highlighted: bool,
+) -> bool {
     if is_muted {
         return false;
     }
+    if mentions_only && !is_highlighted {
+        return false;
+    }
     focused_room_id != Some(event_room_id)
+}
+
+/// Whether a message's `m.mentions` content targets the signed-in user
+/// (directly, or via a whole-room mention) — the per-message highlight
+/// signal `should_notify` needs for mentions-and-keywords-only rooms. Only
+/// covers `m.mentions`-based mentions (MSC3952); a homeserver-side keyword
+/// push rule with no `m.mentions` payload isn't detected by this — that's a
+/// narrower, documented gap rather than a claim of full push-rule parity.
+pub fn is_highlighted_mentions(
+    mentions: Option<&matrix_sdk::ruma::events::Mentions>,
+    own_user_id: &str,
+) -> bool {
+    mentions.is_some_and(|m| m.room || m.user_ids.iter().any(|u| u.as_str() == own_user_id))
 }
 
 /// Builds the (title, body) pair for a local notification from a Matrix
@@ -200,6 +224,78 @@ fn windows_overlay_icon(count: u32) -> Option<tauri::image::Image<'static>> {
     Some(tauri::image::Image::new_owned(rgba, SIZE, SIZE))
 }
 
+/// Builds and fires a local notification for one message, if it warrants
+/// one — the single decision+fire path shared by the opened-room timeline
+/// listener (`timeline::maybe_notify_new_message`) and the sync loop's
+/// unopened-room path (`sync::notify_unopened_room_messages`), so both agree
+/// on mute/mentions-only/focus suppression instead of each re-implementing
+/// it. Also the natural place for Spec 11 to plug in a push-decrypted
+/// message later.
+pub async fn maybe_send_notification(
+    app: &AppHandle,
+    room: &matrix_sdk::Room,
+    own_user_id: Option<&matrix_sdk::ruma::UserId>,
+    sender: &str,
+    sender_display_name: Option<&str>,
+    body: &str,
+    mentions: Option<&matrix_sdk::ruma::events::Mentions>,
+) {
+    use tauri_plugin_notification::NotificationExt;
+
+    if own_user_id.is_some_and(|me| me.as_str() == sender) {
+        return;
+    }
+
+    let mode = room.notification_mode().await;
+    let is_muted = matches!(
+        mode,
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+    );
+    let mentions_only = matches!(
+        mode,
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly)
+    );
+    let is_highlighted =
+        own_user_id.is_some_and(|me| is_highlighted_mentions(mentions, me.as_str()));
+
+    let focused_room_id = app
+        .state::<MatrixState>()
+        .focused_room_id
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !should_notify(
+        focused_room_id.as_deref(),
+        room.room_id().as_str(),
+        is_muted,
+        mentions_only,
+        is_highlighted,
+    ) {
+        return;
+    }
+
+    let display_name = match room.cached_display_name() {
+        Some(name) => name,
+        None => room
+            .display_name()
+            .await
+            .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
+    };
+    let room_name = match display_name {
+        matrix_sdk::RoomDisplayName::Empty => None,
+        other => Some(other.to_string()),
+    };
+
+    let (title, notif_body) =
+        build_notification(room_name.as_deref(), sender_display_name, sender, body);
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(notif_body)
+        .show();
+}
+
 /// Whether the app is currently registered to launch on login.
 #[tauri::command]
 pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
@@ -293,22 +389,73 @@ mod tests {
 
     #[test]
     fn focused_room_is_suppressed() {
-        assert!(!should_notify(Some("!a:x"), "!a:x", false));
+        assert!(!should_notify(Some("!a:x"), "!a:x", false, false, false));
     }
 
     #[test]
     fn different_room_than_focused_still_notifies() {
-        assert!(should_notify(Some("!a:x"), "!b:x", false));
+        assert!(should_notify(Some("!a:x"), "!b:x", false, false, false));
     }
 
     #[test]
     fn no_focused_room_notifies() {
-        assert!(should_notify(None, "!a:x", false));
+        assert!(should_notify(None, "!a:x", false, false, false));
     }
 
     #[test]
     fn muted_room_never_notifies_even_unfocused() {
-        assert!(!should_notify(Some("!other:x"), "!a:x", true));
+        assert!(!should_notify(Some("!other:x"), "!a:x", true, false, false));
+    }
+
+    #[test]
+    fn mentions_only_room_suppresses_non_highlighted_message() {
+        assert!(!should_notify(None, "!a:x", false, true, false));
+    }
+
+    #[test]
+    fn mentions_only_room_notifies_a_highlighted_message() {
+        assert!(should_notify(None, "!a:x", false, true, true));
+    }
+
+    #[test]
+    fn mentions_only_still_suppressed_when_target_room_is_focused() {
+        assert!(!should_notify(Some("!a:x"), "!a:x", false, true, true));
+    }
+
+    #[test]
+    fn all_messages_mode_notifies_regardless_of_highlight() {
+        assert!(should_notify(None, "!a:x", false, false, false));
+    }
+
+    #[test]
+    fn mentions_targeting_own_user_id_are_highlighted() {
+        use matrix_sdk::ruma::events::Mentions;
+        use matrix_sdk::ruma::user_id;
+        let mut mentions = Mentions::new();
+        mentions
+            .user_ids
+            .insert(user_id!("@me:example.org").to_owned());
+        assert!(is_highlighted_mentions(Some(&mentions), "@me:example.org"));
+        assert!(!is_highlighted_mentions(
+            Some(&mentions),
+            "@someone-else:example.org"
+        ));
+    }
+
+    #[test]
+    fn whole_room_mention_is_highlighted_for_anyone() {
+        use matrix_sdk::ruma::events::Mentions;
+        let mut mentions = Mentions::new();
+        mentions.room = true;
+        assert!(is_highlighted_mentions(
+            Some(&mentions),
+            "@anyone:example.org"
+        ));
+    }
+
+    #[test]
+    fn no_mentions_content_is_never_highlighted() {
+        assert!(!is_highlighted_mentions(None, "@me:example.org"));
     }
 
     #[test]

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
+import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import { AppShell } from "@/features/shell/AppShell";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
@@ -49,18 +50,31 @@ export function RoomsScreen({
   }, []);
 
   // Tells the Rust side which room has focus so it can suppress a local
-  // notification for whatever the user is already looking at (Spec 10). No
-  // cleanup on this effect: React runs an effect's cleanup before re-running
-  // it on every dependency change, and clearing focus to `null` there would
-  // open a brief "nothing focused" window on every room switch during which
-  // a notification for the room being switched away from could slip through.
+  // notification for whatever the user is already looking at (Spec 10). Not
+  // just a function of `activeRoomId`: the active room isn't actually
+  // "focused" while the settings overlay covers the chat, or while the OS
+  // window itself is blurred/minimized — in either case the room should read
+  // as unfocused so a background notification for it still fires. Re-synced
+  // (not just set once) on window focus/blur so switching back to the app
+  // restores tracking without needing `activeRoomId` to change.
+  const settingsSection = useAtomValue(settingsOpenAtom);
   useEffect(() => {
-    setFocusedRoom(activeRoomId).catch(console.error);
-  }, [activeRoomId]);
+    function syncFocusedRoom() {
+      const isShowingChat = !settingsSection && document.hasFocus();
+      setFocusedRoom(isShowingChat ? activeRoomId : null).catch(console.error);
+    }
+    syncFocusedRoom();
+    window.addEventListener("focus", syncFocusedRoom);
+    window.addEventListener("blur", syncFocusedRoom);
+    return () => {
+      window.removeEventListener("focus", syncFocusedRoom);
+      window.removeEventListener("blur", syncFocusedRoom);
+    };
+  }, [activeRoomId, settingsSection]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
-  // this doesn't fire on every `activeRoomId` change.
+  // this doesn't fire on every `activeRoomId`/`settingsSection` change.
   useEffect(() => {
     return () => {
       setFocusedRoom(null).catch(console.error);
@@ -105,18 +119,29 @@ export function RoomsScreen({
     rightPanelOpenAtomFamily(activeRoom?.room_id ?? ""),
   );
 
+  // Bumped on every room selection, even re-selecting the already-active
+  // room — `activeRoomId` alone wouldn't change in that case, so on mobile
+  // `AppShell` couldn't tell "reopen the detail view" apart from "nothing
+  // happened" when tapping the current room again from the list.
+  const [selectionRequestId, setSelectionRequestId] = useState(0);
+  function handleSelectRoom(roomId: string) {
+    setActiveRoomId(roomId);
+    setSelectionRequestId((n) => n + 1);
+  }
+
   return (
     <>
       <AppShell
         activeRoomId={activeRoomId}
+        selectionRequestId={selectionRequestId}
         roomList={
-          <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={setActiveRoomId} />
+          <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={handleSelectRoom} />
         }
         peopleList={
           <RoomList
             rooms={rooms.filter((room) => room.is_direct)}
             activeRoomId={activeRoomId}
-            onSelectRoom={setActiveRoomId}
+            onSelectRoom={handleSelectRoom}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}

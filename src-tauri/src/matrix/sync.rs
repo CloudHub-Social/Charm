@@ -136,6 +136,78 @@ async fn emit_room_updates(
     }
 }
 
+/// Fires local notifications for new messages in rooms that do **not**
+/// currently have a live `Timeline` open — i.e. every room except whichever
+/// one the user has open right now, which `timeline::spawn_timeline_listener`
+/// already covers via its own `maybe_notify_new_message`. Without this, a
+/// message in any room the user hasn't opened this session never reached
+/// notification logic at all, since `emit_room_updates` above deliberately
+/// stopped driving per-message timeline state from raw sync events back in
+/// Spec 14 (opened rooms get theirs from `matrix-sdk-ui`'s `Timeline` diff
+/// stream instead) — this restores the room-independent path for the
+/// (usually much larger) set of rooms that aren't currently open.
+///
+/// Only called from the loop's steady-state iterations, never the initial
+/// `sync_once` — that response's timeline events are pre-existing history,
+/// not new messages, same reasoning as the opened-room listener skipping its
+/// own initial `timeline:update`.
+async fn notify_unopened_room_messages(
+    app: &AppHandle,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+
+    let state = app.state::<MatrixState>();
+    let own_user_id = client.user_id();
+
+    for (room_id, update) in &response.rooms.joined {
+        if state.is_timeline_open(room_id).await {
+            continue;
+        }
+        let Some(room) = client.get_room(room_id) else {
+            continue;
+        };
+
+        for raw_event in &update.timeline.events {
+            let deserialize_result: Result<AnySyncTimelineEvent, _> = raw_event.raw().deserialize();
+            let Ok(deserialized) = deserialize_result else {
+                continue;
+            };
+            let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(msg)) =
+                deserialized
+            else {
+                continue;
+            };
+            let Some(original) = msg.as_original() else {
+                continue; // a redaction of an earlier event, not a new message
+            };
+            if own_user_id.is_some_and(|me| me == original.sender) {
+                continue;
+            }
+
+            let sender_display_name = room
+                .get_member_no_sync(&original.sender)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|member| member.display_name().map(ToOwned::to_owned));
+            let body = original.content.body().to_string();
+
+            shell::maybe_send_notification(
+                app,
+                &room,
+                own_user_id,
+                original.sender.as_str(),
+                sender_display_name.as_deref(),
+                &body,
+                original.content.mentions.as_ref(),
+            )
+            .await;
+        }
+    }
+}
+
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
@@ -203,6 +275,7 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
                     consecutive_failures = 0;
                     emit_room_list_and_badge(&app, &client).await;
                     emit_room_updates(&app, &client, &response).await;
+                    notify_unopened_room_messages(&app, &client, &response).await;
                 }
                 Err(e) => {
                     consecutive_failures += 1;

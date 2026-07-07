@@ -18,6 +18,8 @@ interface AppShellProps {
   rightPanel: ReactNode | null;
   /** The currently selected room id, or `null` — drives the mobile list-vs-detail view. */
   activeRoomId: string | null;
+  /** Bumped by the caller on every room selection, including re-selecting the already-active room — `activeRoomId` alone can't distinguish "reopen the detail view for this room" from "nothing happened" when the id doesn't change. */
+  selectionRequestId: number;
 }
 
 /**
@@ -33,6 +35,7 @@ export function AppShell({
   content,
   rightPanel,
   activeRoomId,
+  selectionRequestId,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
@@ -41,7 +44,11 @@ export function AppShell({
 
   useEffect(() => {
     if (activeRoomId) setMobileView("detail");
-  }, [activeRoomId]);
+    // Depends on `selectionRequestId` too, not just `activeRoomId`:
+    // re-selecting the already-active room from the list bumps the request
+    // id without changing `activeRoomId`, and that reselection must still
+    // reopen the detail view.
+  }, [activeRoomId, selectionRequestId]);
 
   if (layout === "desktop") {
     return (
@@ -55,9 +62,9 @@ export function AppShell({
 
   return (
     <div className="flex h-screen flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden [&>aside]:w-full [&>aside]:border-r-0 [&>div]:w-full [&>div]:border-l-0">
         {mobileView === "detail" && activeRoomId
-          ? content
+          ? (rightPanel ?? content)
           : mobileTab === "chats"
             ? roomList
             : peopleList}

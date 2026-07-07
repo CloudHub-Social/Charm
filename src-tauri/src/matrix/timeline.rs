@@ -614,10 +614,10 @@ pub(crate) fn spawn_timeline_listener(
 }
 
 /// Fires a local OS notification for `message` if it warrants one: not our
-/// own message, not redacted, not still a pending local echo, the target
-/// room isn't muted, and the target room doesn't currently have focus
-/// (`shell::should_notify`). Title/body come from `shell::build_notification`
-/// so Spec 11's push-decrypt path can reuse the exact same shaping.
+/// own message, not redacted, not still a pending local echo. The actual
+/// mute/mentions-only/focus decision and the notification fire itself are
+/// `shell::maybe_send_notification` — shared with the sync loop's
+/// unopened-room path (`sync::notify_unopened_room_messages`) so both agree.
 async fn maybe_notify_new_message(
     app: &AppHandle,
     client: &Client,
@@ -625,54 +625,61 @@ async fn maybe_notify_new_message(
     own_user_id: Option<&UserId>,
     message: &RoomMessageSummary,
 ) {
-    use tauri::Manager;
-    use tauri_plugin_notification::NotificationExt;
-
     if message.redacted || !matches!(message.send_state, SendState::Sent) {
-        return;
-    }
-    if own_user_id.is_some_and(|me| me.as_str() == message.sender) {
         return;
     }
 
     let Some(room) = client.get_room(room_id) else {
         return;
     };
-    let is_muted = matches!(
+
+    // Only worth the extra fetch for the raw event's `m.mentions` content
+    // when the room is actually mentions-and-keywords-only — the common
+    // case (all-messages/mute) never looks at it.
+    let mentions_only = matches!(
         room.notification_mode().await,
-        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly)
     );
-
-    let focused_room_id = app
-        .state::<MatrixState>()
-        .focused_room_id
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    if !shell::should_notify(focused_room_id.as_deref(), room_id.as_str(), is_muted) {
-        return;
-    }
-
-    let display_name = match room.cached_display_name() {
-        Some(name) => name,
-        None => room
-            .display_name()
-            .await
-            .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
-    };
-    let room_name = match display_name {
-        matrix_sdk::RoomDisplayName::Empty => None,
-        other => Some(other.to_string()),
+    let mentions = if mentions_only {
+        fetch_message_mentions(&room, &message.event_id).await
+    } else {
+        None
     };
 
-    let (title, body) = shell::build_notification(
-        room_name.as_deref(),
-        message.sender_display_name.as_deref(),
+    shell::maybe_send_notification(
+        app,
+        &room,
+        own_user_id,
         &message.sender,
+        message.sender_display_name.as_deref(),
         &message.body,
-    );
+        mentions.as_ref(),
+    )
+    .await;
+}
 
-    let _ = app.notification().builder().title(title).body(body).show();
+/// Refetches the original event's raw content to read its `m.mentions`
+/// field — `RoomMessageSummary` doesn't carry it, so this is only called for
+/// mentions-and-keywords-only rooms (see `maybe_notify_new_message`), not on
+/// every message.
+async fn fetch_message_mentions(
+    room: &matrix_sdk::Room,
+    event_id: &str,
+) -> Option<matrix_sdk::ruma::events::Mentions> {
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+    let original = room
+        .load_or_fetch_event(&parsed_event_id, None)
+        .await
+        .ok()?;
+    let deserialized: matrix_sdk::ruma::events::AnySyncTimelineEvent =
+        original.kind.raw().deserialize().ok()?;
+    let matrix_sdk::ruma::events::AnySyncTimelineEvent::MessageLike(
+        matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
+    ) = deserialized
+    else {
+        return None;
+    };
+    msg.as_original()?.content.mentions.clone()
 }
 
 /// Cursor-based pagination over a room's message history, oldest-not-included:

@@ -180,6 +180,18 @@ impl MatrixState {
     /// same id as one the previous account had open would otherwise be
     /// served that stale `Timeline` (and its listener still emitting for the
     /// old client) before ever consulting the new one.
+    /// Whether `room_id` currently has a live `Timeline` held open (i.e. the
+    /// user has the room open right now). `sync::notify_unopened_room_messages`
+    /// uses this to only handle notifications for rooms *without* one —
+    /// `spawn_timeline_listener`'s own `maybe_notify_new_message` already
+    /// covers whichever room(s) are open, so this avoids double-notifying
+    /// (or double-computing mentions) for a room covered by both paths.
+    /// `peek`, not `get`: this must not perturb the LRU's recency ordering as
+    /// a side effect of merely checking membership.
+    pub(crate) async fn is_timeline_open(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
+        self.timelines.lock().await.peek(room_id).is_some()
+    }
+
     pub(crate) async fn clear_timelines(&self) {
         self.timelines.lock().await.clear();
     }
