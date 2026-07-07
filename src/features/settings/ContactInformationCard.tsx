@@ -23,7 +23,7 @@ export function ContactInformationCard() {
     queryFn: get3pids,
   });
 
-  if (threepids && threepids.length === 0) return null;
+  if (!isError && threepids && threepids.length === 0) return null;
 
   return (
     <SettingsCard heading="Contact Information">

@@ -47,4 +47,22 @@ describe("ContactInformationCard", () => {
     expect(await screen.findByText("Couldn't load contact information")).toBeInTheDocument();
     expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
   });
+
+  it("still shows an error on a failed background refetch, even with a cached empty result", async () => {
+    // The empty-list early return must not run ahead of the isError check —
+    // otherwise a query that first resolved to [] and then failed on a
+    // later refetch would silently render nothing instead of the error.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["settings", "3pids"], []);
+    get3pids.mockRejectedValue(new Error("network error"));
+
+    render(
+      <QueryClientProvider client={client}>
+        <ContactInformationCard />
+      </QueryClientProvider>,
+    );
+    await client.refetchQueries({ queryKey: ["settings", "3pids"] });
+
+    expect(await screen.findByText("Couldn't load contact information")).toBeInTheDocument();
+  });
 });

@@ -46,7 +46,7 @@ export function BlockedUsersCard() {
     unblock.mutate(userId);
   }
 
-  if (ignoredUsers && ignoredUsers.length === 0) return null;
+  if (!isError && ignoredUsers && ignoredUsers.length === 0) return null;
 
   return (
     <SettingsCard heading="Blocked Users">
