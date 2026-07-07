@@ -5,7 +5,7 @@ const AVATAR_COLORS = [
   "var(--color-warning)",
   "var(--color-success)",
   "var(--color-danger)",
-  "var(--gray-500)",
+  "var(--color-text-muted)",
 ];
 
 function hash(input: string): number {

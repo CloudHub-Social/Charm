@@ -15,7 +15,13 @@ const buttonVariants = cva(
         outline:
           "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
         secondary: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        ghost: "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
+        // Explicit `text-foreground`: ghost has no background at rest, so
+        // without an explicit color class it inherits ambient text color
+        // rather than a token — invisible/low-contrast outside a dark
+        // ancestor (e.g. the light theme). See Charm 2.0 Spec 09's
+        // contrast-debt note.
+        ghost:
+          "text-foreground hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
