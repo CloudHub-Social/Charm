@@ -14,7 +14,11 @@ const MEDIUM_LABELS: Record<string, string> = {
  * display is in scope here).
  */
 export function ContactInformationCard() {
-  const { data: threepids } = useQuery({
+  const {
+    data: threepids,
+    isError,
+    error,
+  } = useQuery({
     queryKey: ["settings", "3pids"],
     queryFn: get3pids,
   });
@@ -23,7 +27,12 @@ export function ContactInformationCard() {
 
   return (
     <SettingsCard heading="Contact Information">
-      {threepids ? (
+      {isError ? (
+        <SettingTile
+          title={<span className="text-destructive">Couldn't load contact information</span>}
+          description={String(error)}
+        />
+      ) : threepids ? (
         threepids.map((t) => (
           <SettingTile
             key={`${t.medium}:${t.address}`}

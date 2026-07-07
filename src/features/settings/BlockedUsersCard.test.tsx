@@ -71,4 +71,12 @@ describe("BlockedUsersCard", () => {
     resolveA();
     await waitFor(() => expect(unblockB).not.toBeDisabled());
   });
+
+  it("shows an error instead of a permanent loading state when the query fails", async () => {
+    getIgnoredUsers.mockRejectedValue(new Error("network error"));
+    renderWithProviders(<BlockedUsersCard />);
+
+    expect(await screen.findByText("Couldn't load blocked users")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
 });

@@ -9,7 +9,11 @@ const IGNORED_USERS_QUERY_KEY = ["settings", "ignored-users"];
 /** Blocked/ignored users list (Spec 18) — blocking a user happens from their profile elsewhere in the app; this only lists and unblocks. */
 export function BlockedUsersCard() {
   const queryClient = useQueryClient();
-  const { data: ignoredUsers } = useQuery({
+  const {
+    data: ignoredUsers,
+    isError,
+    error,
+  } = useQuery({
     queryKey: IGNORED_USERS_QUERY_KEY,
     queryFn: getIgnoredUsers,
   });
@@ -46,7 +50,12 @@ export function BlockedUsersCard() {
 
   return (
     <SettingsCard heading="Blocked Users">
-      {ignoredUsers ? (
+      {isError ? (
+        <SettingTile
+          title={<span className="text-destructive">Couldn't load blocked users</span>}
+          description={String(error)}
+        />
+      ) : ignoredUsers ? (
         ignoredUsers.map((userId) => (
           <SettingTile
             key={userId}

@@ -39,4 +39,12 @@ describe("ContactInformationCard", () => {
 
     await vi.waitFor(() => expect(container).toBeEmptyDOMElement());
   });
+
+  it("shows an error instead of a permanent loading state when the query fails", async () => {
+    get3pids.mockRejectedValue(new Error("network error"));
+    renderWithProviders(<ContactInformationCard />);
+
+    expect(await screen.findByText("Couldn't load contact information")).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+  });
 });
