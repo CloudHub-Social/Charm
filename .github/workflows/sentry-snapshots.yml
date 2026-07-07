@@ -41,11 +41,11 @@ jobs:
       SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
       SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # 24, not 22 like the other jobs: @storybook/test-runner's Jest
           # loader `require()`s .storybook/test-runner.ts (an ES module)
@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload snapshot artifact (debug)
         if: always() && hashFiles('.artifacts/sentry-snapshots/**/*.png') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
           path: .artifacts/sentry-snapshots

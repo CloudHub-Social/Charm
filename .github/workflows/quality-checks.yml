@@ -10,11 +10,11 @@ jobs:
     name: Frontend (lint, format, typecheck, test, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -44,11 +44,11 @@ jobs:
     name: Storybook (build + axe a11y)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # 24, not 22 like the other jobs here: @storybook/test-runner's
           # Jest loader `require()`s .storybook/test-runner.ts (an ES module)
@@ -74,11 +74,11 @@ jobs:
     name: E2E (message actions, against the dev server)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: pnpm
@@ -96,7 +96,7 @@ jobs:
       # tauri-driver or Synapse.
       - run: pnpm test:e2e
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -114,7 +114,7 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -166,7 +166,7 @@ jobs:
       TEST_MATRIX_USERNAME_2: ${{ secrets.CI_MATRIX_TEST_USERNAME_2 || 'evie2' }}
       TEST_MATRIX_PASSWORD_2: ${{ secrets.CI_MATRIX_TEST_PASSWORD_2 || 'testpass123' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Tauri Linux system dependencies
         # This crate is a Tauri app, so even a `cargo test` build pulls in
@@ -278,7 +278,7 @@ jobs:
       run:
         working-directory: src-tauri
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Tauri Linux system dependencies
         run: |
