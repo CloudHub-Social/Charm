@@ -1,4 +1,4 @@
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   markRoomRead,
   setRoomFavourite,
@@ -16,6 +17,7 @@ import {
   setRoomMuted,
   type RoomSummary,
 } from "@/lib/matrix";
+import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
 import { SpaceBrowser } from "./SpaceBrowser";
@@ -44,6 +46,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const [browsingSpace, setBrowsingSpace] = useState<RoomSummary | null>(null);
   const { data: ownProfile } = useOwnProfile();
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const badge = useAtomValue(badgeAtom);
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
 
@@ -93,14 +96,31 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
         ) : (
           <span className="text-base font-bold text-foreground">Charm</span>
         )}
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Open settings"
-          onClick={() => setSettingsOpen("account")}
-        >
-          <SettingsIcon />
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          {badge && badge.total_unread > 0 && (
+            <span
+              className={cn(
+                "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
+                badge.total_highlight > 0
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground",
+              )}
+              aria-label={`${badge.total_unread} unread rooms${
+                badge.total_highlight > 0 ? `, ${badge.total_highlight} mentions` : ""
+              }`}
+            >
+              {badge.total_highlight > 0 ? badge.total_highlight : badge.total_unread}
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Open settings"
+            onClick={() => setSettingsOpen("account")}
+          >
+            <SettingsIcon />
+          </Button>
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {allEmpty ? (
