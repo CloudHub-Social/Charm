@@ -559,11 +559,29 @@ pub(crate) fn spawn_timeline_listener(
         // Seed with every event id already present before this listener
         // subscribed — the initial `timeline:update` for a room the user
         // just opened is existing history, never a "new message" worth a
-        // notification.
+        // notification. Additive only (never replaced/shrunk) — see
+        // `max_seen_timestamp_ms` below for why replacing it was a bug.
         let mut seen_event_ids: std::collections::HashSet<String> = initial_summaries
             .iter()
             .map(|m| m.event_id.clone())
             .collect();
+        // The other half of the "is this genuinely new" check: backward
+        // pagination (scrolling up to load older history) inserts messages
+        // at the *front* of `items` that were never in `seen_event_ids`
+        // either, since they'd never been loaded before — an id-membership
+        // check alone can't tell "message arrived at the tail just now" apart
+        // from "history revealed by scrolling up", and would fire a
+        // notification for old content the first time a room's history is
+        // paged into. Older-history messages always have a timestamp at or
+        // before everything already loaded, so gating on strictly-greater
+        // timestamp (in addition to the id check) correctly excludes them
+        // while still catching genuine new arrivals (always time-ordered
+        // after the newest thing loaded so far).
+        let mut max_seen_timestamp_ms: u64 = initial_summaries
+            .iter()
+            .map(|m| m.timestamp_ms)
+            .max()
+            .unwrap_or(0);
         let _ = app.emit(
             "timeline:update",
             RoomTimelineUpdate {
@@ -594,13 +612,17 @@ pub(crate) fn spawn_timeline_listener(
 
             let new_messages: Vec<&RoomMessageSummary> = summaries
                 .iter()
-                .filter(|m| !seen_event_ids.contains(&m.event_id))
+                .filter(|m| {
+                    !seen_event_ids.contains(&m.event_id) && m.timestamp_ms > max_seen_timestamp_ms
+                })
                 .collect();
             for message in &new_messages {
                 maybe_notify_new_message(&app, &client, &room_id, own_user_id.as_deref(), message)
                     .await;
             }
-            seen_event_ids = summaries.iter().map(|m| m.event_id.clone()).collect();
+            seen_event_ids.extend(summaries.iter().map(|m| m.event_id.clone()));
+            max_seen_timestamp_ms = max_seen_timestamp_ms
+                .max(summaries.iter().map(|m| m.timestamp_ms).max().unwrap_or(0));
 
             let _ = app.emit(
                 "timeline:update",
