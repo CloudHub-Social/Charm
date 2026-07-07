@@ -26,7 +26,7 @@ export function GeneralPanel() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: AUTOSTART_QUERY_KEY }),
   });
   const requestNotificationPermission = useMutation({
-    mutationFn: requestPermission,
+    mutationFn: () => requestPermission(),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: NOTIFICATION_PERMISSION_QUERY_KEY }),
   });
 

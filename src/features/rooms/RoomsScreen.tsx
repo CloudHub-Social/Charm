@@ -7,6 +7,7 @@ import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import { AppShell } from "@/features/shell/AppShell";
+import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
   listRooms,
@@ -118,6 +119,17 @@ export function RoomsScreen({
   const [rightPanelOpen, setRightPanelOpen] = useAtom(
     rightPanelOpenAtomFamily(activeRoom?.room_id ?? ""),
   );
+
+  // The right panel is desktop-only (mobile has no room besides the active
+  // one to show it alongside — see `AppShell`'s non-goals). Without this,
+  // opening it on desktop and then narrowing the window would leave
+  // `rightPanelOpen` stuck `true`, so the mobile detail view's `rightPanel ??
+  // content` would keep showing the (now off-layout) info panel instead of
+  // the chat.
+  const layout = useAdaptiveLayout();
+  useEffect(() => {
+    if (layout === "mobile" && rightPanelOpen) setRightPanelOpen(false);
+  }, [layout, rightPanelOpen, setRightPanelOpen]);
 
   // Bumped on every room selection, even re-selecting the already-active
   // room — `activeRoomId` alone wouldn't change in that case, so on mobile

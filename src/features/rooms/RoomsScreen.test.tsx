@@ -1,7 +1,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
+import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
+
+const mockUseAdaptiveLayout = vi.fn(() => "desktop");
+vi.mock("@/features/shell/useAdaptiveLayout", () => ({
+  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
 
 const listRooms = vi.fn();
 const onRoomListUpdate = vi.fn();
@@ -83,6 +90,7 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 }
 
 beforeEach(() => {
+  mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
@@ -187,5 +195,38 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("closes the right panel when the layout narrows to mobile", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    const store = createStore();
+    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+
+    const { rerender } = render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    rerender(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+
+    await waitFor(() => expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(false));
   });
 });
