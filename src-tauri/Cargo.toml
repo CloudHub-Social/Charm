@@ -53,7 +53,8 @@ keyring = { version = "3", features = ["windows-native"] }
 [dev-dependencies]
 matrix-sdk-test = "0.18.0"
 # Enables `matrix_sdk::test_utils::mocks::MatrixMockServer`, used by the
-# Timeline-mapping unit tests in `tests/timeline_mapping.rs` to build a real
+# Timeline-mapping unit tests in `src/matrix/timeline.rs`'s own `#[cfg(test)]`
+# module (not a separate `tests/` file) to build a real
 # `matrix-sdk-ui` `Timeline` against a mocked homeserver (no live Synapse
 # needed) instead of hand-fabricating `EventTimelineItem`s, which the crate
 # doesn't expose a public constructor for.
