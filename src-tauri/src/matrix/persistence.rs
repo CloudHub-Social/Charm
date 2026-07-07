@@ -304,9 +304,15 @@ pub enum RelocateOutcome {
     /// No store existed at `account_key`'s path yet — the temp store was
     /// renamed there.
     Relocated(PathBuf),
-    /// `account_key` already had a store (orphaned by an incomplete previous
-    /// login/logout, or a previous device's now-stale session) — it was
-    /// discarded and the temp store was renamed into its place instead.
+    /// `account_key` already had a store — most commonly just a repeated
+    /// login for the same account (every interactive login mints a new
+    /// `device_id`, so this is a routine, non-error outcome), but also
+    /// reachable via a store orphaned by an incomplete previous
+    /// login/logout. Either way it was discarded and the temp store was
+    /// renamed into its place instead. [`relocate_store_at`] logs this case,
+    /// since it means a pre-existing store's data was just discarded — safe
+    /// only under the "always a new device" assumption documented on
+    /// [`relocate_store`].
     Superseded(PathBuf),
 }
 
@@ -323,7 +329,7 @@ impl RelocateOutcome {
 /// `account_key` can finally be computed. If a store for that account
 /// already exists, it is treated as stale and discarded, and the temp store
 /// (bound to the session that was *just* authenticated) is relocated in its
-/// place instead — matrix-rust-sdk binds a crypto store to whichever device
+/// place instead — matrix-sdk-crypto binds a crypto store to whichever device
 /// first opened it, and an interactive login always yields a new device, so
 /// keeping the old store and trying to restore the new session onto it
 /// would fail with "the account in the store doesn't match the account in
@@ -396,7 +402,16 @@ pub fn relocate_store_at(
     // first-time path.
     let existed = account_path.exists();
     if existed {
-        std::fs::remove_dir_all(&account_path).map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(&account_path).map_err(|e| {
+            format!(
+                "failed to discard stale store for {account_key} at {}: {e}",
+                account_path.display()
+            )
+        })?;
+        eprintln!(
+            "relocate_store: discarded stale store for {account_key} at {} (superseded by a fresh login)",
+            account_path.display()
+        );
     }
 
     let passphrase = get_or_create_passphrase(temp_key)?;
