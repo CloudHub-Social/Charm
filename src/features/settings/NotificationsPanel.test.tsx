@@ -207,4 +207,23 @@ describe("NotificationsPanel", () => {
     await waitFor(() => expect(requestPermission).toHaveBeenCalled());
     await waitFor(() => expect(registerPush).toHaveBeenCalled());
   });
+
+  it("does not register push if the notification permission is denied", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "unified_push",
+      registered: false,
+      endpoint_present: false,
+      last_error: null,
+      available: true,
+    });
+    requestPermission.mockResolvedValue("denied");
+    renderWithProviders(<NotificationsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    // Give the denied-permission branch a turn to (not) call registerPush.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(registerPush).not.toHaveBeenCalled();
+  });
 });

@@ -33,9 +33,13 @@ function PushTransportSection() {
   // The homeserver can only deliver a push if the OS has also granted the
   // notification permission — without this, `register_push` can succeed
   // while `app.notification().show()` still silently shows nothing (Android
-  // 13+/iOS both gate on it separately from push registration itself).
+  // 13+/iOS both gate on it separately from push registration itself). Only
+  // proceed to register if the user actually granted it — registering a
+  // pusher the OS won't let us show anything for just generates server
+  // traffic with no visible result until they separately fix permissions.
   async function handleEnable() {
-    await requestPermission();
+    const permission = await requestPermission();
+    if (permission !== "granted") return;
     register.mutate();
   }
 

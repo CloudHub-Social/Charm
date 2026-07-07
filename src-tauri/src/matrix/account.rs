@@ -106,6 +106,17 @@ async fn clear_local_session(
     user_id: &str,
 ) -> Result<(), String> {
     let account_key = persistence::account_key(user_id);
+
+    // Best-effort, and must run before the client is cleared below (it needs
+    // one to delete the homeserver pusher): without this, logging out (or
+    // deactivating) leaves both the OS-level UnifiedPush/APNs registration
+    // and the homeserver pusher active for an account no longer signed in on
+    // this device. Never allowed to fail logout itself — a homeserver/
+    // network hiccup during cleanup shouldn't block signing out.
+    if let Err(e) = crate::push::unregister_push_impl(app, state).await {
+        eprintln!("failed to unregister push during logout/deactivate: {e}");
+    }
+
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
     *state.client.lock().await = None;

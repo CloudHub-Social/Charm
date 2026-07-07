@@ -327,12 +327,14 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     resolve_pending(Err(format!("UnifiedPush registration failed: {reason}")));
 }
 
-/// Called from `PushMessagingReceiver.onUnregistered` — best-effort local
-/// state cleanup; the Rust-side `unregister()` call path already clears
-/// `CURRENT_ENDPOINT` itself, but the distributor can also unregister this
-/// app out-of-band (e.g. the user removed it from the distributor's own UI).
-/// See `nativeOnNewEndpoint`'s doc comment for why this takes `JObject`, not
-/// `JClass`.
+/// Called from `PushMessagingReceiver.onUnregistered` — the distributor
+/// unregistered this app out-of-band (e.g. the user removed it from the
+/// distributor's own UI, or the Rust-side `unregister()` call path's own
+/// `UnifiedPush.unregister()` triggered it). Clears the local endpoint
+/// immediately, then spawns `super::handle_transport_unregistered` to also
+/// delete the homeserver pusher — per UnifiedPush's own contract for this
+/// callback, see that function's doc comment. See `nativeOnNewEndpoint`'s
+/// doc comment for why this takes `JObject`, not `JClass`.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnUnregistered<
     'local,
@@ -341,6 +343,12 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     _this: JObject<'local>,
 ) {
     *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let Some(app) = super::global_app_handle() else {
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        super::handle_transport_unregistered(&app).await;
+    });
 }
 
 /// Called from `PushMessagingReceiver.onMessage` with the raw push bytes
