@@ -190,6 +190,28 @@ fn spawn_timeline_listener(
         let (mut items, mut stream) = strong.subscribe().await;
         drop(strong);
 
+        // Emit the current snapshot immediately on subscribe, not just on
+        // the next diff — mirrors desktop's `spawn_timeline_listener`
+        // (`timeline.rs`'s own initial `app.emit`). Without this, a room
+        // opened via `get_or_create_timeline` (which is what spawns this
+        // listener in the first place) would show nothing over the
+        // WebSocket until the *next* live event happened to arrive; the
+        // `GET .../timeline` HTTP route separately serves the same initial
+        // page on request, but a frontend that treats the WebSocket as its
+        // single source of live room state (again, matching desktop's own
+        // contract) would otherwise see an empty room until then.
+        let initial_messages = charm_lib::matrix::timeline::items_to_summaries(
+            &items,
+            own_user_id.as_deref(),
+            &client,
+            None,
+        )
+        .await;
+        let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
+            room_id: room_id.to_string(),
+            messages: initial_messages,
+        }));
+
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
         loop {
             let diffs = tokio::select! {
