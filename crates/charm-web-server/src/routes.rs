@@ -197,7 +197,11 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoRespo
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         state.sessions.remove(cookie.value()).await;
     }
-    let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+    // `remove` must be given a cookie matching the *original* cookie's
+    // path — `Cookie::from(SESSION_COOKIE)` alone defaults to no path,
+    // which doesn't match `session_cookie`'s explicit `path("/")` and would
+    // leave some clients holding onto the (now server-side-invalid) cookie.
+    let jar = jar.remove(Cookie::build(SESSION_COOKIE).path("/"));
     (jar, StatusCode::NO_CONTENT)
 }
 
@@ -214,12 +218,20 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoRe
 }
 
 /// Server-issued session cookie: HttpOnly (unreadable to page JS), Secure
-/// (HTTPS-only transport — see the crate README's local-dev HTTP caveat),
+/// unless explicitly disabled (HTTPS-only transport by default — see below),
 /// SameSite=Strict (never sent on cross-site navigations/requests).
+///
+/// `Secure` cookies are never stored or sent by browsers over plain HTTP —
+/// `main.rs` itself only ever serves plain HTTP (TLS termination is expected
+/// to happen in front of it, e.g. a reverse proxy on `matrix-vps`), so a
+/// `Secure` cookie against a non-TLS deployment or local dev would silently
+/// never persist a login. `CHARM_WEB_SERVER_INSECURE_COOKIES=1` opts out for
+/// exactly those two cases; production behind TLS must not set it.
 fn session_cookie(token: String) -> Cookie<'static> {
+    let secure = std::env::var("CHARM_WEB_SERVER_INSECURE_COOKIES").as_deref() != Ok("1");
     Cookie::build((SESSION_COOKIE, token))
         .http_only(true)
-        .secure(true)
+        .secure(secure)
         .same_site(SameSite::Strict)
         .path("/")
         .build()
@@ -479,7 +491,9 @@ async fn run_command(
     Json(request): Json<RunCommandRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let result = run_command_impl(&session.client, &room_id, request.command, request.args).await;
+    let result = run_command_impl(&session.client, &room_id, request.command, request.args)
+        .await
+        .map_err(ApiError::bad_request)?;
     Ok(Json(result))
 }
 

@@ -42,18 +42,29 @@ impl SessionStore {
     /// Mints a fresh, server-chosen opaque token, stores `session` under it,
     /// and returns the token to be set as the session cookie's value. Tokens
     /// are never derived from or influenced by client input.
+    ///
+    /// Retries on the astronomically unlikely case of a collision with an
+    /// existing token — `HashMap::insert` would otherwise silently overwrite
+    /// (and orphan) another session, which would violate the "two sessions
+    /// must never share a token" isolation guarantee this store exists to
+    /// provide (see `tests/isolation.rs`).
     pub async fn create(&self, session: Session) -> String {
-        let token: String = rand::rng()
-            .sample_iter(&Alphanumeric)
-            .take(SESSION_TOKEN_LEN)
-            .map(char::from)
-            .collect();
+        let session = Arc::new(session);
+        loop {
+            let token: String = rand::rng()
+                .sample_iter(&Alphanumeric)
+                .take(SESSION_TOKEN_LEN)
+                .map(char::from)
+                .collect();
 
-        self.inner
-            .write()
-            .await
-            .insert(token.clone(), Arc::new(session));
-        token
+            let mut inner = self.inner.write().await;
+            if let std::collections::hash_map::Entry::Vacant(entry) = inner.entry(token.clone()) {
+                entry.insert(session);
+                return token;
+            }
+            // Collision: drop the write lock and mint a new token instead of
+            // looping while holding it.
+        }
     }
 
     pub async fn get(&self, token: &str) -> Option<Arc<Session>> {

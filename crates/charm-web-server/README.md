@@ -68,6 +68,13 @@ cargo run -p charm-web-server
 
 Listens on `CHARM_WEB_SERVER_ADDR` (default `0.0.0.0:8787`).
 
+The session cookie is `Secure` by default, which browsers refuse to store or
+send over plain HTTP — `main.rs` itself only ever serves plain HTTP (TLS is
+expected to terminate in front of it, e.g. a reverse proxy in production).
+For local dev or any other non-TLS deployment, set
+`CHARM_WEB_SERVER_INSECURE_COOKIES=1` to drop the `Secure` flag; never set
+this in a production deployment that's actually behind TLS.
+
 ## Deployment (not done as part of this PR — flagged as a manual follow-up)
 
 Per the spec's Deployment topology: this runs as another persistent process
