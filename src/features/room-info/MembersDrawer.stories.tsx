@@ -1,14 +1,14 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient } from "@tanstack/react-query";
 import { AppProviders } from "@/providers";
-import { RoomInfoPanel } from "./RoomInfoPanel";
+import { MembersDrawer } from "./MembersDrawer";
 import { roomDetailsQueryKey } from "./useRoomDetails";
 import { roomMembersQueryKey } from "./useRoomMembers";
 import type { RoomDetails, RoomMemberSummary } from "@/lib/matrix";
 
 const ROOM_ID = "!story:localhost";
 
-const ADMIN_DETAILS: RoomDetails = {
+const DETAILS: RoomDetails = {
   room_id: ROOM_ID,
   name: "Design Team",
   topic: "All things design system",
@@ -41,23 +41,6 @@ const ADMIN_DETAILS: RoomDetails = {
   },
 };
 
-const READ_ONLY_DETAILS: RoomDetails = {
-  ...ADMIN_DETAILS,
-  my_power_level: 0,
-  can: {
-    set_name: false,
-    set_topic: false,
-    set_avatar: false,
-    set_join_rules: false,
-    set_history_visibility: false,
-    set_encryption: false,
-    set_power_levels: false,
-    invite: false,
-    kick: false,
-    ban: false,
-  },
-};
-
 const MEMBERS: RoomMemberSummary[] = [
   {
     user_id: "@evie:localhost",
@@ -82,46 +65,32 @@ const MEMBERS: RoomMemberSummary[] = [
   },
 ];
 
-/** Seeds a fresh QueryClient's cache directly so the panel renders real data — Storybook has no Tauri host, so the underlying `get_room_details`/`get_room_member_list` invokes reject; seeded data survives a failed background refetch (TanStack Query keeps last-known-good `data` on refetch error). */
-function seededQueryClient(details: RoomDetails) {
+function seededQueryClient() {
   const client = new QueryClient();
-  client.setQueryData(roomDetailsQueryKey(ROOM_ID), details);
+  client.setQueryData(roomDetailsQueryKey(ROOM_ID), DETAILS);
   client.setQueryData(roomMembersQueryKey(ROOM_ID), MEMBERS);
   return client;
 }
 
 const meta = {
-  title: "RoomInfo/RoomInfoPanel",
-  component: RoomInfoPanel,
+  title: "RoomInfo/MembersDrawer",
+  component: MembersDrawer,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
-} satisfies Meta<typeof RoomInfoPanel>;
+  decorators: [
+    (Story) => (
+      <AppProviders client={seededQueryClient()}>
+        <div className="flex h-screen justify-end">
+          <Story />
+        </div>
+      </AppProviders>
+    ),
+  ],
+} satisfies Meta<typeof MembersDrawer>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Admin: Story = {
+export const Default: Story = {
   args: { roomId: ROOM_ID, currentUserId: "@evie:localhost", onClose: () => {} },
-  decorators: [
-    (Story) => (
-      <AppProviders client={seededQueryClient(ADMIN_DETAILS)}>
-        <div className="flex h-screen justify-end">
-          <Story />
-        </div>
-      </AppProviders>
-    ),
-  ],
-};
-
-export const ReadOnlyMember: Story = {
-  args: { roomId: ROOM_ID, currentUserId: "@evie:localhost", onClose: () => {} },
-  decorators: [
-    (Story) => (
-      <AppProviders client={seededQueryClient(READ_ONLY_DETAILS)}>
-        <div className="flex h-screen justify-end">
-          <Story />
-        </div>
-      </AppProviders>
-    ),
-  ],
 };
