@@ -1,11 +1,20 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+// Solid-fill variants (not --color-accent/-warning/-success/-danger/
+// -text-muted directly): every avatar fallback pairs one of these
+// background colors with fixed white initials text (see AvatarFallback's
+// `text-white`) — the canvas-tuned semantic tokens are calibrated for text/
+// border/ring contexts on a themed background, not for a solid fill under
+// unconditionally-white text, and several fall well under the 4.5:1 WCAG AA
+// floor there (e.g. success-500 at 2.13-2.27:1, gray-400/gray-300 at
+// 2.15-3.09:1). See tokens.css's --primary-solid/-destructive-solid/
+// -success-solid/-warning-solid/-muted-solid definitions.
 const AVATAR_COLORS = [
-  "var(--color-accent)",
-  "var(--color-warning)",
-  "var(--color-success)",
-  "var(--color-danger)",
-  "var(--color-text-muted)",
+  "var(--primary-solid)",
+  "var(--warning-solid)",
+  "var(--success-solid)",
+  "var(--destructive-solid)",
+  "var(--muted-solid)",
 ];
 
 function hash(input: string): number {

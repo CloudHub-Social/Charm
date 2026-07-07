@@ -49,7 +49,10 @@ describe("useAppearance", () => {
     await vi.waitFor(() =>
       expect(storeSet).toHaveBeenCalledWith(
         "appearance",
-        expect.objectContaining({ fontSize: "xl" }),
+        expect.objectContaining({
+          state: expect.objectContaining({ fontSize: "xl" }),
+          updatedAt: expect.any(Number),
+        }),
       ),
     );
   });
@@ -76,6 +79,7 @@ describe("useAppearance", () => {
       result.current.setTheme("light");
     });
     const mirrored = JSON.parse(localStorage.getItem("charm:appearance")!);
-    expect(mirrored.theme).toBe("light");
+    expect(mirrored.state.theme).toBe("light");
+    expect(mirrored.updatedAt).toEqual(expect.any(Number));
   });
 });

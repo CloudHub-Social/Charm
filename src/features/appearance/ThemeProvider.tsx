@@ -2,7 +2,12 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, useEffect } from "react";
 import { densityAtom, fontSizeAtom, reducedMotionAtom, themeAtom } from "./atoms";
 import { applyAppearanceToDom, resolveEffectiveTheme } from "./dom";
-import { mergeAppearance, readLocalMirror, readPersistedAppearance } from "./persistence";
+import {
+  mergeAppearance,
+  pickNewerEnvelope,
+  readLocalMirror,
+  readPersistedAppearance,
+} from "./persistence";
 
 /**
  * Mounted once near the root (see `main.tsx`). Two jobs:
@@ -32,7 +37,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     async function reconcile() {
       const persisted = await readPersistedAppearance();
-      const state = mergeAppearance(persisted ?? readLocalMirror());
+      const local = readLocalMirror();
+      // Prefer whichever of the store/localStorage is actually newer rather
+      // than unconditionally trusting the store — see persistence.ts's doc
+      // comment: the store write in `persistAppearance` is async and can
+      // still be in flight (or can fail) when the app quits, in which case
+      // a stale-but-non-null store value must not silently win over a
+      // newer localStorage write.
+      const state = mergeAppearance(pickNewerEnvelope(persisted, local));
       if (cancelled) return;
       setTheme(state.theme);
       setFontSize(state.fontSize);

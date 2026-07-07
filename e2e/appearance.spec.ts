@@ -66,3 +66,31 @@ test("defaults to dark when no appearance has been persisted", async ({ page }) 
 
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
+
+test("boot script falls back to defaults for a corrupted-but-parseable persisted value", async ({
+  page,
+}) => {
+  // Valid JSON, invalid enum values — e.g. a hand-edited localStorage entry
+  // or a store file from an incompatible build. The boot script must
+  // validate against its allowed-value lists rather than accepting these
+  // verbatim (which would set e.g. data-theme="banana", matching no CSS
+  // override and silently breaking theming).
+  await page.addInitScript(seedAppearanceMirror, {
+    theme: "banana",
+    fontSize: "huge",
+    density: "spacious",
+    reducedMotion: "maybe",
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+  });
+
+  await page.goto("/");
+
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-density", "cozy");
+  await expect(page.locator("html")).toHaveAttribute("data-font-size", "md");
+  await expect(page.locator("html")).toHaveAttribute("data-reduced-motion", "system");
+});

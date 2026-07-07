@@ -10,21 +10,45 @@
       // the module bundle, reading the localStorage mirror that
       // `src/features/appearance/persistence.ts` write-throughs on every
       // change (the async `tauri-plugin-store` value is reconciled after
-      // mount by `ThemeProvider`). Keep the attribute names in sync with
-      // `src/features/appearance/dom.ts`'s `applyAppearanceToDom` — this
-      // script can't import that module since it must run before any bundle.
+      // mount by `ThemeProvider`). Keep the attribute names AND the allowed
+      // value lists below in sync by hand with
+      // `src/features/appearance/atoms.ts`'s `VALID_THEMES`/etc. and
+      // `dom.ts`'s `applyAppearanceToDom` — this script can't import those
+      // modules since it must run before any bundle.
       (function () {
         var DEFAULTS = { theme: "dark", fontSize: "md", density: "cozy", reducedMotion: "system" };
+        var VALID = {
+          theme: ["dark", "light", "midnight", "system"],
+          fontSize: ["sm", "md", "lg", "xl"],
+          density: ["compact", "cozy"],
+          reducedMotion: ["system", "on", "off"],
+        };
+        // Validates a field against its allowed value list rather than a
+        // bare `||`/`??` fallback — localStorage is unschemed JSON, so a
+        // corrupted-but-parseable value (e.g. a hand-edited
+        // `theme: "banana"`) would otherwise be accepted verbatim and set
+        // as `data-theme="banana"`, which matches no CSS override and
+        // silently breaks theming. Matches `mergeAppearance`'s validation
+        // in persistence.ts.
+        function pick(value, key) {
+          return VALID[key].indexOf(value) !== -1 ? value : DEFAULTS[key];
+        }
         var state = DEFAULTS;
         try {
           var raw = localStorage.getItem("charm:appearance");
           if (raw) {
             var parsed = JSON.parse(raw);
+            // The mirror is a `{ state, updatedAt }` envelope (see
+            // persistence.ts's `PersistedEnvelope`) so ThemeProvider's
+            // reconciliation can last-write-wins against the async store.
+            // Fall back to treating `parsed` itself as the state for a
+            // mirror written by a pre-envelope build.
+            var innerState = parsed && typeof parsed.state === "object" ? parsed.state : parsed;
             state = {
-              theme: parsed.theme || DEFAULTS.theme,
-              fontSize: parsed.fontSize || DEFAULTS.fontSize,
-              density: parsed.density || DEFAULTS.density,
-              reducedMotion: parsed.reducedMotion || DEFAULTS.reducedMotion,
+              theme: pick(innerState.theme, "theme"),
+              fontSize: pick(innerState.fontSize, "fontSize"),
+              density: pick(innerState.density, "density"),
+              reducedMotion: pick(innerState.reducedMotion, "reducedMotion"),
             };
           }
         } catch (e) {

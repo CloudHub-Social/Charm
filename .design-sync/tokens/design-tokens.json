@@ -6,8 +6,8 @@
     "gray-800": "#1c1c1f",
     "gray-700": "#2a2a2e",
     "gray-600": "#3d3d42",
-    "gray-500": "#5c5c63",
-    "gray-400": "#86868f",
+    "gray-500": "#5a5a60",
+    "gray-400": "#92929a",
     "gray-300": "#b0b0b8",
     "gray-200": "#d4d4d9",
     "gray-100": "#ececef",
@@ -46,7 +46,7 @@
       "color-text-primary": "var(--gray-50)",
       "color-text-secondary": "var(--gray-300)",
       "color-text-muted": "var(--gray-400)",
-      "color-accent": "var(--accent-500)",
+      "color-accent": "#8174f9",
       "color-accent-hover": "var(--accent-400)",
       "color-accent-active": "var(--accent-600)",
       "color-danger": "var(--danger-500)",
@@ -62,7 +62,11 @@
       "color-border-default": "var(--gray-300)",
       "color-text-primary": "var(--gray-950)",
       "color-text-secondary": "var(--gray-700)",
-      "color-text-muted": "var(--gray-500)"
+      "color-text-muted": "var(--gray-500)",
+      "color-danger": "#e21313",
+      "color-success": "#167f3d",
+      "color-warning": "#9e6506",
+      "color-accent": "#5d4df7"
     },
     "midnight": {
       "color-bg-base": "var(--black-pure)",

@@ -12,6 +12,24 @@ export interface AppearanceState {
   reducedMotion: ReducedMotion;
 }
 
+/**
+ * Single source of truth for the allowed value set of each appearance
+ * field, consumed by `mergeAppearance` (persistence.ts) to validate
+ * anything read back from `localStorage`/`tauri-plugin-store` — both are
+ * plain JSON, so a corrupted-but-parseable value (e.g. `theme: "banana"`)
+ * would otherwise sail through the `??` null-coalescing in `mergeAppearance`
+ * and get written straight to the DOM dataset, where it matches no
+ * `[data-theme="…"]`/etc. CSS override and silently breaks theming.
+ *
+ * `index.html`'s inline boot script can't import this (it must run before
+ * any module bundle), so it duplicates these same literal value lists —
+ * kept in sync by hand; see that script's comment.
+ */
+export const VALID_THEMES: readonly Theme[] = ["dark", "light", "midnight", "system"];
+export const VALID_FONT_SIZES: readonly FontSize[] = ["sm", "md", "lg", "xl"];
+export const VALID_DENSITIES: readonly Density[] = ["compact", "cozy"];
+export const VALID_REDUCED_MOTIONS: readonly ReducedMotion[] = ["system", "on", "off"];
+
 /** Matches the defaults baked into `index.html`'s inline boot script and
  * `tokens.css` (dark-first, cozy density, M font size, system motion). */
 export const DEFAULT_APPEARANCE: AppearanceState = {

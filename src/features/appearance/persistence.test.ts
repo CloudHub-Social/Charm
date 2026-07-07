@@ -4,9 +4,11 @@ import {
   LOCAL_STORAGE_KEY,
   mergeAppearance,
   persistAppearance,
+  pickNewerEnvelope,
   readLocalMirror,
   readPersistedAppearance,
   writeLocalMirror,
+  type PersistedEnvelope,
 } from "./persistence";
 
 const storeGet = vi.fn();
@@ -29,16 +31,19 @@ afterEach(() => {
 });
 
 describe("local mirror", () => {
-  it("round-trips through localStorage", () => {
+  it("round-trips through localStorage as a { state, updatedAt } envelope", () => {
     const state: AppearanceState = {
       theme: "light",
       fontSize: "lg",
       density: "compact",
       reducedMotion: "on",
     };
-    writeLocalMirror(state);
-    expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual(state);
-    expect(readLocalMirror()).toEqual(state);
+    writeLocalMirror(state, 1000);
+    expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
+      state,
+      updatedAt: 1000,
+    });
+    expect(readLocalMirror()).toEqual({ state, updatedAt: 1000 });
   });
 
   it("returns null when nothing is stored", () => {
@@ -49,12 +54,24 @@ describe("local mirror", () => {
     localStorage.setItem(LOCAL_STORAGE_KEY, "{not json");
     expect(readLocalMirror()).toBeNull();
   });
+
+  it("treats a pre-envelope bare AppearanceState as updatedAt: 0", () => {
+    // A mirror written by a build that predates the { state, updatedAt }
+    // envelope — must not throw, and must always lose a version compare
+    // against any properly-versioned value (see pickNewerEnvelope).
+    const bareState: AppearanceState = { ...DEFAULT_APPEARANCE, theme: "midnight" };
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(bareState));
+    expect(readLocalMirror()).toEqual({ state: bareState, updatedAt: 0 });
+  });
 });
 
 describe("readPersistedAppearance", () => {
-  it("returns the store's value when the plugin is available", async () => {
-    storeGet.mockResolvedValue({ theme: "midnight" });
-    await expect(readPersistedAppearance()).resolves.toEqual({ theme: "midnight" });
+  it("returns the store's envelope when the plugin is available", async () => {
+    storeGet.mockResolvedValue({ state: { theme: "midnight" }, updatedAt: 500 });
+    await expect(readPersistedAppearance()).resolves.toEqual({
+      state: { theme: "midnight" },
+      updatedAt: 500,
+    });
   });
 
   it("returns null when the store has no value yet", async () => {
@@ -66,21 +83,71 @@ describe("readPersistedAppearance", () => {
     load.mockRejectedValue(new Error("no host"));
     await expect(readPersistedAppearance()).resolves.toBeNull();
   });
+
+  it("treats a pre-envelope bare AppearanceState from the store as updatedAt: 0", () => {
+    const bareState = { theme: "light" };
+    storeGet.mockResolvedValue(bareState);
+    return expect(readPersistedAppearance()).resolves.toEqual({
+      state: bareState,
+      updatedAt: 0,
+    });
+  });
 });
 
 describe("persistAppearance", () => {
-  it("writes through to both the store and the localStorage mirror", async () => {
+  it("writes through to both the store and the localStorage mirror with the given timestamp", async () => {
     const state: AppearanceState = { ...DEFAULT_APPEARANCE, theme: "midnight" };
+    await persistAppearance(state, 12345);
+    expect(storeSet).toHaveBeenCalledWith("appearance", { state, updatedAt: 12345 });
+    expect(readLocalMirror()).toEqual({ state, updatedAt: 12345 });
+  });
+
+  it("defaults updatedAt to Date.now() when not given", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(999);
+    const state: AppearanceState = { ...DEFAULT_APPEARANCE, theme: "light" };
     await persistAppearance(state);
-    expect(storeSet).toHaveBeenCalledWith("appearance", state);
-    expect(readLocalMirror()).toEqual(state);
+    expect(readLocalMirror()).toEqual({ state, updatedAt: 999 });
+    vi.useRealTimers();
   });
 
   it("still writes the localStorage mirror when the store plugin fails", async () => {
     load.mockRejectedValue(new Error("no host"));
     const state: AppearanceState = { ...DEFAULT_APPEARANCE, density: "compact" };
-    await persistAppearance(state);
-    expect(readLocalMirror()).toEqual(state);
+    await persistAppearance(state, 42);
+    expect(readLocalMirror()).toEqual({ state, updatedAt: 42 });
+  });
+});
+
+describe("pickNewerEnvelope", () => {
+  const older: PersistedEnvelope = { state: { theme: "dark" }, updatedAt: 100 };
+  const newer: PersistedEnvelope = { state: { theme: "light" }, updatedAt: 200 };
+
+  it("prefers the store when it is newer", () => {
+    expect(pickNewerEnvelope(newer, older)).toEqual(newer.state);
+  });
+
+  it("prefers localStorage when it is newer — the race this fixes", () => {
+    // The scenario from the bug report: the user changes a setting, the
+    // synchronous localStorage write lands, then the app quits before the
+    // async tauri-plugin-store write resolves. On next launch the store
+    // still holds the OLDER value but is non-null — reconciliation must not
+    // let it unconditionally win.
+    expect(pickNewerEnvelope(older, newer)).toEqual(newer.state);
+  });
+
+  it("prefers the store on an exact tie", () => {
+    const tie: PersistedEnvelope = { state: { theme: "midnight" }, updatedAt: 100 };
+    expect(pickNewerEnvelope(older, tie)).toEqual(older.state);
+  });
+
+  it("falls back to whichever one is non-null", () => {
+    expect(pickNewerEnvelope(newer, null)).toEqual(newer.state);
+    expect(pickNewerEnvelope(null, older)).toEqual(older.state);
+  });
+
+  it("returns null when both are null", () => {
+    expect(pickNewerEnvelope(null, null)).toBeNull();
   });
 });
 
@@ -101,5 +168,43 @@ describe("mergeAppearance", () => {
       reducedMotion: "off",
     };
     expect(mergeAppearance(full)).toEqual(full);
+  });
+
+  it("falls back to the default for an invalid theme rather than propagating it", () => {
+    // Simulates corrupted-but-parseable JSON (e.g. hand-edited localStorage
+    // or a store file written by an incompatible build) — `theme` is a
+    // string, just not one of the supported values.
+    const corrupted = { theme: "banana" } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("falls back to the default for an invalid fontSize/density/reducedMotion", () => {
+    const corrupted = {
+      fontSize: "huge",
+      density: "spacious",
+      reducedMotion: "maybe",
+    } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("falls back to the default when a field is a non-string type", () => {
+    const corrupted = { theme: 42, density: null } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(
+      expect.objectContaining({
+        theme: DEFAULT_APPEARANCE.theme,
+        density: DEFAULT_APPEARANCE.density,
+      }),
+    );
+  });
+
+  it("validates each field independently — a valid theme survives an invalid density", () => {
+    const partiallyCorrupted = {
+      theme: "light",
+      density: "spacious",
+    } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(partiallyCorrupted)).toEqual({
+      ...DEFAULT_APPEARANCE,
+      theme: "light",
+    });
   });
 });
