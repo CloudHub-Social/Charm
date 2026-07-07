@@ -12,7 +12,8 @@ use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata:
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
-use matrix_sdk::ruma::UserId;
+use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -43,6 +44,85 @@ pub struct ProfileSummary {
     /// instead) — the frontend uses this to hide actions that can't
     /// succeed rather than let them fail confusingly.
     pub uses_oauth: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct ThirdPartyIdSummary {
+    pub medium: String,
+    pub address: String,
+}
+
+/// The account's confirmed email/phone contact methods, for the Account
+/// panel's Contact Information section (Spec 18) — a thin read-only
+/// projection of `get_3pids`' `medium`/`address` fields; the homeserver-side
+/// add/remove flow (email verification tokens, etc.) is Day-2 (see Spec 18's
+/// non-goals; only display is in scope here).
+#[tauri::command]
+pub async fn get_3pids(state: State<'_, MatrixState>) -> Result<Vec<ThirdPartyIdSummary>, String> {
+    let client = state.require_client().await?;
+    let response = client
+        .account()
+        .get_3pids()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response
+        .threepids
+        .into_iter()
+        .map(|t| ThirdPartyIdSummary {
+            medium: t.medium.to_string(),
+            address: t.address,
+        })
+        .collect())
+}
+
+/// Reads the account's `m.ignored_user_list` account data event directly
+/// (rather than `Client::subscribe_to_ignore_user_list_changes`, which only
+/// yields a value on the next change, not the current one) — same pattern
+/// as `matrix_sdk::Account::ignore_user`'s own internal lookup.
+async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
+    let content = client
+        .account()
+        .account_data::<IgnoredUserListEventContent>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = content else {
+        return Ok(Vec::new());
+    };
+    let content = raw.deserialize().map_err(|e| e.to_string())?;
+    Ok(content.ignored_users.into_keys().collect())
+}
+
+#[tauri::command]
+pub async fn get_ignored_users(state: State<'_, MatrixState>) -> Result<Vec<String>, String> {
+    let client = state.require_client().await?;
+    Ok(ignored_user_ids(&client)
+        .await?
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect())
+}
+
+#[tauri::command]
+pub async fn ignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    client
+        .account()
+        .ignore_user(user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    client
+        .account()
+        .unignore_user(user_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Runs a UIA-gated `call` (`change_password`/`deactivate`/`delete_devices`),

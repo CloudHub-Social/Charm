@@ -1,7 +1,6 @@
 import { MessageSquare, Settings as SettingsIcon, Users } from "lucide-react";
-import { useSetAtom } from "jotai";
 import { useEffect, useState, type ReactNode } from "react";
-import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
 type MobileTab = "chats" | "people";
@@ -49,7 +48,7 @@ export function AppShell({
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
-  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
     if (activeRoomId) onMobileViewChange("detail");
@@ -107,7 +106,7 @@ export function AppShell({
         <button
           type="button"
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => setSettingsOpen("account")}
+          onClick={() => openSettings("account")}
         >
           <SettingsIcon className="size-5" aria-hidden="true" />
           Settings

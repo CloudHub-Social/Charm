@@ -6,6 +6,7 @@ import { VerificationOverlay } from "@/features/verification/VerificationOverlay
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { useSettingsHashSync } from "@/features/settings/useSettingsNavigation";
 import { AppShell, type MobileView } from "@/features/shell/AppShell";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
@@ -53,6 +54,7 @@ export function RoomsScreen({
   // directly via `usePresence` — see ChatShell/RoomListItem.
   usePresenceListener();
   useBadgeListener();
+  useSettingsHashSync();
 
   useEffect(() => {
     listRooms().then(setRooms).catch(console.error);

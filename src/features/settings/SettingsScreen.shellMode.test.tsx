@@ -1,9 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import { settingsOpenAtom } from "./settingsAtoms";
+
+const mockUseAdaptiveLayout = vi.fn();
+vi.mock("@/features/shell/useAdaptiveLayout", () => ({
+  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: vi.fn().mockResolvedValue({
@@ -13,6 +18,9 @@ vi.mock("@/lib/matrix", () => ({
     uses_oauth: false,
   }),
   getAccountDeactivateUrl: vi.fn().mockResolvedValue(null),
+  get3pids: vi.fn().mockResolvedValue([]),
+  getIgnoredUsers: vi.fn().mockResolvedValue([]),
+  unignoreUser: vi.fn(),
   listDevices: vi.fn().mockResolvedValue([]),
   crossSigningStatus: vi.fn().mockResolvedValue({
     has_master_key: true,
@@ -36,67 +44,56 @@ vi.mock("@/lib/matrix", () => ({
     available: false,
   }),
   onPushStatus: vi.fn().mockReturnValue(Promise.resolve(() => {})),
-  registerPush: vi.fn().mockResolvedValue({
-    transport: "none",
-    registered: false,
-    endpoint_present: false,
-  }),
-  unregisterPush: vi.fn().mockResolvedValue(undefined),
-  get3pids: vi.fn().mockResolvedValue([]),
-  getIgnoredUsers: vi.fn().mockResolvedValue([]),
-  unignoreUser: vi.fn(),
+  registerPush: vi.fn(),
+  unregisterPush: vi.fn(),
   getAutostart: vi.fn().mockResolvedValue(false),
   setAutostart: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/plugin-notification", () => ({
-  requestPermission: vi.fn().mockResolvedValue("granted"),
-}));
-
-function renderScreen(section: "account" | "notifications" | "devices" | "appearance" | null) {
+function renderScreen(section: "account") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const store = createStore();
   store.set(settingsOpenAtom, section);
-  render(
+  return render(
     <QueryClientProvider client={client}>
       <JotaiProvider store={store}>
         <SettingsScreen onLoggedOut={vi.fn()} />
       </JotaiProvider>
     </QueryClientProvider>,
   );
-  return store;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.location.hash = "";
 });
 
-describe("SettingsScreen", () => {
-  it("renders nothing when closed", () => {
-    renderScreen(null);
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-  });
-
-  it("switches sections via the nav", async () => {
+describe("SettingsScreen shell mode", () => {
+  it("renders a centered dialog over a frozen background on desktop", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
     renderScreen("account");
-    expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
 
-    const notificationsTab = screen.getByRole("tab", { name: "Notifications" });
-    // Radix's Tabs activates on focus (the default "automatic" activation
-    // mode), which a real click produces but jsdom's synthetic `click` alone
-    // does not — focus it explicitly first.
-    notificationsTab.focus();
-    fireEvent.click(notificationsTab);
-
-    expect(await screen.findByText("Default notification mode")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
   });
 
-  it("closes via the close button", async () => {
-    const store = renderScreen("account");
-    await screen.findByRole("heading", { name: "Profile" });
+  it("renders a full page (no dialog) on mobile", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderScreen("account");
 
-    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    await screen.findByRole("button", { name: "Close settings" });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 
-    expect(store.get(settingsOpenAtom)).toBeNull();
+  it("switching a section updates the #/settings/<section> hash", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderScreen("account");
+
+    await screen.findByRole("button", { name: "Close settings" });
+    const notificationsTab = screen.getByRole("tab", { name: "Notifications" });
+    notificationsTab.focus();
+    notificationsTab.click();
+
+    await screen.findByText("Default notification mode");
+    expect(window.location.hash).toBe("#/settings/notifications");
   });
 });

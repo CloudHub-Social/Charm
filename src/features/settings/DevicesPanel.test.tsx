@@ -229,4 +229,62 @@ describe("DevicesPanel", () => {
 
     resolveFirst("flow-other");
   });
+
+  it("bulk-signs-out selected devices via the sticky action bar", async () => {
+    const devices: DeviceSummary[] = [
+      ...DEVICES,
+      {
+        device_id: "TABLET",
+        display_name: "Tablet",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+    listDevices.mockResolvedValue(devices);
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Tablet");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Tablet" }));
+    // The current device never gets a selection checkbox — it can't be
+    // bulk-revoked.
+    expect(screen.queryByRole("checkbox", { name: "Select This laptop" })).not.toBeInTheDocument();
+
+    expect(screen.getByText("2 devices selected")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
+    await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("TABLET", undefined));
+  });
+
+  it("prompts once for a password if bulk sign-out hits a UIA challenge, then retries the remaining devices", async () => {
+    const devices: DeviceSummary[] = [
+      ...DEVICES,
+      {
+        device_id: "TABLET",
+        display_name: "Tablet",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+    listDevices.mockResolvedValue(devices);
+    deleteDevice.mockRejectedValueOnce(new Error("uia")).mockResolvedValue(undefined);
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Tablet");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    const passwordInput = await screen.findByLabelText("Current password");
+    fireEvent.change(passwordInput, { target: { value: "current-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(deleteDevice).toHaveBeenLastCalledWith("OTHER", "current-password"));
+  });
 });

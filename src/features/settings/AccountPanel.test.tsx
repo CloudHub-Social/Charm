@@ -13,6 +13,9 @@ const resolveAvatar = vi.fn();
 const changePassword = vi.fn();
 const deactivateAccount = vi.fn();
 const getAccountDeactivateUrl = vi.fn();
+const get3pids = vi.fn();
+const getIgnoredUsers = vi.fn();
+const unignoreUser = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: (...args: unknown[]) => getProfile(...args),
@@ -24,6 +27,9 @@ vi.mock("@/lib/matrix", () => ({
   changePassword: (...args: unknown[]) => changePassword(...args),
   deactivateAccount: (...args: unknown[]) => deactivateAccount(...args),
   getAccountDeactivateUrl: (...args: unknown[]) => getAccountDeactivateUrl(...args),
+  get3pids: (...args: unknown[]) => get3pids(...args),
+  getIgnoredUsers: (...args: unknown[]) => getIgnoredUsers(...args),
+  unignoreUser: (...args: unknown[]) => unignoreUser(...args),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -55,6 +61,9 @@ beforeEach(() => {
   logout.mockReset();
   getAccountDeactivateUrl.mockReset().mockResolvedValue(null);
   deactivateAccount.mockReset();
+  get3pids.mockReset().mockResolvedValue([]);
+  getIgnoredUsers.mockReset().mockResolvedValue([]);
+  unignoreUser.mockReset();
 });
 
 describe("AccountPanel", () => {
