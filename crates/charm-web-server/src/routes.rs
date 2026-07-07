@@ -44,7 +44,6 @@ use charm_lib::matrix::send::{build_message_content, send_and_capture_transactio
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
-use matrix_sdk_ui::timeline::RoomExt as _;
 
 use crate::session::Session;
 use crate::AppState;
@@ -340,19 +339,21 @@ async fn get_timeline_page(
     let session = require_session(&state, &jar).await?;
     let parsed_room_id =
         RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let room = session
-        .client
-        .get_room(&parsed_room_id)
-        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
-    // No cross-request timeline cache in sub-PR A (that's the `MatrixState`
-    // LRU on the desktop side, which is `AppHandle`-bound) — each page
-    // request builds a fresh `Timeline` handle. Fine for MVP request volume;
-    // worth revisiting (likely as part of sub-PR B, alongside real
-    // persistence) if this becomes a hot path.
-    let timeline = room
-        .timeline()
+    // Reuses this session's cached `Timeline` for the room (see
+    // `Session::get_or_create_timeline`) rather than building a fresh one
+    // per request — a `Timeline` carries its own pagination cursor, so a
+    // brand-new one on every call silently reset pagination and made
+    // "load older messages" always return the same first page.
+    let timeline = session
+        .get_or_create_timeline(&parsed_room_id)
         .await
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        .map_err(|e| {
+            if e == format!("room {room_id} not found") {
+                ApiError::not_found(e)
+            } else {
+                ApiError::bad_request(e)
+            }
+        })?;
     let page = get_timeline_page_impl(&session.client, &timeline, None, query.limit)
         .await
         .map_err(ApiError::bad_request)?;

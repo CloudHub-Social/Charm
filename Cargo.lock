@@ -1102,6 +1102,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "charm",
+ "lru",
  "matrix-sdk",
  "matrix-sdk-ui",
  "rand 0.10.2",

@@ -51,7 +51,7 @@ pub async fn login(request: LoginRequest) -> Result<(LoginResponse, Session), St
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session { client, user_id }))
+    Ok((response, Session::new(client, user_id)))
 }
 
 /// Registers a new account and logs it in, same in-memory-client shape as
@@ -85,5 +85,5 @@ pub async fn register(request: RegisterRequest) -> Result<(LoginResponse, Sessio
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session { client, user_id }))
+    Ok((response, Session::new(client, user_id)))
 }

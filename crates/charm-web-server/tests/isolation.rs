@@ -20,10 +20,7 @@ async fn dummy_session(user_id: &str) -> Session {
         .expect(
             "building a client against an unreachable homeserver shouldn't require network access",
         );
-    Session {
-        client,
-        user_id: user_id.to_string(),
-    }
+    Session::new(client, user_id.to_string())
 }
 
 #[tokio::test]
