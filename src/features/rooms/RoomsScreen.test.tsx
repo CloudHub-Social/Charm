@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
-import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
@@ -38,8 +38,12 @@ vi.mock("@/features/settings/SettingsScreen", () => ({
   SettingsScreen: () => null,
 }));
 
-vi.mock("@/features/room-info/RoomInfoPanel", () => ({
-  RoomInfoPanel: () => <div>room-info-panel</div>,
+vi.mock("@/features/room-info/MembersDrawer", () => ({
+  MembersDrawer: () => <div>members-drawer</div>,
+}));
+
+vi.mock("@/features/room-info/RoomSettingsModal", () => ({
+  RoomSettingsModal: () => null,
 }));
 
 vi.mock("./ChatShell", () => ({
@@ -200,7 +204,7 @@ describe("RoomsScreen", () => {
   it("closes the right panel when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();
-    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+    store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);
 
     const { rerender } = render(
       <Provider store={store}>
@@ -213,7 +217,7 @@ describe("RoomsScreen", () => {
       </Provider>,
     );
     await screen.findByText("chat-content:!a:example.org");
-    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+    expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
 
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     rerender(
@@ -227,7 +231,9 @@ describe("RoomsScreen", () => {
       </Provider>,
     );
 
-    await waitFor(() => expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(false));
+    await waitFor(() =>
+      expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(false),
+    );
   });
 
   it("does not force-close a right panel opened while already on mobile", async () => {
@@ -249,10 +255,10 @@ describe("RoomsScreen", () => {
     // Opening the panel *while already mobile* (no desktop -> mobile
     // transition involved) must not be immediately reset — only an actual
     // transition should force it closed.
-    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+    store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+    expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
   });
 
   it("does not report the active room as focused while a mobile list tab is showing", async () => {

@@ -16,8 +16,9 @@ import {
   setFocusedRoom,
   type RoomSummary,
 } from "@/lib/matrix";
-import { RoomInfoPanel } from "@/features/room-info/RoomInfoPanel";
-import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { MembersDrawer } from "@/features/room-info/MembersDrawer";
+import { RoomSettingsModal } from "@/features/room-info/RoomSettingsModal";
+import { membersDrawerOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
 
 interface RoomsScreenProps {
   currentUserId: string;
@@ -146,28 +147,28 @@ export function RoomsScreen({
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
-  const [rightPanelOpen, setRightPanelOpen] = useAtom(
-    rightPanelOpenAtomFamily(activeRoom?.room_id ?? ""),
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    membersDrawerOpenAtomFamily(activeRoom?.room_id ?? ""),
   );
 
-  // The right panel is desktop-only (mobile has no room besides the active
-  // one to show it alongside — see `AppShell`'s non-goals). Reset only on
-  // the desktop -> mobile *transition* (tracked via `prevLayoutRef`), not
-  // whenever `rightPanelOpen` is true while already mobile — the latter
-  // would fire every time the panel opens on mobile (via `ChatShell`'s
-  // "Show room info" button) and immediately close it again before it's
-  // ever visible, defeating mobile's own ability to show it. The transition
-  // check still catches opening it on desktop and then narrowing the
-  // window, which would otherwise leave `rightPanelOpen` stuck `true` and
-  // the mobile detail view showing a panel for a layout it was never opened
-  // in.
+  // The members drawer is desktop-only (mobile has no room besides the
+  // active one to show it alongside — see `AppShell`'s non-goals). Reset
+  // only on the desktop -> mobile *transition* (tracked via
+  // `prevLayoutRef`), not whenever `membersDrawerOpen` is true while already
+  // mobile — the latter would fire every time the drawer opens on mobile
+  // (via `ChatShell`'s "Show members" button) and immediately close it again
+  // before it's ever visible, defeating mobile's own ability to show it. The
+  // transition check still catches opening it on desktop and then narrowing
+  // the window, which would otherwise leave `membersDrawerOpen` stuck `true`
+  // and the mobile detail view showing a panel for a layout it was never
+  // opened in.
   const prevLayoutRef = useRef(layout);
   useEffect(() => {
-    if (prevLayoutRef.current === "desktop" && layout === "mobile" && rightPanelOpen) {
-      setRightPanelOpen(false);
+    if (prevLayoutRef.current === "desktop" && layout === "mobile" && membersDrawerOpen) {
+      setMembersDrawerOpen(false);
     }
     prevLayoutRef.current = layout;
-  }, [layout, rightPanelOpen, setRightPanelOpen]);
+  }, [layout, membersDrawerOpen, setMembersDrawerOpen]);
 
   return (
     <>
@@ -186,15 +187,16 @@ export function RoomsScreen({
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
         rightPanel={
-          activeRoom && rightPanelOpen ? (
-            <RoomInfoPanel
+          activeRoom && membersDrawerOpen ? (
+            <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}
-              onClose={() => setRightPanelOpen(false)}
+              onClose={() => setMembersDrawerOpen(false)}
             />
           ) : null
         }
       />
+      <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
     </>
