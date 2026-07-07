@@ -174,7 +174,14 @@ mod android {
         activity: &JObject,
     ) -> Result<JClass<'a>, SecretStoreError> {
         if let Some(cached) = SECURE_STORAGE_CLASS_REF.get() {
-            return Ok(JClass::from(cached.as_obj().clone()));
+            // `JObject` doesn't implement `Clone` in jni 0.21 (local/global
+            // refs are tracked resources, not freely copyable values) — a
+            // new local ref onto the same underlying object is the correct
+            // way to hand out another usable reference to it.
+            let local = env
+                .new_local_ref(cached.as_obj())
+                .map_err(jni_error("new_local_ref(cached SecureStorage class)"))?;
+            return Ok(JClass::from(local));
         }
         let class_loader = env
             .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
@@ -200,7 +207,10 @@ mod android {
         // Another thread may have raced us here; either ref works, so keep
         // whichever `OnceLock::set` actually won and use that one.
         let cached = SECURE_STORAGE_CLASS_REF.get_or_init(|| global);
-        Ok(JClass::from(cached.as_obj().clone()))
+        let local = env
+            .new_local_ref(cached.as_obj())
+            .map_err(jni_error("new_local_ref(cached SecureStorage class)"))?;
+        Ok(JClass::from(local))
     }
 
     pub(super) fn get(service: &str, account: &str) -> Result<String, SecretStoreError> {
