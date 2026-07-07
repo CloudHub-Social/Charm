@@ -131,8 +131,26 @@ mod android {
     /// rather than looked up by name on every call.
     static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
 
-    fn jni_error(context: &str) -> impl Fn(jni::errors::Error) -> SecretStoreError + '_ {
-        move |e| SecretStoreError::Other(format!("{context}: {e}"))
+    /// Maps a JNI call's result to `SecretStoreError`, and — if it failed —
+    /// clears any pending Java exception first.
+    ///
+    /// The `jni` crate's exception-checking macros (used internally by
+    /// `call_method`/`call_static_method`/etc.) convert a pending exception
+    /// into `Err(Error::JavaException)` but never call `ExceptionClear`
+    /// themselves (confirmed against the jni 0.21.1 source: `check_exception!`
+    /// returns the error without clearing). Per the JNI spec, almost no JNI
+    /// function may be called with an exception still pending — including
+    /// implicitly on thread detach — so leaving one set here could crash the
+    /// JVM the next time this (or another) call reuses the thread.
+    fn jni_result<T>(
+        env: &mut jni::JNIEnv,
+        context: &str,
+        result: Result<T, jni::errors::Error>,
+    ) -> Result<T, SecretStoreError> {
+        result.map_err(|e| {
+            let _ = env.exception_clear();
+            SecretStoreError::Other(format!("{context}: {e}"))
+        })
     }
 
     /// Attaches the calling thread to the JVM and hands back an `env` plus
@@ -146,11 +164,15 @@ mod android {
         // Android runtime already established and keeps alive for the life
         // of the process — the same handle every Android-targeting Tauri
         // plugin uses to reach the JVM from native code.
-        let vm =
-            unsafe { JavaVM::from_raw(ctx.vm().cast()) }.map_err(jni_error("attach to JVM"))?;
+        //
+        // No `env` exists yet at this point, so there's nothing to clear a
+        // pending exception on — neither of these can leave one pending
+        // anyway (they attach/describe the JVM itself, not a Java call).
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
+            .map_err(|e| SecretStoreError::Other(format!("attach to JVM: {e}")))?;
         let mut env = vm
             .attach_current_thread()
-            .map_err(jni_error("attach current thread"))?;
+            .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
         // SAFETY: `ctx.context()` is a valid `jobject` for the app's
         // `Activity`/`Context` for the lifetime of this call.
         let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
@@ -178,73 +200,61 @@ mod android {
             // refs are tracked resources, not freely copyable values) — a
             // new local ref onto the same underlying object is the correct
             // way to hand out another usable reference to it.
-            let local = env
-                .new_local_ref(cached.as_obj())
-                .map_err(jni_error("new_local_ref(cached SecureStorage class)"))?;
+            let result = env.new_local_ref(cached.as_obj());
+            let local = jni_result(env, "new_local_ref(cached SecureStorage class)", result)?;
             return Ok(JClass::from(local));
         }
-        let class_loader = env
-            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-            .map_err(jni_error("activity.getClassLoader()"))?
-            .l()
-            .map_err(jni_error("getClassLoader() return value"))?;
-        let class_name = env
-            .new_string(SECURE_STORAGE_CLASS.replace('/', "."))
-            .map_err(jni_error("new_string(class name)"))?;
-        let class_obj = env
-            .call_method(
-                &class_loader,
-                "loadClass",
-                "(Ljava/lang/String;)Ljava/lang/Class;",
-                &[JValue::from(&class_name)],
-            )
-            .map_err(jni_error("classLoader.loadClass(SecureStorage)"))?
-            .l()
-            .map_err(jni_error("loadClass() return value"))?;
-        let global = env
-            .new_global_ref(&class_obj)
-            .map_err(jni_error("new_global_ref(SecureStorage class)"))?;
+        let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
+        let class_loader = jni_result(env, "activity.getClassLoader()", result)?;
+        let result = class_loader.l();
+        let class_loader = jni_result(env, "getClassLoader() return value", result)?;
+        let result = env.new_string(SECURE_STORAGE_CLASS.replace('/', "."));
+        let class_name = jni_result(env, "new_string(class name)", result)?;
+        let result = env.call_method(
+            &class_loader,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;",
+            &[JValue::from(&class_name)],
+        );
+        let class_obj = jni_result(env, "classLoader.loadClass(SecureStorage)", result)?;
+        let result = class_obj.l();
+        let class_obj = jni_result(env, "loadClass() return value", result)?;
+        let result = env.new_global_ref(&class_obj);
+        let global = jni_result(env, "new_global_ref(SecureStorage class)", result)?;
         // Another thread may have raced us here; either ref works, so keep
         // whichever `OnceLock::set` actually won and use that one.
         let cached = SECURE_STORAGE_CLASS_REF.get_or_init(|| global);
-        let local = env
-            .new_local_ref(cached.as_obj())
-            .map_err(jni_error("new_local_ref(cached SecureStorage class)"))?;
+        let result = env.new_local_ref(cached.as_obj());
+        let local = jni_result(env, "new_local_ref(cached SecureStorage class)", result)?;
         Ok(JClass::from(local))
     }
 
     pub(super) fn get(service: &str, account: &str) -> Result<String, SecretStoreError> {
         with_env(|env, activity| {
             let class = secure_storage_class(env, activity)?;
-            let service_j = env
-                .new_string(service)
-                .map_err(jni_error("new_string(service)"))?;
-            let account_j = env
-                .new_string(account)
-                .map_err(jni_error("new_string(account)"))?;
-            let result = env
-                .call_static_method(
-                    class,
-                    "get",
-                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
-                    &[
-                        JValue::from(activity),
-                        JValue::from(&service_j),
-                        JValue::from(&account_j),
-                    ],
-                )
-                .map_err(jni_error("call SecureStorage.get"))?;
-            let obj = result
-                .l()
-                .map_err(jni_error("SecureStorage.get return value"))?;
+            let result = env.new_string(service);
+            let service_j = jni_result(env, "new_string(service)", result)?;
+            let result = env.new_string(account);
+            let account_j = jni_result(env, "new_string(account)", result)?;
+            let result = env.call_static_method(
+                class,
+                "get",
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                &[
+                    JValue::from(activity),
+                    JValue::from(&service_j),
+                    JValue::from(&account_j),
+                ],
+            );
+            let return_value = jni_result(env, "call SecureStorage.get", result)?;
+            let result = return_value.l();
+            let obj = jni_result(env, "SecureStorage.get return value", result)?;
             if obj.is_null() {
                 return Err(SecretStoreError::NotFound);
             }
             let value_str = JString::from(obj);
-            let value: String = env
-                .get_string(&value_str)
-                .map_err(jni_error("read SecureStorage.get result"))?
-                .into();
+            let result = env.get_string(&value_str);
+            let value: String = jni_result(env, "read SecureStorage.get result", result)?.into();
             Ok(value)
         })
     }
@@ -256,16 +266,13 @@ mod android {
     ) -> Result<(), SecretStoreError> {
         with_env(|env, activity| {
             let class = secure_storage_class(env, activity)?;
-            let service_j = env
-                .new_string(service)
-                .map_err(jni_error("new_string(service)"))?;
-            let account_j = env
-                .new_string(account)
-                .map_err(jni_error("new_string(account)"))?;
-            let password_j = env
-                .new_string(password)
-                .map_err(jni_error("new_string(password)"))?;
-            env.call_static_method(
+            let result = env.new_string(service);
+            let service_j = jni_result(env, "new_string(service)", result)?;
+            let result = env.new_string(account);
+            let account_j = jni_result(env, "new_string(account)", result)?;
+            let result = env.new_string(password);
+            let password_j = jni_result(env, "new_string(password)", result)?;
+            let result = env.call_static_method(
                 class,
                 "set",
                 "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
@@ -275,8 +282,8 @@ mod android {
                     JValue::from(&account_j),
                     JValue::from(&password_j),
                 ],
-            )
-            .map_err(jni_error("call SecureStorage.set"))?;
+            );
+            jni_result(env, "call SecureStorage.set", result)?;
             Ok(())
         })
     }
@@ -284,13 +291,11 @@ mod android {
     pub(super) fn delete(service: &str, account: &str) -> Result<(), SecretStoreError> {
         with_env(|env, activity| {
             let class = secure_storage_class(env, activity)?;
-            let service_j = env
-                .new_string(service)
-                .map_err(jni_error("new_string(service)"))?;
-            let account_j = env
-                .new_string(account)
-                .map_err(jni_error("new_string(account)"))?;
-            env.call_static_method(
+            let result = env.new_string(service);
+            let service_j = jni_result(env, "new_string(service)", result)?;
+            let result = env.new_string(account);
+            let account_j = jni_result(env, "new_string(account)", result)?;
+            let result = env.call_static_method(
                 class,
                 "delete",
                 "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
@@ -299,8 +304,8 @@ mod android {
                     JValue::from(&service_j),
                     JValue::from(&account_j),
                 ],
-            )
-            .map_err(jni_error("call SecureStorage.delete"))?;
+            );
+            jni_result(env, "call SecureStorage.delete", result)?;
             Ok(())
         })
     }
