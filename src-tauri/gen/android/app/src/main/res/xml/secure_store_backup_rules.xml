@@ -1,22 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Excludes `SecureStorage.kt`'s EncryptedSharedPreferences file from both
-  Android's legacy full-data backup and the modern (Android 12+) cloud/
-  device-transfer backup. Its values are encrypted with a key held in the
-  Android Keystore, which is device-bound and never included in a backup
-  (by design — the Keystore doesn't back up private key material). A
-  restored copy of the encrypted prefs file on a different device (or the
-  same device after a factory reset) can't be decrypted with the original
-  key, so keeping it out of backups avoids shipping master-key-less
-  ciphertext, and lets the app fall back to its normal
-  regenerate-passphrase/re-login path instead of tripping over stale
-  undecryptable data.
+  Excludes `SecureStorage.kt`'s EncryptedSharedPreferences file *and*
+  `matrix_store/` (the SQLCipher databases it holds the passphrase for —
+  see `matrix_store_root` in persistence.rs) from both Android's legacy
+  full-data backup and the modern (Android 12+) cloud/device-transfer
+  backup.
+
+  Both must be excluded together, not just the prefs file: the prefs
+  file's values are encrypted with a key held in the Android Keystore,
+  which is device-bound and never included in a backup (by design — the
+  Keystore doesn't back up private key material), so a restored copy on a
+  different device (or the same device after a factory reset) can't be
+  decrypted regardless. But if only the prefs file were excluded,
+  `matrix_store/`'s encrypted databases *would* come back on restore with
+  no matching passphrase, and `relocate_store`'s existing-store path would
+  try to reuse that restored (now-orphaned) database with a freshly
+  generated passphrase — a mismatch, not a working store. Excluding both
+  keeps the failure mode a clean "no local session" that falls through to
+  re-login, rather than a store present, encrypted, and unopenable.
 -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+        <exclude domain="file" path="matrix_store/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+        <exclude domain="file" path="matrix_store/" />
     </device-transfer>
 </data-extraction-rules>

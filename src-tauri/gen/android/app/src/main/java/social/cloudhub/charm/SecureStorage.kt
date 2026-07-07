@@ -78,11 +78,24 @@ object SecureStorage {
         }
     }
 
-    /** No-ops if (`service`, `account`) has nothing stored — matches `keyring`'s delete semantics on other platforms, where callers already tolerate a missing entry. */
+    /**
+     * No-ops if (`service`, `account`) has nothing stored — matches
+     * `keyring`'s delete semantics on other platforms, where callers already
+     * tolerate a missing entry.
+     *
+     * Also surfaces a failed `commit()` the same way `set()` does: callers
+     * like `clear_session`/`clear_oauth_session` treat a returning `delete`
+     * as proof the local secret is gone, so a silently-ignored failed
+     * commit here would tell logout/deactivate/stale-session cleanup the
+     * session was cleared while the encrypted token is still on disk and
+     * restorable on the next launch.
+     */
     @JvmStatic
     fun delete(context: Context, service: String, account: String) {
         synchronized(lock) {
-            preferences(context, service).edit().remove(account).commit()
+            check(preferences(context, service).edit().remove(account).commit()) {
+                "SecureStorage.delete: SharedPreferences.commit() returned false for $service/$account"
+            }
         }
     }
 }
