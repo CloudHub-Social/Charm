@@ -83,6 +83,18 @@ describe("RoomSettingsModal", () => {
     await waitFor(() => expect(screen.getByLabelText("Search members")).toBeInTheDocument());
   });
 
+  it("shows a dismissible error message when the details fetch fails", async () => {
+    getRoomDetails.mockRejectedValue(new Error("network error"));
+
+    renderModal({ roomId: "!fails:localhost", section: "general" });
+
+    expect(await screen.findByText("Couldn't load room settings.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close room settings" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
   it("closes and clears the target when dismissed", async () => {
     const details = makeRoomDetails({ name: "Design Team" });
     getRoomDetails.mockResolvedValue(details);

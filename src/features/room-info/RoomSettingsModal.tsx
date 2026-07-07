@@ -30,7 +30,7 @@ interface RoomSettingsModalProps {
  */
 export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
   const [target, setTarget] = useAtom(roomSettingsAtom);
-  const { data: details, isLoading } = useRoomDetails(target?.roomId ?? null);
+  const { data: details, isLoading, isError } = useRoomDetails(target?.roomId ?? null);
 
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -43,6 +43,20 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
         {isLoading && (
           <div className="flex items-center justify-between p-4">
             <p className="text-sm text-muted-foreground">Loading…</p>
+            <button
+              type="button"
+              aria-label="Close room settings"
+              onClick={() => setTarget(null)}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
+
+        {isError && (
+          <div className="flex items-center justify-between p-4">
+            <p className="text-sm text-destructive">Couldn't load room settings.</p>
             <button
               type="button"
               aria-label="Close room settings"
