@@ -110,4 +110,14 @@ describe("SettingsScreen", () => {
     expect(screen.queryByLabelText("Launch Charm when I log in")).not.toBeInTheDocument();
     expect(getAutostart).not.toHaveBeenCalled();
   });
+
+  it("falls back to the first available section instead of a blank panel when deep-linked to an unsupported one", async () => {
+    renderScreen("desktop");
+
+    // Falls back to Account (the first entry in SECTIONS), rather than
+    // leaving the Tabs `value` pointed at "desktop" with no matching
+    // trigger or content, which would otherwise render nothing at all.
+    expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Account" })).toHaveAttribute("aria-selected", "true");
+  });
 });

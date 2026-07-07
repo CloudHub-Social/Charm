@@ -49,10 +49,18 @@ function SettingsBody({
   const showDesktopSection = isTauri() && !mobile;
   const sections = SECTIONS.filter((s) => !s.desktopOnly || showDesktopSection);
 
+  // A `#/settings/desktop` deep link (or a stale one from switching from
+  // desktop to mobile width, or Tauri to a plain browser, without closing
+  // settings first) would otherwise select a section with no matching tab
+  // or content — Radix then renders nothing at all, leaving settings open
+  // on a blank panel. Falling back to the first available section, same as
+  // if nothing had been selected yet, always shows something real.
+  const effectiveSection = sections.some((s) => s.value === section) ? section : sections[0].value;
+
   return (
     <Tabs
       orientation={mobile ? "horizontal" : "vertical"}
-      value={section}
+      value={effectiveSection}
       onValueChange={(value) => onSectionChange(value as SettingsSection)}
       className={mobile ? "flex h-full w-full flex-col" : "flex h-full w-full"}
     >
