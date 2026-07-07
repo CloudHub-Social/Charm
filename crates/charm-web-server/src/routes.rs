@@ -1365,8 +1365,12 @@ fn spawn_progress_forwarder(
 async fn set_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Same rationale as `send_attachment`: a raw, non-JSON body means no
+    // automatic CORS preflight, so this needs its own explicit Origin check.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let mime = infer_image_mime(&body);
     session
@@ -1399,12 +1403,21 @@ fn infer_image_mime(bytes: &[u8]) -> mime::Mime {
 /// different source of truth (the message's declared mimetype) instead of
 /// prematurely committing to octet-stream.
 fn sniffed_image_mime(bytes: &[u8]) -> Option<mime::Mime> {
+    // `guess_format` only inspects magic bytes to identify the format — it
+    // works regardless of whether this crate's `image` build actually has
+    // the matching *decode* feature enabled (e.g. `avif` pulls in a heavy
+    // `dav1d`-based decoder this crate doesn't otherwise need), so every
+    // format `guess_format` can recognize is safe to map here even though
+    // only a subset would successfully decode.
     match image::guess_format(bytes) {
         Ok(image::ImageFormat::Png) => Some(mime::IMAGE_PNG),
         Ok(image::ImageFormat::Jpeg) => Some(mime::IMAGE_JPEG),
         Ok(image::ImageFormat::Gif) => Some(mime::IMAGE_GIF),
         Ok(image::ImageFormat::WebP) => Some("image/webp".parse().expect("valid mime")),
         Ok(image::ImageFormat::Bmp) => Some(mime::IMAGE_BMP),
+        Ok(image::ImageFormat::Avif) => Some("image/avif".parse().expect("valid mime")),
+        Ok(image::ImageFormat::Tiff) => Some("image/tiff".parse().expect("valid mime")),
+        Ok(image::ImageFormat::Ico) => Some("image/x-icon".parse().expect("valid mime")),
         Ok(_) | Err(_) => None,
     }
 }
@@ -1425,7 +1438,11 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
 async fn remove_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
 ) -> Result<impl IntoResponse, ApiError> {
+    // DELETE isn't a CORS "simple method", so this is already preflighted —
+    // checked anyway for defense in depth and consistency with `set_avatar`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     session
         .client
