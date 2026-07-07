@@ -120,10 +120,16 @@ mod android {
     //! context through every `persistence.rs` call site.
 
     use super::SecretStoreError;
-    use jni::objects::{JObject, JString, JValue};
+    use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
     use jni::JavaVM;
+    use std::sync::OnceLock;
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
+
+    /// Cached `GlobalRef` to the `SecureStorage` `Class` object, resolved
+    /// once via the Activity's own classloader (see [`secure_storage_class`])
+    /// rather than looked up by name on every call.
+    static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
 
     fn jni_error(context: &str) -> impl Fn(jni::errors::Error) -> SecretStoreError + '_ {
         move |e| SecretStoreError::Other(format!("{context}: {e}"))
@@ -151,8 +157,55 @@ mod android {
         f(&mut env, &activity)
     }
 
+    /// Resolves the `SecureStorage` class via the Activity's own classloader
+    /// rather than `JNIEnv::find_class`/a by-name `call_static_method`.
+    ///
+    /// A thread attached to the JVM from native code (as `with_env` does for
+    /// every call here, since these run on Tokio worker threads, not the
+    /// thread Android started the app on) resolves plain class-name lookups
+    /// against the *system* classloader, which only knows the Android
+    /// framework — not app-defined classes like this one. That lookup would
+    /// intermittently throw `ClassNotFoundException` (in practice, on
+    /// whichever call happens to land on a freshly-attached thread first).
+    /// Going through `activity.getClassLoader()` instead resolves against the
+    /// app's own classloader, same as a normal Kotlin/Java call site would.
+    fn secure_storage_class<'a>(
+        env: &mut jni::JNIEnv<'a>,
+        activity: &JObject,
+    ) -> Result<JClass<'a>, SecretStoreError> {
+        if let Some(cached) = SECURE_STORAGE_CLASS_REF.get() {
+            return Ok(JClass::from(cached.as_obj().clone()));
+        }
+        let class_loader = env
+            .call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .map_err(jni_error("activity.getClassLoader()"))?
+            .l()
+            .map_err(jni_error("getClassLoader() return value"))?;
+        let class_name = env
+            .new_string(SECURE_STORAGE_CLASS.replace('/', "."))
+            .map_err(jni_error("new_string(class name)"))?;
+        let class_obj = env
+            .call_method(
+                &class_loader,
+                "loadClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::from(&class_name)],
+            )
+            .map_err(jni_error("classLoader.loadClass(SecureStorage)"))?
+            .l()
+            .map_err(jni_error("loadClass() return value"))?;
+        let global = env
+            .new_global_ref(&class_obj)
+            .map_err(jni_error("new_global_ref(SecureStorage class)"))?;
+        // Another thread may have raced us here; either ref works, so keep
+        // whichever `OnceLock::set` actually won and use that one.
+        let cached = SECURE_STORAGE_CLASS_REF.get_or_init(|| global);
+        Ok(JClass::from(cached.as_obj().clone()))
+    }
+
     pub(super) fn get(service: &str, account: &str) -> Result<String, SecretStoreError> {
         with_env(|env, activity| {
+            let class = secure_storage_class(env, activity)?;
             let service_j = env
                 .new_string(service)
                 .map_err(jni_error("new_string(service)"))?;
@@ -161,7 +214,7 @@ mod android {
                 .map_err(jni_error("new_string(account)"))?;
             let result = env
                 .call_static_method(
-                    SECURE_STORAGE_CLASS,
+                    class,
                     "get",
                     "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
                     &[
@@ -192,6 +245,7 @@ mod android {
         password: &str,
     ) -> Result<(), SecretStoreError> {
         with_env(|env, activity| {
+            let class = secure_storage_class(env, activity)?;
             let service_j = env
                 .new_string(service)
                 .map_err(jni_error("new_string(service)"))?;
@@ -202,7 +256,7 @@ mod android {
                 .new_string(password)
                 .map_err(jni_error("new_string(password)"))?;
             env.call_static_method(
-                SECURE_STORAGE_CLASS,
+                class,
                 "set",
                 "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                 &[
@@ -219,6 +273,7 @@ mod android {
 
     pub(super) fn delete(service: &str, account: &str) -> Result<(), SecretStoreError> {
         with_env(|env, activity| {
+            let class = secure_storage_class(env, activity)?;
             let service_j = env
                 .new_string(service)
                 .map_err(jni_error("new_string(service)"))?;
@@ -226,7 +281,7 @@ mod android {
                 .new_string(account)
                 .map_err(jni_error("new_string(account)"))?;
             env.call_static_method(
-                SECURE_STORAGE_CLASS,
+                class,
                 "delete",
                 "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
                 &[

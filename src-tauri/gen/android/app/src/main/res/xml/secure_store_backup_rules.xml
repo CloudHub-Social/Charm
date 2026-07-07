@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Excludes `SecureStorage.kt`'s EncryptedSharedPreferences file from both
+  Android's legacy full-data backup and the modern (Android 12+) cloud/
+  device-transfer backup. Its values are encrypted with a key held in the
+  Android Keystore, which is device-bound and never included in a backup
+  (by design — the Keystore doesn't back up private key material). A
+  restored copy of the encrypted prefs file on a different device (or the
+  same device after a factory reset) can't be decrypted with the original
+  key, so keeping it out of backups avoids shipping master-key-less
+  ciphertext, and lets the app fall back to its normal
+  regenerate-passphrase/re-login path instead of tripping over stale
+  undecryptable data.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+    </device-transfer>
+</data-extraction-rules>

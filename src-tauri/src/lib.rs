@@ -13,39 +13,6 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// Spec 13 spike scaffolding only — not shipped product code. Lets the
-/// `?auto=1` CI mode of `public/spike-webrtc.html` hand its A/B/C results back
-/// to the host process so a headless CI job can assert on them from a file
-/// instead of needing a human to read the on-screen log.
-///
-/// Defaults to the app's data dir (not cwd) so this is pullable on Android —
-/// `adb shell run-as <pkg> cat <app_data_dir>/spike-ci-report.json` — where a
-/// relative path would land somewhere CI can't reach. Desktop CI overrides
-/// with `SPIKE_CI_REPORT_PATH` pointed at the checkout for a plain file read.
-#[tauri::command]
-fn spike_ci_report(app: tauri::AppHandle, results: serde_json::Value) -> Result<(), String> {
-    let path = match std::env::var("SPIKE_CI_REPORT_PATH") {
-        Ok(p) => std::path::PathBuf::from(p),
-        Err(_) => {
-            use tauri::Manager;
-            app.path()
-                .app_data_dir()
-                .map_err(|e| e.to_string())?
-                .join("spike-ci-report.json")
-        }
-    };
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&results).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    eprintln!("spike_ci_report: wrote {}", path.display());
-    Ok(())
-}
-
 /// Matches `key = value` / `key: "value"` pairs (JSON-ish or Debug/Display
 /// formatted) for field names that should never reach Sentry, case
 /// insensitively. Not a general-purpose secret scanner — just a
@@ -134,7 +101,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
-            spike_ci_report,
             matrix::auth::login,
             matrix::auth::register,
             matrix::auth::discover_homeserver,

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy (pre-Android 12) counterpart to secure_store_backup_rules.xml, referenced via android:fullBackupContent for devices below API 31. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="secure_store_social.cloudhub.charm.xml" />
+</full-backup-content>
