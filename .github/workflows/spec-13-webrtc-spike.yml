@@ -153,7 +153,11 @@ jobs:
           disable-animations: true
           script: |
             PKG=social.cloudhub.charm
-            APK=$(find src-tauri/gen/android -iname "*-x86_64-debug.apk" | head -1)
+            # `--target x86_64` still produces a "universal" flavor APK
+            # (app-universal-debug.apk) by default per the Gradle product
+            # flavors this project's build.gradle.kts sets up — not an
+            # x86_64-named one as the previous pattern assumed.
+            APK=$(find src-tauri/gen/android -iname "*-debug.apk" | head -1)
             echo "Installing $APK"
             adb install -r "$APK"
             # Pre-grant the OS-level runtime permission (Android 6+ requirement).
