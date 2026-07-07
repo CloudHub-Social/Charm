@@ -1,5 +1,5 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -63,6 +63,24 @@ export function DevicesPanel() {
     status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key,
   );
   const groups = groupDevices(devices ?? []);
+  const selectableDeviceIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
+
+  // Prunes selectedIds whenever the device list changes underneath it — a
+  // device can leave the selectable set without going through toggleSelected
+  // at all: signing it out from its own row menu, another session revoking
+  // it, or a refetch simply dropping it. Without this, the action bar's
+  // count and the bulk-revoke loop would both keep sending an id for a
+  // device that no longer exists (or no longer qualifies).
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const next = new Set([...prev].filter((id) => selectableDeviceIds.includes(id)));
+      return next.size === prev.size ? prev : next;
+    });
+    // Only the device list itself should trigger a prune — reacting to
+    // `selectableDeviceIds` (a new array every render) would run this on
+    // every render instead of only when `devices` actually changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devices]);
 
   function toggleSelected(deviceId: string) {
     setSelectedIds((prev) => {
@@ -145,7 +163,6 @@ export function DevicesPanel() {
     }
   }
 
-  const selectableIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
   const selectedCount = selectedIds.size;
 
   return (
@@ -244,7 +261,7 @@ export function DevicesPanel() {
               variant="destructive"
               size="sm"
               onClick={() => setBulkOpen(true)}
-              disabled={!selectableIds.some((id) => selectedIds.has(id))}
+              disabled={!selectableDeviceIds.some((id) => selectedIds.has(id))}
             >
               Sign out selected
             </Button>

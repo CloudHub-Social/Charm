@@ -189,6 +189,28 @@ describe("DevicesPanel", () => {
     await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
   });
 
+  it("prunes a selected device from the bulk-select state once it's revoked from its own row menu", async () => {
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Phone");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    expect(screen.getByText("1 device selected")).toBeInTheDocument();
+
+    // Revoking has nothing to do with the bulk-select checkbox — it's the
+    // row's own "Sign out" action — but it still removes the device from
+    // `listDevices`'s next result, which must prune it out of `selectedIds`
+    // too, not leave the action bar showing a device that's already gone.
+    listDevices.mockResolvedValue([DEVICES[0]]);
+    openActionsMenu("Actions for Phone");
+    fireEvent.click(await screen.findByText("Sign out"));
+    await screen.findByText("Sign out this device?");
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
+    await waitFor(() => expect(screen.queryByText("Phone")).not.toBeInTheDocument());
+    expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
+  });
+
   it("does not offer bulk-select for an OAuth account, whose devices can only be revoked via account management", async () => {
     getProfile.mockResolvedValue({
       user_id: "@me:localhost",
