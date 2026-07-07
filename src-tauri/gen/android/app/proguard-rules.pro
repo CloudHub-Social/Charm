@@ -21,9 +21,11 @@
 #-renamesourcefileattribute SourceFile
 
 # Tink (pulled in transitively by androidx.security:security-crypto and
-# org.unifiedpush.android:connector) references JSR-305 annotations that are
-# compile-only and never shipped at runtime, so R8 can't find them. They're
-# annotations with no runtime behavior to preserve — safe to silence rather
-# than keep.
--dontwarn javax.annotation.Nullable
--dontwarn javax.annotation.concurrent.GuardedBy
+# org.unifiedpush.android:connector) references JSR-305 and error-prone
+# annotations that are compile-only and never shipped at runtime, so R8
+# can't find them. They're annotations with no runtime behavior to
+# preserve — safe to silence rather than keep. Cover both packages wholesale
+# rather than the individual classes R8 happened to flag first, since the
+# next unflagged class in either package would just repeat this failure.
+-dontwarn javax.annotation.**
+-dontwarn com.google.errorprone.annotations.**
