@@ -265,11 +265,23 @@ pub fn router(state: AppState) -> Router {
 /// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WS check already
 /// requires for that same deployment shape.
 fn cors_layer() -> tower_http::cors::CorsLayer {
+    use axum::http::{header, Method};
     use tower_http::cors::{AllowOrigin, CorsLayer};
 
+    // `Any` for methods/headers is a literal `*` on the wire — the CORS
+    // spec (and browsers enforcing it) reject a wildcard
+    // `Access-Control-Allow-Methods`/`-Headers` on a response that also
+    // carries `Access-Control-Allow-Credentials: true`, silently breaking
+    // every non-"simple" cross-origin request (any `PUT`/`DELETE`, or a
+    // `POST` with `Content-Type: application/json`) instead of erroring
+    // loudly. Listing exactly what this API actually uses avoids the
+    // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
+    // and the only non-default header any request needs to set is
+    // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
+    // browsers set that one themselves, but it still needs to be allowed).
     let layer = CorsLayer::new()
-        .allow_methods(tower_http::cors::Any)
-        .allow_headers(tower_http::cors::Any)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE])
         .allow_credentials(true);
 
     let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
