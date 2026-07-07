@@ -61,9 +61,13 @@ Synced to claude.ai/design project `82fcc48e-45b8-4e8f-9496-83645ae4236a`
   ui components import IPC bindings via `@bindings/*` → `src-tauri/src/bindings/*.ts`,
   which sit OUTSIDE the ds-types tsconfig `rootDir` (`../src`), so tsc emits their
   declarations in place instead of under `.design-sync/types/`. These untracked
-  `src-tauri/src/bindings/*.d.ts` are expected build artifacts — do NOT commit them,
-  and `git clean -f src-tauri/src/bindings/*.d.ts` before `git worktree remove`
-  (plain remove refuses while untracked files exist).
+  `src-tauri/src/bindings/*.d.ts` are expected build artifacts — do NOT commit them.
+  They live in whichever checkout ran `buildCmd` (the isolated worktree, when you
+  synced from one), so clean them **from inside that worktree** —
+  `git -C <worktree> clean -f 'src-tauri/src/bindings/*.d.ts'` (or run the clean while
+  cd'd into it) — *before* `git worktree remove <worktree>` from the main checkout.
+  Cleaning from the main checkout won't touch the worktree's copies, so the plain
+  remove still refuses while those untracked files exist.
 - **conventions.md color-token naming is loose (not blocking).** The header says the
   utilities "map to a `--color-*` token", but the semantic color vars are actually bare
   shadcn names (`--background`, `--destructive`, …); only `--color-bg-base`/`--color-accent`
