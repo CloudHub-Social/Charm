@@ -528,9 +528,24 @@ fn message_preview(
 /// Never surfaces ciphertext: a decryption failure (missing megolm key, most
 /// commonly) falls back to a generic body and is logged, rather than either
 /// showing raw content or silently dropping the notification outright.
+///
+/// Reuses the app's already-running `Client` (`MatrixState::client`) when one
+/// exists rather than always building a fresh one via `restore_any_client`:
+/// matrix-sdk-sqlite opens its SQLCipher store in WAL mode, which allows
+/// multiple reader connections but still serializes writers, so a second
+/// `Client` for the same account competing with the live sync loop's writes
+/// (received-key storage, sync-token updates, etc.) risks `SQLITE_BUSY`/lock
+/// contention for no benefit — the running client already has everything
+/// this needs. `restore_any_client` (a fresh headless client, no sync loop)
+/// remains the fallback for the actual "app was killed" case this spec
+/// exists for, where nothing is running yet.
 pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), PushError> {
-    let Some(client) = restore_any_client(app).await? else {
-        return Err("no restorable session to handle this push against".to_string());
+    let running_client = app.state::<MatrixState>().client.lock().await.clone();
+    let client = match running_client {
+        Some(client) => client,
+        None => restore_any_client(app)
+            .await?
+            .ok_or_else(|| "no restorable session to handle this push against".to_string())?,
     };
 
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
