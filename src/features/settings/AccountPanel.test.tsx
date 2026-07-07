@@ -106,8 +106,8 @@ describe("AccountPanel", () => {
 
   it("surfaces the actual deactivation retry error instead of assuming it's always a wrong password", async () => {
     deactivateAccount
-      .mockRejectedValueOnce(new Error("uia"))
-      .mockRejectedValueOnce(new Error("server is temporarily unavailable"));
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockRejectedValueOnce({ kind: "Other", message: "server is temporarily unavailable" });
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 
     const [openButton] = screen.getAllByRole("button", { name: "Deactivate account" });
@@ -124,7 +124,27 @@ describe("AccountPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Deactivate account" }));
 
-    expect(await screen.findByText("Error: server is temporarily unavailable")).toBeInTheDocument();
+    expect(await screen.findByText("server is temporarily unavailable")).toBeInTheDocument();
+  });
+
+  it("surfaces a non-UIA deactivation error on the first attempt instead of prompting for a password", async () => {
+    deactivateAccount.mockRejectedValueOnce({
+      kind: "Other",
+      message: "network error",
+    });
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    const [openButton] = screen.getAllByRole("button", { name: "Deactivate account" });
+    fireEvent.click(openButton);
+    fireEvent.click(await screen.findByRole("button", { name: "I understand, continue" }));
+    fireEvent.change(await screen.findByLabelText("Type DEACTIVATE to confirm"), {
+      target: { value: "DEACTIVATE" },
+    });
+    const confirmButtons = await screen.findAllByRole("button", { name: "Deactivate account" });
+    fireEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
   });
 
   it("saves an edited display name", async () => {
@@ -166,7 +186,7 @@ describe("AccountPanel", () => {
   });
 
   it("change password prompts for the account password on the first UIA challenge, then succeeds", async () => {
-    changePassword.mockRejectedValueOnce(new Error("uia")).mockResolvedValueOnce(undefined);
+    changePassword.mockRejectedValueOnce({ kind: "UiaChallenge" }).mockResolvedValueOnce(undefined);
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
@@ -185,7 +205,7 @@ describe("AccountPanel", () => {
   });
 
   it("keeps the typed new password visible (read-only) during the UIA confirmation step", async () => {
-    changePassword.mockRejectedValueOnce(new Error("uia"));
+    changePassword.mockRejectedValueOnce({ kind: "UiaChallenge" });
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
@@ -202,8 +222,8 @@ describe("AccountPanel", () => {
 
   it("surfaces the actual retry error instead of assuming it's always a wrong password", async () => {
     changePassword
-      .mockRejectedValueOnce(new Error("uia"))
-      .mockRejectedValueOnce(new Error("password is too weak"));
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockRejectedValueOnce({ kind: "Other", message: "password is too weak" });
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
@@ -216,11 +236,25 @@ describe("AccountPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
-    expect(await screen.findByText("Error: password is too weak")).toBeInTheDocument();
+    expect(await screen.findByText("password is too weak")).toBeInTheDocument();
+  });
+
+  it("surfaces a non-UIA change-password error on the first attempt instead of prompting for a password", async () => {
+    changePassword.mockRejectedValueOnce({ kind: "Other", message: "network error" });
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Change password" }));
+    fireEvent.change(await screen.findByLabelText("New password"), {
+      target: { value: "weak-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
   });
 
   it("lets the user go back and edit the new password after a failed retry", async () => {
-    changePassword.mockRejectedValueOnce(new Error("uia"));
+    changePassword.mockRejectedValueOnce({ kind: "UiaChallenge" });
     renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Change password" }));

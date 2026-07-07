@@ -45,6 +45,33 @@ pub struct ProfileSummary {
     pub uses_oauth: bool,
 }
 
+/// Structured error for the four UIA-gated settings commands
+/// (`change_password`, `deactivate_account`, `delete_device`,
+/// `bootstrap_cross_signing`), carrying the UIA-vs-other distinction
+/// `retry_uia_with_session` already computes across the Tauri IPC boundary.
+///
+/// `UiaChallenge` means the homeserver wants re-authentication — the
+/// frontend should prompt for a password and retry. `Other` means a real,
+/// unrelated failure (network error, 500, "not logged in", etc.) — the
+/// frontend should surface it as-is, not treat it as a password prompt.
+///
+/// Deliberately minimal (two variants) rather than a general error taxonomy
+/// — resist splitting `Other` further (e.g. network vs. server error) unless
+/// a concrete frontend need shows up.
+#[derive(Debug, Serialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export, export_to = "../src/bindings/")]
+pub enum UiaCommandError {
+    UiaChallenge,
+    Other { message: String },
+}
+
+impl From<String> for UiaCommandError {
+    fn from(message: String) -> Self {
+        UiaCommandError::Other { message }
+    }
+}
+
 /// Runs a UIA-gated `call` (`change_password`/`deactivate`/`delete_devices`),
 /// threading a real session id through the retry when `password` is given.
 ///
@@ -61,13 +88,18 @@ pub(crate) async fn retry_uia_with_session<T, F, Fut>(
     user_id: &UserId,
     password: Option<String>,
     mut call: F,
-) -> Result<T, String>
+) -> Result<T, UiaCommandError>
 where
     F: FnMut(Option<AuthData>) -> Fut,
     Fut: std::future::Future<Output = matrix_sdk::Result<T>>,
 {
     let Some(password) = password else {
-        return call(None).await.map_err(|e| e.to_string());
+        return call(None).await.map_err(|e| match e.as_uiaa_response() {
+            Some(_) => UiaCommandError::UiaChallenge,
+            None => UiaCommandError::Other {
+                message: e.to_string(),
+            },
+        });
     };
 
     let session = match call(None).await {
@@ -78,7 +110,11 @@ where
             // with a password would just produce a second, unrelated failure
             // that the frontend can only render as "incorrect password",
             // masking what actually went wrong.
-            None => return Err(e.to_string()),
+            None => {
+                return Err(UiaCommandError::Other {
+                    message: e.to_string(),
+                })
+            }
         },
     };
 
@@ -89,7 +125,9 @@ where
     auth.session = session;
     call(Some(AuthData::Password(auth)))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| UiaCommandError::Other {
+            message: e.to_string(),
+        })
 }
 
 /// Tears down the local session identically for `logout` and
@@ -341,7 +379,7 @@ pub async fn change_password(
     state: State<'_, MatrixState>,
     new_password: String,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -372,7 +410,7 @@ pub async fn deactivate_account(
     app: AppHandle,
     state: State<'_, MatrixState>,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -385,7 +423,9 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&app, &state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str())
+        .await
+        .map_err(UiaCommandError::from)
 }
 
 #[cfg(test)]
@@ -450,6 +490,15 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
+        let first_attempt_via_helper = retry_uia_with_session(&user_id, None, |auth| {
+            account.change_password("new-password", auth)
+        })
+        .await;
+        assert!(
+            matches!(first_attempt_via_helper, Err(UiaCommandError::UiaChallenge)),
+            "expected the password-less attempt to surface as UiaCommandError::UiaChallenge, got {first_attempt_via_helper:?}"
+        );
+
         let retry =
             retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
                 account.change_password("new-password", auth)
@@ -458,6 +507,35 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// A non-UIA failure (network error, 500, etc.) on the first attempt must
+    /// surface as `UiaCommandError::Other`, not be misclassified as a
+    /// password challenge — see the spec's acceptance criteria.
+    #[tokio::test]
+    async fn change_password_non_uia_error_on_first_attempt_is_not_a_challenge() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/account/password";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
+
+        let result = retry_uia_with_session(&user_id, None, |auth| {
+            account.change_password("new-password", auth)
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(UiaCommandError::Other { .. })),
+            "expected a non-UIA server error to surface as UiaCommandError::Other, got {result:?}"
         );
     }
 
@@ -534,6 +612,14 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
+        let first_attempt_via_helper =
+            retry_uia_with_session(&user_id, None, |auth| account.deactivate(None, auth, false))
+                .await;
+        assert!(
+            matches!(first_attempt_via_helper, Err(UiaCommandError::UiaChallenge)),
+            "expected the password-less attempt to surface as UiaCommandError::UiaChallenge, got {first_attempt_via_helper:?}"
+        );
+
         let retry =
             retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
                 account.deactivate(None, auth, false)
@@ -542,6 +628,34 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// A non-UIA failure on the first attempt must surface as
+    /// `UiaCommandError::Other`, not be misclassified as a password
+    /// challenge.
+    #[tokio::test]
+    async fn deactivate_account_non_uia_error_on_first_attempt_is_not_a_challenge() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/account/deactivate";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
+
+        let result =
+            retry_uia_with_session(&user_id, None, |auth| account.deactivate(None, auth, false))
+                .await;
+
+        assert!(
+            matches!(result, Err(UiaCommandError::Other { .. })),
+            "expected a non-UIA server error to surface as UiaCommandError::Other, got {result:?}"
         );
     }
 

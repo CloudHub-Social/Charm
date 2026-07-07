@@ -20,6 +20,7 @@ import {
   useResolvedAvatarSrc,
   useUpdateProfile,
 } from "./useProfile";
+import { useUiaRetry } from "./useUiaRetry";
 
 interface AccountPanelProps {
   onLoggedOut: () => void;
@@ -202,39 +203,24 @@ interface ChangePasswordDialogProps {
 /** UIA prompt-and-retry: mirrors `bootstrap_cross_signing`'s established convention. */
 function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps) {
   const [newPassword, setNewPassword] = useState("");
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const uia = useUiaRetry((password) => changePassword(newPassword, password));
+  const {
+    needsPassword,
+    password: currentPassword,
+    setPassword: setCurrentPassword,
+    error,
+    submitting,
+  } = uia;
 
   function reset() {
     setNewPassword("");
-    setCurrentPassword("");
-    setNeedsPassword(false);
-    setError(null);
     setDone(false);
+    uia.reset();
   }
 
   async function handleSubmit() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await changePassword(newPassword, needsPassword ? currentPassword : undefined);
-      setDone(true);
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // The backend's error already distinguishes a rejected password from
-        // an unrelated failure (network error, password-policy rejection,
-        // etc.) — surfacing it directly avoids misattributing those to "the
-        // current password is wrong" the way a hardcoded message would.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) setDone(true);
   }
 
   return (
@@ -266,8 +252,8 @@ function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps)
                     type="button"
                     className="text-xs text-muted-foreground underline hover:text-foreground"
                     onClick={() => {
-                      setNeedsPassword(false);
-                      setError(null);
+                      uia.setNeedsPassword(false);
+                      uia.setError(null);
                     }}
                   >
                     Edit
@@ -328,38 +314,18 @@ function DeactivateAccountDialog({
   onDeactivated,
 }: DeactivateAccountDialogProps) {
   const [step, setStep] = useState<"warn" | "confirm">("warn");
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
   const [confirmText, setConfirmText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const uia = useUiaRetry((password) => deactivateAccount(password));
+  const { needsPassword, password, setPassword, error, submitting } = uia;
 
   function reset() {
     setStep("warn");
-    setNeedsPassword(false);
-    setPassword("");
     setConfirmText("");
-    setError(null);
+    uia.reset();
   }
 
   async function handleDeactivate() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await deactivateAccount(needsPassword ? password : undefined);
-      onDeactivated();
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // Same rationale as `ChangePasswordDialog`: the backend already
-        // distinguishes a rejected password from an unrelated failure, so
-        // surface it directly instead of assuming it's always the password.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) onDeactivated();
   }
 
   return (

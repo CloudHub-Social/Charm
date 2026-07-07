@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::account::retry_uia_with_session;
+use super::account::{retry_uia_with_session, UiaCommandError};
 use super::MatrixState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -92,7 +92,7 @@ pub fn register_verification_handler(app: AppHandle, client: &Client) {
 pub async fn bootstrap_cross_signing(
     state: State<'_, MatrixState>,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     bootstrap_cross_signing_impl(&client, password).await
 }
@@ -101,7 +101,7 @@ pub async fn bootstrap_cross_signing(
 pub async fn bootstrap_cross_signing_impl(
     client: &Client,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
