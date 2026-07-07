@@ -1,15 +1,12 @@
 //! HTTP routes. Each authenticated route resolves the caller's session from
 //! their cookie, then calls straight into the same `charm_lib::matrix::*`
 //! `_impl` function the desktop Tauri commands use, and serializes the
-//! result as JSON. Deliberately a broad-but-personal-use slice of the full
-//! command surface for sub-PR A — media resolution, avatar upload (both
-//! file-path based on the desktop side), and multi-device
-//! verification/QR-login flows are deferred; everything else needed for a
-//! usable single-account web client is covered. See the crate README.
+//! result as JSON.
 
 use std::sync::Arc;
 
 use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -40,8 +37,15 @@ use charm_lib::matrix::rooms::{
     resolve_alias, set_room_favourite_impl, set_room_low_priority_impl, set_room_manual_order_impl,
     set_room_marked_unread_impl, snapshot_rooms,
 };
-use charm_lib::matrix::send::{build_message_content, send_and_capture_transaction_id};
+use charm_lib::matrix::send::{
+    attachment_info_for, build_message_content, send_and_capture_transaction_id,
+};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
+use charm_lib::matrix::verification::{
+    accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
+    confirm_sas_verification_impl, cross_signing_status_impl,
+};
+use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -153,6 +157,36 @@ pub fn router(state: AppState) -> Router {
             "/api/account-data/{event_type}",
             get(get_account_data).put(set_account_data),
         )
+        // -- media --
+        .route(
+            "/api/rooms/{room_id}/events/{event_id}/media",
+            get(resolve_message_media),
+        )
+        .route("/api/rooms/{room_id}/attachments", post(send_attachment))
+        .route("/api/profile/avatar", put(set_avatar).delete(remove_avatar))
+        // -- verification --
+        .route(
+            "/api/verification/cross-signing",
+            get(get_cross_signing_status).post(bootstrap_cross_signing),
+        )
+        .route(
+            "/api/verification/{other_user_id}/{flow_id}/accept",
+            post(accept_verification),
+        )
+        .route(
+            "/api/verification/{other_user_id}/{flow_id}/cancel",
+            post(cancel_verification),
+        )
+        .route(
+            "/api/verification/{other_user_id}/{flow_id}/sas/start",
+            post(start_sas_verification),
+        )
+        .route(
+            "/api/verification/{other_user_id}/{flow_id}/sas/confirm",
+            post(confirm_sas_verification),
+        )
+        // -- live events --
+        .route("/api/ws", get(ws_handler))
         .with_state(state)
 }
 
@@ -169,15 +203,46 @@ async fn discover_homeserver(
     Ok(Json(DiscoverHomeserverResponse { homeserver_url }))
 }
 
+/// After a successful login/register, spawns the session's background sync
+/// loop (see `sync_loop::spawn`) and, if session persistence is configured
+/// (`AppState::persistence`, see `persistence.rs`), saves it encrypted-at-rest
+/// under the token it's about to be created with — so a restart doesn't drop
+/// this login. Best-effort: a persistence write failure is logged, not
+/// surfaced to the caller, since the session itself is already fully usable
+/// in-memory (matches sub-PR A's behavior when no master key is configured
+/// at all).
+async fn finish_login(state: &AppState, mut session: Session, homeserver_url: &str) -> String {
+    let handle = crate::sync_loop::spawn(session.client.clone(), session.events.clone());
+    *session
+        .sync_handle
+        .get_mut()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+
+    let matrix_session = session.client.matrix_auth().session();
+    let token = state.sessions.create(session).await;
+
+    if let (Some(persistence), Some(matrix_session)) = (&state.persistence, matrix_session) {
+        if let Err(e) = persistence
+            .save(&token, homeserver_url, &matrix_session)
+            .await
+        {
+            tracing::warn!("failed to persist session: {e}");
+        }
+    }
+
+    token
+}
+
 async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(request): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let homeserver_url = request.homeserver_url.clone();
     let (response, session) = crate::auth::login(request)
         .await
         .map_err(ApiError::unauthorized)?;
-    let token = state.sessions.create(session).await;
+    let token = finish_login(&state, session, &homeserver_url).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 
@@ -186,16 +251,31 @@ async fn register(
     jar: CookieJar,
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let homeserver_url = request.homeserver_url.clone();
     let (response, session) = crate::auth::register(request)
         .await
         .map_err(ApiError::bad_request)?;
-    let token = state.sessions.create(session).await;
+    let token = finish_login(&state, session, &homeserver_url).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        if let Some(session) = state.sessions.remove(cookie.value()).await {
+        let token = cookie.value().to_string();
+        if let Some(session) = state.sessions.remove(&token).await {
+            if let Some(handle) = session
+                .sync_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                handle.abort();
+            }
+            if let Some(persistence) = &state.persistence {
+                if let Err(e) = persistence.remove(&token).await {
+                    tracing::warn!("failed to remove persisted session on logout: {e}");
+                }
+            }
             // Revoke the access token on the homeserver too — otherwise it
             // stays valid indefinitely after "logout" only clears local
             // server-side state, unlike the desktop app (which calls the
@@ -918,6 +998,304 @@ async fn set_account_data(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------
+// Media / avatar upload
+// ---------------------------------------------------------------------
+
+/// Resolves an image/video/audio/file `m.room.message`'s attached media and
+/// streams the resolved file back. Unlike desktop's `media::resolve_media`
+/// (which hands the frontend a `file://`-loadable local cache path), a
+/// browser has no such filesystem path to receive — so this reuses the same
+/// `resolve_media_impl` (decryption, cache lookup/population, thumbnail vs.
+/// full-size selection all included) against `crate::media_cache`'s
+/// process-wide cache dir, then reads the resulting cached file back off
+/// disk and streams its bytes with a `Content-Type` guessed from its
+/// extension.
+#[derive(Deserialize)]
+struct ResolveMediaQuery {
+    #[serde(default)]
+    thumbnail: bool,
+}
+
+async fn resolve_message_media(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, event_id)): Path<(String, String)>,
+    Query(query): Query<ResolveMediaQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let cache = crate::media_cache::shared()
+        .await
+        .map_err(ApiError::bad_request)?;
+    let path = charm_lib::matrix::media::resolve_media_impl(
+        &session.client,
+        cache,
+        &room_id,
+        &event_id,
+        query.thumbnail,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+
+    let data = tokio::fs::read(&path)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let content_type = mime_guess::from_path(&path)
+        .first_or_octet_stream()
+        .to_string();
+    Ok(([("content-type", content_type)], data))
+}
+
+/// Uploads a room attachment straight from the request body (a browser has
+/// no local file path to hand over the way desktop's `send_attachment`
+/// takes one) and pushes `upload:progress` over this session's WebSocket
+/// channel as it goes.
+#[derive(Debug, Deserialize)]
+struct AttachmentQuery {
+    filename: String,
+    txn_id: String,
+    caption: Option<String>,
+}
+
+async fn send_attachment(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Query(query): Query<AttachmentQuery>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let parsed_room_id =
+        RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let room = session
+        .client
+        .get_room(&parsed_room_id)
+        .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
+
+    if body.len() as u64 > charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "attachment is {} bytes, over the {}-byte limit",
+            body.len(),
+            charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES
+        )));
+    }
+
+    let data = body.to_vec();
+    let total_bytes = data.len() as u64;
+    let mime = mime_guess::from_path(&query.filename).first_or_octet_stream();
+    let info = attachment_info_for(&mime, &data, total_bytes);
+
+    let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
+    let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
+    if let Some(caption) = query.caption {
+        config = config.caption(Some(
+            matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain(caption),
+        ));
+    }
+
+    room.send_attachment(query.filename, &mime, data, config)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let _ = session
+        .events
+        .send(crate::events::ServerEvent::UploadProgress(
+            charm_lib::matrix::send::UploadProgress {
+                txn_id: query.txn_id,
+                room_id,
+                sent: total_bytes,
+                total: total_bytes,
+            },
+        ));
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Reads the request body as raw avatar image bytes and uploads it as the
+/// account avatar in one step — the bytes-based web equivalent of desktop's
+/// file-path-based `account::set_avatar`.
+async fn set_avatar(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let mime = infer_image_mime(&body);
+    session
+        .client
+        .account()
+        .upload_avatar(&mime, body.to_vec())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn infer_image_mime(bytes: &[u8]) -> mime::Mime {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => mime::IMAGE_PNG,
+        [0xFF, 0xD8, 0xFF, ..] => mime::IMAGE_JPEG,
+        [b'G', b'I', b'F', b'8', ..] => mime::IMAGE_GIF,
+        _ => mime::IMAGE_PNG,
+    }
+}
+
+async fn remove_avatar(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    session
+        .client
+        .account()
+        .set_avatar_url(None)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------
+// Verification
+// ---------------------------------------------------------------------
+
+async fn get_cross_signing_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let status = cross_signing_status_impl(&session.client)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(status))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct BootstrapCrossSigningRequest {
+    password: Option<String>,
+}
+
+async fn bootstrap_cross_signing(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let request: BootstrapCrossSigningRequest = parse_optional_json(&body)?;
+    bootstrap_cross_signing_impl(&session.client, request.password)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn accept_verification(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((other_user_id, flow_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    accept_verification_request_impl(&session.client, &other_user_id, &flow_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn cancel_verification(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((other_user_id, flow_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    cancel_verification_impl(&session.client, &other_user_id, &flow_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Starts the SAS flow and streams `verification:sas_update` over this
+/// session's WebSocket channel — see `sync_loop::start_sas_verification`.
+async fn start_sas_verification(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((other_user_id, flow_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    crate::sync_loop::start_sas_verification(
+        &session.client,
+        session.events.clone(),
+        &other_user_id,
+        &flow_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn confirm_sas_verification(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((other_user_id, flow_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    confirm_sas_verification_impl(&session.client, &other_user_id, &flow_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------------------------------------------------------------------
+// Live events (WebSocket)
+// ---------------------------------------------------------------------
+
+/// Upgrades to a WebSocket and streams this session's `ServerEvent`s
+/// (`sync:state`, `room_list:update`, `timeline:update`, etc. — see
+/// `events.rs`) as they're pushed by `sync_loop.rs` and the per-room
+/// timeline listeners in `session.rs`. Authenticates the same way every HTTP
+/// route does — via the session cookie, checked *before* the protocol
+/// upgrade — since a WebSocket handshake is still a plain HTTP request the
+/// browser sends its cookies on.
+async fn ws_handler(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    ws: WebSocketUpgrade,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
+}
+
+async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
+    let mut receiver = session.events.subscribe();
+    loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                match event {
+                    Ok(event) => {
+                        let Ok(json) = serde_json::to_string(&event) else { continue };
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    // A slow consumer fell behind the broadcast channel's
+                    // capacity — skip ahead rather than disconnecting; the
+                    // next event (e.g. the next `room_list:update`) already
+                    // supersedes whatever was missed for every event type
+                    // this crate emits.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                // This channel is server-push only; a client message (or a
+                // close frame, or the connection dropping) both just mean
+                // "stop streaming" — nothing sent by the client is consumed.
+                match incoming {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => continue,
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

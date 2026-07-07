@@ -9,11 +9,14 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use charm_lib::matrix::timeline::{get_timeline_page_impl, RoomTimelineUpdate};
 use matrix_sdk::Client;
 use matrix_sdk_ui::Timeline;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
+
+use crate::events::{ServerEvent, EVENT_CHANNEL_CAPACITY};
 
 /// Number of random alphanumeric characters in a session token — comfortably
 /// large to make guessing/brute-forcing infeasible for an in-memory,
@@ -43,17 +46,34 @@ pub struct Session {
     /// shared across sessions, keeping the same "session A can't see
     /// session B's state" isolation every other field on `Session` has).
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, Arc<Timeline>>>,
+    /// Fan-out for this session's WebSocket event channel (sub-PR B) — the
+    /// sync loop and per-room timeline listeners below push onto this;
+    /// `crate::routes::ws_handler` subscribes one receiver per connected
+    /// WebSocket. A session can have zero (no tab connected yet/right now)
+    /// or more than one (multiple tabs) receivers at once; `broadcast`
+    /// handles both.
+    pub events: broadcast::Sender<ServerEvent>,
+    /// The task driving this session's background sync loop (see
+    /// `sync_loop::spawn`) — aborted on logout so a signed-out session
+    /// doesn't keep polling `/sync` against the homeserver forever with
+    /// nothing left to deliver its events to. `std::sync::Mutex`, not
+    /// `tokio::sync::Mutex`: only ever touched synchronously (set once right
+    /// after spawning, taken once on logout), never held across an `.await`.
+    pub sync_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Session {
     pub fn new(client: Client, user_id: String) -> Self {
+        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             client,
             user_id,
+            sync_handle: std::sync::Mutex::new(None),
             timelines: Mutex::new(lru::LruCache::new(
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            events,
         }
     }
 
@@ -79,12 +99,83 @@ impl Session {
         let timeline = Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
 
         let mut timelines = self.timelines.lock().await;
+        // Re-check: another concurrent call may have built and inserted one
+        // for this same room while this call was awaiting `room.timeline()`
+        // above (lock isn't held across that await) — keep whichever was
+        // inserted first, and don't spawn a second, redundant listener for it.
         if let Some(existing) = timelines.get(room_id) {
             return Ok(Arc::clone(existing));
         }
+
+        spawn_timeline_listener(
+            self.client.clone(),
+            Arc::downgrade(&timeline),
+            room_id.to_owned(),
+            self.events.clone(),
+        );
         timelines.put(room_id.to_owned(), Arc::clone(&timeline));
         Ok(timeline)
     }
+}
+
+/// Pushes `timeline:update` every time this room's live `Timeline` reports a
+/// diff, for as long as the `Timeline` stays alive (weak handle: once it's
+/// LRU-evicted from `Session::timelines` and every other clone is dropped,
+/// this listener notices on its next diff/liveness tick and exits rather
+/// than keeping the room's sync subscription alive forever).
+///
+/// Deliberately simpler than desktop's `timeline::spawn_timeline_listener`:
+/// rather than hand-diffing `matrix-sdk-ui`'s `VectorDiff`s into a
+/// `RoomMessageSummary` list itself (that logic is desktop-internal, not
+/// `pub`), this just re-fetches the current page via the same
+/// `get_timeline_page_impl` the HTTP `GET .../timeline` route already uses
+/// on every diff. A browser tab already has a full page of messages loaded
+/// client-side, so re-sending that page on every diff is more bytes than a
+/// true incremental patch, but is correct and reuses the one page-building
+/// code path this crate has — revisit if a room with very high message
+/// volume makes this too chatty for a real deployment.
+fn spawn_timeline_listener(
+    client: Client,
+    timeline: std::sync::Weak<Timeline>,
+    room_id: matrix_sdk::ruma::OwnedRoomId,
+    events: broadcast::Sender<ServerEvent>,
+) {
+    use futures_util::StreamExt;
+
+    const LIVENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+    tokio::spawn(async move {
+        let Some(strong) = timeline.upgrade() else {
+            return;
+        };
+        let (_initial_items, mut stream) = strong.subscribe().await;
+        drop(strong);
+
+        let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
+        loop {
+            let diffs = tokio::select! {
+                diffs = stream.next() => diffs,
+                _ = liveness_check.tick() => {
+                    if timeline.upgrade().is_some() {
+                        continue;
+                    }
+                    break;
+                }
+            };
+            if diffs.is_none() {
+                break;
+            }
+            let Some(strong) = timeline.upgrade() else {
+                break;
+            };
+            if let Ok(page) = get_timeline_page_impl(&client, &strong, None, None).await {
+                let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
+                    room_id: room_id.to_string(),
+                    messages: page.messages,
+                }));
+            }
+        }
+    });
 }
 
 /// `Arc<RwLock<HashMap<...>>>` so it can be cloned cheaply into axum's
@@ -125,6 +216,18 @@ impl SessionStore {
             // Collision: drop the write lock and mint a new token instead of
             // looping while holding it.
         }
+    }
+
+    /// Inserts `session` under a caller-chosen `token` — used only at
+    /// startup to reinsert a persisted session under the exact token it was
+    /// issued to a browser under before the restart (see
+    /// `persistence::PersistenceStore::restore_all` and `main.rs`), so an
+    /// already-set cookie keeps working. Never exposed to request handlers:
+    /// every other insertion path goes through [`Self::create`]'s
+    /// server-chosen token, preserving the "tokens are never client/caller
+    /// influenced at request time" property.
+    pub async fn insert(&self, token: String, session: Session) {
+        self.inner.write().await.insert(token, Arc::new(session));
     }
 
     pub async fn get(&self, token: &str) -> Option<Arc<Session>> {
