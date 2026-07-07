@@ -29,6 +29,14 @@ const OAUTH_SESSION_ACCOUNT: &str = "oauth-session";
 /// than a real per-account store, so [`known_account_keys`] can skip it.
 const TEMP_STORE_PREFIX: &str = "tmp-";
 
+/// Suffix marking a `matrix_store/` subdirectory as a stale store
+/// [`relocate_store_at_locked`] has moved aside pending discard, rather than
+/// a real per-account store — so [`known_account_keys`] must skip it too
+/// (otherwise a leftover backup, from e.g. its best-effort final cleanup
+/// failing, would be treated as a real account and `try_restore_session`
+/// would attempt — and fail — to restore a session for it on every launch).
+const STALE_BACKUP_SUFFIX: &str = ".stale-backup";
+
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -111,7 +119,7 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if !name.starts_with(TEMP_STORE_PREFIX) {
+        if !name.starts_with(TEMP_STORE_PREFIX) && !name.ends_with(STALE_BACKUP_SUFFIX) {
             keys.push(name);
         }
     }
@@ -129,6 +137,10 @@ pub fn known_account_keys_at(root: &Path) -> Result<Vec<String>, String> {
 /// attempt abandoned by a hard crash (rather than a clean
 /// `cancel_sso_login`/`cancel_qr_login`, which clean up their own temp store
 /// immediately) doesn't strand its store dir and passphrase entry forever.
+/// Also sweeps any [`STALE_BACKUP_SUFFIX`] directory left behind by a
+/// [`relocate_store_at_locked`] whose final best-effort backup removal
+/// failed — same "leftover from an interrupted run" shape, so it's handled
+/// alongside orphan temp stores rather than via a separate startup hook.
 pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
@@ -148,6 +160,12 @@ pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
             discard_temp_store(&entry.path(), &name);
+        } else if name.ends_with(STALE_BACKUP_SUFFIX) {
+            // No keychain entry is ever created for a backup path (it's
+            // just the existing account store's directory, moved aside
+            // under its account key's passphrase entry, which is
+            // untouched) — a plain removal is all that's needed.
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
     Ok(())
@@ -455,7 +473,7 @@ fn relocate_store_at_locked(
 ) -> Result<RelocateOutcome, String> {
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
-    let backup_path = root.join(format!("{account_key}.stale-backup"));
+    let backup_path = root.join(format!("{account_key}{STALE_BACKUP_SUFFIX}"));
 
     // A stale store from an incomplete previous login/logout can never
     // correctly host the session that was just authenticated (see this
@@ -869,32 +887,38 @@ mod tests {
     }
 
     #[test]
-    fn known_account_keys_excludes_temp_stores() {
+    fn known_account_keys_excludes_temp_stores_and_stale_backups() {
         let root = ScratchRoot::new("known-keys");
         let account_key = account_key("@charm-persistence-test-known:localhost");
         let temp_key = temp_store_key();
+        let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
 
         store_path_at(&root.0, &account_key).unwrap();
         store_path_at(&root.0, &temp_key).unwrap();
+        std::fs::create_dir_all(root.0.join(&backup_key)).unwrap();
 
         let keys = known_account_keys_at(&root.0).unwrap();
         assert!(keys.contains(&account_key));
         assert!(!keys.contains(&temp_key));
+        assert!(!keys.contains(&backup_key));
     }
 
     #[test]
-    fn sweep_orphan_temp_stores_removes_temp_dirs_and_passphrases() {
+    fn sweep_orphan_temp_stores_removes_temp_dirs_passphrases_and_stale_backups() {
         let root = ScratchRoot::new("sweep");
         let account_key = account_key("@charm-persistence-test-sweep:localhost");
         let temp_key = temp_store_key();
+        let backup_path = root.0.join(format!("{account_key}{STALE_BACKUP_SUFFIX}"));
 
         store_path_at(&root.0, &account_key).unwrap();
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         let _ = get_or_create_passphrase(&temp_key).unwrap();
+        std::fs::create_dir_all(&backup_path).unwrap();
 
         sweep_orphan_temp_stores_at(&root.0).unwrap();
 
         assert!(!temp_path.exists());
+        assert!(!backup_path.exists());
         assert!(root.0.join(&account_key).exists());
         let temp_entry =
             keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
