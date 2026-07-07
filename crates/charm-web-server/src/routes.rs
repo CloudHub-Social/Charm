@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -439,17 +440,39 @@ struct RedactRequest {
     reason: Option<String>,
 }
 
+/// Parses an optional JSON body, treating an empty body as `T::default()`
+/// rather than an error — regardless of `Content-Type`. Deliberately not
+/// `axum`'s `Option<Json<T>>` extractor: as of axum 0.8, that extractor
+/// rejects an empty body when `Content-Type: application/json` is present
+/// (which `fetch` and most JSON HTTP clients set even for bodyless
+/// requests) instead of yielding `None`, so these "reason is optional"
+/// moderation routes would incorrectly 4xx on the common no-reason case.
+fn parse_optional_json<T: serde::de::DeserializeOwned + Default>(
+    body: &Bytes,
+) -> Result<T, ApiError> {
+    if body.is_empty() {
+        Ok(T::default())
+    } else {
+        serde_json::from_slice(body).map_err(|e| ApiError::bad_request(e.to_string()))
+    }
+}
+
 async fn redact_event(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((room_id, event_id)): Path<(String, String)>,
-    body: Option<Json<RedactRequest>>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let reason = body.map(|Json(r)| r.reason).unwrap_or_default();
-    redact_event_impl(&session.client, &room_id, &event_id, reason.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    let reason: RedactRequest = parse_optional_json(&body)?;
+    redact_event_impl(
+        &session.client,
+        &room_id,
+        &event_id,
+        reason.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -504,7 +527,19 @@ async fn run_command(
     let session = require_session(&state, &jar).await?;
     let result = run_command_impl(&session.client, &room_id, request.command, request.args)
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|e| {
+            // `run_command_impl`'s `get_room` helper fails with exactly this
+            // message shape for a missing room (see `commands.rs`) — map
+            // that case to 404, consistent with every other room-scoped
+            // route (`get_timeline_page`, `send_message`, etc.), rather than
+            // lumping it in with genuine bad-request failures (bad args,
+            // permission errors, send-queue failures).
+            if e == format!("room {room_id} not found") {
+                ApiError::not_found(e)
+            } else {
+                ApiError::bad_request(e)
+            }
+        })?;
     Ok(Json(result))
 }
 
@@ -745,13 +780,18 @@ async fn kick_member(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((room_id, user_id)): Path<(String, String)>,
-    body: Option<Json<ReasonRequest>>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let reason = body.map(|Json(r)| r.reason).unwrap_or_default();
-    kick_member_impl(&session.client, &room_id, &user_id, reason.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    let reason: ReasonRequest = parse_optional_json(&body)?;
+    kick_member_impl(
+        &session.client,
+        &room_id,
+        &user_id,
+        reason.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -759,13 +799,18 @@ async fn ban_member(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((room_id, user_id)): Path<(String, String)>,
-    body: Option<Json<ReasonRequest>>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let reason = body.map(|Json(r)| r.reason).unwrap_or_default();
-    ban_member_impl(&session.client, &room_id, &user_id, reason.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    let reason: ReasonRequest = parse_optional_json(&body)?;
+    ban_member_impl(
+        &session.client,
+        &room_id,
+        &user_id,
+        reason.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -773,13 +818,18 @@ async fn unban_member(
     State(state): State<AppState>,
     jar: CookieJar,
     Path((room_id, user_id)): Path<(String, String)>,
-    body: Option<Json<ReasonRequest>>,
+    body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let reason = body.map(|Json(r)| r.reason).unwrap_or_default();
-    unban_member_impl(&session.client, &room_id, &user_id, reason.as_deref())
-        .await
-        .map_err(ApiError::bad_request)?;
+    let reason: ReasonRequest = parse_optional_json(&body)?;
+    unban_member_impl(
+        &session.client,
+        &room_id,
+        &user_id,
+        reason.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
