@@ -3,7 +3,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
-import { settingsOpenAtom } from "./settingsAtoms";
+import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
+
+const getAutostart = vi.fn().mockResolvedValue(false);
 
 vi.mock("@/lib/matrix", () => ({
   getProfile: vi.fn().mockResolvedValue({
@@ -45,7 +47,7 @@ vi.mock("@/lib/matrix", () => ({
   get3pids: vi.fn().mockResolvedValue([]),
   getIgnoredUsers: vi.fn().mockResolvedValue([]),
   unignoreUser: vi.fn(),
-  getAutostart: vi.fn().mockResolvedValue(false),
+  getAutostart: (...args: unknown[]) => getAutostart(...args),
   setAutostart: vi.fn(),
 }));
 
@@ -53,7 +55,7 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
 
-function renderScreen(section: "account" | "notifications" | "devices" | "appearance" | null) {
+function renderScreen(section: SettingsSection | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const store = createStore();
   store.set(settingsOpenAtom, section);
@@ -98,5 +100,14 @@ describe("SettingsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
     expect(store.get(settingsOpenAtom)).toBeNull();
+  });
+
+  it("never mounts DesktopPanel outside Tauri, even deep-linked straight to that section", async () => {
+    renderScreen("desktop");
+    await screen.findByRole("tablist");
+
+    expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Launch Charm when I log in")).not.toBeInTheDocument();
+    expect(getAutostart).not.toHaveBeenCalled();
   });
 });

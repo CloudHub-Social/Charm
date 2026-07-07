@@ -74,9 +74,11 @@ function SettingsBody({
         <TabsContent value="appearance">
           <AppearancePanel />
         </TabsContent>
-        <TabsContent value="desktop">
-          <DesktopPanel />
-        </TabsContent>
+        {isTauri() && (
+          <TabsContent value="desktop">
+            <DesktopPanel />
+          </TabsContent>
+        )}
         <TabsContent value="about">
           <AboutPanel />
         </TabsContent>

@@ -189,6 +189,20 @@ describe("DevicesPanel", () => {
     await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
   });
 
+  it("does not offer bulk-select for an OAuth account, whose devices can only be revoked via account management", async () => {
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: true,
+    });
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Phone");
+
+    expect(screen.queryByRole("checkbox", { name: "Select Phone" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/selected$/)).not.toBeInTheDocument();
+  });
+
   it("lets a second device start verification while the first is still in flight", async () => {
     const devices: DeviceSummary[] = [
       ...DEVICES,

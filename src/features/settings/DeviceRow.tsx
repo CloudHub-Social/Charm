@@ -107,7 +107,7 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: 
               className={
                 device.is_verified
                   ? "rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success"
-                  : "rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] text-destructive"
+                  : "rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive"
               }
             >
               {device.is_verified ? "Verified" : "Unverified"}

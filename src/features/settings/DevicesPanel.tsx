@@ -308,7 +308,7 @@ function DeviceGroup({
           onVerify={() => verify.mutateAsync(device.device_id)}
           onRevoke={(password) => revoke.mutateAsync({ deviceId: device.device_id, password })}
           selection={
-            device.is_current
+            device.is_current || usesOAuth
               ? undefined
               : {
                   selected: selectedIds.has(device.device_id),

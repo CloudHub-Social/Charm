@@ -19,7 +19,7 @@ export function AboutPanel() {
             <a
               href={REPO_URL}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="text-sm font-medium text-foreground underline"
             >
               GitHub
