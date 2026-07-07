@@ -40,4 +40,34 @@ describe("BlockedUsersCard", () => {
 
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
+
+  it("keeps a user's own Unblock button disabled while its request is in flight, even after unblocking a second user", async () => {
+    getIgnoredUsers.mockResolvedValue(["@a:example.org", "@b:example.org"]);
+    let resolveA!: () => void;
+    unignoreUser.mockImplementation(
+      (userId: string) =>
+        new Promise<void>((resolve) => {
+          if (userId === "@a:example.org") resolveA = resolve;
+          else resolve();
+        }),
+    );
+    renderWithProviders(<BlockedUsersCard />);
+    await screen.findByText("@a:example.org");
+
+    const [unblockA, unblockB] = screen.getAllByRole("button", { name: "Unblock" });
+    fireEvent.click(unblockA);
+    expect(unblockA).toBeDisabled();
+
+    fireEvent.click(unblockB);
+    await waitFor(() => expect(unignoreUser).toHaveBeenCalledTimes(2));
+    expect(unignoreUser.mock.calls[1][0]).toBe("@b:example.org");
+
+    // @a's own request is still unresolved — its button must stay disabled
+    // rather than re-enabling just because a *different* mutation call
+    // settled.
+    expect(unblockA).toBeDisabled();
+
+    resolveA();
+    await waitFor(() => expect(unblockA).not.toBeDisabled());
+  });
 });
