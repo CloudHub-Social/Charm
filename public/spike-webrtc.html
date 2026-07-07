@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Spec 13 spike — WebRTC capability harness</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: -apple-system, system-ui, sans-serif;
+        margin: 0;
+        padding: 12px;
+        background: #111;
+        color: #eee;
+      }
+      h1 {
+        font-size: 16px;
+        margin: 0 0 8px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      button {
+        padding: 10px 14px;
+        font-size: 14px;
+        border: none;
+        border-radius: 6px;
+        background: #2563eb;
+        color: #fff;
+      }
+      button:disabled {
+        background: #444;
+      }
+      video {
+        width: 45%;
+        max-width: 320px;
+        background: #000;
+        border-radius: 6px;
+      }
+      #log {
+        white-space: pre-wrap;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        background: #000;
+        color: #7cfc00;
+        padding: 8px;
+        border-radius: 6px;
+        height: 40vh;
+        overflow-y: auto;
+      }
+      textarea {
+        width: 100%;
+        height: 60px;
+        font-family: monospace;
+        font-size: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Spec 13 spike — this is throwaway harness code, not shipped product UI</h1>
+    <div class="row">
+      <button id="btnA">A: getUserMedia</button>
+      <button id="btnB">B: loopback RTCPeerConnection</button>
+      <button id="btnC">C: getDisplayMedia</button>
+      <button id="btnClear">clear log</button>
+    </div>
+    <div class="row">
+      <video id="localVideo" autoplay playsinline muted></video>
+      <video id="remoteVideo" autoplay playsinline muted></video>
+      <video id="screenVideo" autoplay playsinline muted></video>
+    </div>
+
+    <div class="row" id="manualSignalling" style="display: none; flex-direction: column">
+      <strong>Two-device signalling (manual copy/paste, R2 in the spec)</strong>
+      <label>My local SDP (send this to the other device):</label>
+      <textarea id="localSdp" readonly></textarea>
+      <label>Paste remote SDP here, then click Apply:</label>
+      <textarea id="remoteSdpInput"></textarea>
+      <div class="row">
+        <button id="btnApplyRemote">Apply remote SDP</button>
+        <button id="btnCreateAnswer">Create answer (callee side)</button>
+      </div>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+      const logEl = document.getElementById("log");
+      function log(msg) {
+        const ts = new Date().toISOString().split("T")[1].replace("Z", "");
+        logEl.textContent += `[${ts}] ${msg}\n`;
+        logEl.scrollTop = logEl.scrollHeight;
+        console.log(msg);
+      }
+
+      document.getElementById("btnClear").onclick = () => (logEl.textContent = "");
+
+      log(`UA: ${navigator.userAgent}`);
+      log(`getUserMedia available: ${!!navigator.mediaDevices?.getUserMedia}`);
+      log(`getDisplayMedia available: ${!!navigator.mediaDevices?.getDisplayMedia}`);
+      log(`RTCPeerConnection available: ${!!window.RTCPeerConnection}`);
+
+      let localStream = null;
+
+      // --- Button A: getUserMedia ---
+      document.getElementById("btnA").onclick = async () => {
+        log("A: requesting getUserMedia({audio:true,video:true})...");
+        try {
+          localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+          document.getElementById("localVideo").srcObject = localStream;
+          const tracks = localStream
+            .getTracks()
+            .map((t) => `${t.kind}:${t.readyState}:enabled=${t.enabled}`);
+          log(`A: PASS — granted, tracks = [${tracks.join(", ")}]`);
+        } catch (err) {
+          log(`A: FAIL — ${err.name}: ${err.message}`);
+        }
+      };
+
+      // --- Button B: loopback RTCPeerConnection ---
+      document.getElementById("btnB").onclick = async () => {
+        if (!localStream) {
+          log("B: no local stream yet — run A first (loopback needs a media source).");
+          return;
+        }
+        log("B: building pcA/pcB loopback...");
+        const pcA = new RTCPeerConnection();
+        const pcB = new RTCPeerConnection();
+
+        pcA.onicecandidate = (e) => {
+          if (e.candidate)
+            pcB
+              .addIceCandidate(e.candidate)
+              .catch((err) => log(`B: pcB addIceCandidate error ${err}`));
+        };
+        pcB.onicecandidate = (e) => {
+          if (e.candidate)
+            pcA
+              .addIceCandidate(e.candidate)
+              .catch((err) => log(`B: pcA addIceCandidate error ${err}`));
+        };
+        pcA.onconnectionstatechange = () => log(`B: pcA.connectionState = ${pcA.connectionState}`);
+        pcB.onconnectionstatechange = () => log(`B: pcB.connectionState = ${pcB.connectionState}`);
+        pcB.ontrack = (e) => {
+          log(`B: pcB received track kind=${e.track.kind}`);
+          document.getElementById("remoteVideo").srcObject = e.streams[0];
+        };
+
+        localStream.getTracks().forEach((t) => pcA.addTrack(t, localStream));
+
+        try {
+          const offer = await pcA.createOffer();
+          await pcA.setLocalDescription(offer);
+          await pcB.setRemoteDescription(offer);
+          const answer = await pcB.createAnswer();
+          await pcB.setLocalDescription(answer);
+          await pcA.setRemoteDescription(answer);
+          log("B: offer/answer exchanged, waiting for ICE + connectionState=connected...");
+        } catch (err) {
+          log(`B: FAIL during negotiation — ${err.name}: ${err.message}`);
+        }
+      };
+
+      // --- Button C: getDisplayMedia ---
+      document.getElementById("btnC").onclick = async () => {
+        log("C: requesting getDisplayMedia()...");
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          log("C: EXPECTED-GAP — getDisplayMedia not present on this platform/webview.");
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+          document.getElementById("screenVideo").srcObject = stream;
+          log(`C: PASS — got display stream, tracks=${stream.getTracks().length}`);
+        } catch (err) {
+          log(`C: FAIL/EXPECTED-GAP — ${err.name}: ${err.message}`);
+        }
+      };
+
+      // --- Manual two-device signalling shim (mobile leg, R2) ---
+      // Enable by appending ?manual=1 to the URL.
+      if (new URLSearchParams(location.search).get("manual") === "1") {
+        document.getElementById("manualSignalling").style.display = "flex";
+        let pc = null;
+        const localSdpBox = document.getElementById("localSdp");
+
+        document.getElementById("btnB").addEventListener(
+          "click",
+          async () => {
+            // override: caller side builds one PC and prints its offer for manual transfer
+            pc = new RTCPeerConnection();
+            pc.onicecandidate = (e) => {
+              if (!e.candidate) localSdpBox.value = JSON.stringify(pc.localDescription);
+            };
+            pc.ontrack = (e) => (document.getElementById("remoteVideo").srcObject = e.streams[0]);
+            if (localStream) localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            log("manual: offer generated, copy localSdp box to the other device.");
+          },
+          { capture: true },
+        );
+
+        document.getElementById("btnCreateAnswer").onclick = async () => {
+          pc = new RTCPeerConnection();
+          pc.onicecandidate = (e) => {
+            if (!e.candidate) localSdpBox.value = JSON.stringify(pc.localDescription);
+          };
+          pc.ontrack = (e) => (document.getElementById("remoteVideo").srcObject = e.streams[0]);
+          if (localStream) localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+          const remote = JSON.parse(document.getElementById("remoteSdpInput").value);
+          await pc.setRemoteDescription(remote);
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          log("manual: answer generated, copy localSdp box back to the caller.");
+        };
+
+        document.getElementById("btnApplyRemote").onclick = async () => {
+          const remote = JSON.parse(document.getElementById("remoteSdpInput").value);
+          await pc.setRemoteDescription(remote);
+          log("manual: remote SDP applied.");
+        };
+      }
+    </script>
+  </body>
+</html>
