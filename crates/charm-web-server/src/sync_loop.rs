@@ -354,18 +354,26 @@ fn register_verification_handler(
                     other_device_id: ev.content.from_device.to_string(),
                 };
 
-                // Broadcasting is best-effort for whatever WebSocket
-                // clients are already connected right now; buffering (below)
-                // is what actually guarantees delivery for the common case
-                // where none are yet — see
-                // `Session::pending_verification_requests`'s doc comment.
-                // Both happen unconditionally: a client connected exactly
-                // now could otherwise miss it if only one path ran.
-                let _ = events.send(ServerEvent::VerificationRequest(summary.clone()));
-
-                let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
-                if pending.len() < crate::session::MAX_PENDING_VERIFICATION_REQUESTS {
-                    pending.push(summary);
+                // `broadcast::Sender::send` returns `Err` precisely when
+                // there are zero active receivers right now — i.e. exactly
+                // the "nobody could have gotten this live" case buffering
+                // exists for (see `Session::pending_verification_requests`'s
+                // doc comment). Buffering unconditionally (an earlier
+                // version of this did exactly that) meant a request that
+                // *was* delivered live still sat in the buffer and got
+                // redelivered — stale and duplicated — to the next socket
+                // that connects (a reconnect, a second tab), and could fill
+                // the bounded buffer with already-delivered entries,
+                // crowding out a genuinely missed one for the flow that
+                // actually needs it.
+                if events
+                    .send(ServerEvent::VerificationRequest(summary.clone()))
+                    .is_err()
+                {
+                    let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+                    if pending.len() < crate::session::MAX_PENDING_VERIFICATION_REQUESTS {
+                        pending.push(summary);
+                    }
                 }
             }
         },

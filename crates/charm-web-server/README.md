@@ -68,13 +68,16 @@ server.md`.
   decrypted). Resolved media is only ever served inline with its real
   `Content-Type` for `image/`/`audio`/`video/` *excluding* `image/svg+xml`
   (SVG is active content) — anything else is forced to
-  `application/octet-stream` + `Content-Disposition: attachment` (plus
-  `X-Content-Type-Options: nosniff`), since this route serves sender-
-  controlled bytes from the browser's authenticated API origin. `POST
-  .../attachments` takes the filename/caption as base64-encoded
-  `x-attachment-filename`/`x-attachment-caption` headers, not query
-  parameters — a query string routinely ends up in browser history and
-  access logs, which a private filename or caption shouldn't.
+  `application/octet-stream` + `Content-Disposition: attachment`, plus
+  `X-Content-Type-Options: nosniff` and `Cross-Origin-Resource-Policy:
+  same-origin` on every response, since this route serves sender-controlled,
+  privacy-sensitive bytes from the browser's authenticated API origin.
+  `POST .../attachments` is `multipart/form-data` (`file` + optional
+  `caption` fields, `txn_id` as a query param) rather than a raw body with
+  filename/caption in headers or the query string — keeps a long caption
+  out of header-size limits and browser history/access logs, and lets the
+  `file` part's own `Content-Type` (the browser's real `File.type`) drive
+  the sent event's mimetype instead of guessing from the filename alone.
 - **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm,
   cross-signing bootstrap/status, and outgoing self-verification
   (`POST /api/verification/devices/{device_id}/request`,

@@ -13,8 +13,6 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
@@ -1162,6 +1160,16 @@ async fn resolve_message_media(
             ("content-type", content_type),
             ("content-disposition", content_disposition.to_string()),
             ("x-content-type-options", "nosniff".to_string()),
+            // Same-site subdomains attach this session's cookie
+            // automatically (`SameSite=Strict` only blocks cross-*site*),
+            // so without this a subdomain page could embed this URL as an
+            // `<img>`/`<video>` and — even unable to read the bytes
+            // directly — learn whether the victim can access this private
+            // attachment at all (load succeeds vs. errors) purely from
+            // `onload`/`onerror`/media-metadata timing, and render it
+            // inside the attacker's own page. `same-origin` refuses to load
+            // this response as a subresource from any origin but this one.
+            ("cross-origin-resource-policy", "same-origin".to_string()),
         ],
         body,
     ))
@@ -1198,51 +1206,27 @@ async fn declared_media_mimetype(
     }
 }
 
-/// Uploads a room attachment straight from the request body (a browser has
-/// no local file path to hand over the way desktop's `send_attachment`
-/// takes one) and pushes `upload:progress` over this session's WebSocket
-/// channel as the upload progresses — same `SharedObservable`-subscribing
-/// forwarder pattern as desktop's `send::spawn_progress_forwarder`, just
-/// pushing onto this session's broadcast channel instead of `app.emit`.
+/// Uploads a room attachment as `multipart/form-data` (a browser has no
+/// local file path to hand over the way desktop's `send_attachment` takes
+/// one) and pushes `upload:progress` over this session's WebSocket channel
+/// as the upload progresses — same `SharedObservable`-subscribing forwarder
+/// pattern as desktop's `send::spawn_progress_forwarder`, just pushing onto
+/// this session's broadcast channel instead of `app.emit`.
 ///
-/// `filename`/`caption` travel as base64-encoded request headers, not query
-/// parameters: a query string routinely ends up in browser history,
-/// reverse-proxy access logs, and error-tracking breadcrumbs, none of which
-/// should see a private filename or message caption. Headers aren't
-/// logged by those same layers by default, and base64-encoding sidesteps
-/// HTTP header value rules (no raw newlines/non-ASCII) without needing a
-/// full multipart-body parser for what's otherwise still a single raw
-/// binary body. `txn_id` stays as a query param — it's a caller-generated
-/// opaque correlation id, not user content, so it carries nothing worth
-/// hiding.
-const ATTACHMENT_FILENAME_HEADER: &str = "x-attachment-filename";
-const ATTACHMENT_CAPTION_HEADER: &str = "x-attachment-caption";
-
+/// Expected fields: `file` (the attachment bytes, with its filename and
+/// `Content-Type` carried by the part itself — not a manually-set request
+/// header, per multipart's own encoding), `txn_id` (opaque caller-generated
+/// correlation id), and an optional `caption`. Multipart, not raw
+/// bytes-plus-query/headers (an earlier version of this route used
+/// base64-encoded `x-attachment-filename`/`x-attachment-caption` headers):
+/// a header value has to fit within the browser/reverse-proxy/server's
+/// header-size limits, which a caption of even a few KB — inflated further
+/// by base64 — could blow past well before Matrix's own event-size limits
+/// ever came into play, rejecting an upload the underlying protocol would
+/// have accepted just fine.
 #[derive(Debug, Deserialize)]
 struct AttachmentQuery {
     txn_id: String,
-}
-
-fn decode_base64_header(headers: &axum::http::HeaderMap, name: &str) -> Result<String, ApiError> {
-    let value = headers
-        .get(name)
-        .ok_or_else(|| ApiError::bad_request(format!("missing {name} header")))?
-        .to_str()
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let bytes = BASE64
-        .decode(value)
-        .map_err(|e| ApiError::bad_request(format!("{name} is not valid base64: {e}")))?;
-    String::from_utf8(bytes).map_err(|e| ApiError::bad_request(e.to_string()))
-}
-
-fn decode_optional_base64_header(
-    headers: &axum::http::HeaderMap,
-    name: &str,
-) -> Result<Option<String>, ApiError> {
-    if !headers.contains_key(name) {
-        return Ok(None);
-    }
-    decode_base64_header(headers, name).map(Some)
 }
 
 async fn send_attachment(
@@ -1251,18 +1235,14 @@ async fn send_attachment(
     headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
     Query(query): Query<AttachmentQuery>,
-    body: Bytes,
+    mut multipart: axum::extract::Multipart,
 ) -> Result<impl IntoResponse, ApiError> {
-    // Unlike the JSON routes (which force a CORS preflight via
-    // `Content-Type: application/json`), this endpoint accepts a raw body
-    // with no required content type — a same-site subdomain (which the
-    // session cookie's `SameSite=Strict` does *not* protect against, only
-    // cross-*site* is blocked) could otherwise submit a "simple" POST that
-    // never triggers a preflight, sending an attachment as this user.
+    // A `multipart/form-data` body is itself one of the CORS-safelisted
+    // "simple" content types, so — same as the raw-bytes version this
+    // replaced — this still needs its own explicit Origin check rather
+    // than relying on a preflight to have gated it.
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
-    let filename = decode_base64_header(&headers, ATTACHMENT_FILENAME_HEADER)?;
-    let caption = decode_optional_base64_header(&headers, ATTACHMENT_CAPTION_HEADER)?;
     let parsed_room_id =
         RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let room = session
@@ -1270,31 +1250,57 @@ async fn send_attachment(
         .get_room(&parsed_room_id)
         .ok_or_else(|| ApiError::not_found(format!("room {room_id} not found")))?;
 
-    if body.len() as u64 > charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES {
-        return Err(ApiError::bad_request(format!(
-            "attachment is {} bytes, over the {}-byte limit",
-            body.len(),
-            charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES
-        )));
+    let mut filename = None;
+    let mut declared_mime: Option<mime::Mime> = None;
+    let mut data: Option<Vec<u8>> = None;
+    let mut caption = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?
+    {
+        match field.name() {
+            Some("file") => {
+                filename = field.file_name().map(str::to_string);
+                declared_mime = field.content_type().and_then(|ct| ct.parse().ok());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::bad_request(e.to_string()))?;
+                if bytes.len() as u64 > charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES {
+                    return Err(ApiError::bad_request(format!(
+                        "attachment is {} bytes, over the {}-byte limit",
+                        bytes.len(),
+                        charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES
+                    )));
+                }
+                data = Some(bytes.to_vec());
+            }
+            Some("caption") => {
+                caption = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| ApiError::bad_request(e.to_string()))?,
+                );
+            }
+            _ => {}
+        }
     }
-
-    let data = body.to_vec();
+    let filename = filename.ok_or_else(|| ApiError::bad_request("missing file field"))?;
+    let data = data.ok_or_else(|| ApiError::bad_request("missing file field"))?;
     let total_bytes = data.len() as u64;
-    // Prefer the browser's own `Content-Type` (a `File` object's `.type`,
+
+    // Prefer the part's own `Content-Type` (a `File` object's `.type`,
     // sniffed from its actual bytes/extension by the browser itself — more
     // reliable than re-guessing server-side from just the filename, which
     // misses a camera photo with no or a misleading extension) over a
-    // filename-only guess. Falls back to the filename guess when the
-    // request either omits `Content-Type` or sends one of the generic
-    // defaults a browser sets automatically when it *doesn't* know the real
-    // type (a bare `fetch(url, {body: someBlob})` with an untyped `Blob`
-    // sends `application/octet-stream`; a `FormData`/URL-encoded body would
-    // send its own boilerplate type) — those carry no more information than
-    // not sending the header at all, so they shouldn't override the guess.
-    let mime = headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<mime::Mime>().ok())
+    // filename-only guess. Falls back to the filename guess when the part
+    // either omits `Content-Type` or sends one of the generic defaults a
+    // browser sets automatically when it *doesn't* know the real type —
+    // those carry no more information than not sending it at all, so they
+    // shouldn't override the guess.
+    let mime = declared_mime
         .filter(|m| *m != mime::APPLICATION_OCTET_STREAM && *m != mime::TEXT_PLAIN)
         .unwrap_or_else(|| mime_guess::from_path(&filename).first_or_octet_stream());
     let info = attachment_info_for(&mime, &data, total_bytes);
