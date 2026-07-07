@@ -168,6 +168,13 @@ jobs:
           # real answer, not a workaround.
           adb shell pm grant $PKG android.permission.CAMERA
           adb shell pm grant $PKG android.permission.RECORD_AUDIO
+          # Clear the logcat buffer immediately before launch — an earlier
+          # run's failure dump (`adb logcat -d | tail -200`) was 100% unrelated
+          # emulator/system noise (Wi-Fi, Dialer, DropBox) with zero mentions
+          # of our package, because by the time of a 5-minute timeout the last
+          # 200 lines were nowhere near the actual launch. Clearing first means
+          # the eventual dump only contains what happened during this run.
+          adb logcat -c
           adb shell am start -n $PKG/.MainActivity
           REPORT=""
           for i in $(seq 1 60); do
@@ -178,8 +185,8 @@ jobs:
             sleep 5
           done
           if [ -z "$REPORT" ]; then
-            echo "Timed out waiting for spike-ci-report.json; last logcat:"
-            adb logcat -d | tail -200
+            echo "Timed out waiting for spike-ci-report.json; full logcat since launch:"
+            adb logcat -d
             exit 1
           fi
           echo "$REPORT" | tee spike-ci-report.json
