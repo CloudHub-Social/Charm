@@ -98,9 +98,30 @@ async fn repersist_if_token_changed(
     Some(access_token)
 }
 
-/// Registers this session's live event handlers and spawns its background
-/// sync loop. Called once per session, right after login/register/restore
-/// (mirrors desktop calling `spawn_sync_loop` from the same three places).
+/// Registers this session's live event handlers — presence, self-profile,
+/// and incoming verification requests. Split out from [`spawn`] so callers
+/// (`auth::login`/`auth::register`/`persistence::restore_one`) can call this
+/// *before* their own initial `sync_once`, not just before `spawn`'s loop:
+/// a `to-device` event (like `m.key.verification.request`) that arrives
+/// during that very first sync is processed once, synchronously, as part of
+/// that call — it is never replayed on a later sync. Registering the
+/// verification handler only once `spawn` runs (an earlier version of this
+/// function did exactly that) meant a verification request that happened to
+/// land in the initial sync's response was silently dropped: the browser
+/// would never see its `verification:request` event and the flow would be
+/// stuck with no way to know it existed.
+pub fn register_event_handlers(client: &Client, events: broadcast::Sender<ServerEvent>) {
+    register_presence_handler(client.clone(), events.clone());
+    register_self_profile_handler(client.clone(), events.clone());
+    register_verification_handler(client.clone(), events);
+}
+
+/// Spawns this session's background sync loop. Called once per session,
+/// right after login/register/restore (mirrors desktop calling
+/// `spawn_sync_loop` from the same three places) — **after**
+/// [`register_event_handlers`] has already been called on this same
+/// `client` by the caller, before its own initial `sync_once` (see that
+/// function's doc comment for why the ordering matters).
 ///
 /// `initial_response` is the `SyncResponse` `auth::login`/`auth::register`/
 /// `persistence::restore_one` already obtained establishing local room-store
@@ -120,10 +141,6 @@ pub fn spawn(
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
 ) -> tokio::task::JoinHandle<()> {
-    register_presence_handler(client.clone(), events.clone());
-    register_self_profile_handler(client.clone(), events.clone());
-    register_verification_handler(client.clone(), events.clone());
-
     {
         let client = client.clone();
         tokio::spawn(async move {

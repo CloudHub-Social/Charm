@@ -13,6 +13,8 @@ use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
@@ -1088,20 +1090,7 @@ async fn resolve_message_media(
     let cache = crate::media_cache::for_account(&session.user_id)
         .await
         .map_err(ApiError::bad_request)?;
-    // The message's declared mimetype describes the *full-size* media —
-    // when a thumbnail is requested instead, the resolved bytes are
-    // whatever the thumbnail source actually is (matrix-generated
-    // thumbnails are always a plain image, regardless of the full media's
-    // type — e.g. a `video/mp4`'s thumbnail is a JPEG/PNG frame), so using
-    // the full-size mimetype there would mislabel image bytes as
-    // `video/mp4` and break rendering. Only look it up for the non-
-    // thumbnail case; the thumbnail case sniffs the resolved bytes instead,
-    // below.
-    let declared_mimetype = if query.thumbnail {
-        None
-    } else {
-        declared_media_mimetype(&session.client, &room_id, &event_id).await
-    };
+    let declared_mimetype = declared_media_mimetype(&session.client, &room_id, &event_id).await;
     let path = charm_lib::matrix::media::resolve_media_impl(
         &session.client,
         cache,
@@ -1115,29 +1104,32 @@ async fn resolve_message_media(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let guessed_content_type = if let Some(declared) = declared_mimetype {
-        declared
-    } else if query.thumbnail {
-        // Sniff from content rather than guessing from `MediaCache`'s
-        // extensionless SHA-256 filename (which would always fall back to
-        // `application/octet-stream`) — a small prefix is enough for format
-        // magic-byte detection; `infer_image_mime` also guarantees the
-        // result is always a safe-to-render-inline image type or
-        // `application/octet-stream`, never something active.
-        let mut prefix = [0u8; 64];
-        let read = async {
-            use tokio::io::AsyncReadExt;
-            let mut f = tokio::fs::File::open(&path).await?;
-            f.read(&mut prefix).await
-        }
-        .await
-        .unwrap_or(0);
-        infer_image_mime(&prefix[..read]).to_string()
-    } else {
-        mime_guess::from_path(&path)
-            .first_or_octet_stream()
-            .to_string()
-    };
+    // Sniff the actual resolved bytes first, falling back to the message's
+    // declared mimetype, then a filename guess (always `octet-stream` here,
+    // since `MediaCache` stores extensionless SHA-256 names — kept only as
+    // a final, harmless fallback).
+    //
+    // Sniffing has to come *first*, not the declared mimetype: when a
+    // thumbnail is requested, `resolve_media_impl` returns either a real
+    // generated thumbnail (always a plain image, regardless of the full
+    // media's type — e.g. a `video/mp4`'s thumbnail is a JPEG/PNG frame) or,
+    // for encrypted media with no dedicated thumbnail source, silently falls
+    // back to the *original* file — which could be non-image bytes
+    // (`sniff_content_type` returning `None` for those correctly leaves the
+    // declared mimetype in charge instead). Sniffing whichever one actually
+    // came back, rather than assuming based on the `thumbnail` query flag,
+    // handles both cases without needing to know which one
+    // `resolve_media_impl` chose.
+    let guessed_content_type =
+        if let Some(sniffed) = sniff_content_type(std::path::Path::new(&path)).await {
+            sniffed
+        } else if let Some(declared) = declared_mimetype {
+            declared
+        } else {
+            mime_guess::from_path(&path)
+                .first_or_octet_stream()
+                .to_string()
+        };
     // This route serves sender-controlled bytes under the browser's
     // authenticated API origin — reflecting an arbitrary declared mimetype
     // verbatim (e.g. `text/html`, or `image/svg+xml` — SVG is itself active
@@ -1150,11 +1142,15 @@ async fn resolve_message_media(
     // `Content-Disposition: attachment` (forcing a download rather than
     // inline/same-origin execution) and `X-Content-Type-Options: nosniff`
     // blocks the browser from trying to sniff its way back to something
-    // active anyway.
-    let is_safe_inline_type = !guessed_content_type.contains("svg")
+    // active anyway. Lowercased first — MIME types are case-insensitive and
+    // sender-controlled (`Image/SVG+XML` is exactly as active as
+    // `image/svg+xml`), so comparing against the raw declared casing would
+    // let a trivially different-cased value skip this check entirely.
+    let lower_content_type = guessed_content_type.to_ascii_lowercase();
+    let is_safe_inline_type = !lower_content_type.contains("svg")
         && ["image/", "audio/", "video/"]
             .iter()
-            .any(|prefix| guessed_content_type.starts_with(prefix));
+            .any(|prefix| lower_content_type.starts_with(prefix));
     let (content_type, content_disposition) = if is_safe_inline_type {
         (guessed_content_type, "inline")
     } else {
@@ -1208,21 +1204,65 @@ async fn declared_media_mimetype(
 /// channel as the upload progresses — same `SharedObservable`-subscribing
 /// forwarder pattern as desktop's `send::spawn_progress_forwarder`, just
 /// pushing onto this session's broadcast channel instead of `app.emit`.
+///
+/// `filename`/`caption` travel as base64-encoded request headers, not query
+/// parameters: a query string routinely ends up in browser history,
+/// reverse-proxy access logs, and error-tracking breadcrumbs, none of which
+/// should see a private filename or message caption. Headers aren't
+/// logged by those same layers by default, and base64-encoding sidesteps
+/// HTTP header value rules (no raw newlines/non-ASCII) without needing a
+/// full multipart-body parser for what's otherwise still a single raw
+/// binary body. `txn_id` stays as a query param — it's a caller-generated
+/// opaque correlation id, not user content, so it carries nothing worth
+/// hiding.
+const ATTACHMENT_FILENAME_HEADER: &str = "x-attachment-filename";
+const ATTACHMENT_CAPTION_HEADER: &str = "x-attachment-caption";
+
 #[derive(Debug, Deserialize)]
 struct AttachmentQuery {
-    filename: String,
     txn_id: String,
-    caption: Option<String>,
+}
+
+fn decode_base64_header(headers: &axum::http::HeaderMap, name: &str) -> Result<String, ApiError> {
+    let value = headers
+        .get(name)
+        .ok_or_else(|| ApiError::bad_request(format!("missing {name} header")))?
+        .to_str()
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let bytes = BASE64
+        .decode(value)
+        .map_err(|e| ApiError::bad_request(format!("{name} is not valid base64: {e}")))?;
+    String::from_utf8(bytes).map_err(|e| ApiError::bad_request(e.to_string()))
+}
+
+fn decode_optional_base64_header(
+    headers: &axum::http::HeaderMap,
+    name: &str,
+) -> Result<Option<String>, ApiError> {
+    if !headers.contains_key(name) {
+        return Ok(None);
+    }
+    decode_base64_header(headers, name).map(Some)
 }
 
 async fn send_attachment(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
     Query(query): Query<AttachmentQuery>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Unlike the JSON routes (which force a CORS preflight via
+    // `Content-Type: application/json`), this endpoint accepts a raw body
+    // with no required content type — a same-site subdomain (which the
+    // session cookie's `SameSite=Strict` does *not* protect against, only
+    // cross-*site* is blocked) could otherwise submit a "simple" POST that
+    // never triggers a preflight, sending an attachment as this user.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
+    let filename = decode_base64_header(&headers, ATTACHMENT_FILENAME_HEADER)?;
+    let caption = decode_optional_base64_header(&headers, ATTACHMENT_CAPTION_HEADER)?;
     let parsed_room_id =
         RoomId::parse(&room_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let room = session
@@ -1240,12 +1280,12 @@ async fn send_attachment(
 
     let data = body.to_vec();
     let total_bytes = data.len() as u64;
-    let mime = mime_guess::from_path(&query.filename).first_or_octet_stream();
+    let mime = mime_guess::from_path(&filename).first_or_octet_stream();
     let info = attachment_info_for(&mime, &data, total_bytes);
 
     let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
     let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
-    if let Some(caption) = query.caption {
+    if let Some(caption) = caption {
         config = config.caption(Some(
             matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain(caption),
         ));
@@ -1262,7 +1302,7 @@ async fn send_attachment(
     );
 
     let send = room
-        .send_attachment(query.filename, &mime, data, config)
+        .send_attachment(filename, &mime, data, config)
         .with_send_progress_observable(progress);
     let result = send.await;
     // The forwarder holds its own clone of `progress`, so it doesn't close
@@ -1349,14 +1389,37 @@ async fn set_avatar(
 /// avatar, but mislabeling unrecognized bytes as a specific image type is
 /// worse than an honest "unknown" content type.
 fn infer_image_mime(bytes: &[u8]) -> mime::Mime {
+    sniffed_image_mime(bytes).unwrap_or(mime::APPLICATION_OCTET_STREAM)
+}
+
+/// `None` when the bytes aren't a recognized image format at all — as
+/// opposed to [`infer_image_mime`]'s `Mime`-always contract, callers here
+/// (`sniff_content_type`) need to distinguish "definitely not an image" from
+/// "unrecognized, default to octet-stream" so they can fall through to a
+/// different source of truth (the message's declared mimetype) instead of
+/// prematurely committing to octet-stream.
+fn sniffed_image_mime(bytes: &[u8]) -> Option<mime::Mime> {
     match image::guess_format(bytes) {
-        Ok(image::ImageFormat::Png) => mime::IMAGE_PNG,
-        Ok(image::ImageFormat::Jpeg) => mime::IMAGE_JPEG,
-        Ok(image::ImageFormat::Gif) => mime::IMAGE_GIF,
-        Ok(image::ImageFormat::WebP) => "image/webp".parse().expect("valid mime"),
-        Ok(image::ImageFormat::Bmp) => mime::IMAGE_BMP,
-        Ok(_) | Err(_) => mime::APPLICATION_OCTET_STREAM,
+        Ok(image::ImageFormat::Png) => Some(mime::IMAGE_PNG),
+        Ok(image::ImageFormat::Jpeg) => Some(mime::IMAGE_JPEG),
+        Ok(image::ImageFormat::Gif) => Some(mime::IMAGE_GIF),
+        Ok(image::ImageFormat::WebP) => Some("image/webp".parse().expect("valid mime")),
+        Ok(image::ImageFormat::Bmp) => Some(mime::IMAGE_BMP),
+        Ok(_) | Err(_) => None,
     }
+}
+
+/// Reads a small prefix of the file at `path` and sniffs its content type —
+/// `None` if the bytes aren't a recognized image format (audio/video/other
+/// binary formats have no cheap universal magic-byte sniff this crate
+/// already depends on, so those fall through to the caller's next source of
+/// truth rather than being guessed at here).
+async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
+    use tokio::io::AsyncReadExt;
+    let mut prefix = [0u8; 64];
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    let read = file.read(&mut prefix).await.ok()?;
+    sniffed_image_mime(&prefix[..read]).map(|mime| mime.to_string())
 }
 
 async fn remove_avatar(
@@ -1513,10 +1576,11 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         WARNED_NO_ALLOWED_ORIGIN.get_or_init(|| {
             tracing::warn!(
-                "{ALLOWED_ORIGIN_ENV} not set — WebSocket connections are accepted from any \
-                 origin (including same-site subdomains of this deployment), which lets any \
-                 page on one of them read another logged-in user's live session data. Set it \
-                 before deploying behind a shared registrable domain."
+                "{ALLOWED_ORIGIN_ENV} not set — cross-origin requests (including from same-site \
+                 subdomains of this deployment, which the session cookie's SameSite=Strict does \
+                 not protect against) are accepted, letting any page on one of them act as or \
+                 read another logged-in user's live session data. Set it before deploying \
+                 behind a shared registrable domain."
             );
         });
         return true;
@@ -1530,21 +1594,30 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
         .any(|allowed_origin| allowed_origin == origin)
 }
 
+/// Shared guard for the state-changing routes that accept a raw (non-JSON)
+/// body and so don't get an automatic CORS preflight — see
+/// `send_attachment`'s call site for the full rationale.
+fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if origin_is_allowed(origin) {
+        Ok(())
+    } else {
+        Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+        })
+    }
+}
+
 async fn ws_handler(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, ApiError> {
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    if !origin_is_allowed(origin) {
-        return Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: "origin not allowed".to_string(),
-        });
-    }
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
 }
@@ -1582,12 +1655,35 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
                             break;
                         }
                     }
-                    // A slow consumer fell behind the broadcast channel's
-                    // capacity — skip ahead rather than disconnecting; the
-                    // next event (e.g. the next `room_list:update`) already
-                    // supersedes whatever was missed for every event type
-                    // this crate emits.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // A slow consumer fell more than `EVENT_CHANNEL_CAPACITY`
+                    // events behind and the broadcast channel dropped the
+                    // gap. Skipping ahead (an earlier version of this did
+                    // exactly that) is only safe for events a later one
+                    // fully supersedes — true for `room_list:update`/
+                    // `badge:update`/`timeline:update`, but not for
+                    // `verification:request`, a `verification:sas_update`
+                    // mid-flow, or the terminal `upload:progress` tick: none
+                    // of those are replayed or reissued by anything later,
+                    // so silently skipping past one leaves the frontend
+                    // permanently unaware a verification flow exists, or an
+                    // upload's progress bar stuck mid-way forever. There's
+                    // no way to tell from here which kind(s) of event were
+                    // actually dropped, so the only correct move is to close
+                    // the connection and force the client to reconnect and
+                    // reload current state from scratch, rather than risk
+                    // silently losing a not-safely-droppable event.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "WebSocket client lagged {skipped} events behind; closing so it reconnects"
+                        );
+                        let _ = socket
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: axum::extract::ws::close_code::AGAIN,
+                                reason: "lagged behind; reconnect".into(),
+                            })))
+                            .await;
+                        break;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }

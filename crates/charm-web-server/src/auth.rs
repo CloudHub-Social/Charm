@@ -44,6 +44,18 @@ pub async fn login(
         .matrix_auth()
         .session()
         .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
+    let user_id = session_meta.meta.user_id.to_string();
+
+    // Built (and its event handlers registered — see
+    // `register_event_handlers`'s doc comment for why that must happen
+    // *before* the sync below, not just before `sync_loop::spawn`) ahead of
+    // that sync, not after: `Session::new` is what creates this session's
+    // broadcast channel, and a `to-device` verification event landing in
+    // this very first sync response is processed synchronously as part of
+    // this call — never replayed later — so the handler needs somewhere to
+    // push it to before this call happens, not after.
+    let session = Session::new(client.clone(), user_id.clone());
+    crate::sync_loop::register_event_handlers(&client, session.events.clone());
 
     // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
     // room store, which only gets populated by a sync — without this, every
@@ -55,13 +67,12 @@ pub async fn login(
         .await
         .map_err(|e| e.to_string())?;
 
-    let user_id = session_meta.meta.user_id.to_string();
     let response = LoginResponse {
-        user_id: user_id.clone(),
+        user_id,
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session::new(client, user_id), initial_response))
+    Ok((response, session, initial_response))
 }
 
 /// Registers a new account and logs it in, same in-memory-client shape as
@@ -86,17 +97,22 @@ pub async fn register(
         .matrix_auth()
         .session()
         .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
+    let user_id = session_meta.meta.user_id.to_string();
+
+    // See `login`'s doc comment on this same ordering: session (and its
+    // event handlers) built before the initial sync, not after.
+    let session = Session::new(client.clone(), user_id.clone());
+    crate::sync_loop::register_event_handlers(&client, session.events.clone());
 
     let initial_response = client
         .sync_once(SyncSettings::default())
         .await
         .map_err(|e| e.to_string())?;
 
-    let user_id = session_meta.meta.user_id.to_string();
     let response = LoginResponse {
-        user_id: user_id.clone(),
+        user_id,
         device_id: session_meta.meta.device_id.to_string(),
     };
 
-    Ok((response, Session::new(client, user_id), initial_response))
+    Ok((response, session, initial_response))
 }

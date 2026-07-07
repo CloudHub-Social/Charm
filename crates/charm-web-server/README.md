@@ -66,10 +66,15 @@ server.md`.
   `charm_lib::matrix::persistence::account_key` — never shared across
   sessions, so one account can't reach media only another account has
   decrypted). Resolved media is only ever served inline with its real
-  `Content-Type` for `image/`/`audio`/`video/` — anything else is forced to
+  `Content-Type` for `image/`/`audio`/`video/` *excluding* `image/svg+xml`
+  (SVG is active content) — anything else is forced to
   `application/octet-stream` + `Content-Disposition: attachment` (plus
   `X-Content-Type-Options: nosniff`), since this route serves sender-
-  controlled bytes from the browser's authenticated API origin.
+  controlled bytes from the browser's authenticated API origin. `POST
+  .../attachments` takes the filename/caption as base64-encoded
+  `x-attachment-filename`/`x-attachment-caption` headers, not query
+  parameters — a query string routinely ends up in browser history and
+  access logs, which a private filename or caption shouldn't.
 - **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm,
   cross-signing bootstrap/status, and outgoing self-verification
   (`POST /api/verification/devices/{device_id}/request`,

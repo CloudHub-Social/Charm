@@ -390,6 +390,15 @@ async fn restore_one(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Session (and its event handlers) built before the sync below, not
+    // after — see `sync_loop::register_event_handlers`'s doc comment for
+    // why: a to-device verification event landing in this restore's own
+    // initial sync is processed synchronously as part of it and never
+    // replayed later, so the handler must already be registered.
+    let session =
+        crate::session::Session::new(client.clone(), entry.session.meta.user_id.to_string());
+    crate::sync_loop::register_event_handlers(&client, session.events.clone());
+
     // Re-establish local room-store state the same way a fresh login does
     // (see `auth::login`'s doc comment, including why the response is
     // returned rather than discarded — `sync_loop::spawn` reuses it as its
@@ -399,10 +408,7 @@ async fn restore_one(
         .await
         .map_err(|e| e.to_string())?;
 
-    Ok((
-        crate::session::Session::new(client, entry.session.meta.user_id.to_string()),
-        initial_response,
-    ))
+    Ok((session, initial_response))
 }
 
 #[cfg(test)]
