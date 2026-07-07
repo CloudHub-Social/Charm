@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   changes:
@@ -26,6 +27,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual dispatch (e.g. re-running the platform jobs after a CI
+            # infra fix) always runs them — there's no "changed files" concept.
+            changed="src-tauri/"
           else
             # push to main: diff against the pre-push tip. Falls back to
             # running the platform jobs (safe default) if `before` isn't a
