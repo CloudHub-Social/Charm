@@ -159,36 +159,60 @@ impl PersistenceStore {
     /// `remove` ever read or write, so an entry neither of them touches
     /// (any token but the one being saved/removed) round-trips byte-for-byte
     /// even if this deployment could no longer decrypt it at all.
-    async fn read_all_raw(&self) -> Vec<EncryptedBlob> {
-        let Ok(bytes) = tokio::fs::read(&self.path).await else {
-            return Vec::new();
+    /// `Ok(vec![])` when the file simply doesn't exist yet (first run —
+    /// nothing to preserve). `Err` when it exists but its *top-level* JSON
+    /// is invalid (truncated write, hand-edited into garbage, disk
+    /// corruption) — as opposed to a single malformed entry *within* an
+    /// otherwise-valid array, which is scoped to that one entry below and
+    /// never surfaces as an error here. The distinction is load-bearing for
+    /// [`Self::save`]/[`Self::remove`]: they must *never* treat "I
+    /// couldn't parse what's there" the same as "there's nothing there" —
+    /// doing so would make an unrelated login/logout permanently overwrite
+    /// a merely-unreadable-right-now file with just the one new/removed
+    /// entry, destroying every other still-possibly-recoverable session in
+    /// it.
+    async fn read_all_raw(&self) -> Result<Vec<EncryptedBlob>, String> {
+        let bytes = match tokio::fs::read(&self.path).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.to_string()),
         };
-        // Per-entry, not per-file: deserializing the whole array in one
-        // shot means a single entry missing/mistyping a field (an old file
-        // format, a hand-edited/bit-rotted byte) would fail the *entire*
-        // array and silently return nothing — every other account's still-
-        // perfectly-good blob along with it. Parsing into loosely-typed
-        // `Value`s first and converting each independently keeps that
-        // failure scoped to the one bad entry, same as `read_all`'s
-        // per-entry decrypt failures below.
-        let Ok(values) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
-            return Vec::new();
-        };
-        values
+        // Per-entry, not per-file, *within* the array: deserializing the
+        // whole array in one shot means a single entry missing/mistyping a
+        // field (an old file format, a hand-edited/bit-rotted byte) would
+        // fail the *entire* array and be indistinguishable from "nothing
+        // ever written here" — every other account's still-perfectly-good
+        // blob along with it. Parsing into loosely-typed `Value`s first and
+        // converting each independently keeps that failure scoped to the
+        // one bad entry, same as `read_all`'s per-entry decrypt failures
+        // below. The *outer* `Vec<Value>` parse failing, though (not valid
+        // JSON at all) is exactly the top-level-corruption case this
+        // function must report as `Err`, not silently swallow.
+        let values: Vec<serde_json::Value> =
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        Ok(values
             .into_iter()
             .filter_map(|value| serde_json::from_value(value).ok())
-            .collect()
+            .collect())
     }
 
     /// Decrypts every blob, for the startup-only restore path
     /// ([`Self::restore_all`]) that actually needs live `PersistedSession`
-    /// values — an entry that fails to decrypt here is dropped with a
-    /// warning (see [`Self::restore_all`]'s doc comment for why that
-    /// particular tradeoff, unlike `save`/`remove`, is fine: it only ever
-    /// *reads*, never rewrites the file other entries live in).
+    /// values. Unlike `save`/`remove`, this only ever *reads* — it never
+    /// rewrites the file other entries live in — so both an unreadable
+    /// top-level file and a single unreadable entry within it are fine to
+    /// fail open here (log and treat as "nothing more to restore") rather
+    /// than propagating an error nothing downstream would act on
+    /// differently.
     async fn read_all(&self) -> Vec<PersistedSession> {
-        self.read_all_raw()
-            .await
+        let blobs = match self.read_all_raw().await {
+            Ok(blobs) => blobs,
+            Err(e) => {
+                tracing::warn!("sessions.enc.json is unreadable, restoring nothing: {e}");
+                return Vec::new();
+            }
+        };
+        blobs
             .iter()
             .filter_map(|blob| match self.decrypt(blob) {
                 Ok(session) => Some(session),
@@ -248,7 +272,7 @@ impl PersistenceStore {
     ) -> Result<(), String> {
         let _guard = self.lock.lock().await;
         let hash = token_hash(token);
-        let mut blobs = self.read_all_raw().await;
+        let mut blobs = self.read_all_raw().await?;
         blobs.retain(|b| b.token_hash != hash);
         blobs.push(self.encrypt(
             token,
@@ -268,7 +292,7 @@ impl PersistenceStore {
     pub async fn remove(&self, token: &str) -> Result<(), String> {
         let _guard = self.lock.lock().await;
         let hash = token_hash(token);
-        let mut blobs = self.read_all_raw().await;
+        let mut blobs = self.read_all_raw().await?;
         blobs.retain(|b| b.token_hash != hash);
         self.write_all_raw(&blobs).await
     }
@@ -310,6 +334,13 @@ impl PersistenceStore {
     /// is dropped rather than blocking startup; that browser's next request
     /// with the now-dead cookie gets an ordinary 401 and re-logs-in, same
     /// self-healing tradeoff desktop's `try_restore_session` makes.
+    /// Tuple order: `(token, homeserver_url, session, initial_response,
+    /// originally_persisted_access_token)`. The last field is what was
+    /// actually on disk *before* `restore_one`'s own `sync_once` ran —
+    /// deliberately not re-read from the just-restored `Session`'s client,
+    /// since that `sync_once` can itself trigger a token refresh; see
+    /// `sync_loop::PersistHandle::initial_access_token`'s doc comment for
+    /// why that distinction matters.
     pub async fn restore_all(
         &self,
     ) -> Vec<(
@@ -317,13 +348,19 @@ impl PersistenceStore {
         String,
         crate::session::Session,
         matrix_sdk::sync::SyncResponse,
+        String,
     )> {
         let mut restored = Vec::new();
         for entry in self.read_all().await {
+            let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             match restore_one(&entry).await {
-                Ok((session, initial_response)) => {
-                    restored.push((entry.token, entry.homeserver_url, session, initial_response))
-                }
+                Ok((session, initial_response)) => restored.push((
+                    entry.token,
+                    entry.homeserver_url,
+                    session,
+                    initial_response,
+                    originally_persisted_access_token,
+                )),
                 Err(e) => {
                     tracing::warn!(
                         "dropping persisted session for {}: failed to restore: {e}",

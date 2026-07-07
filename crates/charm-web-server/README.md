@@ -129,6 +129,17 @@ this in a production deployment that's actually behind TLS.
   cache live (default `./data`). Only relevant when `CHARM_WEB_SERVER_MASTER_KEY`
   is set.
 
+### WebSocket origin allowlist
+
+- `CHARM_WEB_SERVER_ALLOWED_ORIGIN` — the frontend origin(s) allowed to open
+  `GET /api/ws` (comma-separated for more than one). **Set this before
+  deploying behind a shared registrable domain** — the session cookie's
+  `SameSite=Strict` doesn't defend against a same-*site* subdomain (a
+  different origin, same registrable domain) opening this socket and
+  attaching the cookie automatically; only an explicit `Origin` check does.
+  Unset by default (permissive, with a one-time startup warning) so local
+  dev keeps working with zero configuration.
+
 ## Deployment (not done as part of this PR — flagged as a manual follow-up)
 
 Per the spec's Deployment topology: this runs as another persistent process

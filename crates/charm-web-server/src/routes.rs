@@ -261,14 +261,17 @@ async fn finish_login(
         }
     }
 
-    let persist = state
-        .persistence
-        .clone()
-        .map(|store| crate::sync_loop::PersistHandle {
-            store,
+    let persist = if let (Some(store), Some(matrix_session)) = (&state.persistence, &matrix_session)
+    {
+        Some(crate::sync_loop::PersistHandle {
+            store: store.clone(),
             token: token.clone(),
             homeserver_url: homeserver_url.to_string(),
-        });
+            initial_access_token: matrix_session.tokens.access_token.clone(),
+        })
+    } else {
+        None
+    };
     let handle = crate::sync_loop::spawn(
         stored.client.clone(),
         stored.events.clone(),
@@ -1085,12 +1088,20 @@ async fn resolve_message_media(
     let cache = crate::media_cache::for_account(&session.user_id)
         .await
         .map_err(ApiError::bad_request)?;
-    // `resolve_media_impl` only returns a cache path — `MediaCache` stores
-    // files under extensionless SHA-256 names, so guessing the content type
-    // from that path (as an earlier version of this route did) always fell
-    // back to `application/octet-stream`. The event carries the real
-    // declared mimetype, so look it up directly instead.
-    let declared_mimetype = declared_media_mimetype(&session.client, &room_id, &event_id).await;
+    // The message's declared mimetype describes the *full-size* media —
+    // when a thumbnail is requested instead, the resolved bytes are
+    // whatever the thumbnail source actually is (matrix-generated
+    // thumbnails are always a plain image, regardless of the full media's
+    // type — e.g. a `video/mp4`'s thumbnail is a JPEG/PNG frame), so using
+    // the full-size mimetype there would mislabel image bytes as
+    // `video/mp4` and break rendering. Only look it up for the non-
+    // thumbnail case; the thumbnail case sniffs the resolved bytes instead,
+    // below.
+    let declared_mimetype = if query.thumbnail {
+        None
+    } else {
+        declared_media_mimetype(&session.client, &room_id, &event_id).await
+    };
     let path = charm_lib::matrix::media::resolve_media_impl(
         &session.client,
         cache,
@@ -1104,24 +1115,46 @@ async fn resolve_message_media(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let guessed_content_type = declared_mimetype.unwrap_or_else(|| {
+    let guessed_content_type = if let Some(declared) = declared_mimetype {
+        declared
+    } else if query.thumbnail {
+        // Sniff from content rather than guessing from `MediaCache`'s
+        // extensionless SHA-256 filename (which would always fall back to
+        // `application/octet-stream`) — a small prefix is enough for format
+        // magic-byte detection; `infer_image_mime` also guarantees the
+        // result is always a safe-to-render-inline image type or
+        // `application/octet-stream`, never something active.
+        let mut prefix = [0u8; 64];
+        let read = async {
+            use tokio::io::AsyncReadExt;
+            let mut f = tokio::fs::File::open(&path).await?;
+            f.read(&mut prefix).await
+        }
+        .await
+        .unwrap_or(0);
+        infer_image_mime(&prefix[..read]).to_string()
+    } else {
         mime_guess::from_path(&path)
             .first_or_octet_stream()
             .to_string()
-    });
+    };
     // This route serves sender-controlled bytes under the browser's
     // authenticated API origin — reflecting an arbitrary declared mimetype
-    // verbatim (e.g. `text/html`) would let a malicious room member craft a
-    // "file" that the browser executes same-origin if a user is ever linked
-    // straight to this URL, with access to this origin's session cookie.
-    // Only image/audio/video are safe to render inline; anything else is
-    // downgraded to `application/octet-stream` with `Content-Disposition:
-    // attachment` (forcing a download rather than inline/same-origin
-    // execution) and `X-Content-Type-Options: nosniff` blocks the browser
-    // from trying to sniff its way back to something active anyway.
-    let is_safe_inline_type = ["image/", "audio/", "video/"]
-        .iter()
-        .any(|prefix| guessed_content_type.starts_with(prefix));
+    // verbatim (e.g. `text/html`, or `image/svg+xml` — SVG is itself active
+    // content, capable of embedding `<script>`, despite the `image/`
+    // prefix) would let a malicious room member craft a "file" that the
+    // browser executes same-origin if a user is ever linked straight to
+    // this URL, with access to this origin's session cookie. Only
+    // image/audio/video *excluding SVG* are safe to render inline; anything
+    // else is downgraded to `application/octet-stream` with
+    // `Content-Disposition: attachment` (forcing a download rather than
+    // inline/same-origin execution) and `X-Content-Type-Options: nosniff`
+    // blocks the browser from trying to sniff its way back to something
+    // active anyway.
+    let is_safe_inline_type = !guessed_content_type.contains("svg")
+        && ["image/", "audio/", "video/"]
+            .iter()
+            .any(|prefix| guessed_content_type.starts_with(prefix));
     let (content_type, content_disposition) = if is_safe_inline_type {
         (guessed_content_type, "inline")
     } else {
@@ -1457,11 +1490,61 @@ async fn request_device_verification(
 /// route does — via the session cookie, checked *before* the protocol
 /// upgrade — since a WebSocket handshake is still a plain HTTP request the
 /// browser sends its cookies on.
+/// Env var naming the frontend origin(s) allowed to open `/api/ws`
+/// (comma-separated for more than one, e.g. a staging + prod frontend). The
+/// session cookie alone doesn't defend against this: `SameSite=Strict`
+/// blocks a cookie from being sent on a cross-*site* request, but a
+/// same-*site* subdomain (a different origin, same registrable domain — the
+/// exact case this env var exists to reject) still gets the cookie sent
+/// automatically, since `SameSite` never distinguishes between an app's own
+/// subdomains. A WebSocket handshake is still an ordinary HTTP request the
+/// browser attaches cookies to, so without an explicit `Origin` check here,
+/// any page on any subdomain of this deployment's registrable domain could
+/// open this socket and read another logged-in user's room list, timeline,
+/// profile, and verification events.
+const ALLOWED_ORIGIN_ENV: &str = "CHARM_WEB_SERVER_ALLOWED_ORIGIN";
+
+/// Logged at most once per process — `origin_is_allowed` runs on every WS
+/// handshake, and warning on every single one when this just isn't
+/// configured (e.g. local dev) would be pure noise.
+static WARNED_NO_ALLOWED_ORIGIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+fn origin_is_allowed(origin: Option<&str>) -> bool {
+    let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
+        WARNED_NO_ALLOWED_ORIGIN.get_or_init(|| {
+            tracing::warn!(
+                "{ALLOWED_ORIGIN_ENV} not set — WebSocket connections are accepted from any \
+                 origin (including same-site subdomains of this deployment), which lets any \
+                 page on one of them read another logged-in user's live session data. Set it \
+                 before deploying behind a shared registrable domain."
+            );
+        });
+        return true;
+    };
+    let Some(origin) = origin else {
+        return false;
+    };
+    allowed
+        .split(',')
+        .map(str::trim)
+        .any(|allowed_origin| allowed_origin == origin)
+}
+
 async fn ws_handler(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, ApiError> {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if !origin_is_allowed(origin) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+        });
+    }
     let session = require_session(&state, &jar).await?;
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
 }

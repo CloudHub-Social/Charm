@@ -54,6 +54,23 @@ pub struct PersistHandle {
     pub store: std::sync::Arc<PersistenceStore>,
     pub token: String,
     pub homeserver_url: String,
+    /// The access token *actually on disk* for this session at the moment
+    /// `spawn` is called — from the `MatrixSession` `routes::finish_login`
+    /// just saved, or from the persisted entry `persistence::restore_one`
+    /// read (**not** whatever `client.matrix_auth().session()` reports at
+    /// spawn time). Seeds `last_saved_access_token` in `spawn` below.
+    ///
+    /// The distinction matters for restore specifically: `restore_one`'s own
+    /// `sync_once` (run to re-establish local room-store state before this
+    /// function is ever called) can itself trigger a token refresh on a
+    /// homeserver that issues expiring tokens — so by the time `spawn` runs,
+    /// the *client's* current session may already differ from what's on
+    /// disk. Seeding from the client's live state (an earlier version of
+    /// this did exactly that) would make that already-refreshed token look
+    /// like "no change from what's saved", so it would never get persisted
+    /// — a session restored once, silently carrying a token now stale on
+    /// disk, would fail to restore again on the *next* restart.
+    pub initial_access_token: String,
 }
 
 /// Re-saves the session if (and only if) its access token has changed since
@@ -120,17 +137,14 @@ pub fn spawn(
         emit_room_list_and_badge(&client, &events).await;
         emit_room_updates(&client, &events, &initial_response).await;
 
-        // Seeded from the client's own current session, not `None` — the
-        // caller (`routes::finish_login` / `main.rs`'s restore loop) always
-        // persists this exact token before spawning the loop (at login, or
-        // by definition of having just been restored from what was on
-        // disk), so treating the first iteration as "unknown, must save"
-        // would immediately rewrite `sessions.enc.json` with byte-identical
-        // content on every single login/restore.
-        let mut last_saved_access_token = client
-            .matrix_auth()
-            .session()
-            .map(|session| session.tokens.access_token);
+        // Seeded from `PersistHandle::initial_access_token` — what's
+        // actually saved on disk right now — not `None` and not the
+        // client's own current session; see that field's doc comment for
+        // why both of those are wrong (the former rewrites unchanged
+        // content on every login/restore, the latter can miss a token
+        // refresh that already happened during restore's own initial
+        // sync).
+        let mut last_saved_access_token = persist.as_ref().map(|p| p.initial_access_token.clone());
 
         let mut consecutive_failures: u32 = 0;
         loop {
