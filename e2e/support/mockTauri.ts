@@ -272,18 +272,18 @@ export function installMockTauri(seed: {
     // Mirrors the real `mark_room_read` Rust command, which only sends a read
     // receipt + fully-read marker — it does NOT touch the separate MSC2867
     // `m.marked_unread` flag (that's `set_room_marked_unread`'s job). So this
-    // clears the numeric unread counters but leaves `is_marked_unread` alone,
-    // recomputing `has_unread` from the same invariant `snapshot_rooms` uses
-    // rather than force-setting it to `false`.
+    // clears the numeric unread counters but leaves `is_marked_unread` alone.
+    // With both counters now zeroed, the `has_unread` invariant's other two
+    // clauses (`unread_messages > 0`, `unread_count > 0`) are unconditionally
+    // false, so the recompute reduces to just `is_marked_unread` — computing
+    // the full invariant here would wrongly read the counters *after*
+    // they'd already been cleared.
     mark_room_read: (args) => {
       const targetRoom = findRoom(args.roomId as string);
       if (targetRoom) {
         targetRoom.unread_count = 0;
         targetRoom.unread_messages = 0;
-        targetRoom.has_unread =
-          targetRoom.is_marked_unread ||
-          (!targetRoom.is_muted && (targetRoom.unread_messages as number) > 0) ||
-          (targetRoom.unread_count as number) > 0;
+        targetRoom.has_unread = Boolean(targetRoom.is_marked_unread);
         pushRoomListUpdate();
       }
       return undefined;
