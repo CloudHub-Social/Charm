@@ -500,7 +500,7 @@ export function installMockTauri(seed: {
       // the chat header and `RoomList` both read the room's name from
       // `RoomSummary`, not `RoomDetails`, so this keeps them in sync too
       // (see Spec 07 acceptance criteria 2).
-      emit("room_list:update", [room]);
+      pushRoomListUpdate();
       return undefined;
     },
     set_room_topic: (args) => {
