@@ -1454,7 +1454,38 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
     let mut prefix = [0u8; 64];
     let mut file = tokio::fs::File::open(path).await.ok()?;
     let read = file.read(&mut prefix).await.ok()?;
-    sniffed_image_mime(&prefix[..read]).map(|mime| mime.to_string())
+    let prefix = &prefix[..read];
+    sniffed_image_mime(prefix)
+        .map(|mime| mime.to_string())
+        .or_else(|| sniffed_av_mime(prefix))
+}
+
+/// A small, hand-rolled magic-byte sniff for the common audio/video
+/// container formats — unlike images, this crate has no existing dependency
+/// that already does A/V format detection, so this only covers the formats
+/// actually likely to show up as Matrix attachments rather than being
+/// exhaustive. `None` (not a guess) for anything unrecognized; callers fall
+/// through to a filename-based guess from there.
+fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
+    // MP4-family containers (mp4/mov/m4a/3gp/heic, ...): a 4-byte size
+    // field, then the literal ASCII `ftyp` box type at offset 4 — the size
+    // varies per file, so this can't be a fixed-offset prefix match against
+    // the whole box like the others below.
+    if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        return Some("video/mp4".to_string());
+    }
+    match bytes {
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => Some("video/webm".to_string()),
+        [b'O', b'g', b'g', b'S', ..] => Some("audio/ogg".to_string()),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => {
+            Some("audio/wav".to_string())
+        }
+        [b'I', b'D', b'3', ..] | [0xFF, 0xFB, ..] | [0xFF, 0xF3, ..] | [0xFF, 0xF2, ..] => {
+            Some("audio/mpeg".to_string())
+        }
+        [b'f', b'L', b'a', b'C', ..] => Some("audio/flac".to_string()),
+        _ => None,
+    }
 }
 
 async fn remove_avatar(
@@ -1552,6 +1583,7 @@ async fn start_sas_verification(
     crate::sync_loop::start_sas_verification(
         &session.client,
         session.events.clone(),
+        session.pending_verification_events.clone(),
         &other_user_id,
         &flow_id,
     )
@@ -1587,6 +1619,7 @@ async fn request_device_verification(
     let flow_id = crate::sync_loop::request_device_verification(
         &session.client,
         session.events.clone(),
+        session.pending_verification_events.clone(),
         &device_id,
     )
     .await
@@ -1695,16 +1728,27 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     // same as any other transient send failure elsewhere in this loop.
     let pending = std::mem::take(
         &mut *session
-            .pending_verification_requests
+            .pending_verification_events
             .lock()
             .unwrap_or_else(|e| e.into_inner()),
     );
-    for summary in pending {
-        let event = crate::events::ServerEvent::VerificationRequest(summary);
+    let mut pending = pending.into_iter();
+    for event in pending.by_ref() {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };
         if socket.send(Message::Text(json.into())).await.is_err() {
+            // This socket died mid-flush — the entries not yet sent
+            // (including this one) go back into the buffer rather than
+            // being dropped, so the *next* connection attempt (this
+            // browser's automatic reconnect, or another tab) still finds
+            // them instead of the flow being lost for good.
+            let mut buffer = session
+                .pending_verification_events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            buffer.push(event);
+            buffer.extend(pending);
             return;
         }
     }

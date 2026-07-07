@@ -424,7 +424,7 @@ async fn restore_one(
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
-        session.pending_verification_requests.clone(),
+        session.pending_verification_events.clone(),
     );
 
     // Re-establish local room-store state the same way a fresh login does

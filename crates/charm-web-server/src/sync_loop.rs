@@ -113,13 +113,43 @@ async fn repersist_if_token_changed(
 pub fn register_event_handlers(
     client: &Client,
     events: broadcast::Sender<ServerEvent>,
-    pending_verification_requests: std::sync::Arc<
-        std::sync::Mutex<Vec<VerificationRequestSummary>>,
-    >,
+    pending_verification_events: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
 ) {
     register_presence_handler(client.clone(), events.clone());
     register_self_profile_handler(client.clone(), events.clone());
-    register_verification_handler(client.clone(), events, pending_verification_requests);
+    register_verification_handler(client.clone(), events, pending_verification_events);
+}
+
+/// Sends `event` live if there's at least one connected WebSocket receiver;
+/// otherwise buffers it in `pending` for `crate::routes::ws_handler` to
+/// deliver on the next connection — see `Session::pending_verification_events`'s
+/// doc comment for why this matters specifically for verification events.
+/// A buffered `verification:sas_update` replaces any earlier one already
+/// buffered *for the same flow* rather than accumulating: only the latest
+/// state is ever useful to resume from, and keeping every intermediate one
+/// would also make it easy for a single fast-moving flow to crowd out a
+/// genuinely separate flow's buffered request.
+fn buffer_verification_event(
+    events: &broadcast::Sender<ServerEvent>,
+    pending: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    event: ServerEvent,
+) {
+    if events.send(event.clone()).is_ok() {
+        return;
+    }
+    let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+    if let ServerEvent::VerificationSasUpdate(SasUpdatePayload { flow_id, .. }) = &event {
+        pending.retain(|existing| {
+            !matches!(
+                existing,
+                ServerEvent::VerificationSasUpdate(SasUpdatePayload { flow_id: existing_flow, .. })
+                    if existing_flow == flow_id
+            )
+        });
+    }
+    if pending.len() < crate::session::MAX_PENDING_VERIFICATION_EVENTS {
+        pending.push(event);
+    }
 }
 
 /// Spawns this session's background sync loop. Called once per session,
@@ -333,7 +363,7 @@ fn register_self_profile_handler(client: Client, events: broadcast::Sender<Serve
 fn register_verification_handler(
     client: Client,
     events: broadcast::Sender<ServerEvent>,
-    pending: std::sync::Arc<std::sync::Mutex<Vec<VerificationRequestSummary>>>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
 ) {
     client.add_event_handler(
         move |ev: ToDeviceKeyVerificationRequestEvent, client: Client| {
@@ -354,27 +384,11 @@ fn register_verification_handler(
                     other_device_id: ev.content.from_device.to_string(),
                 };
 
-                // `broadcast::Sender::send` returns `Err` precisely when
-                // there are zero active receivers right now — i.e. exactly
-                // the "nobody could have gotten this live" case buffering
-                // exists for (see `Session::pending_verification_requests`'s
-                // doc comment). Buffering unconditionally (an earlier
-                // version of this did exactly that) meant a request that
-                // *was* delivered live still sat in the buffer and got
-                // redelivered — stale and duplicated — to the next socket
-                // that connects (a reconnect, a second tab), and could fill
-                // the bounded buffer with already-delivered entries,
-                // crowding out a genuinely missed one for the flow that
-                // actually needs it.
-                if events
-                    .send(ServerEvent::VerificationRequest(summary.clone()))
-                    .is_err()
-                {
-                    let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
-                    if pending.len() < crate::session::MAX_PENDING_VERIFICATION_REQUESTS {
-                        pending.push(summary);
-                    }
-                }
+                buffer_verification_event(
+                    &events,
+                    &pending,
+                    ServerEvent::VerificationRequest(summary),
+                );
             }
         },
     );
@@ -388,6 +402,7 @@ fn register_verification_handler(
 pub async fn start_sas_verification(
     client: &Client,
     events: broadcast::Sender<ServerEvent>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
     other_user_id: &str,
     flow_id: &str,
 ) -> Result<(), String> {
@@ -416,10 +431,14 @@ pub async fn start_sas_verification(
                 update,
                 SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
             );
-            let _ = events.send(ServerEvent::VerificationSasUpdate(SasUpdatePayload {
-                flow_id: flow_id.clone(),
-                update,
-            }));
+            buffer_verification_event(
+                &events,
+                &pending,
+                ServerEvent::VerificationSasUpdate(SasUpdatePayload {
+                    flow_id: flow_id.clone(),
+                    update,
+                }),
+            );
             if is_terminal {
                 break;
             }
@@ -450,6 +469,7 @@ fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
 pub async fn request_device_verification(
     client: &Client,
     events: broadcast::Sender<ServerEvent>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
     device_id: &str,
 ) -> Result<String, String> {
     use matrix_sdk::encryption::verification::VerificationRequestState;
@@ -493,13 +513,15 @@ pub async fn request_device_verification(
             }
         }
 
-        let _ = events.send(ServerEvent::VerificationRequest(
-            VerificationRequestSummary {
+        buffer_verification_event(
+            &events,
+            &pending,
+            ServerEvent::VerificationRequest(VerificationRequestSummary {
                 flow_id: emit_flow_id,
                 other_user_id: own_user_id.to_string(),
                 other_device_id: device_id.to_string(),
-            },
-        ));
+            }),
+        );
     });
 
     Ok(flow_id)

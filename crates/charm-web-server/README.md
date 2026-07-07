@@ -101,6 +101,17 @@ server.md`.
   reconnects to, keeps long-polling `/sync` and advertising the account
   online forever. See `sync_loop::spawn`'s doc comment for why this needs
   its own idle-timeout design rather than a quick fix.
+- **Device management endpoints (list/revoke/reset).** This sub-PR adds the
+  outgoing-verification route (`request_device_verification`) but not the
+  rest of desktop's `devices.rs` command surface a Settings → Devices UI
+  actually needs first — listing this account's devices (to get the device
+  ids `request_device_verification`'s route requires), revoking another
+  session, or resetting cross-signing. A web session can respond to or
+  initiate verification of a device it already knows the id of, but has no
+  way yet to discover that id or manage devices otherwise. Straightforward
+  `_impl`-reusing routes to add, same shape as the verification routes this
+  sub-PR already has — left for a follow-up slice rather than growing this
+  PR's already-large diff further.
 - **QR login.** Desktop's `qr_login::start_qr_login` is built around
   `MatrixState`'s single-client-per-process model (it drives an in-progress
   login to completion *before* any session/token exists to key it by) —
