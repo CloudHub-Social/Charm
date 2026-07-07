@@ -99,6 +99,11 @@ export function DevicesPanel() {
       return;
     }
     setSelectedIds(new Set());
+    // Closing programmatically (not via the Dialog's own onOpenChange, which
+    // this doesn't go through) skips the reset that a user-driven close
+    // gets — without this, the next bulk sign-out would open straight into
+    // the stale "needs password" prompt from this run.
+    resetBulk();
     setBulkOpen(false);
     setBulkSubmitting(false);
   }

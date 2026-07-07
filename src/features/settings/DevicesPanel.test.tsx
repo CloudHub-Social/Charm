@@ -301,4 +301,45 @@ describe("DevicesPanel", () => {
 
     await waitFor(() => expect(deleteDevice).toHaveBeenLastCalledWith("OTHER", "current-password"));
   });
+
+  it("clears the password-prompt state after a successful bulk sign-out, so the next one starts fresh", async () => {
+    const devices: DeviceSummary[] = [
+      ...DEVICES,
+      {
+        device_id: "TABLET",
+        display_name: "Tablet",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+    listDevices.mockResolvedValue(devices);
+    deleteDevice.mockRejectedValueOnce(new Error("uia")).mockResolvedValue(undefined);
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Tablet");
+
+    // First bulk sign-out: hits a UIA challenge, then succeeds with a
+    // password — this closes the dialog programmatically (not via the
+    // Dialog's own onOpenChange), which must still reset the "needs
+    // password" state for next time.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    fireEvent.change(await screen.findByLabelText("Current password"), {
+      target: { value: "current-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(deleteDevice).toHaveBeenLastCalledWith("OTHER", "current-password"));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /Sign out/ })).not.toBeInTheDocument(),
+    );
+
+    // Second bulk sign-out, on a fresh selection: must start from the
+    // password-less state, not reopen straight into the stale prompt.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Tablet" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    await screen.findByRole("dialog", { name: /Sign out/ });
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
+  });
 });

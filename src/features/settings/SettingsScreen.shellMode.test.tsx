@@ -76,6 +76,18 @@ describe("SettingsScreen shell mode", () => {
     expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
   });
 
+  it("renders exactly one close button on desktop, not a duplicate from Radix's default", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    renderScreen("account");
+
+    await screen.findByRole("dialog", { name: "Settings" });
+    // Matches both the custom "Close settings" button and Radix's own
+    // default close button (accessible name "Close") — DialogContent
+    // renders one automatically unless showCloseButton={false}, which
+    // would otherwise duplicate this one at the same position.
+    expect(screen.getAllByRole("button", { name: /close/i })).toHaveLength(1);
+  });
+
   it("renders a full page (no dialog) on mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     renderScreen("account");
