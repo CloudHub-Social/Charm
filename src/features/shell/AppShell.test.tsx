@@ -1,14 +1,41 @@
-import { createElement, type PropsWithChildren, type ReactNode } from "react";
+import { createElement, useState, type PropsWithChildren, type ReactNode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { describe, expect, it, vi } from "vitest";
-import { AppShell } from "./AppShell";
+import { AppShell, type MobileView } from "./AppShell";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 
 const mockUseAdaptiveLayout = vi.fn();
 vi.mock("./useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
+
+/** Mirrors how `RoomsScreen` owns `mobileView` and passes it down controlled. */
+function Harness({
+  activeRoomId,
+  selectionRequestId = 0,
+  rightPanel = null,
+  initialMobileView = "list",
+}: {
+  activeRoomId: string | null;
+  selectionRequestId?: number;
+  rightPanel?: ReactNode;
+  initialMobileView?: MobileView;
+}) {
+  const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
+  return (
+    <AppShell
+      activeRoomId={activeRoomId}
+      selectionRequestId={selectionRequestId}
+      mobileView={mobileView}
+      onMobileViewChange={setMobileView}
+      roomList={<div>room-list</div>}
+      peopleList={<div>people-list</div>}
+      content={<div>chat-content</div>}
+      rightPanel={rightPanel}
+    />
+  );
+}
 
 function renderShell(
   activeRoomId: string | null,
@@ -21,13 +48,10 @@ function renderShell(
   const store = options.store ?? createStore();
   const wrapper = ({ children }: PropsWithChildren) => createElement(Provider, { store }, children);
   const view = render(
-    <AppShell
+    <Harness
       activeRoomId={activeRoomId}
-      selectionRequestId={options.selectionRequestId ?? 0}
-      roomList={<div>room-list</div>}
-      peopleList={<div>people-list</div>}
-      content={<div>chat-content</div>}
-      rightPanel={options.rightPanel ?? null}
+      selectionRequestId={options.selectionRequestId}
+      rightPanel={options.rightPanel}
     />,
     { wrapper },
   );
@@ -101,7 +125,12 @@ describe("AppShell", () => {
   it("reopens the detail view when selectionRequestId bumps for the already-active room", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const store = createStore();
-    const { rerender } = renderShell("!room:example.org", { selectionRequestId: 1, store });
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(Provider, { store }, children);
+    const { rerender } = render(
+      <Harness activeRoomId="!room:example.org" selectionRequestId={1} />,
+      { wrapper },
+    );
 
     // Navigate back to the list without changing the active room — this is
     // the scenario the bug covers: tapping the same room again from the
@@ -111,14 +140,7 @@ describe("AppShell", () => {
 
     rerender(
       <Provider store={store}>
-        <AppShell
-          activeRoomId="!room:example.org"
-          selectionRequestId={2}
-          roomList={<div>room-list</div>}
-          peopleList={<div>people-list</div>}
-          content={<div>chat-content</div>}
-          rightPanel={null}
-        />
+        <Harness activeRoomId="!room:example.org" selectionRequestId={2} />
       </Provider>,
     );
 

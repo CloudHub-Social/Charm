@@ -190,6 +190,24 @@ pub fn run() {
             setup_tray_and_menu(app)?;
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Desktop platforms destroy the app's only window (and, on
+            // Windows/Linux, exit the whole process) when the user clicks
+            // its close button unless something intercepts that — which
+            // would take the tray icon down with it, so "Show" from the
+            // tray menu could never bring the window back and background
+            // sync/notifications would stop entirely. Hiding instead keeps
+            // the process (and tray) alive; the tray menu's "Quit" still
+            // exits for real via `app.exit(0)`, which doesn't go through a
+            // window-close event at all.
+            #[cfg(desktop)]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             matrix::auth::login,

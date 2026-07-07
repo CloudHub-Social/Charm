@@ -229,4 +229,54 @@ describe("RoomsScreen", () => {
 
     await waitFor(() => expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(false));
   });
+
+  it("does not force-close a right panel opened while already on mobile", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const store = createStore();
+
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+
+    // Opening the panel *while already mobile* (no desktop -> mobile
+    // transition involved) must not be immediately reset — only an actual
+    // transition should force it closed.
+    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+  });
+
+  it("does not report the active room as focused while a mobile list tab is showing", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    // AppShell auto-switches to the detail view once a room is selected, so
+    // the room reads as focused right after auto-select.
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith("!a:example.org"));
+    setFocusedRoom.mockClear();
+
+    // Tapping the Chats tab navigates back to the list — the room is still
+    // "active" but no longer on-screen, so it must stop reading as focused.
+    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith(null));
+    hasFocus.mockRestore();
+  });
 });

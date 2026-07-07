@@ -185,6 +185,19 @@ async fn notify_unopened_room_messages(
             if own_user_id.is_some_and(|me| me == original.sender) {
                 continue;
             }
+            // An edit: also an original `m.room.message`, carrying an
+            // `m.replace` relation to the event it edits. The opened-room
+            // path (matrix-sdk-ui's `Timeline`) collapses these onto the
+            // existing item rather than treating them as a new message; this
+            // unopened-room path has no such collapsing; so skip them here
+            // too, or editing an old message would notify with the edit's
+            // fallback body as if it were freshly sent.
+            if matches!(
+                original.content.relates_to,
+                Some(matrix_sdk::ruma::events::room::message::Relation::Replacement(_))
+            ) {
+                continue;
+            }
 
             let sender_display_name = room
                 .get_member_no_sync(&original.sender)

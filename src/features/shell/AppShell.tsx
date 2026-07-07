@@ -5,7 +5,7 @@ import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
 type MobileTab = "chats" | "people";
-type MobileView = "list" | "detail";
+export type MobileView = "list" | "detail";
 
 interface AppShellProps {
   /** The rooms rail (`RoomList`) — rendered as the sidebar on desktop, and as the "Chats" tab's list on mobile. */
@@ -20,6 +20,14 @@ interface AppShellProps {
   activeRoomId: string | null;
   /** Bumped by the caller on every room selection, including re-selecting the already-active room — `activeRoomId` alone can't distinguish "reopen the detail view for this room" from "nothing happened" when the id doesn't change. */
   selectionRequestId: number;
+  /**
+   * Controlled by the caller (`RoomsScreen`), not owned here — its focus-
+   * tracking effect needs to know whether the chat is actually visible on
+   * mobile (only true in `"detail"`) to decide whether the active room
+   * should read as focused for local-notification suppression.
+   */
+  mobileView: MobileView;
+  onMobileViewChange: (view: MobileView) => void;
 }
 
 /**
@@ -36,18 +44,20 @@ export function AppShell({
   rightPanel,
   activeRoomId,
   selectionRequestId,
+  mobileView,
+  onMobileViewChange,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
-  const [mobileView, setMobileView] = useState<MobileView>("list");
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
 
   useEffect(() => {
-    if (activeRoomId) setMobileView("detail");
+    if (activeRoomId) onMobileViewChange("detail");
     // Depends on `selectionRequestId` too, not just `activeRoomId`:
     // re-selecting the already-active room from the list bumps the request
     // id without changing `activeRoomId`, and that reselection must still
     // reopen the detail view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRoomId, selectionRequestId]);
 
   if (layout === "desktop") {
@@ -76,7 +86,7 @@ export function AppShell({
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("chats");
-            setMobileView("list");
+            onMobileViewChange("list");
           }}
         >
           <MessageSquare className="size-5" aria-hidden="true" />
@@ -88,7 +98,7 @@ export function AppShell({
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("people");
-            setMobileView("list");
+            onMobileViewChange("list");
           }}
         >
           <Users className="size-5" aria-hidden="true" />
