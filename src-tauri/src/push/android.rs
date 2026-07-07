@@ -88,7 +88,8 @@ impl super::NotificationTransport for UnifiedPushTransport {
         }
 
         if let Err(e) = with_env(|env, activity| {
-            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let new_string_result = env.new_string(INSTANCE_ID);
+            let instance = jni_result(env, "new_string(instance)", new_string_result)?;
             let class = push_bridge_class(env, activity)?;
             let result = env.call_static_method(
                 class,
@@ -125,7 +126,8 @@ impl super::NotificationTransport for UnifiedPushTransport {
 
     async fn unregister(&self) -> Result<(), PushError> {
         with_env(|env, activity| {
-            let instance = jni_result(env, "new_string(instance)", env.new_string(INSTANCE_ID))?;
+            let new_string_result = env.new_string(INSTANCE_ID);
+            let instance = jni_result(env, "new_string(instance)", new_string_result)?;
             let class = push_bridge_class(env, activity)?;
             let result = env.call_static_method(
                 class,
@@ -195,11 +197,8 @@ fn push_bridge_class<'a>(
     activity: &JObject,
 ) -> Result<JClass<'a>, PushError> {
     if let Some(cached) = CLASS_REF.get() {
-        let local = jni_result(
-            env,
-            "new_local_ref(cached PushBridge class)",
-            env.new_local_ref(cached.as_obj()),
-        )?;
+        let result = env.new_local_ref(cached.as_obj());
+        let local = jni_result(env, "new_local_ref(cached PushBridge class)", result)?;
         return Ok(JClass::from(local));
     }
     let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
