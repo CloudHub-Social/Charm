@@ -33,6 +33,11 @@ use tokio::sync::Mutex;
 /// every clone (including any in-flight command still holding one) is gone.
 const MAX_LIVE_TIMELINES: usize = 20;
 
+/// How many recently-notified event ids `MatrixState::notified_event_ids`
+/// remembers — comfortably more than could plausibly be in flight across the
+/// opened-room/unopened-room notification race window at once.
+const MAX_NOTIFIED_EVENT_IDS: usize = 200;
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing (multiple
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
@@ -100,6 +105,18 @@ pub struct MatrixState {
     /// looking at (Spec 10). `None` when no room has focus (e.g. the room
     /// list, settings, or another window has it).
     pub(crate) focused_room_id: std::sync::Mutex<Option<String>>,
+    /// Event ids a local notification has already been fired for, shared
+    /// between the opened-room timeline listener and the sync loop's
+    /// unopened-room path (`shell::maybe_send_notification` checks this
+    /// before either fires one). Needed because a room can transition
+    /// between the two paths mid-flight: `spawn_timeline_listener`'s
+    /// liveness check only notices its `Timeline` was evicted from the LRU
+    /// up to [`shell::TIMELINE_LIVENESS_CHECK_INTERVAL`] late, during which
+    /// window both paths could otherwise independently notify for the same
+    /// new message (`spawn_timeline_listener`'s own liveness check only polls
+    /// every 30s). Bounded the same way `timelines` is — an unbounded set
+    /// would grow for the life of the process.
+    pub(crate) notified_event_ids: std::sync::Mutex<lru::LruCache<String, ()>>,
 }
 
 impl Default for MatrixState {
@@ -118,6 +135,10 @@ impl Default for MatrixState {
             )),
             sync_loop_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
+            notified_event_ids: std::sync::Mutex::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(MAX_NOTIFIED_EVENT_IDS)
+                    .expect("MAX_NOTIFIED_EVENT_IDS is a nonzero constant"),
+            )),
         }
     }
 }
@@ -193,6 +214,24 @@ impl MatrixState {
         self.timelines.lock().await.peek(room_id).is_some()
     }
 
+    /// Records that a local notification is about to be fired for
+    /// `event_id`, returning `true` the first time (go ahead and notify) and
+    /// `false` if it's already been marked (skip — some other path already
+    /// notified, or is about to). See `notified_event_ids`'s doc comment for
+    /// why two independent paths can otherwise both reach for the same
+    /// event.
+    pub(crate) fn mark_notified(&self, event_id: &str) -> bool {
+        let mut notified = self
+            .notified_event_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if notified.contains(event_id) {
+            return false;
+        }
+        notified.put(event_id.to_string(), ());
+        true
+    }
+
     pub(crate) async fn clear_timelines(&self) {
         self.timelines.lock().await.clear();
     }
@@ -212,5 +251,26 @@ impl MatrixState {
                 Ok::<_, String>(cache)
             })
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_notified_returns_true_only_the_first_time() {
+        let state = MatrixState::default();
+        assert!(state.mark_notified("$event:example.org"));
+        assert!(!state.mark_notified("$event:example.org"));
+    }
+
+    #[test]
+    fn mark_notified_tracks_distinct_events_independently() {
+        let state = MatrixState::default();
+        assert!(state.mark_notified("$a:example.org"));
+        assert!(state.mark_notified("$b:example.org"));
+        assert!(!state.mark_notified("$a:example.org"));
+        assert!(!state.mark_notified("$b:example.org"));
     }
 }

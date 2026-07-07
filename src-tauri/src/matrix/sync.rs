@@ -206,15 +206,19 @@ async fn notify_unopened_room_messages(
                 .flatten()
                 .and_then(|member| member.display_name().map(ToOwned::to_owned));
             let body = original.content.body().to_string();
+            let mentions = original.content.mentions.clone();
 
             shell::maybe_send_notification(
                 app,
                 &room,
                 own_user_id,
-                original.sender.as_str(),
-                sender_display_name.as_deref(),
-                &body,
-                original.content.mentions.as_ref(),
+                shell::NewMessageNotification {
+                    event_id: original.event_id.as_str(),
+                    sender: original.sender.as_str(),
+                    sender_display_name: sender_display_name.as_deref(),
+                    body: &body,
+                },
+                || async move { mentions },
             )
             .await;
         }

@@ -36,6 +36,18 @@ export function RoomsScreen({
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
 
+  // Bumped on every room selection — via the room list, a deep link, or the
+  // initial auto-select — even when it re-selects the already-active room.
+  // `activeRoomId` alone can't signal that: on mobile, `AppShell` needs to
+  // tell "open/reopen the detail view for this room" apart from "nothing
+  // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
+  // link for the room already selected while a list tab is showing).
+  const [selectionRequestId, setSelectionRequestId] = useState(0);
+  function selectRoom(roomId: string) {
+    setActiveRoomId(roomId);
+    setSelectionRequestId((n) => n + 1);
+  }
+
   // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
   // app; consumers (the DM header/room-list presence dot) read the atoms
   // directly via `usePresence` — see ChatShell/RoomListItem.
@@ -113,17 +125,24 @@ export function RoomsScreen({
     if (!resolvedDeepLinkTarget) return;
     const match = rooms.find((room) => room.room_id === resolvedDeepLinkTarget);
     if (match) {
-      setActiveRoomId(match.room_id);
+      // `selectRoom`, not a plain `setActiveRoomId`: a deep link targeting
+      // the room that's already active (e.g. re-tapping the same
+      // `charm://room/<id>` link while mobile is showing a list tab) must
+      // still bump `selectionRequestId` so the mobile detail view actually
+      // opens, not just silently consume the link.
+      selectRoom(match.room_id);
       setResolvedDeepLinkTarget(null);
       onDeepLinkConsumed();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedDeepLinkTarget, rooms, onDeepLinkConsumed]);
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
     if (activeRoomId === null && rooms.length > 0) {
-      setActiveRoomId(rooms[0].room_id);
+      selectRoom(rooms[0].room_id);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
@@ -150,16 +169,6 @@ export function RoomsScreen({
     prevLayoutRef.current = layout;
   }, [layout, rightPanelOpen, setRightPanelOpen]);
 
-  // Bumped on every room selection, even re-selecting the already-active
-  // room — `activeRoomId` alone wouldn't change in that case, so on mobile
-  // `AppShell` couldn't tell "reopen the detail view" apart from "nothing
-  // happened" when tapping the current room again from the list.
-  const [selectionRequestId, setSelectionRequestId] = useState(0);
-  function handleSelectRoom(roomId: string) {
-    setActiveRoomId(roomId);
-    setSelectionRequestId((n) => n + 1);
-  }
-
   return (
     <>
       <AppShell
@@ -167,14 +176,12 @@ export function RoomsScreen({
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
-        roomList={
-          <RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={handleSelectRoom} />
-        }
+        roomList={<RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={selectRoom} />}
         peopleList={
           <RoomList
             rooms={rooms.filter((room) => room.is_direct)}
             activeRoomId={activeRoomId}
-            onSelectRoom={handleSelectRoom}
+            onSelectRoom={selectRoom}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}

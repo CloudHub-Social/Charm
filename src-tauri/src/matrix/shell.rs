@@ -224,6 +224,15 @@ fn windows_overlay_icon(count: u32) -> Option<tauri::image::Image<'static>> {
     Some(tauri::image::Image::new_owned(rgba, SIZE, SIZE))
 }
 
+/// The fields of a new message `maybe_send_notification` needs, grouped so
+/// the function itself doesn't take an unwieldy number of bare parameters.
+pub struct NewMessageNotification<'a> {
+    pub event_id: &'a str,
+    pub sender: &'a str,
+    pub sender_display_name: Option<&'a str>,
+    pub body: &'a str,
+}
+
 /// Builds and fires a local notification for one message, if it warrants
 /// one — the single decision+fire path shared by the opened-room timeline
 /// listener (`timeline::maybe_notify_new_message`) and the sync loop's
@@ -231,18 +240,43 @@ fn windows_overlay_icon(count: u32) -> Option<tauri::image::Image<'static>> {
 /// on mute/mentions-only/focus suppression instead of each re-implementing
 /// it. Also the natural place for Spec 11 to plug in a push-decrypted
 /// message later.
-pub async fn maybe_send_notification(
+///
+/// `event_id` gates on `MatrixState::mark_notified` before doing anything
+/// else — a room can transition between the opened/unopened-room paths
+/// while a notification for it is in flight (see `notified_event_ids`'s doc
+/// comment), so this is the one place both agree not to double-fire for the
+/// same event.
+///
+/// `fetch_mentions` is a lazy callback rather than a plain `Option` so
+/// `room.notification_mode()` is only ever read once, here: reading it once
+/// in a caller to decide whether to bother fetching mentions and again in
+/// here to make the final mute/mentions-only decision left a window where a
+/// room's mode could change between the two reads, potentially reaching a
+/// mentions-only decision without ever having fetched the mentions needed to
+/// evaluate it.
+pub async fn maybe_send_notification<F, Fut>(
     app: &AppHandle,
     room: &matrix_sdk::Room,
     own_user_id: Option<&matrix_sdk::ruma::UserId>,
-    sender: &str,
-    sender_display_name: Option<&str>,
-    body: &str,
-    mentions: Option<&matrix_sdk::ruma::events::Mentions>,
-) {
+    message: NewMessageNotification<'_>,
+    fetch_mentions: F,
+) where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Option<matrix_sdk::ruma::events::Mentions>>,
+{
     use tauri_plugin_notification::NotificationExt;
 
+    let NewMessageNotification {
+        event_id,
+        sender,
+        sender_display_name,
+        body,
+    } = message;
+
     if own_user_id.is_some_and(|me| me.as_str() == sender) {
+        return;
+    }
+    if !app.state::<MatrixState>().mark_notified(event_id) {
         return;
     }
 
@@ -255,8 +289,13 @@ pub async fn maybe_send_notification(
         mode,
         Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly)
     );
+    let mentions = if mentions_only {
+        fetch_mentions().await
+    } else {
+        None
+    };
     let is_highlighted =
-        own_user_id.is_some_and(|me| is_highlighted_mentions(mentions, me.as_str()));
+        own_user_id.is_some_and(|me| is_highlighted_mentions(mentions.as_ref(), me.as_str()));
 
     let focused_room_id = app
         .state::<MatrixState>()

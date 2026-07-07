@@ -14,6 +14,12 @@ use ts_rs::TS;
 
 use super::{media, profiles, shell, MatrixState};
 
+/// The fixed placeholder body used for an as-yet-undecrypted message (see
+/// `MsgLikeKind::UnableToDecrypt` below) — a single source of truth so the
+/// notification path can recognize and skip it instead of comparing against
+/// a duplicated literal.
+const UNABLE_TO_DECRYPT_BODY: &str = "Unable to decrypt message";
+
 /// Display metadata for a non-text `m.room.message` msgtype, additive
 /// alongside Spec 03's flat `RoomMessageSummary` fields — `None` for text
 /// messages. Carries no bytes, no `MediaSource`, no encryption key material:
@@ -486,7 +492,7 @@ async fn timeline_item_to_summary(
             sender_display_name,
             sender_avatar_url,
             sender_avatar_path,
-            body: "Unable to decrypt message".to_string(),
+            body: UNABLE_TO_DECRYPT_BODY.to_string(),
             formatted_body: None,
             timestamp_ms,
             edited: false,
@@ -642,7 +648,12 @@ pub(crate) fn spawn_timeline_listener(
 }
 
 /// Fires a local OS notification for `message` if it warrants one: not our
-/// own message, not redacted, not still a pending local echo. The actual
+/// own message, not redacted, not still a pending local echo, and not still
+/// an as-yet-undecrypted placeholder (its key can arrive any time after —
+/// see `Timeline::retry_decryption` — at which point this same event id
+/// reappears with a real body and gets its own, correctly-timed
+/// notification; notifying on the placeholder now would just be a spurious
+/// "Unable to decrypt message" toast ahead of the real one). The actual
 /// mute/mentions-only/focus decision and the notification fire itself are
 /// `shell::maybe_send_notification` — shared with the sync loop's
 /// unopened-room path (`sync::notify_unopened_room_messages`) so both agree.
@@ -653,7 +664,10 @@ async fn maybe_notify_new_message(
     own_user_id: Option<&UserId>,
     message: &RoomMessageSummary,
 ) {
-    if message.redacted || !matches!(message.send_state, SendState::Sent) {
+    if message.redacted
+        || !matches!(message.send_state, SendState::Sent)
+        || message.body == UNABLE_TO_DECRYPT_BODY
+    {
         return;
     }
 
@@ -661,27 +675,17 @@ async fn maybe_notify_new_message(
         return;
     };
 
-    // Only worth the extra fetch for the raw event's `m.mentions` content
-    // when the room is actually mentions-and-keywords-only — the common
-    // case (all-messages/mute) never looks at it.
-    let mentions_only = matches!(
-        room.notification_mode().await,
-        Some(matrix_sdk::notification_settings::RoomNotificationMode::MentionsAndKeywordsOnly)
-    );
-    let mentions = if mentions_only {
-        fetch_message_mentions(&room, &message.event_id).await
-    } else {
-        None
-    };
-
     shell::maybe_send_notification(
         app,
         &room,
         own_user_id,
-        &message.sender,
-        message.sender_display_name.as_deref(),
-        &message.body,
-        mentions.as_ref(),
+        shell::NewMessageNotification {
+            event_id: &message.event_id,
+            sender: &message.sender,
+            sender_display_name: message.sender_display_name.as_deref(),
+            body: &message.body,
+        },
+        || fetch_message_mentions(&room, &message.event_id),
     )
     .await;
 }
