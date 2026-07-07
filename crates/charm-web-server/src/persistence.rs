@@ -258,11 +258,11 @@ impl PersistenceStore {
     /// is dropped rather than blocking startup; that browser's next request
     /// with the now-dead cookie gets an ordinary 401 and re-logs-in, same
     /// self-healing tradeoff desktop's `try_restore_session` makes.
-    pub async fn restore_all(&self) -> Vec<(String, crate::session::Session)> {
+    pub async fn restore_all(&self) -> Vec<(String, String, crate::session::Session)> {
         let mut restored = Vec::new();
         for entry in self.read_all().await {
             match restore_one(&entry).await {
-                Ok(session) => restored.push((entry.token, session)),
+                Ok(session) => restored.push((entry.token, entry.homeserver_url, session)),
                 Err(e) => {
                     tracing::warn!(
                         "dropping persisted session for {}: failed to restore: {e}",

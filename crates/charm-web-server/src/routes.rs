@@ -54,6 +54,12 @@ use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
 
+/// Sanity cap on an avatar upload — well over any real profile picture, but
+/// (unlike attachments) an avatar has no legitimate reason to approach
+/// `MAX_ATTACHMENT_UPLOAD_BYTES`, so this gets its own, much smaller limit
+/// rather than reusing that one.
+const AVATAR_UPLOAD_MAX_BYTES: usize = 10 * 1024 * 1024;
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         // -- unauthenticated: discovery, login/registration --
@@ -168,7 +174,14 @@ pub fn router(state: AppState) -> Router {
                 charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES as usize,
             )),
         )
-        .route("/api/profile/avatar", put(set_avatar).delete(remove_avatar))
+        .route(
+            "/api/profile/avatar",
+            put(set_avatar)
+                .delete(remove_avatar)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    AVATAR_UPLOAD_MAX_BYTES,
+                )),
+        )
         // -- verification --
         .route(
             "/api/verification/cross-signing",
@@ -189,6 +202,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/verification/{other_user_id}/{flow_id}/sas/confirm",
             post(confirm_sas_verification),
+        )
+        .route(
+            "/api/verification/devices/{device_id}/request",
+            post(request_device_verification),
         )
         // -- live events --
         .route("/api/ws", get(ws_handler))
@@ -216,28 +233,44 @@ async fn discover_homeserver(
 /// surfaced to the caller, since the session itself is already fully usable
 /// in-memory (matches sub-PR A's behavior when no master key is configured
 /// at all).
-async fn finish_login(state: &AppState, mut session: Session, homeserver_url: &str) -> String {
-    let handle = crate::sync_loop::spawn(
-        session.client.clone(),
-        session.events.clone(),
-        session.sync_presence.clone(),
-    );
-    *session
-        .sync_handle
-        .get_mut()
-        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-
+async fn finish_login(state: &AppState, session: Session, homeserver_url: &str) -> String {
     let matrix_session = session.client.matrix_auth().session();
     let token = state.sessions.create(session).await;
+    // Re-fetch the now-stored `Arc<Session>` rather than holding onto the
+    // owned `Session` from above — `sync_loop::spawn` needs the real,
+    // now-known `token` to build a `PersistHandle` (so a later token
+    // refresh mid-session re-saves under the *same* cookie, not a stale
+    // one), which isn't minted until `create` runs.
+    let stored = state
+        .sessions
+        .get(&token)
+        .await
+        .expect("session was just created under this token");
 
-    if let (Some(persistence), Some(matrix_session)) = (&state.persistence, matrix_session) {
+    if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         if let Err(e) = persistence
-            .save(&token, homeserver_url, &matrix_session)
+            .save(&token, homeserver_url, matrix_session)
             .await
         {
             tracing::warn!("failed to persist session: {e}");
         }
     }
+
+    let persist = state
+        .persistence
+        .clone()
+        .map(|store| crate::sync_loop::PersistHandle {
+            store,
+            token: token.clone(),
+            homeserver_url: homeserver_url.to_string(),
+        });
+    let handle = crate::sync_loop::spawn(
+        stored.client.clone(),
+        stored.events.clone(),
+        stored.sync_presence.clone(),
+        persist,
+    );
+    *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
     token
 }
@@ -1065,13 +1098,38 @@ async fn resolve_message_media(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let content_type = declared_mimetype.unwrap_or_else(|| {
+    let guessed_content_type = declared_mimetype.unwrap_or_else(|| {
         mime_guess::from_path(&path)
             .first_or_octet_stream()
             .to_string()
     });
+    // This route serves sender-controlled bytes under the browser's
+    // authenticated API origin — reflecting an arbitrary declared mimetype
+    // verbatim (e.g. `text/html`) would let a malicious room member craft a
+    // "file" that the browser executes same-origin if a user is ever linked
+    // straight to this URL, with access to this origin's session cookie.
+    // Only image/audio/video are safe to render inline; anything else is
+    // downgraded to `application/octet-stream` with `Content-Disposition:
+    // attachment` (forcing a download rather than inline/same-origin
+    // execution) and `X-Content-Type-Options: nosniff` blocks the browser
+    // from trying to sniff its way back to something active anyway.
+    let is_safe_inline_type = ["image/", "audio/", "video/"]
+        .iter()
+        .any(|prefix| guessed_content_type.starts_with(prefix));
+    let (content_type, content_disposition) = if is_safe_inline_type {
+        (guessed_content_type, "inline")
+    } else {
+        ("application/octet-stream".to_string(), "attachment")
+    };
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
-    Ok(([("content-type", content_type)], body))
+    Ok((
+        [
+            ("content-type", content_type),
+            ("content-disposition", content_disposition.to_string()),
+            ("x-content-type-options", "nosniff".to_string()),
+        ],
+        body,
+    ))
 }
 
 /// Best-effort lookup of an image/video/audio/file message's declared
@@ -1350,6 +1408,24 @@ async fn confirm_sas_verification(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Starts an outgoing self-verification of another of this account's own
+/// devices — see `sync_loop::request_device_verification`.
+async fn request_device_verification(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(device_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let flow_id = crate::sync_loop::request_device_verification(
+        &session.client,
+        session.events.clone(),
+        &device_id,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(flow_id))
 }
 
 // ---------------------------------------------------------------------

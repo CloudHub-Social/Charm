@@ -61,12 +61,22 @@ server.md`.
 - **Media resolution, attachment upload, avatar upload** — bytes-based web
   equivalents of desktop's file-path-based commands (`resolve_message_media`,
   `send_attachment`, `set_avatar`/`remove_avatar` in `routes.rs`), reusing
-  `charm_lib::matrix::media::resolve_media_impl` against a process-wide
-  `MediaCache` (`media_cache.rs`).
-- **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm and
-  cross-signing bootstrap/status routes, reusing the same `_impl` functions
-  as desktop; SAS state changes stream as `verification:sas_update` over the
-  WebSocket channel (`sync_loop::start_sas_verification`).
+  `charm_lib::matrix::media::resolve_media_impl` against a per-account
+  `MediaCache` (`media_cache.rs`, keyed by
+  `charm_lib::matrix::persistence::account_key` — never shared across
+  sessions, so one account can't reach media only another account has
+  decrypted). Resolved media is only ever served inline with its real
+  `Content-Type` for `image/`/`audio`/`video/` — anything else is forced to
+  `application/octet-stream` + `Content-Disposition: attachment` (plus
+  `X-Content-Type-Options: nosniff`), since this route serves sender-
+  controlled bytes from the browser's authenticated API origin.
+- **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm,
+  cross-signing bootstrap/status, and outgoing self-verification
+  (`POST /api/verification/devices/{device_id}/request`,
+  `sync_loop::request_device_verification`) routes, reusing the same
+  `_impl` functions/SDK calls as desktop; SAS state changes stream as
+  `verification:sas_update` over the WebSocket channel
+  (`sync_loop::start_sas_verification`).
 
 ## Still deferred
 

@@ -37,10 +37,49 @@ use matrix_sdk::Client;
 use tokio::sync::broadcast;
 
 use crate::events::{SasUpdatePayload, ServerEvent};
+use crate::persistence::PersistenceStore;
 
 /// Same bound and backoff shape as desktop's loop — see
 /// `src-tauri/src/matrix/sync.rs::spawn_sync_loop` for the full rationale.
 const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
+
+/// What the sync loop needs to keep this session's persisted
+/// `MatrixSession` current as the SDK silently rotates its access/refresh
+/// token pair in the background (e.g. token refresh on a homeserver that
+/// issues expiring tokens) — without this, only the token pair saved at
+/// login time is ever persisted, so a restart some time after a refresh
+/// restores a *stale, already-invalidated* token and drops the session even
+/// though persistence is enabled.
+pub struct PersistHandle {
+    pub store: std::sync::Arc<PersistenceStore>,
+    pub token: String,
+    pub homeserver_url: String,
+}
+
+/// Re-saves the session if (and only if) its access token has changed since
+/// `last_saved_access_token`, returning the new value to track — cheap to
+/// call after every sync iteration without rewriting
+/// `sessions.enc.json` on every single poll when nothing actually rotated.
+async fn repersist_if_token_changed(
+    client: &Client,
+    persist: &PersistHandle,
+    last_saved_access_token: Option<String>,
+) -> Option<String> {
+    let session = client.matrix_auth().session()?;
+    if last_saved_access_token.as_deref() == Some(session.tokens.access_token.as_str()) {
+        return last_saved_access_token;
+    }
+    let access_token = session.tokens.access_token.clone();
+    if let Err(e) = persist
+        .store
+        .save(&persist.token, &persist.homeserver_url, &session)
+        .await
+    {
+        tracing::warn!("failed to re-persist refreshed session: {e}");
+        return last_saved_access_token;
+    }
+    Some(access_token)
+}
 
 /// Registers this session's live event handlers and spawns its background
 /// sync loop. Called once per session, right after login/register/restore
@@ -50,6 +89,7 @@ pub fn spawn(
     client: Client,
     events: broadcast::Sender<ServerEvent>,
     sync_presence: std::sync::Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
+    persist: Option<PersistHandle>,
 ) -> tokio::task::JoinHandle<()> {
     register_presence_handler(client.clone(), events.clone());
     register_self_profile_handler(client.clone(), events.clone());
@@ -78,6 +118,12 @@ pub fn spawn(
         emit_room_list_and_badge(&client, &events).await;
         emit_room_updates(&client, &events, &initial_response).await;
 
+        let mut last_saved_access_token = None;
+        if let Some(persist) = &persist {
+            last_saved_access_token =
+                repersist_if_token_changed(&client, persist, last_saved_access_token).await;
+        }
+
         let mut consecutive_failures: u32 = 0;
         loop {
             // Read fresh every iteration, not baked into one long-lived
@@ -91,6 +137,11 @@ pub fn spawn(
                     consecutive_failures = 0;
                     emit_room_list_and_badge(&client, &events).await;
                     emit_room_updates(&client, &events, &response).await;
+                    if let Some(persist) = &persist {
+                        last_saved_access_token =
+                            repersist_if_token_changed(&client, persist, last_saved_access_token)
+                                .await;
+                    }
                 }
                 Err(e) => {
                     consecutive_failures += 1;
@@ -296,4 +347,73 @@ fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
         symbol: emoji.symbol.to_string(),
         description: emoji.description.to_string(),
     }
+}
+
+/// Starts an outgoing SAS verification of another of this account's own
+/// devices ("verify another session") — web-server-local equivalent of
+/// desktop's `devices::request_device_verification`, reusing the SDK calls
+/// directly (that command has no `_impl` split; it's tightly coupled to
+/// `app.emit`) rather than duplicating them into `charm_lib`. Without this,
+/// a web session could only ever *respond* to a verification request
+/// another client started — never initiate one itself. Returns the new
+/// flow's id immediately, before the other device has necessarily accepted,
+/// same as desktop: the caller should watch for
+/// `verification:sas_update`/`verification:request` afterward rather than
+/// block on this waiting for the whole flow.
+pub async fn request_device_verification(
+    client: &Client,
+    events: broadcast::Sender<ServerEvent>,
+    device_id: &str,
+) -> Result<String, String> {
+    use matrix_sdk::encryption::verification::VerificationRequestState;
+    use matrix_sdk::ruma::OwnedDeviceId;
+
+    let own_user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let device_id: OwnedDeviceId = device_id.into();
+
+    let device = client
+        .encryption()
+        .get_device(&own_user_id, &device_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("device {device_id} not found"))?;
+
+    let request = device
+        .request_verification()
+        .await
+        .map_err(|e| e.to_string())?;
+    let flow_id = request.flow_id().to_string();
+
+    let emit_flow_id = flow_id.clone();
+    tokio::spawn(async move {
+        let mut changes = request.changes();
+        while let Some(request_state) = changes.next().await {
+            match request_state {
+                VerificationRequestState::Ready { .. } => break,
+                // Same exhaustive terminal-state bailout as
+                // `start_sas_verification`'s SAS-state loop above — these
+                // states are never expected without first observing
+                // `Ready`, so give up rather than loop forever if one
+                // somehow arrives anyway.
+                VerificationRequestState::Cancelled(_)
+                | VerificationRequestState::Done
+                | VerificationRequestState::Transitioned { .. } => return,
+                VerificationRequestState::Created { .. }
+                | VerificationRequestState::Requested { .. } => continue,
+            }
+        }
+
+        let _ = events.send(ServerEvent::VerificationRequest(
+            VerificationRequestSummary {
+                flow_id: emit_flow_id,
+                other_user_id: own_user_id.to_string(),
+                other_device_id: device_id.to_string(),
+            },
+        ));
+    });
+
+    Ok(flow_id)
 }

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use charm_lib::matrix::timeline::{get_timeline_page_impl, RoomTimelineUpdate};
+use charm_lib::matrix::timeline::RoomTimelineUpdate;
 use matrix_sdk::Client;
 use matrix_sdk_ui::Timeline;
 use rand::distr::Alphanumeric;
@@ -138,16 +138,19 @@ impl Session {
 /// this listener notices on its next diff/liveness tick and exits rather
 /// than keeping the room's sync subscription alive forever).
 ///
-/// Deliberately simpler than desktop's `timeline::spawn_timeline_listener`:
-/// rather than hand-diffing `matrix-sdk-ui`'s `VectorDiff`s into a
-/// `RoomMessageSummary` list itself (that logic is desktop-internal, not
-/// `pub`), this just re-fetches the current page via the same
-/// `get_timeline_page_impl` the HTTP `GET .../timeline` route already uses
-/// on every diff. A browser tab already has a full page of messages loaded
-/// client-side, so re-sending that page on every diff is more bytes than a
-/// true incremental patch, but is correct and reuses the one page-building
-/// code path this crate has — revisit if a room with very high message
-/// volume makes this too chatty for a real deployment.
+/// Applies each `VectorDiff` batch to a local snapshot and re-summarizes via
+/// `charm_lib::matrix::timeline::items_to_summaries` (the same `pub`
+/// snapshot-to-DTO function desktop's own listener uses) — **not**
+/// `get_timeline_page_impl`, which this used in an earlier version of this
+/// function: that helper unconditionally calls `Timeline::paginate_backwards`
+/// before taking its snapshot, since its actual job is serving the HTTP
+/// `GET .../timeline` "load older messages" route. Calling it from *every*
+/// live diff meant every new message/edit in a room silently walked that
+/// room's backward-pagination cursor further back and fetched more history
+/// the user never asked for — a real bug, not just a style choice, since it
+/// also meant a genuine "load older" request racing a live update could
+/// return duplicated or skipped history depending on which of the two had
+/// most recently moved the cursor.
 fn spawn_timeline_listener(
     client: Client,
     timeline: std::sync::Weak<Timeline>,
@@ -158,11 +161,13 @@ fn spawn_timeline_listener(
 
     const LIVENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+    let own_user_id = client.user_id().map(ToOwned::to_owned);
+
     tokio::spawn(async move {
         let Some(strong) = timeline.upgrade() else {
             return;
         };
-        let (_initial_items, mut stream) = strong.subscribe().await;
+        let (mut items, mut stream) = strong.subscribe().await;
         drop(strong);
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
@@ -176,18 +181,28 @@ fn spawn_timeline_listener(
                     break;
                 }
             };
-            if diffs.is_none() {
+            let Some(diffs) = diffs else { break };
+            if timeline.upgrade().is_none() {
                 break;
             }
-            let Some(strong) = timeline.upgrade() else {
-                break;
-            };
-            if let Ok(page) = get_timeline_page_impl(&client, &strong, None, None).await {
-                let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
-                    room_id: room_id.to_string(),
-                    messages: page.messages,
-                }));
+            for diff in diffs {
+                diff.apply(&mut items);
             }
+            // No media cache in this crate yet (matches every other
+            // `items_to_summaries`/`snapshot_rooms` call site here) — media
+            // metadata is still carried, just without a locally resolved
+            // thumbnail path.
+            let messages = charm_lib::matrix::timeline::items_to_summaries(
+                &items,
+                own_user_id.as_deref(),
+                &client,
+                None,
+            )
+            .await;
+            let _ = events.send(ServerEvent::Timeline(RoomTimelineUpdate {
+                room_id: room_id.to_string(),
+                messages,
+            }));
         }
     });
 }
