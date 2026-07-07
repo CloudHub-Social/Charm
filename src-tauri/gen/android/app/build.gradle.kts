@@ -88,17 +88,18 @@ dependencies {
     // github.com/UnifiedPush/android-embedded_fcm_distributor at the time
     // this was wired up — re-check unifiedpush.org/developers/android/ before
     // bumping either).
-    implementation("org.unifiedpush.android:connector:3.0.10")
-    // embedded-fcm-distributor pulls in Firebase Messaging, which depends on
-    // com.google.crypto.tink:tink-android — a different artifact than the
-    // plain com.google.crypto.tink:tink that androidx.security:security-crypto
-    // (above) depends on. Both ship the same classes, so Gradle's duplicate
-    // class check fails the build; exclude the android variant here and let
-    // security-crypto's tink win, since it's already required and android-tink
-    // is largely a subset (differs mainly in doing less optional work).
-    implementation("org.unifiedpush.android:embedded-fcm-distributor:3.0.0-rc1") {
-        exclude(group = "com.google.crypto.tink", module = "tink-android")
+    // connector pulls in the plain com.google.crypto.tink:tink:1.17.0, while
+    // androidx.security:security-crypto (above) pulls in
+    // com.google.crypto.tink:tink-android:1.8.0 — a different artifact that
+    // ships the same classes, so Gradle's duplicate class check fails the
+    // build. (embedded-fcm-distributor below only depends on kotlin-stdlib;
+    // it was never the source of the conflict.) Exclude the plain variant
+    // here and let security-crypto's tink-android win, since that's the
+    // artifact actually needed for Keystore-backed EncryptedSharedPreferences.
+    implementation("org.unifiedpush.android:connector:3.0.10") {
+        exclude(group = "com.google.crypto.tink", module = "tink")
     }
+    implementation("org.unifiedpush.android:embedded-fcm-distributor:3.0.0-rc1")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
