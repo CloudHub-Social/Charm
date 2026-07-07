@@ -1,0 +1,303 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { deriveOnboardingStatus, useOnboardingGate } from "./useOnboardingGate";
+
+const listRooms = vi.fn();
+const getAccountData = vi.fn();
+const setAccountData = vi.fn();
+const getLocalOnboardingFlag = vi.fn();
+const setLocalOnboardingFlag = vi.fn();
+
+vi.mock("@/lib/matrix", () => ({
+  listRooms: (...args: unknown[]) => listRooms(...args),
+  getAccountData: (...args: unknown[]) => getAccountData(...args),
+  setAccountData: (...args: unknown[]) => setAccountData(...args),
+  getLocalOnboardingFlag: (...args: unknown[]) => getLocalOnboardingFlag(...args),
+  setLocalOnboardingFlag: (...args: unknown[]) => setLocalOnboardingFlag(...args),
+}));
+
+beforeEach(() => {
+  listRooms.mockReset();
+  getAccountData.mockReset();
+  setAccountData.mockReset().mockResolvedValue(undefined);
+  getLocalOnboardingFlag.mockReset();
+  setLocalOnboardingFlag.mockReset().mockResolvedValue(undefined);
+});
+
+describe("deriveOnboardingStatus (pure precedence rule)", () => {
+  it.each([
+    { roomCount: 0, localFlag: false, accountDataPresent: false, expected: "pending" },
+    { roomCount: 0, localFlag: true, accountDataPresent: false, expected: "done" },
+    { roomCount: 0, localFlag: false, accountDataPresent: true, expected: "done" },
+    { roomCount: 0, localFlag: true, accountDataPresent: true, expected: "done" },
+    { roomCount: 1, localFlag: false, accountDataPresent: false, expected: "done" },
+    { roomCount: 1, localFlag: true, accountDataPresent: false, expected: "done" },
+    { roomCount: 1, localFlag: false, accountDataPresent: true, expected: "done" },
+    { roomCount: 1, localFlag: true, accountDataPresent: true, expected: "done" },
+  ] as const)(
+    "rooms=$roomCount local=$localFlag accountData=$accountDataPresent -> $expected",
+    ({ roomCount, localFlag, accountDataPresent, expected }) => {
+      expect(deriveOnboardingStatus({ roomCount, localFlag, accountDataPresent })).toBe(expected);
+    },
+  );
+});
+
+describe("useOnboardingGate", () => {
+  it("is pending for a brand-new account: zero rooms, no local flag, no account-data flag", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@new:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+  });
+
+  it("is done when only the local flag is set", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(true);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@local-only:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("is done when only the account-data flag is set", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue({ completed_at: 1, version: 1 });
+
+    const { result } = renderHook(() => useOnboardingGate("@account-data-only:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("is done when both flags are set", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(true);
+    getAccountData.mockResolvedValue({ completed_at: 1, version: 1 });
+
+    const { result } = renderHook(() => useOnboardingGate("@both:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("is done immediately for an account with joined rooms, without waiting on either flag", async () => {
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@returning:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // Opportunistic write-back so future launches short-circuit on the flag
+    // alone (Spec 12's gating logic, point 1).
+    await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
+  });
+
+  it("guards the opportunistic room-based write-back against a since-switched-away account", async () => {
+    // Each call to `listRooms` gets its own controllable deferred — resolving
+    // the *first* one (@user-a's) only after switching accounts models a
+    // slow `listRooms` reply landing after the user has already logged out
+    // and back in as someone else.
+    const deferredResolvers: ((rooms: { room_id: string }[]) => void)[] = [];
+    listRooms.mockImplementation(
+      () =>
+        new Promise<{ room_id: string }[]>((resolve) => {
+          deferredResolvers.push(resolve);
+        }),
+    );
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { rerender } = renderHook(({ userId }: { userId: string }) => useOnboardingGate(userId), {
+      initialProps: { userId: "@user-a:localhost" },
+    });
+
+    rerender({ userId: "@user-b:localhost" });
+    await waitFor(() => expect(deferredResolvers).toHaveLength(2));
+
+    // Resolve @user-a's (now-stale) `listRooms` call with a non-empty room
+    // list — this is exactly the path that fires the unguarded opportunistic
+    // write before the fix.
+    deferredResolvers[0]([{ room_id: "!existing:localhost" }]);
+
+    // Give the fire-and-forget write a tick to run, if it were going to.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
+  it("skips the opportunistic write-back for a returning user whose local flag is already set", async () => {
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    getLocalOnboardingFlag.mockResolvedValue(true);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@already-flagged:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // A redundant PUT to the homeserver on every single launch would be
+    // wasted work — the local flag alone already short-circuits future
+    // launches, so there's nothing new to persist.
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
+  it("backfills the local flag when the account-data flag is present but the local flag isn't", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue({ completed_at: 1, version: 1 });
+
+    const { result } = renderHook(() => useOnboardingGate("@account-data-only-backfill:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // So a later launch where the account-data round trip can't complete
+    // (offline, slow homeserver) still has a local flag to short-circuit on.
+    await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
+  });
+
+  it("guards the account-data backfill against a since-switched-away account", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    // Each call to `getAccountData` gets its own controllable deferred —
+    // resolving @user-a's only after switching accounts models a slow
+    // account-data fetch landing after the user has already logged out and
+    // back in as someone else.
+    const deferredResolvers: ((data: unknown) => void)[] = [];
+    getAccountData.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferredResolvers.push(resolve);
+        }),
+    );
+
+    const { rerender } = renderHook(({ userId }: { userId: string }) => useOnboardingGate(userId), {
+      initialProps: { userId: "@user-a:localhost" },
+    });
+
+    await waitFor(() => expect(deferredResolvers).toHaveLength(1));
+    rerender({ userId: "@user-b:localhost" });
+    await waitFor(() => expect(deferredResolvers).toHaveLength(2));
+
+    // Resolve @user-a's (now-stale) `getAccountData` call with a genuine
+    // confirmed flag — exactly the path that would backfill the local flag
+    // onto whoever is now signed in, before the fix.
+    deferredResolvers[0]({ completed_at: 1, version: 1 });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
+  it("biases toward done (not pending) when the local-flag read fails", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockRejectedValue(new Error("disk error"));
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@local-flag-read-error:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("biases toward done (not pending) when the account-data read fails, but does NOT persist that as a local flag", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockRejectedValue(new Error("network error"));
+
+    const { result } = renderHook(() => useOnboardingGate("@account-data-read-error:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+    // A transient read failure biasing this one evaluation toward "done" is
+    // fine and recoverable (it just re-evaluates next launch); but backfilling
+    // the local flag here would permanently skip onboarding on this device
+    // even if it never actually completed — that's not recoverable.
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
+  it("stays loading until a session (user id) is available", () => {
+    const { result } = renderHook(() => useOnboardingGate(null));
+    expect(result.current.status).toBe("loading");
+    expect(listRooms).not.toHaveBeenCalled();
+  });
+
+  it("defaults to done if evaluating the gate throws (e.g. offline first launch)", async () => {
+    listRooms.mockRejectedValue(new Error("network error"));
+
+    const { result } = renderHook(() => useOnboardingGate("@offline:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("done"));
+  });
+
+  it("complete() writes both persistence layers and flips status to done", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@completing:localhost"));
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+
+    await act(async () => {
+      await result.current.complete();
+    });
+
+    expect(setAccountData).toHaveBeenCalledWith(
+      "social.cloudhub.charm.onboarding",
+      expect.objectContaining({ version: 1 }),
+    );
+    expect(setLocalOnboardingFlag).toHaveBeenCalled();
+    expect(result.current.status).toBe("done");
+  });
+
+  it("complete() resolves on the local write alone, without waiting on a slow/hung account-data write", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+    // Never resolves — models an offline/hung homeserver request.
+    setAccountData.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useOnboardingGate("@offline-completing:localhost"));
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+
+    await act(async () => {
+      await result.current.complete();
+    });
+
+    expect(setLocalOnboardingFlag).toHaveBeenCalled();
+    expect(result.current.status).toBe("done");
+  });
+
+  it("a stale complete() call from a since-switched-away account doesn't write or flip status", async () => {
+    listRooms.mockResolvedValue([]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string }) => useOnboardingGate(userId),
+      { initialProps: { userId: "@user-a:localhost" } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+    const staleComplete = result.current.complete;
+
+    // Switch the signed-in account before the stale `complete` (captured
+    // above, for @user-a) resolves — e.g. the user logged out and back in
+    // as someone else while an onboarding-completion write was in flight.
+    rerender({ userId: "@user-b:localhost" });
+    await waitFor(() => expect(listRooms).toHaveBeenCalledTimes(2));
+
+    setAccountData.mockClear();
+    setLocalOnboardingFlag.mockClear();
+
+    await act(async () => {
+      await staleComplete();
+    });
+
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+});

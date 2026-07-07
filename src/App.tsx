@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoginScreen } from "@/features/auth/LoginScreen";
+import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
+import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
 import { RoomsScreen } from "@/features/rooms/RoomsScreen";
 import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
@@ -10,10 +12,20 @@ interface AppProps {
   onLoggedOut?: () => void;
 }
 
+/**
+ * Branches `restoring -> !session -> onboarding-pending -> RoomsScreen`. The
+ * onboarding branch (Spec 12) sits between session and rooms as its own
+ * full-surface screen, not a modal inside `RoomsScreen` — so it renders
+ * before the room-list machinery mounts, and so the deep-link hold below
+ * (`deepLinkRoomId`) stays untouched: a link arriving mid-onboarding stays
+ * held here and is only consumed by `RoomsScreen` once onboarding
+ * completes.
+ */
 function App({ onLoggedOut }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
+  const onboarding = useOnboardingGate(session?.user_id ?? null);
 
   useEffect(() => {
     tryRestoreSession()
@@ -37,6 +49,18 @@ function App({ onLoggedOut }: AppProps) {
 
   if (!session) {
     return <LoginScreen onSignedIn={setSession} />;
+  }
+
+  if (onboarding.status === "loading") {
+    // Blank rather than `RoomsScreen`: showing rooms here would fire
+    // `listRooms()`/mount its listeners only to immediately unmount once the
+    // gate resolves to "pending" — a flicker plus wasted IPC calls on every
+    // login, not just new accounts.
+    return <div className="flex min-h-screen items-center justify-center bg-background" />;
+  }
+
+  if (onboarding.status === "pending") {
+    return <OnboardingScreen onDone={onboarding.complete} />;
   }
 
   return (
