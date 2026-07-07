@@ -54,8 +54,7 @@ keyring = { version = "3", features = ["windows-native"] }
 [dev-dependencies]
 matrix-sdk-test = "0.18.0"
 # Provides `EventFactory`/room-builder fixtures used by the timeline-mapping
-# unit tests in `src/matrix/timeline.rs`; `MatrixMockServer` itself is enabled
-# by `matrix-sdk`'s `testing` feature below.
+# unit tests in `src/matrix/timeline.rs`.
 matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # For tests/sso_login.rs: drives the real Synapse<->Dex OIDC redirect chain
 # with a cookie jar, exactly like a browser would.
@@ -64,4 +63,3 @@ wiremock = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
-
