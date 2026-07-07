@@ -76,8 +76,14 @@ export function useOnboardingGate(userId: string | null) {
           // rooms are later left) short-circuits on the flag alone, without
           // re-deriving from room count — but skip it when the local flag is
           // already set, so a returning user's every launch doesn't perform
-          // a redundant account-data PUT to the homeserver.
-          if (!localFlag) void writeCompletionFlags();
+          // a redundant account-data PUT to the homeserver. Guarded the same
+          // way as `complete()`: this fire-and-forget write's IPC calls
+          // resolve against whichever account is *currently* signed in, so
+          // without the `userId` check a fast logout-then-login-as-someone-
+          // else could land this account's onboarding flags on the new one.
+          if (!localFlag) {
+            void writeCompletionFlags(() => activeUserIdRef.current === userId);
+          }
           return;
         }
 
@@ -95,13 +101,15 @@ export function useOnboardingGate(userId: string | null) {
         if (cancelled) return;
 
         const accountDataPresent = accountData !== null;
-        if (accountDataPresent) {
+        if (accountDataPresent && activeUserIdRef.current === userId) {
           // Backfill the local flag: `list_rooms` and the local flag are
           // both local-store reads, but this check needed the homeserver —
           // without this, a later offline/slow launch on this same device
           // (where the account-data round trip can't complete) would have
           // nothing local to short-circuit on and would re-show onboarding
-          // despite it already being done on another device.
+          // despite it already being done on another device. Guarded against
+          // an account switch during the `getAccountData` await, same
+          // rationale as the opportunistic write above.
           void setLocalOnboardingFlag();
         }
 
@@ -132,7 +140,7 @@ export function useOnboardingGate(userId: string | null) {
 
   const complete = useCallback(async () => {
     if (activeUserIdRef.current !== userId) return;
-    await writeCompletionFlags();
+    await writeCompletionFlags(() => activeUserIdRef.current === userId);
     if (activeUserIdRef.current !== userId) return;
     setStatus("done");
   }, [userId]);
@@ -150,12 +158,21 @@ export function useOnboardingGate(userId: string | null) {
  * background failure is still fine: the local flag alone already satisfies
  * "don't re-onboard this device," and if this device also has this account
  * signed in elsewhere, the flag re-derives from account data anyway.
+ *
+ * `isStillActive` is re-checked right before the (fast, but still async)
+ * local write — every call site passes a closure over its own
+ * `activeUserIdRef`/`userId` pair so a since-switched-away account's stale
+ * completion can never land on whichever account is now signed in (the
+ * underlying IPC commands resolve against the *currently* active client,
+ * not whichever account's JS closure happened to call them).
  */
-async function writeCompletionFlags(): Promise<void> {
+async function writeCompletionFlags(isStillActive: () => boolean): Promise<void> {
+  if (!isStillActive()) return;
   const content: OnboardingAccountData = { completed_at: Date.now(), version: 1 };
   setAccountData(ONBOARDING_ACCOUNT_DATA_TYPE, content).catch((err: unknown) => {
     console.error("useOnboardingGate: failed to write the onboarding account-data flag", err);
   });
+  if (!isStillActive()) return;
   await setLocalOnboardingFlag().catch((err: unknown) => {
     console.error("useOnboardingGate: failed to write the local onboarding flag", err);
   });
