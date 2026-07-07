@@ -336,44 +336,41 @@ pub async fn maybe_send_notification<F, Fut>(
 }
 
 /// Whether the app is currently registered to launch on login. Desktop-only:
-/// `tauri_plugin_autostart` (only ever registered under `#[cfg(desktop)]` in
-/// `lib.rs`'s builder chain — mobile has no equivalent OS concept) doesn't
-/// expose `ManagerExt`/`autolaunch()` on mobile targets at all, so this
-/// reports "not enabled" there rather than failing to compile/panicking on a
-/// plugin that was never registered.
+/// autostart isn't a mobile concept, and `tauri-plugin-autostart`'s
+/// `ManagerExt`/`autolaunch()` aren't available on mobile builds (mirrors the
+/// `#[cfg(desktop)]` gate already around the plugin's registration in
+/// `lib.rs`). (Independently fixed on `main` in #46 as well as here — same
+/// finding; merge-resolved by keeping `main`'s split-function shape.)
+#[cfg(desktop)]
 #[tauri::command]
 pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
-    #[cfg(desktop)]
-    {
-        use tauri_plugin_autostart::ManagerExt;
-        app.autolaunch().is_enabled().map_err(|e| e.to_string())
-    }
-    #[cfg(not(desktop))]
-    {
-        let _ = app;
-        Ok(false)
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[cfg(not(desktop))]
+#[tauri::command]
+pub fn get_autostart(_app: AppHandle) -> Result<bool, String> {
+    Ok(false)
+}
+
+/// Enables/disables launch-on-login. Desktop-only — see [`get_autostart`].
+#[cfg(desktop)]
+#[tauri::command]
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autostart = app.autolaunch();
+    if enabled {
+        autostart.enable().map_err(|e| e.to_string())
+    } else {
+        autostart.disable().map_err(|e| e.to_string())
     }
 }
 
-/// Enables/disables launch-on-login. No-ops on mobile — see
-/// [`get_autostart`]'s doc comment.
+#[cfg(not(desktop))]
 #[tauri::command]
-pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
-    #[cfg(desktop)]
-    {
-        use tauri_plugin_autostart::ManagerExt;
-        let autostart = app.autolaunch();
-        if enabled {
-            autostart.enable().map_err(|e| e.to_string())
-        } else {
-            autostart.disable().map_err(|e| e.to_string())
-        }
-    }
-    #[cfg(not(desktop))]
-    {
-        let _ = (app, enabled);
-        Ok(())
-    }
+pub fn set_autostart(_app: AppHandle, _enabled: bool) -> Result<(), String> {
+    Err("autostart is not supported on mobile".to_string())
 }
 
 #[cfg(test)]
