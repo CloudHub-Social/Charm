@@ -92,6 +92,12 @@ server.md`.
   `matrix_store/`). A restart currently keeps a browser's cookie/login
   working but loses that session's previously-learned room keys and
   verification/trust state.
+- **No idle/abandoned-session expiry.** A session's sync loop (and the
+  presence-online it sets) runs indefinitely until an explicit logout — a
+  closed browser tab, or a restored-at-startup session nobody ever
+  reconnects to, keeps long-polling `/sync` and advertising the account
+  online forever. See `sync_loop::spawn`'s doc comment for why this needs
+  its own idle-timeout design rather than a quick fix.
 - **QR login.** Desktop's `qr_login::start_qr_login` is built around
   `MatrixState`'s single-client-per-process model (it drives an in-progress
   login to completion *before* any session/token exists to key it by) —

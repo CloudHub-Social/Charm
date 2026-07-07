@@ -71,7 +71,26 @@ pub struct Session {
     /// task spawned before the session is wrapped in the `SessionStore`'s
     /// own `Arc` (see `sync_loop::spawn`'s caller in `routes.rs`/`main.rs`).
     pub sync_presence: Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
+    /// Incoming `verification:request` events this session has seen but no
+    /// WebSocket client has yet been connected to receive — see
+    /// `crate::routes::ws_handler`, which drains this on every new
+    /// connection. A `broadcast::Sender::send` with zero subscribers simply
+    /// drops the event (returns an error, which every handler already
+    /// ignores), and this event, unlike `room_list:update`/`timeline:update`,
+    /// is never reissued by anything later: a to-device verification
+    /// request that lands during login/register's or restore's own initial
+    /// sync — which happens before `finish_login` can even return a cookie
+    /// for a browser to open a WebSocket with — would otherwise be lost for
+    /// good, and the flow would be stuck with no way for the browser to
+    /// ever learn it existed. Bounded defensively (verification requests
+    /// are rare in practice) so an abandoned session with nobody ever
+    /// connecting can't grow this unboundedly.
+    pub pending_verification_requests:
+        Arc<std::sync::Mutex<Vec<charm_lib::matrix::verification::VerificationRequestSummary>>>,
 }
+
+/// See `Session::pending_verification_requests`'s doc comment.
+pub(crate) const MAX_PENDING_VERIFICATION_REQUESTS: usize = 20;
 
 impl Session {
     pub fn new(client: Client, user_id: String) -> Self {
@@ -87,6 +106,7 @@ impl Session {
                 NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            pending_verification_requests: Arc::new(std::sync::Mutex::new(Vec::new())),
             events,
         }
     }

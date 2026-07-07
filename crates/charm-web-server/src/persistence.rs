@@ -350,20 +350,44 @@ impl PersistenceStore {
         matrix_sdk::sync::SyncResponse,
         String,
     )> {
-        let mut restored = Vec::new();
-        for entry in self.read_all().await {
+        // Concurrent, not one-at-a-time: each entry's `restore_one` makes a
+        // real network call (build a client, restore the session, run an
+        // initial `sync_once`), so restoring serially means one slow or
+        // unreachable homeserver — or simply having many saved sessions —
+        // blocks every *other*, perfectly-healthy account's restore behind
+        // it, and this whole function runs before `main.rs` starts
+        // accepting connections. `RESTORE_TIMEOUT` bounds how long any
+        // single entry can hold up the rest: a homeserver that never
+        // responds at all can't block startup indefinitely either.
+        const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+        let entries = self.read_all().await;
+        let attempts = entries.into_iter().map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-            match restore_one(&entry).await {
-                Ok((session, initial_response)) => restored.push((
+            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry)).await;
+            (entry, originally_persisted_access_token, outcome)
+        });
+        let outcomes = futures_util::future::join_all(attempts).await;
+
+        let mut restored = Vec::new();
+        for (entry, originally_persisted_access_token, outcome) in outcomes {
+            match outcome {
+                Ok(Ok((session, initial_response))) => restored.push((
                     entry.token,
                     entry.homeserver_url,
                     session,
                     initial_response,
                     originally_persisted_access_token,
                 )),
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::warn!(
                         "dropping persisted session for {}: failed to restore: {e}",
+                        entry.session.meta.user_id
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "dropping persisted session for {}: restore timed out after {RESTORE_TIMEOUT:?}",
                         entry.session.meta.user_id
                     );
                 }
@@ -397,7 +421,11 @@ async fn restore_one(
     // replayed later, so the handler must already be registered.
     let session =
         crate::session::Session::new(client.clone(), entry.session.meta.user_id.to_string());
-    crate::sync_loop::register_event_handlers(&client, session.events.clone());
+    crate::sync_loop::register_event_handlers(
+        &client,
+        session.events.clone(),
+        session.pending_verification_requests.clone(),
+    );
 
     // Re-establish local room-store state the same way a fresh login does
     // (see `auth::login`'s doc comment, including why the response is

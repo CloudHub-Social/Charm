@@ -1280,7 +1280,23 @@ async fn send_attachment(
 
     let data = body.to_vec();
     let total_bytes = data.len() as u64;
-    let mime = mime_guess::from_path(&filename).first_or_octet_stream();
+    // Prefer the browser's own `Content-Type` (a `File` object's `.type`,
+    // sniffed from its actual bytes/extension by the browser itself — more
+    // reliable than re-guessing server-side from just the filename, which
+    // misses a camera photo with no or a misleading extension) over a
+    // filename-only guess. Falls back to the filename guess when the
+    // request either omits `Content-Type` or sends one of the generic
+    // defaults a browser sets automatically when it *doesn't* know the real
+    // type (a bare `fetch(url, {body: someBlob})` with an untyped `Blob`
+    // sends `application/octet-stream`; a `FormData`/URL-encoded body would
+    // send its own boilerplate type) — those carry no more information than
+    // not sending the header at all, so they shouldn't override the guess.
+    let mime = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<mime::Mime>().ok())
+        .filter(|m| *m != mime::APPLICATION_OCTET_STREAM && *m != mime::TEXT_PLAIN)
+        .unwrap_or_else(|| mime_guess::from_path(&filename).first_or_octet_stream());
     let info = attachment_info_for(&mime, &data, total_bytes);
 
     let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = query.txn_id.clone().into();
@@ -1476,8 +1492,11 @@ struct BootstrapCrossSigningRequest {
 async fn bootstrap_cross_signing(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Bodyless/optional-body POST — same CSRF exposure as `send_attachment`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let request: BootstrapCrossSigningRequest = parse_optional_json(&body)?;
     bootstrap_cross_signing_impl(&session.client, request.password)
@@ -1489,8 +1508,10 @@ async fn bootstrap_cross_signing(
 async fn accept_verification(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((other_user_id, flow_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     accept_verification_request_impl(&session.client, &other_user_id, &flow_id)
         .await
@@ -1501,8 +1522,10 @@ async fn accept_verification(
 async fn cancel_verification(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((other_user_id, flow_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     cancel_verification_impl(&session.client, &other_user_id, &flow_id)
         .await
@@ -1515,8 +1538,10 @@ async fn cancel_verification(
 async fn start_sas_verification(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((other_user_id, flow_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     crate::sync_loop::start_sas_verification(
         &session.client,
@@ -1532,8 +1557,10 @@ async fn start_sas_verification(
 async fn confirm_sas_verification(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((other_user_id, flow_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     confirm_sas_verification_impl(&session.client, &other_user_id, &flow_id)
         .await
@@ -1546,8 +1573,10 @@ async fn confirm_sas_verification(
 async fn request_device_verification(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(device_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let flow_id = crate::sync_loop::request_device_verification(
         &session.client,
@@ -1652,6 +1681,27 @@ const WS_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let mut receiver = session.events.subscribe();
+    // Drain (not just peek) any verification requests that arrived before a
+    // client was connected to receive them — see
+    // `Session::pending_verification_requests`'s doc comment. Taken, not
+    // cloned, so a second tab connecting later doesn't re-deliver the same
+    // already-seen request; if this socket fails to send one it's dropped,
+    // same as any other transient send failure elsewhere in this loop.
+    let pending = std::mem::take(
+        &mut *session
+            .pending_verification_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    );
+    for summary in pending {
+        let event = crate::events::ServerEvent::VerificationRequest(summary);
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
     let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
     // The first `tick()` fires immediately, not after the first interval —
     // skip it so this doesn't send a redundant ping the instant a client

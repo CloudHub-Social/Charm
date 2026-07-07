@@ -110,10 +110,16 @@ async fn repersist_if_token_changed(
 /// land in the initial sync's response was silently dropped: the browser
 /// would never see its `verification:request` event and the flow would be
 /// stuck with no way to know it existed.
-pub fn register_event_handlers(client: &Client, events: broadcast::Sender<ServerEvent>) {
+pub fn register_event_handlers(
+    client: &Client,
+    events: broadcast::Sender<ServerEvent>,
+    pending_verification_requests: std::sync::Arc<
+        std::sync::Mutex<Vec<VerificationRequestSummary>>,
+    >,
+) {
     register_presence_handler(client.clone(), events.clone());
     register_self_profile_handler(client.clone(), events.clone());
-    register_verification_handler(client.clone(), events);
+    register_verification_handler(client.clone(), events, pending_verification_requests);
 }
 
 /// Spawns this session's background sync loop. Called once per session,
@@ -134,6 +140,23 @@ pub fn register_event_handlers(client: &Client, events: broadcast::Sender<Server
 /// connected browser tab sees.
 ///
 /// Returns the loop's `JoinHandle` so the caller can abort it on logout.
+///
+/// **Known gap: no idle/abandoned-session expiry.** This loop (and the
+/// presence-online task it spawns) runs for as long as the session exists
+/// in `SessionStore` — aborted only on an explicit logout (`sync_handle` in
+/// `session.rs`), never because a browser tab was simply closed without
+/// logging out, or because a restored-at-startup session has had no
+/// WebSocket connection at all since the restart. Both cases keep
+/// long-polling `/sync` and advertising the account as online indefinitely.
+/// Desktop doesn't have this problem — its single client's lifetime is tied
+/// to the app process itself, closing the window *is* logging out in every
+/// practical sense — but a web session has no equivalent signal; there's no
+/// tab-close event a server can observe. Fixing this properly needs its own
+/// idle-timeout design (e.g. track last-WebSocket-activity per session and
+/// abort/re-mark-offline after some threshold with nobody connected) rather
+/// than a one-line change, so it's called out here rather than silently
+/// shipped incomplete — same treatment as the crypto-store persistence gap
+/// (see `persistence.rs`'s module doc comment).
 pub fn spawn(
     client: Client,
     events: broadcast::Sender<ServerEvent>,
@@ -307,10 +330,15 @@ fn register_self_profile_handler(client: Client, events: broadcast::Sender<Serve
 }
 
 /// Web-server-local equivalent of `verification::register_verification_handler`.
-fn register_verification_handler(client: Client, events: broadcast::Sender<ServerEvent>) {
+fn register_verification_handler(
+    client: Client,
+    events: broadcast::Sender<ServerEvent>,
+    pending: std::sync::Arc<std::sync::Mutex<Vec<VerificationRequestSummary>>>,
+) {
     client.add_event_handler(
         move |ev: ToDeviceKeyVerificationRequestEvent, client: Client| {
             let events = events.clone();
+            let pending = pending.clone();
             async move {
                 let Some(request) = client
                     .encryption()
@@ -320,13 +348,25 @@ fn register_verification_handler(client: Client, events: broadcast::Sender<Serve
                     return;
                 };
 
-                let _ = events.send(ServerEvent::VerificationRequest(
-                    VerificationRequestSummary {
-                        flow_id: request.flow_id().to_string(),
-                        other_user_id: request.other_user_id().to_string(),
-                        other_device_id: ev.content.from_device.to_string(),
-                    },
-                ));
+                let summary = VerificationRequestSummary {
+                    flow_id: request.flow_id().to_string(),
+                    other_user_id: request.other_user_id().to_string(),
+                    other_device_id: ev.content.from_device.to_string(),
+                };
+
+                // Broadcasting is best-effort for whatever WebSocket
+                // clients are already connected right now; buffering (below)
+                // is what actually guarantees delivery for the common case
+                // where none are yet — see
+                // `Session::pending_verification_requests`'s doc comment.
+                // Both happen unconditionally: a client connected exactly
+                // now could otherwise miss it if only one path ran.
+                let _ = events.send(ServerEvent::VerificationRequest(summary.clone()));
+
+                let mut pending = pending.lock().unwrap_or_else(|e| e.into_inner());
+                if pending.len() < crate::session::MAX_PENDING_VERIFICATION_REQUESTS {
+                    pending.push(summary);
+                }
             }
         },
     );

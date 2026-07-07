@@ -55,7 +55,11 @@ pub async fn login(
     // this call — never replayed later — so the handler needs somewhere to
     // push it to before this call happens, not after.
     let session = Session::new(client.clone(), user_id.clone());
-    crate::sync_loop::register_event_handlers(&client, session.events.clone());
+    crate::sync_loop::register_event_handlers(
+        &client,
+        session.events.clone(),
+        session.pending_verification_requests.clone(),
+    );
 
     // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
     // room store, which only gets populated by a sync — without this, every
@@ -102,7 +106,11 @@ pub async fn register(
     // See `login`'s doc comment on this same ordering: session (and its
     // event handlers) built before the initial sync, not after.
     let session = Session::new(client.clone(), user_id.clone());
-    crate::sync_loop::register_event_handlers(&client, session.events.clone());
+    crate::sync_loop::register_event_handlers(
+        &client,
+        session.events.clone(),
+        session.pending_verification_requests.clone(),
+    );
 
     let initial_response = client
         .sync_once(SyncSettings::default())
