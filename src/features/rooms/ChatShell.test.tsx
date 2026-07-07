@@ -12,6 +12,7 @@ import type {
   TypingUpdate,
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
+import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -156,13 +157,15 @@ function summary(
   };
 }
 
-function renderChatShell() {
-  const store = createStore();
-  return render(
-    <JotaiProvider store={store}>
-      <ChatShell room={room} currentUserId="@me:localhost" />
-    </JotaiProvider>,
-  );
+function renderChatShell(store = createStore()) {
+  return {
+    store,
+    ...render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    ),
+  };
 }
 
 function sendDraft(text: string) {
@@ -195,6 +198,23 @@ describe("ChatShell", () => {
 
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("does not mark the room read while room settings covers the chat, but does once it closes", async () => {
+    const store = createStore();
+    store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });
+    renderChatShell(store);
+
+    await screen.findByText("No messages yet");
+    // Give the suppressed effect a tick to (not) fire before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(markRoomRead).not.toHaveBeenCalled();
+
+    act(() => {
+      store.set(roomSettingsAtom, null);
+    });
+
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
