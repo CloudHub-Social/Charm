@@ -64,13 +64,16 @@ keyring = { version = "3", features = ["windows-native"] }
 # matrix-sdk's "sqlite" feature pulls in libsqlite3-sys, which by default
 # looks for a system SQLite via pkg-config/vcpkg. macOS and Linux CI runners
 # already have one; a GitHub Actions Windows runner does not (linking fails
-# with "cannot open input file 'sqlite3.lib'"), and the Android NDK sysroot
+# with "cannot open input file 'sqlite3.lib'"), the Android NDK sysroot
 # doesn't ship one either (linking fails with "unable to find library
 # -lsqlite3" — surfaced by Spec 11's CI run, the first to actually link
-# charm_lib for Android). "bundled" compiles SQLite from source instead,
-# scoped to these two targets so the already-working macOS/Linux link path
-# is untouched.
-[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
+# charm_lib for Android), and the iOS simulator SDK's libsqlite3.tbd isn't
+# wired into the generated Xcode project's link phase either (linking fails
+# with "symbol(s) not found for architecture arm64" on rusqlite's sqlite3_*
+# symbols — surfaced by the same Spec 11 CI run, the first to link charm_lib
+# for iOS). "bundled" compiles SQLite from source instead, scoped to these
+# three targets so the already-working macOS/Linux link path is untouched.
+[target.'cfg(any(target_os = "windows", target_os = "android", target_os = "ios"))'.dependencies]
 libsqlite3-sys = { version = "0.35", features = ["bundled"] }
 
 [dev-dependencies]
