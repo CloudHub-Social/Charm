@@ -28,8 +28,13 @@ export function useSettingsNavigation() {
   );
 
   const closeSettings = useCallback(() => {
+    // Replaces, not pushes: the open already pushed one history entry for
+    // `#/settings/<section>` — closing must collapse back to wherever the
+    // user was, not add a second entry that Back would land on before
+    // reaching that. A push here would make Back reopen settings via
+    // `useSettingsHashSync` instead of leaving the app where it was closed.
     if (parseSettingsHash(window.location.hash)) {
-      history.pushState(null, "", window.location.pathname + window.location.search);
+      history.replaceState(null, "", window.location.pathname + window.location.search);
     }
     setSection(null);
   }, [setSection]);

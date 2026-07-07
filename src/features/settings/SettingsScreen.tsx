@@ -34,31 +34,55 @@ function SettingsBody({
   section,
   onSectionChange,
   onLoggedOut,
+  mobile,
 }: {
   section: SettingsSection;
   onSectionChange: (value: SettingsSection) => void;
   onLoggedOut: () => void;
+  mobile: boolean;
 }) {
-  const sections = SECTIONS.filter((s) => !s.desktopOnly || isTauri());
+  // `isTauri()` alone is true for Tauri *mobile* builds too, not just
+  // desktop — `!mobile` (i.e. actually at the desktop breakpoint) is what
+  // distinguishes "a real desktop capability" from "a Tauri app that happens
+  // to be running on/at a phone-sized viewport", where autostart is neither
+  // supported nor meaningful.
+  const showDesktopSection = isTauri() && !mobile;
+  const sections = SECTIONS.filter((s) => !s.desktopOnly || showDesktopSection);
 
   return (
     <Tabs
-      orientation="vertical"
+      orientation={mobile ? "horizontal" : "vertical"}
       value={section}
       onValueChange={(value) => onSectionChange(value as SettingsSection)}
-      className="flex h-full w-full"
+      className={mobile ? "flex h-full w-full flex-col" : "flex h-full w-full"}
     >
-      <div className="flex w-60 shrink-0 flex-col border-r border-border p-4">
-        <span className="mb-4 text-base font-bold text-foreground">Settings</span>
-        <TabsList variant="line" className="h-auto flex-col items-stretch gap-1 bg-transparent p-0">
+      {mobile ? (
+        <TabsList
+          variant="line"
+          className="h-auto w-full shrink-0 justify-start gap-1 overflow-x-auto border-b border-border bg-transparent p-2"
+        >
           {sections.map((s) => (
-            <TabsTrigger key={s.value} value={s.value} className="justify-start">
+            <TabsTrigger key={s.value} value={s.value} className="shrink-0">
               {s.label}
             </TabsTrigger>
           ))}
         </TabsList>
-      </div>
-      <div className="flex-1 overflow-y-auto p-6">
+      ) : (
+        <div className="flex w-60 shrink-0 flex-col border-r border-border p-4">
+          <span className="mb-4 text-base font-bold text-foreground">Settings</span>
+          <TabsList
+            variant="line"
+            className="h-auto flex-col items-stretch gap-1 bg-transparent p-0"
+          >
+            {sections.map((s) => (
+              <TabsTrigger key={s.value} value={s.value} className="justify-start">
+                {s.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <TabsContent value="account">
           <AccountPanel onLoggedOut={onLoggedOut} />
         </TabsContent>
@@ -74,7 +98,7 @@ function SettingsBody({
         <TabsContent value="appearance">
           <AppearancePanel />
         </TabsContent>
-        {isTauri() && (
+        {showDesktopSection && (
           <TabsContent value="desktop">
             <DesktopPanel />
           </TabsContent>
@@ -94,8 +118,11 @@ function SettingsBody({
  * Settings' shell: a stable, deep-linkable location (`#/settings/<section>`,
  * see `useSettingsNavigation`) rendered in one of two modes matching Charm
  * 1.0's dual-mode single component — desktop shows a centered modal over a
- * frozen background, mobile shows a full page. Not routed via a router
- * (Charm 2.0 has none; see Spec 18) — a hash sync stands in for that.
+ * frozen background, mobile shows a full page with a horizontal-scrolling
+ * top nav instead of the desktop's fixed-width sidebar rail (which would
+ * otherwise squeeze panel content on a phone-width viewport). Not routed via
+ * a router (Charm 2.0 has none; see Spec 18) — a hash sync stands in for
+ * that.
  */
 export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
   const { section, openSettings, closeSettings } = useSettingsNavigation();
@@ -122,6 +149,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
             section={section}
             onSectionChange={openSettings}
             onLoggedOut={onLoggedOut}
+            mobile
           />
         </div>
       </div>
@@ -130,11 +158,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
 
   return (
     <Dialog open onOpenChange={(open) => !open && closeSettings()}>
-      <DialogContent
-        className="flex h-[36rem] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        showCloseButton={false}
-      >
+      <DialogContent className="flex h-[36rem] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <Button
           variant="ghost"
@@ -145,7 +169,12 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
         >
           <XIcon />
         </Button>
-        <SettingsBody section={section} onSectionChange={openSettings} onLoggedOut={onLoggedOut} />
+        <SettingsBody
+          section={section}
+          onSectionChange={openSettings}
+          onLoggedOut={onLoggedOut}
+          mobile={false}
+        />
       </DialogContent>
     </Dialog>
   );

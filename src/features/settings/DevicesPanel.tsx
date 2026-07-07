@@ -126,7 +126,7 @@ export function DevicesPanel() {
   const selectedCount = selectedIds.size;
 
   return (
-    <div className="max-w-lg space-y-6 pb-16">
+    <div className="max-w-lg space-y-6">
       <h1 className="text-lg font-bold text-foreground">Devices</h1>
 
       <SettingsCard heading="Security">
@@ -206,7 +206,7 @@ export function DevicesPanel() {
       />
 
       {selectedCount > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-10 flex items-center justify-between border-t border-border bg-background p-4 shadow-lg">
+        <div className="sticky bottom-0 z-10 -mx-6 -mb-6 flex items-center justify-between border-t border-border bg-background p-4 shadow-lg">
           <span className="text-sm text-foreground">
             {selectedCount} device{selectedCount === 1 ? "" : "s"} selected
           </span>
