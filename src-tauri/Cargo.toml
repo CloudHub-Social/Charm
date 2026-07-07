@@ -44,7 +44,7 @@ eyeball = "0.8.8"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
-lru = "0.12"
+lru = "0.16"
 imbl = "6.1.0"
 regex = "1"
 
