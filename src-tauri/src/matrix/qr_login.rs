@@ -197,6 +197,11 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // longer matches the store a *different* completion just
                 // relocated.
                 let homeserver_url = client.homeserver().to_string();
+                // Stop any sync loop already running for this account
+                // before relocating its store — same rationale as the
+                // identical step in auth.rs's login/register/
+                // complete_sso_login.
+                super::sync::abort_current_sync_loop(&app);
                 if let Err(e) = persistence::relocate_store_and_save_oauth_session(
                     &app,
                     &temp_key,
@@ -210,6 +215,55 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     );
                     return;
                 }
+
+                let response = LoginResponse {
+                    user_id: session.user.meta.user_id.to_string(),
+                    device_id: session.user.meta.device_id.to_string(),
+                };
+
+                // The temp store this attempt opened is gone either way
+                // (relocated above) — clear its tracking slot regardless of
+                // which completion wins the adoption race below.
+                // Compare-and-clear, not an unconditional `= None` — a new
+                // `start_qr_login` could already have overwritten this slot
+                // with a newer attempt's key by the time this runs (e.g. if
+                // this task raced past its last `.await` before a
+                // `cancel_qr_login`/restart aborted it), and clobbering that
+                // would leave the new attempt's own cleanup with nothing to
+                // find.
+                let state = app.state::<MatrixState>();
+                {
+                    let mut pending_key = state
+                        .pending_qr_temp_store_key
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if pending_key.as_deref() == Some(temp_key.as_str()) {
+                        *pending_key = None;
+                    }
+                }
+
+                // A concurrent completion for the same account (e.g. an
+                // overlapping password/SSO login) could have superseded
+                // what was just saved above between that call returning and
+                // here — if so, step aside rather than clear the other
+                // session kind or publish a client for a store that's no
+                // longer current; the completion that won already did its
+                // own version of this.
+                if !persistence::oauth_session_is_current(
+                    &account_key,
+                    session.user.meta.device_id.as_str(),
+                ) {
+                    // This device's login *did* succeed on the homeserver —
+                    // only the local adoption lost the race — so still emit
+                    // completion (mirrors the success path below) rather
+                    // than leaving the caller waiting on a progress event
+                    // that never arrives.
+                    let _ = app.emit(
+                        "qr_login:progress",
+                        QrLoginProgressEvent::Done { session: response },
+                    );
+                    return;
+                }
                 // Enforces the single-account invariant `try_restore_session`'s
                 // doc comment assumes: for *this* account_key, only one
                 // session kind should ever be present in the keychain at a
@@ -219,29 +273,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 // was just saved above.
                 let _ = persistence::clear_session(&account_key);
 
-                let response = LoginResponse {
-                    user_id: session.user.meta.user_id.to_string(),
-                    device_id: session.user.meta.device_id.to_string(),
-                };
-
-                let state = app.state::<MatrixState>();
                 *state.client.lock().await = Some(client.clone());
-                // Compare-and-clear, not an unconditional `= None` — same
-                // rationale as the error path below: a new `start_qr_login`
-                // could already have overwritten this slot with a newer
-                // attempt's key by the time this success path runs (e.g. if
-                // this task raced past its last `.await` before a
-                // `cancel_qr_login`/restart aborted it), and clobbering that
-                // would leave the new attempt's own cleanup with nothing to
-                // find.
-                let mut pending_key = state
-                    .pending_qr_temp_store_key
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if pending_key.as_deref() == Some(temp_key.as_str()) {
-                    *pending_key = None;
-                }
-                drop(pending_key);
                 spawn_sync_loop(app.clone(), client);
 
                 // The app-level completion event, emitted only now that the

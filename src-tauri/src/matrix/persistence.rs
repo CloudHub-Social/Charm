@@ -160,12 +160,8 @@ pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
             discard_temp_store(&entry.path(), &name);
-        } else if name.ends_with(STALE_BACKUP_SUFFIX) {
-            // No keychain entry is ever created for a backup path (it's
-            // just the existing account store's directory, moved aside
-            // under its account key's passphrase entry, which is
-            // untouched) — a plain removal is all that's needed.
-            let _ = std::fs::remove_dir_all(entry.path());
+        } else if let Some(account_key) = name.strip_suffix(STALE_BACKUP_SUFFIX) {
+            recover_or_discard_stale_backup(root, account_key, &name, &entry.path());
         }
     }
     Ok(())
@@ -175,6 +171,56 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
     let _ = std::fs::remove_dir_all(path);
     if let Ok(entry) = SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(temp_key)) {
         let _ = entry.delete_credential();
+    }
+}
+
+/// Handles a leftover `[account_key].stale-backup` directory found at
+/// startup. Two ways it can exist: (1) [`relocate_store_at_locked_with`]
+/// fully committed a relocation but its own final best-effort backup
+/// removal failed — `account_key`'s path has a real, current store, and the
+/// backup is genuinely safe to discard — or (2) the process crashed
+/// *between* the backup rename and the final commit — `account_key`'s path
+/// is empty and this backup is the account's *only* surviving store, which
+/// must be restored (directory and its durably-saved passphrase together),
+/// not discarded, or the account's data is silently lost. Distinguishing
+/// the two only by whether `account_key`'s path currently exists is safe
+/// because [`relocate_store_at_locked_with`] never leaves that path
+/// pointing at anything *other* than a fully-committed store or nothing at
+/// all — there's no partial-install state it could be caught in.
+fn recover_or_discard_stale_backup(
+    root: &Path,
+    account_key: &str,
+    backup_key: &str,
+    backup_path: &Path,
+) {
+    let account_path = root.join(account_key);
+    let backup_passphrase_entry =
+        SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(backup_key));
+
+    if account_path.exists() {
+        let _ = std::fs::remove_dir_all(backup_path);
+        if let Ok(entry) = backup_passphrase_entry {
+            let _ = entry.delete_credential();
+        }
+        return;
+    }
+
+    let restored = (|| -> Option<()> {
+        let backup_entry = backup_passphrase_entry.ok()?;
+        let passphrase = backup_entry.get_password().ok()?;
+        let account_entry =
+            SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key)).ok()?;
+        account_entry.set_password(&passphrase).ok()?;
+        std::fs::rename(backup_path, &account_path).ok()?;
+        let _ = backup_entry.delete_credential();
+        Some(())
+    })();
+
+    if restored.is_none() {
+        eprintln!(
+            "sweep_orphan_temp_stores: found an orphaned stale-backup for {account_key} at {} with no recoverable passphrase — leaving it in place rather than discarding possibly-unrecoverable data",
+            backup_path.display()
+        );
     }
 }
 
@@ -509,9 +555,13 @@ fn relocate_store_at_locked_with(
 ) -> Result<RelocateOutcome, String> {
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
-    let backup_path = root.join(format!("{account_key}{STALE_BACKUP_SUFFIX}"));
+    let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
+    let backup_path = root.join(&backup_key);
     let account_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
+            .map_err(|e| e.to_string())?;
+    let backup_passphrase_entry =
+        SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&backup_key))
             .map_err(|e| e.to_string())?;
 
     // A stale store from an incomplete previous login/logout can never
@@ -522,15 +572,24 @@ fn relocate_store_at_locked_with(
     // Capture its passphrase too, since the next step overwrites this same
     // keychain entry — restoring the directory without also restoring the
     // passphrase that decrypts it would leave a rolled-back store nothing
-    // can open. Clear any leftover backup from a previous crashed attempt
-    // first — if we're here again, that backup is superseded by *this*
-    // attempt's stale store.
+    // can open. A read failure here is treated as a hard error rather than
+    // silently proceeding with no captured passphrase: every real account
+    // store has one (`get_or_create_passphrase` guarantees it), so a read
+    // failure means something's transiently wrong with the keychain itself
+    // — overwriting that same entry next without a captured original would
+    // make any later rollback restore a directory nothing can decrypt.
+    // Clear any leftover backup from a previous crashed attempt first — if
+    // we're here again, that backup is superseded by *this* attempt's stale
+    // store.
     let existed = account_path.exists();
-    let original_passphrase = if existed {
-        account_passphrase_entry.get_password().ok()
-    } else {
-        None
-    };
+    let original_passphrase =
+        if existed {
+            Some(account_passphrase_entry.get_password().map_err(|e| {
+                format!("failed to read existing passphrase for {account_key}: {e}")
+            })?)
+        } else {
+            None
+        };
     if existed {
         if backup_path.exists() {
             let _ = std::fs::remove_dir_all(&backup_path);
@@ -541,6 +600,17 @@ fn relocate_store_at_locked_with(
                 account_path.display()
             )
         })?;
+        // Persisted durably — not just held in `original_passphrase` above
+        // — so a *crash* (as opposed to a clean `Err` return, which the
+        // in-process rollback below already handles) after this point is
+        // still recoverable: `sweep_orphan_temp_stores` finds this backup
+        // directory on the next startup and, if the relocation never
+        // reached its final commit, restores both it and this passphrase
+        // together rather than discarding the account's only surviving
+        // store.
+        if let Some(ref passphrase) = original_passphrase {
+            let _ = backup_passphrase_entry.set_password(passphrase);
+        }
     }
 
     // Best-effort: restores the backed-up store and its original passphrase
@@ -554,6 +624,7 @@ fn relocate_store_at_locked_with(
             if let Some(ref passphrase) = original_passphrase {
                 let _ = account_passphrase_entry.set_password(passphrase);
             }
+            let _ = backup_passphrase_entry.delete_credential();
         }
         err
     };
@@ -587,9 +658,10 @@ fn relocate_store_at_locked_with(
     }
 
     if existed {
-        // Everything is fully committed at this point, so the backup is
-        // safe to discard. Best-effort: failing to reclaim disk space
-        // shouldn't turn an otherwise-successful login into an error.
+        // Everything is fully committed at this point, so the backup (both
+        // its directory and its durable passphrase entry) is safe to
+        // discard. Best-effort: failing to reclaim disk space or a keychain
+        // entry shouldn't turn an otherwise-successful login into an error.
         if let Err(e) = std::fs::remove_dir_all(&backup_path) {
             eprintln!(
                 "relocate_store: failed to remove backup of superseded store for {account_key} at {}: {e}",
@@ -601,6 +673,7 @@ fn relocate_store_at_locked_with(
                 account_path.display()
             );
         }
+        let _ = backup_passphrase_entry.delete_credential();
     }
 
     Ok(if existed {
@@ -682,6 +755,37 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
         Ok(()) | Err(SecretStoreError::NotFound) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+/// True if `account_key`'s currently-saved [`MatrixSession`] is the one this
+/// caller just relocated/saved (matched by `device_id`) — used right after
+/// [`relocate_store_and_save_session`] returns, before a login flow adopts
+/// its `Client` and clears the other session kind, to check whether a
+/// concurrent completion for the *same* account (e.g. a double-submitted
+/// login) has already superseded it since. If it has, the caller should
+/// step aside rather than publish a client/clear a session kind for a store
+/// that's no longer current — the concurrent completion that won already
+/// did its own version of this. Not itself synchronized with
+/// [`relocate_store_and_save_session`]'s lock (checking after releasing it
+/// is unavoidable — the caller needs to run its own further, unrelated
+/// async work first), so this narrows the race window rather than closing
+/// it entirely; see the PR discussion on the wider adoption race for why
+/// closing it fully needs bringing client-adoption itself into the same
+/// critical section.
+pub fn session_is_current(account_key: &str, device_id: &str) -> bool {
+    load_session(account_key)
+        .ok()
+        .flatten()
+        .is_some_and(|saved| saved.session.meta.device_id.as_str() == device_id)
+}
+
+/// OAuth-session counterpart of [`session_is_current`], for the QR login
+/// flow.
+pub fn oauth_session_is_current(account_key: &str, device_id: &str) -> bool {
+    load_oauth_session(account_key)
+        .ok()
+        .flatten()
+        .is_some_and(|saved| saved.user.meta.device_id.as_str() == device_id)
 }
 
 /// Where the local first-run-onboarding marker for `account_key` lives — a
@@ -952,6 +1056,18 @@ mod tests {
             temp_entry.get_password(),
             Err(keyring::Error::NoEntry)
         ));
+        // The durable backup-passphrase entry (written before the account
+        // entry was overwritten, so a crash could still recover the old
+        // store) is cleaned up too, once the relocation fully committed.
+        let backup_entry = keyring::Entry::new(
+            KEYCHAIN_SERVICE,
+            &passphrase_account(&format!("{account_key}{STALE_BACKUP_SUFFIX}")),
+        )
+        .unwrap();
+        assert!(matches!(
+            backup_entry.get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
 
         if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key))
         {
@@ -998,6 +1114,17 @@ mod tests {
             .join(format!("{account_key}{STALE_BACKUP_SUFFIX}"))
             .exists());
         assert!(!temp_path.exists());
+        // The durable backup-passphrase entry is cleaned up on rollback too
+        // — restored into the account entry, not left as a second copy.
+        let backup_entry = keyring::Entry::new(
+            KEYCHAIN_SERVICE,
+            &passphrase_account(&format!("{account_key}{STALE_BACKUP_SUFFIX}")),
+        )
+        .unwrap();
+        assert!(matches!(
+            backup_entry.get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
 
         if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key))
         {
@@ -1023,16 +1150,21 @@ mod tests {
     }
 
     #[test]
-    fn sweep_orphan_temp_stores_removes_temp_dirs_passphrases_and_stale_backups() {
+    fn sweep_orphan_temp_stores_removes_temp_dirs_and_committed_stale_backups() {
         let root = ScratchRoot::new("sweep");
         let account_key = account_key("@charm-persistence-test-sweep:localhost");
         let temp_key = temp_store_key();
-        let backup_path = root.0.join(format!("{account_key}{STALE_BACKUP_SUFFIX}"));
+        let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
+        let backup_path = root.0.join(&backup_key);
 
+        // A real, current store at `account_key` — the relocation that
+        // created this backup already fully committed; only its own
+        // best-effort backup removal failed.
         store_path_at(&root.0, &account_key).unwrap();
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         let _ = get_or_create_passphrase(&temp_key).unwrap();
         std::fs::create_dir_all(&backup_path).unwrap();
+        let _ = get_or_create_passphrase(&backup_key).unwrap();
 
         sweep_orphan_temp_stores_at(&root.0).unwrap();
 
@@ -1045,6 +1177,51 @@ mod tests {
             temp_entry.get_password(),
             Err(keyring::Error::NoEntry)
         ));
+        let backup_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&backup_key)).unwrap();
+        assert!(matches!(
+            backup_entry.get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
+    }
+
+    #[test]
+    fn sweep_orphan_temp_stores_restores_uncommitted_stale_backup() {
+        let root = ScratchRoot::new("sweep-restore");
+        let account_key = account_key("@charm-persistence-test-sweep-restore:localhost");
+        let account_path = root.0.join(&account_key);
+        let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
+        let backup_path = root.0.join(&backup_key);
+
+        // No store at `account_key` — mirrors a crash between the backup
+        // rename and the final commit in `relocate_store_at_locked_with`:
+        // this backup is the account's only surviving store, and its
+        // passphrase was durably saved (under the backup's own keychain
+        // entry) before the account's entry got overwritten.
+        std::fs::create_dir_all(&backup_path).unwrap();
+        std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
+        let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
+
+        sweep_orphan_temp_stores_at(&root.0).unwrap();
+
+        // The backup is restored to the account's path, not discarded.
+        assert!(!backup_path.exists());
+        assert!(account_path.join("existing.txt").exists());
+        assert_eq!(
+            get_or_create_passphrase(&account_key).unwrap(),
+            backup_passphrase
+        );
+        let backup_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&backup_key)).unwrap();
+        assert!(matches!(
+            backup_entry.get_password(),
+            Err(keyring::Error::NoEntry)
+        ));
+
+        if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&account_key))
+        {
+            let _ = entry.delete_credential();
+        }
     }
 
     #[test]

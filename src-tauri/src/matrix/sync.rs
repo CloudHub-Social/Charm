@@ -225,6 +225,28 @@ async fn notify_unopened_room_messages(
     }
 }
 
+/// Aborts the currently-running sync loop (if any) without starting a
+/// replacement — call this just before a login flow is about to supersede
+/// the current account's on-disk store (see
+/// `persistence::relocate_store_and_save_session`), so nothing is still
+/// mid-`/sync` and writing to the SQLite files in the directory that's about
+/// to be renamed out from under it. `spawn_sync_loop` already does its own
+/// version of this abort when it starts a *new* loop, but that happens
+/// *after* the store swap on a re-login for an already-active account — too
+/// late to prevent the old loop from touching the directory during the
+/// rename itself.
+pub(crate) fn abort_current_sync_loop(app: &AppHandle) {
+    let previous = app
+        .state::<MatrixState>()
+        .sync_loop_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(previous) = previous {
+        previous.abort();
+    }
+}
+
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
