@@ -88,6 +88,26 @@ describe("RoomSettingsModal", () => {
     await waitFor(() => expect(screen.getByLabelText("Search members")).toBeInTheDocument());
   });
 
+  it("preserves an unsaved General edit across switching to another section and back", async () => {
+    const details = makeRoomDetails({ name: "Design Team" });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+    const nameField = await screen.findByDisplayValue("Design Team");
+    fireEvent.change(nameField, { target: { value: "Draft Name" } });
+
+    const membersTab = screen.getByRole("tab", { name: "Members" });
+    membersTab.focus();
+    fireEvent.click(membersTab);
+    await waitFor(() => expect(screen.getByLabelText("Search members")).toBeInTheDocument());
+
+    const generalTab = screen.getByRole("tab", { name: "General" });
+    generalTab.focus();
+    fireEvent.click(generalTab);
+
+    await waitFor(() => expect(screen.getByDisplayValue("Draft Name")).toBeInTheDocument());
+  });
+
   it("shows a dismissible error message when the details fetch fails", async () => {
     getRoomDetails.mockRejectedValue(new Error("network error"));
 
