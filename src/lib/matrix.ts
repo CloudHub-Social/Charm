@@ -19,6 +19,9 @@ import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { ProfileSummary } from "@bindings/ProfileSummary";
+import type { PusherKind } from "@bindings/PusherKind";
+import type { PushRegistration } from "@bindings/PushRegistration";
+import type { PushStatus } from "@bindings/PushStatus";
 import type { QrLoginProgressEvent } from "@bindings/QrLoginProgressEvent";
 import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
@@ -72,6 +75,9 @@ export type {
   PresenceStateDto,
   PresenceUpdate,
   ProfileSummary,
+  PusherKind,
+  PushRegistration,
+  PushStatus,
   QrLoginProgressEvent,
   ReactionGroup,
   ReactionToggleResult,
@@ -619,4 +625,27 @@ export function unbanMember(roomId: string, userId: string, reason?: string): Pr
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
 export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
+}
+
+/**
+ * Registers this device for remote push (Spec 11): on desktop this is a
+ * no-op returning `{ transport: "none", ... }` (see `push::active_transport`'s
+ * doc comment — desktop has no remote-push transport by design), on mobile
+ * it obtains a UnifiedPush/FCM/APNs endpoint and registers it as a pusher
+ * with the homeserver.
+ */
+export function registerPush(): Promise<PushRegistration> {
+  return invoke("register_push");
+}
+
+export function unregisterPush(): Promise<void> {
+  return invoke("unregister_push");
+}
+
+export function getPushStatus(): Promise<PushStatus> {
+  return invoke("get_push_status");
+}
+
+export function onPushStatus(callback: (status: PushStatus) => void): Promise<UnlistenFn> {
+  return listen<PushStatus>("push:status", (e) => callback(e.payload));
 }

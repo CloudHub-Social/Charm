@@ -339,7 +339,8 @@ pub async fn maybe_send_notification<F, Fut>(
 /// autostart isn't a mobile concept, and `tauri-plugin-autostart`'s
 /// `ManagerExt`/`autolaunch()` aren't available on mobile builds (mirrors the
 /// `#[cfg(desktop)]` gate already around the plugin's registration in
-/// `lib.rs`).
+/// `lib.rs`). (Independently fixed on `main` in #46 as well as here — same
+/// finding; merge-resolved by keeping `main`'s split-function shape.)
 #[cfg(desktop)]
 #[tauri::command]
 pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
