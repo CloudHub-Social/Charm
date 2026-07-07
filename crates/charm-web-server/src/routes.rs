@@ -1734,8 +1734,24 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     );
     let mut pending = pending.into_iter();
     for event in pending.by_ref() {
-        let Ok(json) = serde_json::to_string(&event) else {
-            continue;
+        let json = match serde_json::to_string(&event) {
+            Ok(json) => json,
+            // `ServerEvent`'s variants are all plain, always-serializable
+            // data (strings, bools, small structs) — this realistically
+            // never fails — but treating a hypothetical failure the same
+            // as a send failure (below), instead of silently dropping the
+            // event via `continue`, costs nothing and keeps this loop's
+            // only two outcomes for a pending event "delivered" or
+            // "still buffered", never "silently lost".
+            Err(_) => {
+                let mut buffer = session
+                    .pending_verification_events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                buffer.push(event);
+                buffer.extend(pending);
+                return;
+            }
         };
         if socket.send(Message::Text(json.into())).await.is_err() {
             // This socket died mid-flush — the entries not yet sent
