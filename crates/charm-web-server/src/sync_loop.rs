@@ -304,10 +304,20 @@ fn emit_snapshot(
     last_snapshot: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
     event: ServerEvent,
 ) {
-    let _ = events.send(event.clone());
-    let mut snapshot = last_snapshot.lock().unwrap_or_else(|e| e.into_inner());
-    snapshot.retain(|existing| std::mem::discriminant(existing) != std::mem::discriminant(&event));
-    snapshot.push(event);
+    // Cache updated *before* the live broadcast, not after: a socket that
+    // subscribes in between those two steps would otherwise be too late to
+    // receive the live send and too early to see the new value in the
+    // replay cache — missing this update entirely until the next one.
+    // Updating the cache first closes that window (a socket connecting
+    // during this function now always sees at least this value, either via
+    // the live broadcast or the replay cache, whichever race it lands in).
+    {
+        let mut snapshot = last_snapshot.lock().unwrap_or_else(|e| e.into_inner());
+        snapshot
+            .retain(|existing| std::mem::discriminant(existing) != std::mem::discriminant(&event));
+        snapshot.push(event.clone());
+    }
+    let _ = events.send(event);
 }
 
 async fn emit_room_list_and_badge(

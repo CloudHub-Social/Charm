@@ -135,6 +135,16 @@ server.md`.
   pick up as its own slice.
 - **Deployment to `matrix-vps`** — see the Deployment section below; not
   attempted as part of either sub-PR.
+- **Media download size isn't capped during download, only after.**
+  `resolve_message_media` checks the resolved file's actual on-disk size
+  against `MAX_ATTACHMENT_UPLOAD_BYTES` only once `resolve_media_impl` has
+  already finished downloading and caching it — a sender who misreports (or
+  omits) `info.size` can still make this route download and cache an
+  arbitrarily large file before the oversized response is rejected and the
+  cached copy removed. Enforcing the cap *during* download requires changing
+  `charm_lib::matrix::media::resolve_media_impl` itself (shared with
+  desktop, where an unbounded download is far less of a concern with one
+  local user) — left as a follow-up rather than done here.
 - A per-room `Timeline` LRU cache (mirroring desktop's `MAX_LIVE_TIMELINES`
   bound in `MatrixState`) — each `get_timeline_page` request (and each
   `timeline:update` push) currently opens/reuses a `Timeline` handle without

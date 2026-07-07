@@ -338,22 +338,16 @@ async fn register(
 async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
-        // Removed unconditionally, whether or not a live in-memory session
-        // exists for this token — not nested inside the `if let Some(session)`
-        // below. A persisted entry can outlive its `SessionStore` entry
-        // (e.g. `restore_all` timed out or failed on it at startup — see
-        // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
-        // can still hold a cookie for a token this process never actually
-        // loaded a `Session` for. Skipping this removal in that case would
-        // leave the cookie's session persisted indefinitely: a later restart
-        // (once the homeserver/network issue that caused the earlier
-        // restore failure has cleared) would restore and start syncing an
-        // account the user believes they already logged out of.
-        if let Some(persistence) = &state.persistence {
-            if let Err(e) = persistence.remove(&token).await {
-                tracing::warn!("failed to remove persisted session on logout: {e}");
-            }
-        }
+        // Stop the live sync loop *before* removing the persisted entry
+        // below, not after. Its `repersist_if_token_changed` can re-save a
+        // refreshed token at any sync iteration — removing the persisted
+        // entry first would leave a window where an in-flight sync
+        // iteration resurrects it with a freshly "current" token right
+        // before this handler gets to abort the loop that raced it.
+        // Aborting first narrows that window (not eliminates it —
+        // `abort()` cancels at the task's next await point, not
+        // synchronously mid-poll — but from "the rest of this handler's
+        // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
             if let Some(handle) = session
                 .sync_handle
@@ -373,6 +367,22 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoRespo
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+        }
+        // Removed unconditionally, whether or not a live in-memory session
+        // was found above — not nested inside that `if let Some(session)`.
+        // A persisted entry can outlive its `SessionStore` entry (e.g.
+        // `restore_all` timed out or failed on it at startup — see
+        // `PersistenceStore::restore_all`'s `RESTORE_TIMEOUT`), so a browser
+        // can still hold a cookie for a token this process never actually
+        // loaded a `Session` for. Skipping this removal in that case would
+        // leave the cookie's session persisted indefinitely: a later restart
+        // (once the homeserver/network issue that caused the earlier
+        // restore failure has cleared) would restore and start syncing an
+        // account the user believes they already logged out of.
+        if let Some(persistence) = &state.persistence {
+            if let Err(e) = persistence.remove(&token).await {
+                tracing::warn!("failed to remove persisted session on logout: {e}");
+            }
         }
     }
     // `remove` must be given a cookie matching the *original* cookie's
@@ -1164,7 +1174,12 @@ async fn resolve_avatar(
     Query(query): Query<ResolveAvatarQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let cache = crate::media_cache::for_account(&session.user_id)
+    let device_id = session
+        .client
+        .device_id()
+        .ok_or_else(|| ApiError::bad_request("session has no device id"))?
+        .to_string();
+    let cache = crate::media_cache::for_session(&session.user_id, &device_id)
         .await
         .map_err(ApiError::bad_request)?;
     let size = query
@@ -1225,7 +1240,12 @@ async fn resolve_message_media(
     Query(query): Query<ResolveMediaQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    let cache = crate::media_cache::for_account(&session.user_id)
+    let device_id = session
+        .client
+        .device_id()
+        .ok_or_else(|| ApiError::bad_request("session has no device id"))?
+        .to_string();
+    let cache = crate::media_cache::for_session(&session.user_id, &device_id)
         .await
         .map_err(ApiError::bad_request)?;
     let declared_mimetype = declared_media_mimetype(&session.client, &room_id, &event_id).await;
@@ -1238,6 +1258,30 @@ async fn resolve_message_media(
     )
     .await
     .map_err(ApiError::bad_request)?;
+
+    // `resolve_media_impl` downloads and caches the full file before we
+    // ever see a path back — the declared `info.size` a sender attaches to
+    // the event is untrusted and unchecked at download time, so a
+    // malicious/misreporting sender can make this route (and the disk
+    // behind `MediaCache`) download and cache arbitrarily large bytes
+    // regardless of what it claimed. This can only catch it after the fact
+    // — the real fix (capping bytes *during* download) belongs in
+    // `charm_lib::matrix::media::resolve_media_impl` itself, shared with
+    // desktop, and is out of scope for this route. Refusing to serve an
+    // over-cap file at least stops this route from handing oversized bytes
+    // back to the browser, and removes the now-useless cached copy rather
+    // than leaving it on disk to be served by a later re-request.
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if metadata.len() > charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(ApiError::bad_request(format!(
+            "resolved media ({} bytes) exceeds the {} byte limit",
+            metadata.len(),
+            charm_lib::matrix::send::MAX_ATTACHMENT_UPLOAD_BYTES
+        )));
+    }
 
     let file = tokio::fs::File::open(&path)
         .await
