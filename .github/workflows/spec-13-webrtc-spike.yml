@@ -140,6 +140,68 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Write the install/launch/report script to a file
+        # reactivecircus/android-emulator-runner's `script:` field runs each
+        # line as its OWN `sh -c` process (confirmed from a real CI log —
+        # every `[command]/usr/bin/sh -c ...` was a separate invocation), so
+        # variable assignments (PKG=, APK=, REPORT=) never survived to the
+        # next line and `$APK`/`$PKG` were always empty. Writing the whole
+        # thing to a real script file and running that as one process keeps
+        # shell state (and the polling loop) intact.
+        run: |
+          cat > android-ci-script.sh <<'SCRIPT'
+          #!/bin/bash
+          set -eo pipefail
+          PKG=social.cloudhub.charm
+          # `--target x86_64` still produces a "universal" flavor APK
+          # (app-universal-debug.apk) by default per the Gradle product
+          # flavors this project's build.gradle.kts sets up — not an
+          # x86_64-named one as an earlier pattern assumed.
+          APK=$(find src-tauri/gen/android -iname "*-debug.apk" | head -1)
+          echo "Installing $APK"
+          adb install -r "$APK"
+          # Pre-grant the OS-level runtime permission (Android 6+ requirement).
+          # Deliberately NOT touching WebChromeClient — whether Tauri's default
+          # Android shell calls PermissionRequest.grant() for the in-webview
+          # media prompt on top of this is exactly the open question (R1);
+          # if it doesn't, capability (1) below reports FAIL, which is the
+          # real answer, not a workaround.
+          adb shell pm grant $PKG android.permission.CAMERA
+          adb shell pm grant $PKG android.permission.RECORD_AUDIO
+          adb shell am start -n $PKG/.MainActivity
+          REPORT=""
+          for i in $(seq 1 60); do
+            if adb shell run-as $PKG test -f files/spike-ci-report.json 2>/dev/null; then
+              REPORT=$(adb shell run-as $PKG cat files/spike-ci-report.json)
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$REPORT" ]; then
+            echo "Timed out waiting for spike-ci-report.json; last logcat:"
+            adb logcat -d | tail -200
+            exit 1
+          fi
+          echo "$REPORT" | tee spike-ci-report.json
+          # Not captured via $() — that would swallow node's exit code and let
+          # a FAIL silently pass. Piping directly makes this the last command
+          # in the script, so its exit code is the script's exit code.
+          echo "$REPORT" | node -e '
+            let d = "";
+            process.stdin.on("data", c => d += c);
+            process.stdin.on("end", () => {
+              const r = JSON.parse(d);
+              let fail = false;
+              for (const k of ["a_getUserMedia", "b_loopbackPeerConnection", "c_getDisplayMedia"]) {
+                console.log(k, "=>", r[k].status, "(" + r[k].detail + ")");
+                if (r[k].status === "FAIL") fail = true;
+              }
+              process.exit(fail ? 1 : 0);
+            });
+          '
+          SCRIPT
+          chmod +x android-ci-script.sh
+
       - name: Run emulator, install APK, launch, and pull the CI report
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2
         with:
@@ -151,54 +213,7 @@ jobs:
           # than failing on "no camera" before permission wiring is even reached.
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back emulated -camera-front emulated
           disable-animations: true
-          script: |
-            PKG=social.cloudhub.charm
-            # `--target x86_64` still produces a "universal" flavor APK
-            # (app-universal-debug.apk) by default per the Gradle product
-            # flavors this project's build.gradle.kts sets up — not an
-            # x86_64-named one as the previous pattern assumed.
-            APK=$(find src-tauri/gen/android -iname "*-debug.apk" | head -1)
-            echo "Installing $APK"
-            adb install -r "$APK"
-            # Pre-grant the OS-level runtime permission (Android 6+ requirement).
-            # Deliberately NOT touching WebChromeClient — whether Tauri's default
-            # Android shell calls PermissionRequest.grant() for the in-webview
-            # media prompt on top of this is exactly the open question (R1);
-            # if it doesn't, capability (1) below reports FAIL, which is the
-            # real answer, not a workaround.
-            adb shell pm grant $PKG android.permission.CAMERA
-            adb shell pm grant $PKG android.permission.RECORD_AUDIO
-            adb shell am start -n $PKG/.MainActivity
-            REPORT=""
-            for i in $(seq 1 60); do
-              if adb shell run-as $PKG test -f files/spike-ci-report.json 2>/dev/null; then
-                REPORT=$(adb shell run-as $PKG cat files/spike-ci-report.json)
-                break
-              fi
-              sleep 5
-            done
-            if [ -z "$REPORT" ]; then
-              echo "Timed out waiting for spike-ci-report.json; last logcat:"
-              adb logcat -d | tail -200
-              exit 1
-            fi
-            echo "$REPORT" | tee spike-ci-report.json
-            # Not captured via $() — that would swallow node's exit code and let
-            # a FAIL silently pass. Piping directly makes this the last command
-            # in the step, so its exit code is the step's exit code.
-            echo "$REPORT" | node -e '
-              let d = "";
-              process.stdin.on("data", c => d += c);
-              process.stdin.on("end", () => {
-                const r = JSON.parse(d);
-                let fail = false;
-                for (const k of ["a_getUserMedia", "b_loopbackPeerConnection", "c_getDisplayMedia"]) {
-                  console.log(k, "=>", r[k].status, "(" + r[k].detail + ")");
-                  if (r[k].status === "FAIL") fail = true;
-                }
-                process.exit(fail ? 1 : 0);
-              });
-            '
+          script: bash android-ci-script.sh
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
