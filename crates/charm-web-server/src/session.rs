@@ -261,6 +261,12 @@ fn spawn_timeline_listener(
         let _ = events.send(initial_event);
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
+        // The first `tick()` fires immediately, not after the first
+        // interval — skip it so this doesn't do a redundant liveness check
+        // the instant the listener starts, on top of whatever `stream.next()`
+        // already resolves first (same fix as the WS keepalive in
+        // `routes.rs`).
+        liveness_check.tick().await;
         loop {
             let diffs = tokio::select! {
                 diffs = stream.next() => diffs,
