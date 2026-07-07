@@ -80,17 +80,17 @@ export const ReadReceiptStack: Story = {
   render: () => (
     <AvatarGroup className="justify-end">
       <Avatar size="sm">
-        <AvatarFallback style={{ background: "var(--color-danger)" }} className="text-white">
+        <AvatarFallback style={{ background: "var(--destructive-solid)" }} className="text-white">
           AL
         </AvatarFallback>
       </Avatar>
       <Avatar size="sm">
-        <AvatarFallback style={{ background: "var(--color-success)" }} className="text-white">
+        <AvatarFallback style={{ background: "var(--success-solid)" }} className="text-white">
           BO
         </AvatarFallback>
       </Avatar>
       <Avatar size="sm">
-        <AvatarFallback style={{ background: "var(--color-warning)" }} className="text-white">
+        <AvatarFallback style={{ background: "var(--warning-solid)" }} className="text-white">
           CA
         </AvatarFallback>
       </Avatar>
@@ -113,7 +113,7 @@ export const SenderIdentity: Story = {
             src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='%23f59e0b'/%3E%3C/svg%3E"
             alt=""
           />
-          <AvatarFallback style={{ background: "var(--color-warning)" }} className="text-white">
+          <AvatarFallback style={{ background: "var(--warning-solid)" }} className="text-white">
             AA
           </AvatarFallback>
         </Avatar>
@@ -121,7 +121,7 @@ export const SenderIdentity: Story = {
       </div>
       <div className="flex items-center gap-2">
         <Avatar size="sm">
-          <AvatarFallback style={{ background: "var(--color-accent)" }} className="text-white">
+          <AvatarFallback style={{ background: "var(--primary-solid)" }} className="text-white">
             BO
           </AvatarFallback>
         </Avatar>
@@ -137,7 +137,7 @@ export const WithPresenceDot: Story = {
   args: { size: "lg" },
   render: (args) => (
     <Avatar {...args}>
-      <AvatarFallback style={{ background: "var(--color-success)" }} className="text-white">
+      <AvatarFallback style={{ background: "var(--success-solid)" }} className="text-white">
         EV
       </AvatarFallback>
       <PresenceDot presence="online" />

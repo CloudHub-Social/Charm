@@ -179,7 +179,7 @@ export function MessageRow({
         <div className="flex items-center gap-1">
           {!own && <div className="w-11 shrink-0" />}
           {message.redacted ? (
-            <div className="w-fit rounded-md bg-secondary/50 px-3 py-2 text-[15px] italic text-muted-foreground">
+            <div className="w-fit rounded-md bg-secondary/50 px-3 py-[var(--message-row-padding-y)] text-[15px] italic text-muted-foreground">
               Message deleted
             </div>
           ) : message.media ? (
@@ -200,8 +200,8 @@ export function MessageRow({
             // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the div itself isn't interactive
             <div
               className={cn(
-                "w-fit rounded-md px-3 py-2 text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
-                own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
+                "w-fit rounded-md px-3 py-[var(--message-row-padding-y)] text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
+                own ? "bg-primary-solid text-primary-foreground" : "bg-secondary text-foreground",
                 isError && "border border-destructive",
               )}
               // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
@@ -213,8 +213,8 @@ export function MessageRow({
           ) : (
             <div
               className={cn(
-                "w-fit rounded-md px-3 py-2 text-[15px]",
-                own ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground",
+                "w-fit rounded-md px-3 py-[var(--message-row-padding-y)] text-[15px]",
+                own ? "bg-primary-solid text-primary-foreground" : "bg-secondary text-foreground",
                 isError && "border border-destructive",
               )}
             >

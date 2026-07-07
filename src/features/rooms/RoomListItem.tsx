@@ -83,8 +83,10 @@ export function RoomListItem({
             <BellOff aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
           )}
         </span>
+        {/* `bg-primary-solid` (not `bg-primary`): solid fill under
+            near-white text — see button.tsx's comment / tokens.css. */}
         {room.unread_count > 0 && (
-          <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[11px] font-bold text-primary-foreground">
+          <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground">
             {room.unread_count}
           </span>
         )}

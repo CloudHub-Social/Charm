@@ -23,7 +23,13 @@ export function FileChip({ filename, size, roomId, eventId, className }: FileChi
       aria-label={`Download ${filename}`}
       className={cn(
         "flex max-w-80 items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[15px] text-foreground hover:bg-accent",
-        !href && "pointer-events-none opacity-70",
+        // `pointer-events-none` only (not `opacity-70` too): dimming the
+        // whole chip while its href resolves also dims the already-
+        // borderline `text-muted-foreground` file-size text below WCAG AA
+        // (an axe-verified real violation) — the loading spinner already
+        // communicates the not-yet-interactive state without sacrificing
+        // text contrast.
+        !href && "pointer-events-none",
         className,
       )}
     >

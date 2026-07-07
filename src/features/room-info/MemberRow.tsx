@@ -50,7 +50,14 @@ export function MemberRow({ roomId, member, can, myPowerLevel, currentUserId }: 
   return (
     <div className="flex min-h-11 items-center gap-2 px-4 py-1.5">
       <Avatar size="sm">
-        <AvatarFallback style={{ backgroundColor: avatarColor(member.user_id) }}>
+        {/* `text-white`: AvatarFallback's default is `text-muted-foreground`
+            (meant for the no-color placeholder state) — without an explicit
+            override it renders muted-gray text on the colorful
+            `avatarColor()` background at ~1.5:1, real WCAG AA failures. */}
+        <AvatarFallback
+          style={{ backgroundColor: avatarColor(member.user_id) }}
+          className="text-white"
+        >
           {initials(member.user_id, member.display_name)}
         </AvatarFallback>
       </Avatar>
