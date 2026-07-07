@@ -19,6 +19,7 @@ import {
 import { MembersDrawer } from "@/features/room-info/MembersDrawer";
 import { RoomSettingsModal } from "@/features/room-info/RoomSettingsModal";
 import { membersDrawerOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 
 interface RoomsScreenProps {
   currentUserId: string;
@@ -147,6 +148,13 @@ export function RoomsScreen({
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  // Keeps `useRoomDetails`' `room_details:update` listener alive for the
+  // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
+  // are open — those now mount `useRoomDetails` independently and only
+  // while visible, so without this always-on subscription here a remote
+  // membership change while both are closed would go un-invalidated,
+  // leaving `useRoomMembers`' cache stale until it naturally expires.
+  useRoomDetails(activeRoom?.room_id ?? null);
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     membersDrawerOpenAtomFamily(activeRoom?.room_id ?? ""),
   );

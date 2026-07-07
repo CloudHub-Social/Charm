@@ -2,9 +2,10 @@ import { screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MembersDrawer } from "./MembersDrawer";
 import { renderWithProviders, makeRoomDetails } from "./testUtils";
+import type { RoomMemberSummary } from "@/lib/matrix";
 
 const getRoomDetails = vi.fn();
-const getRoomMemberList = vi.fn().mockResolvedValue([]);
+const getRoomMemberList = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
@@ -17,17 +18,26 @@ vi.mock("@/lib/matrix", () => ({
   setMemberPowerLevel: vi.fn().mockResolvedValue(undefined),
 }));
 
+const MEMBER: RoomMemberSummary = {
+  user_id: "@alice:example.org",
+  display_name: "Alice",
+  avatar_url: null,
+  power_level: 0,
+  membership: "join",
+};
+
 describe("MembersDrawer", () => {
   it("renders the member list for the room and calls onClose", async () => {
     const details = makeRoomDetails({ member_count: 1 });
     getRoomDetails.mockResolvedValue(details);
+    getRoomMemberList.mockResolvedValue([MEMBER]);
     const onClose = vi.fn();
 
     renderWithProviders(
       <MembersDrawer roomId={details.room_id} currentUserId="@evie:localhost" onClose={onClose} />,
     );
 
-    expect(await screen.findByText("1 member")).toBeInTheDocument();
+    expect(await screen.findByText("1 joined")).toBeInTheDocument();
 
     screen.getByRole("button", { name: "Close members" }).click();
     expect(onClose).toHaveBeenCalledOnce();

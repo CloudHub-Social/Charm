@@ -46,6 +46,14 @@ vi.mock("@/features/room-info/RoomSettingsModal", () => ({
   RoomSettingsModal: () => null,
 }));
 
+// `RoomsScreen` calls `useRoomDetails` directly (to keep its `room_details:update`
+// listener alive regardless of whether the modal/drawer are open) — stub it so
+// these tests, which aren't exercising that data-fetching behavior, don't need a
+// `QueryClientProvider` in the tree.
+vi.mock("@/features/room-info/useRoomDetails", () => ({
+  useRoomDetails: () => ({ data: undefined, isLoading: false }),
+}));
+
 vi.mock("./ChatShell", () => ({
   ChatShell: ({ room: activeRoom }: { room: RoomSummary | null }) => (
     <div>chat-content:{activeRoom?.room_id ?? "none"}</div>
@@ -201,7 +209,7 @@ describe("RoomsScreen", () => {
     await screen.findByText("chat-content:!b:example.org");
   });
 
-  it("closes the right panel when the layout narrows to mobile", async () => {
+  it("closes the members drawer when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();
     store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);
@@ -236,7 +244,7 @@ describe("RoomsScreen", () => {
     );
   });
 
-  it("does not force-close a right panel opened while already on mobile", async () => {
+  it("does not force-close a members drawer opened while already on mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const store = createStore();
 
@@ -252,7 +260,7 @@ describe("RoomsScreen", () => {
     );
     await screen.findByText("chat-content:!a:example.org");
 
-    // Opening the panel *while already mobile* (no desktop -> mobile
+    // Opening the drawer *while already mobile* (no desktop -> mobile
     // transition involved) must not be immediately reset — only an actual
     // transition should force it closed.
     store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);

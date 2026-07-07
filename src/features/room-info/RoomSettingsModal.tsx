@@ -1,4 +1,5 @@
 import { useAtom } from "jotai";
+import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -39,7 +40,19 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
       >
         <DialogTitle className="sr-only">Room settings</DialogTitle>
 
-        {isLoading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
+        {isLoading && (
+          <div className="flex items-center justify-between p-4">
+            <p className="text-sm text-muted-foreground">Loading…</p>
+            <button
+              type="button"
+              aria-label="Close room settings"
+              onClick={() => setTarget(null)}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
 
         {details && target && (
           <TooltipProvider>
@@ -52,9 +65,19 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
               className="min-h-0 flex-1 flex-row"
             >
               <div className="flex w-48 shrink-0 flex-col border-r border-border p-4">
-                <span className="mb-4 truncate text-base font-bold text-foreground">
-                  {details.name ?? details.room_id}
-                </span>
+                <div className="mb-4 flex items-center justify-between gap-2">
+                  <span className="truncate text-base font-bold text-foreground">
+                    {details.name ?? details.room_id}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="Close room settings"
+                    onClick={() => setTarget(null)}
+                    className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
                 <TabsList className="h-fit flex-col items-stretch bg-transparent p-0">
                   {SECTIONS.map((section) => (
                     <TabsTrigger key={section.value} value={section.value}>

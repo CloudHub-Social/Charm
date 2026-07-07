@@ -70,7 +70,7 @@ export function MemberList({ details, currentUserId }: MemberListProps) {
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-foreground">
-          {details.member_count} member{details.member_count === 1 ? "" : "s"}
+          {filtered.length} {MEMBERSHIP_FILTER_LABELS[filter].toLowerCase()}
         </h3>
         <InviteMemberDialog roomId={details.room_id} disabled={!details.can.invite} />
       </div>
