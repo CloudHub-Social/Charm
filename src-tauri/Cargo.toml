@@ -48,7 +48,12 @@ lru = "0.12"
 imbl = "6.1.0"
 regex = "1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# "apple-native" backs the Keychain on both macOS and iOS (Apple's Security
+# framework keychain APIs are shared across the two), so one feature/target
+# selector covers both — see `matrix::secret_store`'s `not(target_os =
+# "android")` branch, which every non-Android platform including iOS falls
+# into.
 keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
