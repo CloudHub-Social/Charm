@@ -149,6 +149,14 @@ pub async fn login(
     // before — report the loss rather than a losing `Ok`, since
     // `LoginScreen` treats any `Ok` response as signed-in-and-adopted.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See the identical restore-on-failure step above this check: this
+        // is the same "don't leave a working session logged out over this
+        // completion's own failure" rationale, just for the later failure
+        // point rather than the relocation itself.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
         return Err(
             "login succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -463,6 +471,11 @@ pub async fn register(
     // than a losing `Ok` response: with `login_completion_lock` held for the
     // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See `login`'s identical restore-on-failure step.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
         return Err(
             "registration succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),
@@ -717,6 +730,11 @@ pub async fn complete_sso_login(
     // than a losing `Ok` response: with `login_completion_lock` held for the
     // whole sequence this should always hold, kept as defense-in-depth.
     if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See `login`'s identical restore-on-failure step.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
         return Err(
             "SSO login succeeded but was superseded by a concurrent login for the same account"
                 .to_string(),

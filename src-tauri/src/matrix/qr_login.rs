@@ -274,6 +274,11 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                     &account_key,
                     session.user.meta.device_id.as_str(),
                 ) {
+                    // See auth.rs's identical restore-on-failure step.
+                    if let Some(previous_client) = previous_client {
+                        *state.client.lock().await = Some(previous_client.clone());
+                        super::sync::spawn_sync_task(app.clone(), previous_client);
+                    }
                     let _ = app.emit(
                         "qr_login:progress",
                         QrLoginProgressEvent::Error {
