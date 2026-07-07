@@ -236,16 +236,20 @@ fn recover_or_discard_stale_backup(
     let restored = (|| -> Option<()> {
         let backup_entry = backup_passphrase_entry.ok()?;
         let passphrase = backup_entry.get_password().ok()?;
-        // Directory swap *first*, account passphrase entry only *after* —
-        // overwriting the account's keychain entry before confirming the
-        // rename actually succeeded would risk pairing the backup's
-        // passphrase with whatever (if anything) is still sitting at
-        // `account_path`, exactly the kind of mismatch this whole recovery
-        // path exists to avoid.
-        std::fs::rename(backup_path, &account_path).ok()?;
+        // Account passphrase entry *first*, directory swap only *after* —
+        // if the keychain write fails transiently, `backup_path` is still
+        // untouched and the next startup sweep can retry this whole
+        // recovery from scratch. The reverse order would leave nothing to
+        // retry: `account_path` was already emptied above, so if the
+        // rename ran first and *then* the passphrase write failed,
+        // `backup_path` would already be gone with no directory left for a
+        // future sweep to find. Safe either way for `account_path` itself:
+        // it's empty right up until the rename below succeeds, so there's
+        // no window where a mismatched passphrase pairs with real data.
         let account_entry =
             SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key)).ok()?;
         account_entry.set_password(&passphrase).ok()?;
+        std::fs::rename(backup_path, &account_path).ok()?;
         let _ = backup_entry.delete_credential();
         Some(())
     })();
@@ -706,10 +710,21 @@ fn relocate_store_at_locked_with(
             let dir_restored =
                 removed_or_absent && std::fs::rename(&backup_path, &account_path).is_ok();
             if dir_restored {
-                if let Some(ref passphrase) = original_passphrase {
-                    let _ = account_passphrase_entry.set_password(passphrase);
+                // Only discard the durable backup-passphrase entry once the
+                // account's own entry is confirmed restored too — if that
+                // keychain write fails transiently, the directory rollback
+                // already succeeded (the old store is back at
+                // `account_path`) but the account entry may still hold the
+                // new store's passphrase; deleting the backup entry here
+                // regardless would remove the only remaining way to repair
+                // that mismatch.
+                let passphrase_restored = match &original_passphrase {
+                    Some(passphrase) => account_passphrase_entry.set_password(passphrase).is_ok(),
+                    None => true,
+                };
+                if passphrase_restored {
+                    let _ = backup_passphrase_entry.delete_credential();
                 }
-                let _ = backup_passphrase_entry.delete_credential();
             }
         }
         err
