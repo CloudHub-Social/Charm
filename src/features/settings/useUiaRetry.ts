@@ -2,7 +2,9 @@ import { useState } from "react";
 import type { UiaCommandError } from "@bindings/UiaCommandError";
 
 function isUiaCommandError(err: unknown): err is UiaCommandError {
-  return typeof err === "object" && err !== null && "kind" in err;
+  if (typeof err !== "object" || err === null || !("kind" in err)) return false;
+  if (err.kind === "UiaChallenge") return true;
+  return err.kind === "Other" && "message" in err && typeof err.message === "string";
 }
 
 function uiaErrorMessage(err: unknown): string {

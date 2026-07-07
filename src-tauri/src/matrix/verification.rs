@@ -80,9 +80,11 @@ pub fn register_verification_handler(app: AppHandle, client: &Client) {
 
 /// Bootstraps cross-signing for the current account if it isn't already set
 /// up. Most homeservers require a fresh UIA session for this — pass the
-/// account password if a first attempt without it fails; the frontend should
-/// treat any error here as "prompt for password and retry". Goes through
-/// `retry_uia_with_session` (same as `account::change_password`/
+/// account password if a first attempt without it fails. The error is a
+/// structured `UiaCommandError`: `UiaChallenge` means the frontend should
+/// prompt for a password and retry; `Other` is a real, unrelated failure
+/// that should be surfaced as-is (see `account::UiaCommandError`). Goes
+/// through `retry_uia_with_session` (same as `account::change_password`/
 /// `deactivate_account`) rather than building `AuthData::Password` directly:
 /// a `session: None` retry is treated as a brand-new UIA attempt on
 /// homeservers that enforce session continuity across stages, so without
