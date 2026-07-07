@@ -10,7 +10,7 @@ import {
 /**
  * Opens settings at `section`, updating the atom directly (so this works
  * even where `useSettingsHashSync` isn't mounted — tests, Storybook) and
- * pushing a matching `#/settings/<section>` hash entry so the location stays
+ * setting a matching `#/settings/<section>` hash so the location stays
  * addressable (bookmarkable, back/forward-navigable, and deep-linkable from
  * elsewhere in the app — e.g. an unverified-session banner linking straight
  * to Devices) without pulling in a full router for what's otherwise a single
@@ -22,9 +22,21 @@ export function useSettingsNavigation() {
   const openSettings = useCallback(
     (next: SettingsSection) => {
       setSection(next);
-      window.location.hash = settingsHash(next);
+      const hash = settingsHash(next);
+      // Push only for the actual open (settings wasn't showing a section
+      // yet) — that's the one entry Back should land on to close it.
+      // Switching sections while already open reuses this same function
+      // (the tab nav's onSectionChange), and pushing there too would stack
+      // one more history entry per tab click; replacing keeps just the one
+      // "settings is open" entry regardless of how many sections were
+      // visited before Back/closing.
+      if (section) {
+        history.replaceState(null, "", window.location.pathname + window.location.search + hash);
+      } else {
+        window.location.hash = hash;
+      }
     },
-    [setSection],
+    [section, setSection],
   );
 
   const closeSettings = useCallback(() => {

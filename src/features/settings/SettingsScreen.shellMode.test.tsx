@@ -145,4 +145,28 @@ describe("SettingsScreen shell mode", () => {
     // leaves it exactly where the (simulated) open left it.
     expect(window.history.length).toBe(historyLengthAfterOpen);
   });
+
+  it("switching sections while already open replaces the hash instead of pushing another history entry", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    window.location.hash = "#/settings/account";
+    const historyLengthAfterOpen = window.history.length;
+    renderScreen("account");
+    await screen.findByRole("button", { name: "Close settings" });
+
+    const notificationsTab = screen.getByRole("tab", { name: "Notifications" });
+    notificationsTab.focus();
+    fireEvent.click(notificationsTab);
+    await screen.findByText("Default notification mode");
+
+    expect(window.location.hash).toBe("#/settings/notifications");
+    // Only the (simulated) initial open should have pushed a history entry
+    // — switching tabs while already open must not add another, or Back
+    // would have to step through every section visited before it actually
+    // closes settings.
+    expect(window.history.length).toBe(historyLengthAfterOpen);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
+    expect(window.location.hash).toBe("");
+    expect(window.history.length).toBe(historyLengthAfterOpen);
+  });
 });

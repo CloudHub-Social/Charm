@@ -14,11 +14,14 @@ export function BlockedUsersCard() {
     queryFn: getIgnoredUsers,
   });
 
-  // Tracks every in-flight unblock by user id, not just the most recent —
+  // Tracks every in-flight unblock by user id (not just the most recent —
   // a single `useMutation`'s `isPending`/`variables` only reflects its
-  // latest call, so unblocking user A and then quickly user B would
-  // re-enable A's button (and let its request re-fire) while A's mutation
-  // was still in flight.
+  // latest call) and, more importantly, serializes them: `unignore_user`
+  // does a read-modify-write of the whole `m.ignored_user_list` account
+  // data event on the server, so two concurrent unblocks for *different*
+  // users can both read the same list and each write back a version
+  // missing only their own removal — whichever write lands last silently
+  // re-blocks the other user. Only one request may be in flight at a time.
   const [pendingUserIds, setPendingUserIds] = useState<Set<string>>(new Set());
 
   const unblock = useMutation({
@@ -34,6 +37,7 @@ export function BlockedUsersCard() {
   });
 
   function handleUnblock(userId: string) {
+    if (pendingUserIds.size > 0) return;
     setPendingUserIds((prev) => new Set(prev).add(userId));
     unblock.mutate(userId);
   }
@@ -52,7 +56,7 @@ export function BlockedUsersCard() {
                 variant="outline"
                 size="sm"
                 onClick={() => handleUnblock(userId)}
-                disabled={pendingUserIds.has(userId)}
+                disabled={pendingUserIds.size > 0}
               >
                 Unblock
               </Button>

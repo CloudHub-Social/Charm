@@ -41,14 +41,13 @@ describe("BlockedUsersCard", () => {
     await waitFor(() => expect(container).toBeEmptyDOMElement());
   });
 
-  it("keeps a user's own Unblock button disabled while its request is in flight, even after unblocking a second user", async () => {
+  it("disables every Unblock button while any one request is in flight, and never fires a second concurrent unignoreUser call", async () => {
     getIgnoredUsers.mockResolvedValue(["@a:example.org", "@b:example.org"]);
     let resolveA!: () => void;
     unignoreUser.mockImplementation(
-      (userId: string) =>
+      () =>
         new Promise<void>((resolve) => {
-          if (userId === "@a:example.org") resolveA = resolve;
-          else resolve();
+          resolveA = resolve;
         }),
     );
     renderWithProviders(<BlockedUsersCard />);
@@ -56,18 +55,20 @@ describe("BlockedUsersCard", () => {
 
     const [unblockA, unblockB] = screen.getAllByRole("button", { name: "Unblock" });
     fireEvent.click(unblockA);
+    await waitFor(() => expect(unignoreUser).toHaveBeenCalledTimes(1));
     expect(unblockA).toBeDisabled();
+    expect(unblockB).toBeDisabled();
 
+    // `unignore_user` does a read-modify-write of the whole ignored-user
+    // list server-side — a second concurrent call for a different user
+    // could read the same pre-removal list and clobber @a's removal on
+    // write. Clicking @b's (disabled) button while @a is in flight must not
+    // start a second request.
     fireEvent.click(unblockB);
-    await waitFor(() => expect(unignoreUser).toHaveBeenCalledTimes(2));
-    expect(unignoreUser.mock.calls[1][0]).toBe("@b:example.org");
-
-    // @a's own request is still unresolved — its button must stay disabled
-    // rather than re-enabling just because a *different* mutation call
-    // settled.
-    expect(unblockA).toBeDisabled();
+    expect(unignoreUser).toHaveBeenCalledTimes(1);
+    expect(unignoreUser.mock.calls[0][0]).toBe("@a:example.org");
 
     resolveA();
-    await waitFor(() => expect(unblockA).not.toBeDisabled());
+    await waitFor(() => expect(unblockB).not.toBeDisabled());
   });
 });
