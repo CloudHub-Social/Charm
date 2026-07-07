@@ -260,6 +260,50 @@ async fn restore_oauth_session(
     Ok(Some(response))
 }
 
+/// Headlessly builds and restores a client for `account_key` — no
+/// `MatrixState` mutation, no sync loop spawned, unlike `try_restore_session`
+/// (which drives the interactive app-startup restore and needs both). Used by
+/// Spec 11's push-decrypt pipeline (`push::handle_push`), which only needs a
+/// client long enough to fetch and decrypt one event.
+///
+/// Tries both session kinds the same way `try_restore_session`'s per-account
+/// loop does (password/SSO's `MatrixSession` vs QR login's `OAuthSession` —
+/// see `persistence::SavedOAuthSession`'s doc comment for why they're
+/// unrelated types here), returning `None` (not an error) if this account has
+/// no saved session or a saved one that no longer restores.
+pub(crate) async fn restore_session_for_push(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<Option<Client>, String> {
+    if let Some(saved) = persistence::load_oauth_session(account_key)? {
+        let client = build_client(app, &saved.homeserver_url, account_key).await?;
+        let session = saved.into_oauth_session();
+        if client
+            .oauth()
+            .restore_session(session, RoomLoadSettings::default())
+            .await
+            .is_err()
+        {
+            return Ok(None);
+        }
+        return Ok(Some(client));
+    }
+
+    let Some(saved) = persistence::load_session(account_key)? else {
+        return Ok(None);
+    };
+    let client = build_client(app, &saved.homeserver_url, account_key).await?;
+    if client
+        .matrix_auth()
+        .restore_session(saved.session, RoomLoadSettings::default())
+        .await
+        .is_err()
+    {
+        return Ok(None);
+    }
+    Ok(Some(client))
+}
+
 /// Accepts either a bare server name (`matrix.org`) or a full homeserver URL —
 /// `server_name_or_homeserver_url` runs `.well-known/matrix/client` discovery
 /// for the former and falls back to treating the input as a URL otherwise.

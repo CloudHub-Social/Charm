@@ -1,0 +1,30 @@
+[package]
+name = "charm-web-server"
+version = "0.1.0"
+edition = "2021"
+description = "Companion HTTP server exposing matrix-rust-sdk over the network for the Charm web client (Spec 16, sub-PR A: HTTP router + ephemeral sessions only — no WebSocket, no encrypted-at-rest storage yet)."
+
+# Deliberately not folded into src-tauri's own Cargo.toml: src-tauri's
+# manifest/lockfile are already load-bearing for the existing Tauri/mobile
+# build. A plain path dependency on `charm_lib` is enough to reuse
+# `matrix/*.rs`'s business logic without touching that build. The two crates
+# do share a `Cargo.lock` via the root workspace, though — see the root
+# `Cargo.toml`'s doc comment for why that's safe.
+[dependencies]
+charm_lib = { package = "charm", path = "../../src-tauri" }
+matrix-sdk = { version = "0.18.0", features = ["e2e-encryption", "sso-login"] }
+matrix-sdk-ui = "0.18.0"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["cookie"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.10.2"
+lru = "0.12"
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json", "cookies"] }

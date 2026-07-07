@@ -1,7 +1,7 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MemberList } from "./MemberList";
-import { makeRoomDetails, renderWithProviders } from "./testUtils";
+import { makeRoomDetails, openDropdownMenu, renderWithProviders } from "./testUtils";
 import type { RoomMemberSummary } from "@/lib/matrix";
 
 const getRoomMemberList = vi.fn();
@@ -25,6 +25,13 @@ const MEMBERS: RoomMemberSummary[] = [
     membership: "join",
   },
   {
+    user_id: "@bob:example.org",
+    display_name: "Bob",
+    avatar_url: null,
+    power_level: 0,
+    membership: "invite",
+  },
+  {
     user_id: "@mallory:example.org",
     display_name: "Mallory",
     avatar_url: null,
@@ -34,27 +41,55 @@ const MEMBERS: RoomMemberSummary[] = [
 ];
 
 describe("MemberList", () => {
-  it("groups active members separately from a Banned section", async () => {
+  it("defaults to the Joined filter, hiding invited and banned members", async () => {
     getRoomMemberList.mockResolvedValue(MEMBERS);
-    const details = makeRoomDetails({ member_count: 2 });
+    const details = makeRoomDetails({ member_count: 3 });
 
     renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
 
     expect(await screen.findByText("Alice")).toBeInTheDocument();
-    expect(screen.getByText("Banned")).toBeInTheDocument();
-    expect(screen.getByText("Mallory")).toBeInTheDocument();
-    expect(screen.getByText("2 members")).toBeInTheDocument();
+    expect(screen.queryByText("Bob")).not.toBeInTheDocument();
+    expect(screen.queryByText("Mallory")).not.toBeInTheDocument();
   });
 
-  it("omits the Banned heading when no member is banned", async () => {
-    getRoomMemberList.mockResolvedValue([MEMBERS[0]]);
-    const details = makeRoomDetails({ member_count: 1 });
+  it("switches to the Invited filter and shows only invited members", async () => {
+    getRoomMemberList.mockResolvedValue(MEMBERS);
+    const details = makeRoomDetails({ member_count: 3 });
 
     renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
+    await screen.findByText("Alice");
 
-    await waitFor(() => expect(screen.getByText("Alice")).toBeInTheDocument());
-    expect(screen.queryByText("Banned")).not.toBeInTheDocument();
-    expect(screen.getByText("1 member")).toBeInTheDocument();
+    openDropdownMenu("Joined");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Invited" }));
+
+    await waitFor(() => expect(screen.getByText("Bob")).toBeInTheDocument());
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
+  it("filters by search query within the active membership filter", async () => {
+    getRoomMemberList.mockResolvedValue(MEMBERS);
+    const details = makeRoomDetails({ member_count: 3 });
+
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
+    await screen.findByText("Alice");
+
+    fireEvent.change(screen.getByLabelText("Search members"), { target: { value: "zzz" } });
+
+    await waitFor(() => expect(screen.getByText("No members match.")).toBeInTheDocument());
+  });
+
+  it("matches by Matrix ID even when the member has a display name", async () => {
+    getRoomMemberList.mockResolvedValue(MEMBERS);
+    const details = makeRoomDetails({ member_count: 3 });
+
+    renderWithProviders(<MemberList details={details} currentUserId="@evie:localhost" />);
+    await screen.findByText("Alice");
+
+    fireEvent.change(screen.getByLabelText("Search members"), {
+      target: { value: "@alice:example.org" },
+    });
+
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
   });
 
   it("disables the Invite trigger when can.invite is false", async () => {

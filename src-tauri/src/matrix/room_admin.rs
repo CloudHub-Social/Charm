@@ -324,7 +324,15 @@ pub async fn get_room_member_list(
     room_id: String,
 ) -> Result<Vec<members::RoomMemberSummary>, String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    get_room_member_list_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`get_room_member_list`].
+pub async fn get_room_member_list_impl(
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<members::RoomMemberSummary>, String> {
+    let room = require_room(client, room_id)?;
     let members = room
         .members(RoomMemberships::ACTIVE | RoomMemberships::BAN)
         .await
@@ -339,7 +347,16 @@ pub async fn set_room_name(
     name: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    set_room_name_impl(&client, &room_id, name).await
+}
+
+/// Core logic behind [`set_room_name`].
+pub async fn set_room_name_impl(
+    client: &Client,
+    room_id: &str,
+    name: String,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.set_name(name).await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -351,8 +368,17 @@ pub async fn set_room_topic(
     topic: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    room.set_room_topic(&topic)
+    set_room_topic_impl(&client, &room_id, &topic).await
+}
+
+/// Core logic behind [`set_room_topic`].
+pub async fn set_room_topic_impl(
+    client: &Client,
+    room_id: &str,
+    topic: &str,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    room.set_room_topic(topic)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -364,6 +390,16 @@ pub async fn set_room_avatar(
     room_id: String,
     file_path: String,
 ) -> Result<(), String> {
+    let client = state.require_client().await?;
+    set_room_avatar_impl(&client, &room_id, &file_path).await
+}
+
+/// Core logic behind [`set_room_avatar`].
+pub async fn set_room_avatar_impl(
+    client: &Client,
+    room_id: &str,
+    file_path: &str,
+) -> Result<(), String> {
     // Reads the path + sniffs its MIME type server-side, same convention as
     // `send::send_attachment` — the frontend hands over a path from its file
     // picker rather than marshaling raw bytes over IPC itself. Checks
@@ -371,7 +407,7 @@ pub async fn set_room_avatar(
     // `send_attachment`: reading first would mean a huge or symlinked-to-a-
     // special-file path gets pulled fully into memory before this ever gets
     // a chance to reject it.
-    let path = Path::new(&file_path);
+    let path = Path::new(file_path);
     let metadata = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("file_path does not refer to a regular file".to_string());
@@ -386,8 +422,7 @@ pub async fn set_room_avatar(
     let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
     let mime = mime_guess::from_path(path).first_or_octet_stream();
 
-    let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    let room = require_room(client, room_id)?;
     room.upload_avatar(&mime, data, None)
         .await
         .map_err(|e| e.to_string())?;
@@ -400,7 +435,12 @@ pub async fn remove_room_avatar(
     room_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    remove_room_avatar_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`remove_room_avatar`].
+pub async fn remove_room_avatar_impl(client: &Client, room_id: &str) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.send_state_event(RoomAvatarEventContent::new())
         .await
         .map_err(|e| e.to_string())?;
@@ -414,7 +454,16 @@ pub async fn set_room_join_rule(
     join_rule: JoinRuleKind,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    set_room_join_rule_impl(&client, &room_id, join_rule).await
+}
+
+/// Core logic behind [`set_room_join_rule`].
+pub async fn set_room_join_rule_impl(
+    client: &Client,
+    room_id: &str,
+    join_rule: JoinRuleKind,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.send_state_event(RoomJoinRulesEventContent::new(join_rule.into()))
         .await
         .map_err(|e| e.to_string())?;
@@ -428,7 +477,16 @@ pub async fn set_room_history_visibility(
     visibility: HistoryVisibilityKind,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    set_room_history_visibility_impl(&client, &room_id, visibility).await
+}
+
+/// Core logic behind [`set_room_history_visibility`].
+pub async fn set_room_history_visibility_impl(
+    client: &Client,
+    room_id: &str,
+    visibility: HistoryVisibilityKind,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.send_state_event(RoomHistoryVisibilityEventContent::new(visibility.into()))
         .await
         .map_err(|e| e.to_string())?;
@@ -444,7 +502,12 @@ pub async fn enable_room_encryption(
     room_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    enable_room_encryption_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`enable_room_encryption`].
+pub async fn enable_room_encryption_impl(client: &Client, room_id: &str) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.enable_encryption().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -457,8 +520,18 @@ pub async fn set_member_power_level(
     power_level: i64,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    let parsed_user_id = UserId::parse(&user_id).map_err(|e| e.to_string())?;
+    set_member_power_level_impl(&client, &room_id, &user_id, power_level).await
+}
+
+/// Core logic behind [`set_member_power_level`].
+pub async fn set_member_power_level_impl(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+    power_level: i64,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
     let level = Int::try_from(power_level).map_err(|e| e.to_string())?;
     room.update_power_levels(vec![(&parsed_user_id, level)])
         .await
@@ -473,7 +546,16 @@ pub async fn set_room_power_level_thresholds(
     changes: PowerLevelThresholds,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
+    set_room_power_level_thresholds_impl(&client, &room_id, changes).await
+}
+
+/// Core logic behind [`set_room_power_level_thresholds`].
+pub async fn set_room_power_level_thresholds_impl(
+    client: &Client,
+    room_id: &str,
+    changes: PowerLevelThresholds,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
     room.apply_power_level_changes(changes.into())
         .await
         .map_err(|e| e.to_string())?;
@@ -487,8 +569,17 @@ pub async fn invite_member(
     user_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    let parsed_user_id = UserId::parse(&user_id).map_err(|e| e.to_string())?;
+    invite_member_impl(&client, &room_id, &user_id).await
+}
+
+/// Core logic behind [`invite_member`].
+pub async fn invite_member_impl(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
     room.invite_user_by_id(&parsed_user_id)
         .await
         .map_err(|e| e.to_string())?;
@@ -503,9 +594,19 @@ pub async fn kick_member(
     reason: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    let parsed_user_id = UserId::parse(&user_id).map_err(|e| e.to_string())?;
-    room.kick_user(&parsed_user_id, reason.as_deref())
+    kick_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
+}
+
+/// Core logic behind [`kick_member`].
+pub async fn kick_member_impl(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
+    room.kick_user(&parsed_user_id, reason)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -519,9 +620,19 @@ pub async fn ban_member(
     reason: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    let parsed_user_id = UserId::parse(&user_id).map_err(|e| e.to_string())?;
-    room.ban_user(&parsed_user_id, reason.as_deref())
+    ban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
+}
+
+/// Core logic behind [`ban_member`].
+pub async fn ban_member_impl(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
+    room.ban_user(&parsed_user_id, reason)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -535,9 +646,19 @@ pub async fn unban_member(
     reason: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let room = require_room(&client, &room_id)?;
-    let parsed_user_id = UserId::parse(&user_id).map_err(|e| e.to_string())?;
-    room.unban_user(&parsed_user_id, reason.as_deref())
+    unban_member_impl(&client, &room_id, &user_id, reason.as_deref()).await
+}
+
+/// Core logic behind [`unban_member`].
+pub async fn unban_member_impl(
+    client: &Client,
+    room_id: &str,
+    user_id: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_user_id = UserId::parse(user_id).map_err(|e| e.to_string())?;
+    room.unban_user(&parsed_user_id, reason)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

@@ -113,7 +113,7 @@ pub async fn set_presence(
     status_msg: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    set_presence_on(&client, presence, status_msg).await?;
+    set_presence_impl(&client, presence, status_msg).await?;
     *state
         .sync_presence
         .lock()
@@ -121,10 +121,14 @@ pub async fn set_presence(
     Ok(())
 }
 
-/// Shared by the `set_presence` command and [`set_presence_online`] (the
-/// one-shot post-login call, which has no `MatrixState` handle available at
-/// its call site in `spawn_sync_loop`).
-async fn set_presence_on(
+/// Core logic behind [`set_presence`], shared with [`set_presence_online`]
+/// (the one-shot post-login call, which has no `MatrixState` handle available
+/// at its call site in `spawn_sync_loop`). Doesn't itself update
+/// `MatrixState.sync_presence` — that's a session-multiplexing concern the
+/// Tauri wrapper owns (mirroring `MatrixState::get_or_create_timeline`'s
+/// caching staying out of `get_timeline_page_impl`), not part of the Matrix
+/// operation itself.
+pub async fn set_presence_impl(
     client: &matrix_sdk::Client,
     presence: PresenceStateDto,
     status_msg: Option<String>,
@@ -147,7 +151,7 @@ async fn set_presence_on(
 /// discards the error so a homeserver that disables presence (or any other
 /// failure here) never blocks or fails login.
 pub async fn set_presence_online(client: &matrix_sdk::Client) -> Result<(), String> {
-    set_presence_on(client, PresenceStateDto::Online, None).await
+    set_presence_impl(client, PresenceStateDto::Online, None).await
 }
 
 /// Best-effort presence lookup for a single user. Returns `Ok(None)` — not an
@@ -160,7 +164,15 @@ pub async fn get_presence(
     user_id: String,
 ) -> Result<Option<PresenceUpdate>, String> {
     let client = state.require_client().await?;
-    let Ok(parsed_user_id) = UserId::parse(&user_id) else {
+    get_presence_impl(&client, &user_id).await
+}
+
+/// Core logic behind [`get_presence`].
+pub async fn get_presence_impl(
+    client: &matrix_sdk::Client,
+    user_id: &str,
+) -> Result<Option<PresenceUpdate>, String> {
+    let Ok(parsed_user_id) = UserId::parse(user_id) else {
         return Ok(None);
     };
 

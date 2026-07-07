@@ -13,6 +13,11 @@ const setDefaultNotificationMode = vi.fn();
 const setRoomNotificationMode = vi.fn();
 const setGlobalMute = vi.fn();
 const setSoundEnabled = vi.fn();
+const getPushStatus = vi.fn();
+const onPushStatus = vi.fn();
+const registerPush = vi.fn();
+const unregisterPush = vi.fn();
+const requestPermission = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   getNotificationSettings: (...args: unknown[]) => getNotificationSettings(...args),
@@ -23,6 +28,14 @@ vi.mock("@/lib/matrix", () => ({
   setRoomNotificationMode: (...args: unknown[]) => setRoomNotificationMode(...args),
   setGlobalMute: (...args: unknown[]) => setGlobalMute(...args),
   setSoundEnabled: (...args: unknown[]) => setSoundEnabled(...args),
+  getPushStatus: (...args: unknown[]) => getPushStatus(...args),
+  onPushStatus: (...args: unknown[]) => onPushStatus(...args),
+  registerPush: (...args: unknown[]) => registerPush(...args),
+  unregisterPush: (...args: unknown[]) => unregisterPush(...args),
+}));
+
+vi.mock("@tauri-apps/plugin-notification", () => ({
+  requestPermission: (...args: unknown[]) => requestPermission(...args),
 }));
 
 function renderWithProviders(children: ReactNode) {
@@ -43,6 +56,21 @@ beforeEach(() => {
   setDefaultNotificationMode.mockReset().mockResolvedValue(undefined);
   setGlobalMute.mockReset().mockResolvedValue(undefined);
   setSoundEnabled.mockReset().mockResolvedValue(undefined);
+  getPushStatus.mockReset().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+    last_error: null,
+    available: false,
+  });
+  onPushStatus.mockReset().mockReturnValue(Promise.resolve(() => {}));
+  registerPush.mockReset().mockResolvedValue({
+    transport: "none",
+    registered: false,
+    endpoint_present: false,
+  });
+  unregisterPush.mockReset().mockResolvedValue(undefined);
+  requestPermission.mockReset().mockResolvedValue("granted");
 });
 
 describe("NotificationsPanel", () => {
@@ -142,5 +170,60 @@ describe("NotificationsPanel", () => {
     // this room's row, which would mean the override got folded away.
     expect(await screen.findByRole("button", { name: "Mentions & keywords only" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: "All messages" })).toHaveLength(1);
+  });
+
+  it("shows 'not available' when the platform has no push transport at all", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "none",
+      registered: false,
+      endpoint_present: false,
+      last_error: null,
+      available: false,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(
+      await screen.findByText(
+        "Not available on this platform — desktop relies on the always-on sync loop instead.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Turn on push notifications" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("requests OS notification permission before registering push, on a platform where it's available", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "unified_push",
+      registered: false,
+      endpoint_present: false,
+      last_error: null,
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    await waitFor(() => expect(registerPush).toHaveBeenCalled());
+  });
+
+  it("does not register push if the notification permission is denied", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "unified_push",
+      registered: false,
+      endpoint_present: false,
+      last_error: null,
+      available: true,
+    });
+    requestPermission.mockResolvedValue("denied");
+    renderWithProviders(<NotificationsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on push notifications" }));
+
+    await waitFor(() => expect(requestPermission).toHaveBeenCalled());
+    // Give the denied-permission branch a turn to (not) call registerPush.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(registerPush).not.toHaveBeenCalled();
   });
 });

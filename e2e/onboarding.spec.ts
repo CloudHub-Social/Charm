@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
+import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
  * End-to-end coverage of Spec 12's two headline scenarios: a brand-new
@@ -24,6 +25,7 @@ test("register a fresh account: onboarding appears, and skipping lands on the ro
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
+  await captureSnapshot(page, "onboarding-welcome-screen");
 
   await page.getByRole("button", { name: "Skip" }).click();
 
@@ -33,6 +35,7 @@ test("register a fresh account: onboarding appears, and skipping lands on the ro
   // what actually distinguishes "onboarding is done" here.
   await expect(page.getByRole("button", { name: "Open settings" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).not.toBeVisible();
+  await captureSnapshot(page, "onboarding-skipped-to-room-list");
 });
 
 test("an account with an existing room never sees onboarding", async ({ page }) => {
@@ -46,4 +49,5 @@ test("an account with an existing room never sees onboarding", async ({ page }) 
 
   await expect(page.getByRole("button", { name: ROOM.name })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).not.toBeVisible();
+  await captureSnapshot(page, "onboarding-returning-account-room-list");
 });

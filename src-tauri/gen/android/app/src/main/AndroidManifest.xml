@@ -1,15 +1,36 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Spec 11: required on API 33+ to actually show a push-triggered
+         notification; requested from the frontend's notifications settings
+         panel, same as the local-notification permission Spec 10 already
+         requests. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
+
+    <!-- Spec 11: lets UnifiedPush.getDistributors() see installed external
+         distributor apps despite Android 11+'s package-visibility
+         restrictions — without this, every external distributor query comes
+         back empty and this app would always fall back to the embedded FCM
+         distributor even when the user has a real one installed. -->
+    <queries>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.REGISTER" />
+        </intent>
+        <intent>
+            <action android:name="org.unifiedpush.android.distributor.UNREGISTER" />
+        </intent>
+    </queries>
 
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.charm"
-        android:usesCleartextTraffic="${usesCleartextTraffic}">
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
+        android:dataExtractionRules="@xml/secure_store_backup_rules"
+        android:fullBackupContent="@xml/secure_store_backup_rules_legacy">
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
@@ -33,5 +54,28 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Spec 11: receives every UnifiedPush event (new endpoint,
+             registration failure, unregistration, incoming message) and
+             forwards each to the Rust core over JNI — see
+             `PushMessagingReceiver.kt`. Must be exported: the distributor
+             delivering these broadcasts (when it's an external UnifiedPush
+             app, not the embedded FCM fallback) is a *different* app, and
+             Android only allows a non-exported component to receive
+             broadcasts from within the same app — matches the connector
+             library's own manifest snippet
+             (org.unifiedpush.android.connector.MessagingReceiver's kdoc).
+             Fixed after PR review: this was wrongly `false` and would have
+             silently dropped every push from an external distributor. -->
+        <receiver
+            android:name=".PushMessagingReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.MESSAGE" />
+                <action android:name="org.unifiedpush.android.connector.UNREGISTERED" />
+                <action android:name="org.unifiedpush.android.connector.NEW_ENDPOINT" />
+                <action android:name="org.unifiedpush.android.connector.REGISTRATION_FAILED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

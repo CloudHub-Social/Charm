@@ -5,6 +5,7 @@
 use matrix_sdk::ruma::api::client::space::get_hierarchy;
 use matrix_sdk::ruma::room::JoinRuleSummary;
 use matrix_sdk::ruma::{OwnedRoomOrAliasId, RoomId};
+use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
@@ -58,7 +59,15 @@ pub async fn list_space_children(
     space_id: String,
 ) -> Result<Vec<SpaceChild>, String> {
     let client = state.require_client().await?;
-    let parsed_space_id = RoomId::parse(&space_id).map_err(|e| e.to_string())?;
+    list_space_children_impl(&client, &space_id).await
+}
+
+/// Core logic behind [`list_space_children`].
+pub async fn list_space_children_impl(
+    client: &Client,
+    space_id: &str,
+) -> Result<Vec<SpaceChild>, String> {
+    let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
 
     let request = get_hierarchy::v1::Request::new(parsed_space_id.clone());
     let response = client.send(request).await.map_err(|e| e.to_string())?;
@@ -97,7 +106,12 @@ pub async fn join_room(
     room_id_or_alias: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let parsed = parse_room_or_alias(&room_id_or_alias)?;
+    join_room_impl(&client, &room_id_or_alias).await
+}
+
+/// Core logic behind [`join_room`].
+pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<(), String> {
+    let parsed = parse_room_or_alias(room_id_or_alias)?;
     client
         .join_room_by_id_or_alias(&parsed, &[])
         .await
@@ -115,9 +129,18 @@ pub async fn knock_room(
     reason: Option<String>,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let parsed = parse_room_or_alias(&room_id_or_alias)?;
+    knock_room_impl(&client, &room_id_or_alias, reason.as_deref()).await
+}
+
+/// Core logic behind [`knock_room`].
+pub async fn knock_room_impl(
+    client: &Client,
+    room_id_or_alias: &str,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let parsed = parse_room_or_alias(room_id_or_alias)?;
     client
-        .knock(parsed, reason, vec![])
+        .knock(parsed, reason.map(ToOwned::to_owned), vec![])
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
