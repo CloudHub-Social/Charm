@@ -284,7 +284,19 @@ pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
     profiles::register_self_profile_handler(app.clone(), &client);
+    spawn_sync_task(app, client);
+}
 
+/// The sync-task-spawning half of [`spawn_sync_loop`], without the
+/// `register_*_handler` calls — use this (not `spawn_sync_loop`) to *resume*
+/// a `Client` that already had those registered by an earlier
+/// `spawn_sync_loop` call (e.g. restoring the previous session after a
+/// failed re-login attempt). matrix-sdk's event handlers accumulate rather
+/// than replace on repeated registration, so calling `spawn_sync_loop` again
+/// on the same `Client` would leave it with duplicate handlers, emitting
+/// duplicate presence/profile updates and verification requests on every
+/// subsequent event.
+pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
 
     // Best-effort: some homeservers disable presence entirely, and a failure

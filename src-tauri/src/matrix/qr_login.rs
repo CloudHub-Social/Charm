@@ -224,7 +224,7 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
                 ) {
                     if let Some(previous_client) = previous_client {
                         *state.client.lock().await = Some(previous_client.clone());
-                        spawn_sync_loop(app.clone(), previous_client);
+                        super::sync::spawn_sync_task(app.clone(), previous_client);
                     }
                     let _ = app.emit(
                         "qr_login:progress",

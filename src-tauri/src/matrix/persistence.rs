@@ -901,30 +901,35 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
 /// [`relocate_store_and_save_session`] returns, before a login flow adopts
 /// its `Client` and clears the other session kind, to check whether a
 /// concurrent completion for the *same* account (e.g. a double-submitted
-/// login) has already superseded it since. If it has, the caller should
-/// step aside rather than publish a client/clear a session kind for a store
-/// that's no longer current — the concurrent completion that won already
-/// did its own version of this. Not itself synchronized with
-/// [`relocate_store_and_save_session`]'s lock (checking after releasing it
-/// is unavoidable — the caller needs to run its own further, unrelated
-/// async work first), so this narrows the race window rather than closing
-/// it entirely; see the PR discussion on the wider adoption race for why
-/// closing it fully needs bringing client-adoption itself into the same
-/// critical section.
+/// login) has already superseded it since. Now that every caller holds
+/// `MatrixState::login_completion_lock` across its whole completion
+/// sequence, no concurrent completion can actually be running at this
+/// point — this is defense-in-depth, not load-bearing synchronization
+/// (see that lock's doc comment for what closed the actual race).
+///
+/// A `load_session` error (a transient keychain read glitch, a corrupt
+/// saved-JSON blob) is treated as "still current" — `true` — rather than
+/// "superseded": with the lock in place, there is no legitimate scenario
+/// where this call fails to read what this same completion just wrote a
+/// moment ago, so failing here almost certainly means a flaky read, not an
+/// actual supersession. Treating it as superseded would tell the frontend a
+/// login that fully succeeded and committed did not, discarding a good
+/// session over a glitch in a check that's now just a sanity net.
 pub fn session_is_current(account_key: &str, device_id: &str) -> bool {
-    load_session(account_key)
-        .ok()
-        .flatten()
-        .is_some_and(|saved| saved.session.meta.device_id.as_str() == device_id)
+    match load_session(account_key) {
+        Ok(saved) => saved.is_none_or(|saved| saved.session.meta.device_id.as_str() == device_id),
+        Err(_) => true,
+    }
 }
 
 /// OAuth-session counterpart of [`session_is_current`], for the QR login
-/// flow.
+/// flow. See its doc comment for the same "read failure counts as still
+/// current" rationale.
 pub fn oauth_session_is_current(account_key: &str, device_id: &str) -> bool {
-    load_oauth_session(account_key)
-        .ok()
-        .flatten()
-        .is_some_and(|saved| saved.user.meta.device_id.as_str() == device_id)
+    match load_oauth_session(account_key) {
+        Ok(saved) => saved.is_none_or(|saved| saved.user.meta.device_id.as_str() == device_id),
+        Err(_) => true,
+    }
 }
 
 /// Where the local first-run-onboarding marker for `account_key` lives — a

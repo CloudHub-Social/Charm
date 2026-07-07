@@ -10,7 +10,7 @@ use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
 use super::{persistence, sync, MatrixState};
@@ -136,7 +136,7 @@ pub async fn login(
     ) {
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_loop(app, previous_client);
+            sync::spawn_sync_task(app, previous_client);
         }
         return Err(e);
     }
@@ -324,17 +324,21 @@ async fn restore_oauth_session(
 /// see `persistence::SavedOAuthSession`'s doc comment for why they're
 /// unrelated types here), returning `None` (not an error) if this account has
 /// no saved session or a saved one that no longer restores.
+/// Caller must hold `MatrixState::login_completion_lock` for as long as the
+/// returned `Client` stays in use, not just for this call — building it
+/// against `account_key`'s store only needs protection from a concurrent
+/// interactive login relocating that store *while this function runs*; the
+/// caller's own subsequent use of the client (fetching/decrypting a room
+/// event) is exactly the same open-handle hazard and needs the same lock
+/// held across it. This function doesn't acquire the lock itself for that
+/// reason — doing so here and releasing it on return would protect the
+/// build but not the use, and a non-reentrant `tokio::sync::Mutex` means
+/// the caller holding its own guard across this call would deadlock if this
+/// function tried to acquire the same lock again.
 pub(crate) async fn restore_session_for_push(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<Option<Client>, String> {
-    // See `try_restore_session`'s identical guard and
-    // `MatrixState::login_completion_lock`'s doc comment: this builds a
-    // client against `account_key`'s store, so it needs to be serialized
-    // against a concurrent interactive login relocating that same store.
-    let matrix_state = app.state::<MatrixState>();
-    let _completion_guard = matrix_state.login_completion_lock.lock().await;
-
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
         let client = build_client(app, &saved.homeserver_url, account_key).await?;
         let session = saved.into_oauth_session();
@@ -450,7 +454,7 @@ pub async fn register(
     ) {
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_loop(app, previous_client);
+            sync::spawn_sync_task(app, previous_client);
         }
         return Err(e);
     }
@@ -704,7 +708,7 @@ pub async fn complete_sso_login(
     ) {
         if let Some(previous_client) = previous_client {
             *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_loop(app, previous_client);
+            sync::spawn_sync_task(app, previous_client);
         }
         return Err(e);
     }
