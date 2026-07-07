@@ -80,7 +80,11 @@ describe("usePush", () => {
 
   it("register mutation calls registerPush and refreshes status", async () => {
     getPushStatus.mockResolvedValue(noneStatus());
-    registerPush.mockResolvedValue({ transport: "unified_push", registered: true, endpoint_present: true });
+    registerPush.mockResolvedValue({
+      transport: "unified_push",
+      registered: true,
+      endpoint_present: true,
+    });
     const { result } = renderWithProviders();
     await waitFor(() => expect(result.current.status).toBeDefined());
 

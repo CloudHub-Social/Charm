@@ -9,7 +9,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { listRooms, type PusherKind, type RoomNotificationModeKind, type RoomSummary } from "@/lib/matrix";
+import {
+  listRooms,
+  type PusherKind,
+  type RoomNotificationModeKind,
+  type RoomSummary,
+} from "@/lib/matrix";
 import { usePush } from "@/features/push/usePush";
 import { useNotificationSettings, useNotificationSettingsActions } from "./useNotificationSettings";
 
@@ -38,11 +43,19 @@ function PushTransportSection() {
       ) : (
         <div className="flex items-center gap-3">
           {status?.registered ? (
-            <Button variant="outline" onClick={() => unregister.mutate()} disabled={unregister.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => unregister.mutate()}
+              disabled={unregister.isPending}
+            >
               Turn off push notifications
             </Button>
           ) : (
-            <Button variant="outline" onClick={() => register.mutate()} disabled={register.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => register.mutate()}
+              disabled={register.isPending}
+            >
               Turn on push notifications
             </Button>
           )}
