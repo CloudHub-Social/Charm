@@ -11,9 +11,16 @@ on:
 # queued runs (each ~12 jobs, several of them expensive macOS/Windows/iOS/
 # Android builds) instead of only the latest push's result mattering. Same
 # pattern sentry-snapshots.yml already uses.
+#
+# cancel-in-progress is deliberately conditional on being a pull_request event:
+# for a push to main, the group key falls back to github.ref, which is the
+# same constant value (`refs/heads/main`) for every push — unconditional
+# cancellation would kill an in-flight main run the moment a second push
+# landed, silently leaving that first merged commit untested. PRs don't have
+# this problem since each PR's own number keys its group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
