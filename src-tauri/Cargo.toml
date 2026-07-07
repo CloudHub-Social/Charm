@@ -66,3 +66,12 @@ wiremock = "0.6"
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# reqwest's default native-tls backend pulls in openssl-sys, which can't find
+# a system OpenSSL to link against when cross-compiling for Android (no
+# pkg-config sysroot). "vendored" builds OpenSSL from source for the Android
+# NDK target instead — scoped to Android only, doesn't touch the TLS backend
+# used on any other platform. Surfaced by Spec 13's CI spike; needed for any
+# Android build of this app, not just that spike.
+openssl = { version = "0.10", features = ["vendored"] }
+
