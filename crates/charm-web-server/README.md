@@ -178,7 +178,7 @@ this in a production deployment that's actually behind TLS.
   cache live (default `./data`). Only relevant when `CHARM_WEB_SERVER_MASTER_KEY`
   is set.
 
-### WebSocket origin allowlist
+### WebSocket origin allowlist and CORS
 
 - `CHARM_WEB_SERVER_ALLOWED_ORIGIN` — the frontend origin(s) allowed to open
   `GET /api/ws` (comma-separated for more than one). **Set this before
@@ -188,6 +188,17 @@ this in a production deployment that's actually behind TLS.
   attaching the cookie automatically; only an explicit `Origin` check does.
   Unset by default (permissive, with a one-time startup warning) so local
   dev keeps working with zero configuration.
+- The same allowlist also drives the router's `CorsLayer` (credentialed —
+  `Access-Control-Allow-Credentials: true`, needed for the session cookie),
+  covering the rest of the HTTP API. Unlike the WS check above, this is
+  **not** permissive-by-default when unset: an empty allowlist grants no
+  cross-origin CORS access at all (same-origin requests need no CORS headers
+  to work, so this still requires zero configuration for a same-origin
+  deployment or the common local-dev shape). **Set
+  `CHARM_WEB_SERVER_ALLOWED_ORIGIN` if the frontend is served from a
+  different origin than this API** (e.g. a Vite dev server on a different
+  port, or a separately-hosted production frontend) — otherwise the browser
+  blocks every response for lacking `Access-Control-Allow-Origin`.
 
 ## Deployment (not done as part of this PR — flagged as a manual follow-up)
 

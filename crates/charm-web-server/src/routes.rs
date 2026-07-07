@@ -233,7 +233,56 @@ pub fn router(state: AppState) -> Router {
         )
         // -- live events --
         .route("/api/ws", get(ws_handler))
+        .layer(cors_layer())
         .with_state(state)
+}
+
+/// Builds the router's CORS layer from the same `CHARM_WEB_SERVER_ALLOWED_ORIGIN`
+/// allowlist `origin_is_allowed`/`require_allowed_origin` already use for the
+/// WebSocket handshake and the raw-body mutating routes. Without this, the
+/// frontend being served from a different origin than this API (exactly the
+/// deployment `CHARM_WEB_SERVER_ALLOWED_ORIGIN` documents supporting) simply
+/// can't call it: axum never adds `Access-Control-Allow-Origin`/
+/// `Access-Control-Allow-Credentials` on its own, so the browser blocks every
+/// cross-origin response, and any request that needs a preflight (most of
+/// this API's JSON `POST`/`PUT`/`DELETE` routes) has no `OPTIONS` handler to
+/// answer it with either.
+///
+/// Deliberately **not** as permissive as `origin_is_allowed`'s own "env var
+/// unset" fallback (which allows any origin, relying on `SameSite=Strict`
+/// alone to still block a truly cross-*site* browser from having the cookie
+/// attached). CORS is a much bigger surface than that one WS handshake check
+/// — it would apply to every route on this router, credentialed — so
+/// reflecting an arbitrary `Origin` back here would let *any* site make
+/// authenticated cross-origin requests carrying this session's cookie
+/// wherever `SameSite=Strict` doesn't already block it (e.g. top-level
+/// navigations, or any future relaxation of that cookie attribute). With no
+/// allowlist configured, this simply grants no cross-origin CORS access at
+/// all: same-origin requests (the common local-dev shape, and any
+/// same-origin production deployment) need no CORS headers to work in the
+/// first place, so "no configuration" still works out of the box for that
+/// case — only a genuinely cross-origin frontend needs
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WS check already
+/// requires for that same deployment shape.
+fn cors_layer() -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{AllowOrigin, CorsLayer};
+
+    let layer = CorsLayer::new()
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any)
+        .allow_credentials(true);
+
+    let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
+        .map(|allowed| {
+            allowed
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter_map(|origin| origin.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    layer.allow_origin(AllowOrigin::list(origins))
 }
 
 // ---------------------------------------------------------------------
@@ -310,8 +359,7 @@ async fn finish_login(
         stored.sync_presence.clone(),
         persist,
         initial_response,
-        stored.last_snapshot.clone(),
-        stored.room_details_snapshots.clone(),
+        stored.sync_snapshots(),
     );
     *stored.sync_handle.lock().unwrap_or_else(|e| e.into_inner()) = Some(handle);
 
@@ -647,9 +695,15 @@ fn parse_optional_json<T: serde::de::DeserializeOwned + Default>(
 async fn redact_event(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, event_id)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Like `send_attachment`/`set_avatar`: a raw (non-JSON) `Bytes` body —
+    // including an empty one, via `parse_optional_json` — is a CORS "simple
+    // request", so a cross-*site* page can still trigger this `POST` without
+    // ever needing a successful preflight the real allowlist could block.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let reason: RedactRequest = parse_optional_json(&body)?;
     redact_event_impl(
@@ -775,8 +829,13 @@ async fn send_typing(
 async fn mark_room_read(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor at all — the plainest possible CORS "simple
+    // request" shape, so this needs the same explicit `Origin` check the
+    // raw-body routes already have.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     mark_room_read_impl(&session.client, &room_id)
         .await
@@ -940,8 +999,11 @@ async fn set_room_history_visibility(
 async fn enable_room_encryption(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path(room_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor — same CORS "simple request" gap as `mark_room_read`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     enable_room_encryption_impl(&session.client, &room_id)
         .await
@@ -983,8 +1045,11 @@ struct ReasonRequest {
 async fn invite_member(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, user_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor — same CORS "simple request" gap as `mark_room_read`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     invite_member_impl(&session.client, &room_id, &user_id)
         .await
@@ -995,9 +1060,12 @@ async fn invite_member(
 async fn kick_member(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, user_id)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Raw/optional body — same CORS "simple request" gap as `redact_event`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let reason: ReasonRequest = parse_optional_json(&body)?;
     kick_member_impl(
@@ -1014,9 +1082,12 @@ async fn kick_member(
 async fn ban_member(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, user_id)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Raw/optional body — same CORS "simple request" gap as `redact_event`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let reason: ReasonRequest = parse_optional_json(&body)?;
     ban_member_impl(
@@ -1033,9 +1104,12 @@ async fn ban_member(
 async fn unban_member(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, user_id)): Path<(String, String)>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Raw/optional body — same CORS "simple request" gap as `redact_event`.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let reason: ReasonRequest = parse_optional_json(&body)?;
     unban_member_impl(
@@ -1686,13 +1760,22 @@ fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
     // others below. `M4A `/`M4B ` are audio-only brands (a plain audio
     // track in an MP4 container, e.g. iTunes/podcast downloads) — labeling
     // them `video/mp4` would have a browser render a black video player for
-    // audio-only content. Every other brand (`isom`, `mp41`/`mp42`, `qt  `,
-    // `3gp*`, ...) does carry video, so that's still the reasonable default.
+    // audio-only content. HEIC/HEIF brands are ISO-BMFF *images* (the
+    // default photo format on recent iPhones) sharing the same `ftyp` box
+    // structure as MP4 — labeling those `video/mp4` would make a browser
+    // try to play a still photo as video and fail to render it at all, so
+    // this crate's own `sniff_content_type` (this function's only caller)
+    // must recognize them as `None`/not-A/V here and let the message's
+    // declared `image/heic` mimetype win instead, rather than this function
+    // ever claiming they're video. Every other brand (`isom`, `mp41`/
+    // `mp42`, `qt  `, `3gp*`, ...) does carry video, so that's still the
+    // reasonable default for anything not explicitly listed.
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
-        return Some(match &bytes[8..12] {
-            b"M4A " | b"M4B " => "audio/mp4".to_string(),
-            _ => "video/mp4".to_string(),
-        });
+        return match &bytes[8..12] {
+            b"M4A " | b"M4B " => Some("audio/mp4".to_string()),
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1" => None,
+            _ => Some("video/mp4".to_string()),
+        };
     }
     match bytes {
         [0x1A, 0x45, 0xDF, 0xA3, ..] => Some("video/webm".to_string()),
@@ -2045,6 +2128,34 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .cloned()
         .collect();
     for event in room_details_snapshots {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
+    // Replay each room's accumulated read-receipt state too — see
+    // `Session::receipt_snapshots`'s doc comment. Unlike the two replays
+    // above, `receipts:update` is a delta-only stream the frontend applies
+    // incrementally with no refetch path, so this sends one synthetic
+    // "catch-up" update per room carrying every receipt currently known,
+    // rather than trying to replay the individual deltas that produced it.
+    let receipt_snapshots: Vec<_> = session
+        .receipt_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(_, receipts)| !receipts.is_empty())
+        .map(|(room_id, receipts)| {
+            crate::events::ServerEvent::Receipts(charm_lib::matrix::ephemeral::ReceiptUpdate {
+                room_id: room_id.to_string(),
+                receipts: receipts.clone(),
+            })
+        })
+        .collect();
+    for event in receipt_snapshots {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };

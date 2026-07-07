@@ -37,8 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 session.sync_presence.clone(),
                 persist,
                 initial_response,
-                session.last_snapshot.clone(),
-                session.room_details_snapshots.clone(),
+                session.sync_snapshots(),
             );
             *session
                 .sync_handle

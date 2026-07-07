@@ -137,6 +137,54 @@ pub struct Session {
     /// details panel and member list stale until the room is remounted.
     pub room_details_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    /// The accumulated latest read receipt per (room, user, receipt type),
+    /// updated by `sync_loop::emit_room_updates` on every `m.receipt` delta
+    /// and replayed as one `receipts:update` per room by
+    /// `crate::routes::ws_handler` on every new connection. Unlike
+    /// `room_snapshots`/`room_details_snapshots` above (each just an
+    /// overwrite-in-place "latest full state"), `receipts:update` is
+    /// documented and treated by the frontend (`useReadReceipts`) as a pure
+    /// *delta* stream with no snapshot/refetch concept — so a connection gap
+    /// isn't fixed by replaying only the most recent delta (that would drop
+    /// every other user's receipt that changed during the same gap); this
+    /// has to actually accumulate current per-user state and replay all of
+    /// it, the same shape a subscriber would have built up by receiving
+    /// every individual delta live.
+    pub receipt_snapshots: Arc<
+        std::sync::Mutex<
+            HashMap<matrix_sdk::ruma::OwnedRoomId, Vec<charm_lib::matrix::ephemeral::EventReceipt>>,
+        >,
+    >,
+}
+
+/// Bundles `Session`'s three "current state, replayed to every new
+/// connection" caches (everything except `room_snapshots`, which
+/// `get_or_create_timeline`'s per-room listener manages independently of
+/// `sync_loop`) into one `Clone`-able value — `sync_loop::spawn` and
+/// `emit_room_updates` take this as a single parameter rather than three
+/// separate `Arc<Mutex<...>>` arguments, keeping their signatures under
+/// clippy's `too_many_arguments` threshold now that there are three of these
+/// instead of one.
+#[derive(Clone)]
+pub struct SyncSnapshots {
+    pub last_snapshot: Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    pub room_details_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    pub receipt_snapshots: Arc<
+        std::sync::Mutex<
+            HashMap<matrix_sdk::ruma::OwnedRoomId, Vec<charm_lib::matrix::ephemeral::EventReceipt>>,
+        >,
+    >,
+}
+
+impl Session {
+    pub fn sync_snapshots(&self) -> SyncSnapshots {
+        SyncSnapshots {
+            last_snapshot: self.last_snapshot.clone(),
+            room_details_snapshots: self.room_details_snapshots.clone(),
+            receipt_snapshots: self.receipt_snapshots.clone(),
+        }
+    }
 }
 
 /// See `Session::pending_verification_events`'s doc comment.
@@ -160,6 +208,7 @@ impl Session {
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_details_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            receipt_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             events,
         }
     }

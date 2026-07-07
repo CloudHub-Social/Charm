@@ -155,6 +155,22 @@ pub fn register_event_handlers(
 /// live-but-about-to-die exactly when an event fires; the common cases
 /// (no connection at all, a healthy connection) are both already handled
 /// correctly.
+/// `ephemeral::ReceiptTypeDto` has no `PartialEq` (it's a shared `charm_lib`
+/// type with no reason to carry one for desktop's own use) — this crate's
+/// receipt-snapshot dedup is the only place that needs to compare two of
+/// them, so it's a local helper rather than adding a derive upstream.
+fn receipt_type_matches(
+    a: charm_lib::matrix::ephemeral::ReceiptTypeDto,
+    b: charm_lib::matrix::ephemeral::ReceiptTypeDto,
+) -> bool {
+    use charm_lib::matrix::ephemeral::ReceiptTypeDto;
+    matches!(
+        (a, b),
+        (ReceiptTypeDto::Read, ReceiptTypeDto::Read)
+            | (ReceiptTypeDto::ReadPrivate, ReceiptTypeDto::ReadPrivate)
+    )
+}
+
 fn buffer_verification_event(
     events: &broadcast::Sender<ServerEvent>,
     pending: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
@@ -219,10 +235,7 @@ pub fn spawn(
     sync_presence: std::sync::Arc<std::sync::Mutex<charm_lib::matrix::presence::PresenceStateDto>>,
     persist: Option<PersistHandle>,
     initial_response: matrix_sdk::sync::SyncResponse,
-    last_snapshot: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
-    room_details_snapshots: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>,
-    >,
+    snapshots: crate::session::SyncSnapshots,
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
@@ -232,18 +245,19 @@ pub fn spawn(
     }
 
     tokio::spawn(async move {
+        let last_snapshot = &snapshots.last_snapshot;
         emit_snapshot(
             &events,
-            &last_snapshot,
+            last_snapshot,
             ServerEvent::SyncState(SyncStateEvent::Syncing),
         );
         emit_snapshot(
             &events,
-            &last_snapshot,
+            last_snapshot,
             ServerEvent::SyncState(SyncStateEvent::Idle),
         );
-        emit_room_list_and_badge(&client, &events, &last_snapshot).await;
-        emit_room_updates(&client, &events, &initial_response, &room_details_snapshots).await;
+        emit_room_list_and_badge(&client, &events, last_snapshot).await;
+        emit_room_updates(&client, &events, &initial_response, &snapshots).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
         // actually saved on disk right now — not `None` and not the
@@ -280,8 +294,8 @@ pub fn spawn(
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    emit_room_list_and_badge(&client, &events, &last_snapshot).await;
-                    emit_room_updates(&client, &events, &response, &room_details_snapshots).await;
+                    emit_room_list_and_badge(&client, &events, last_snapshot).await;
+                    emit_room_updates(&client, &events, &response, &snapshots).await;
                     if let Some(persist) = &persist {
                         last_saved_access_token =
                             repersist_if_token_changed(&client, persist, last_saved_access_token)
@@ -293,7 +307,7 @@ pub fn spawn(
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
                         emit_snapshot(
                             &events,
-                            &last_snapshot,
+                            last_snapshot,
                             ServerEvent::SyncState(SyncStateEvent::Error {
                                 message: e.to_string(),
                             }),
@@ -354,10 +368,10 @@ async fn emit_room_updates(
     client: &Client,
     events: &broadcast::Sender<ServerEvent>,
     response: &matrix_sdk::sync::SyncResponse,
-    room_details_snapshots: &std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>,
-    >,
+    snapshots: &crate::session::SyncSnapshots,
 ) {
+    let room_details_snapshots = &snapshots.room_details_snapshots;
+    let receipt_snapshots = &snapshots.receipt_snapshots;
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -383,6 +397,24 @@ async fn emit_room_updates(
             }
         }
         if !receipts.is_empty() {
+            // Update the accumulated per-room/per-user snapshot (for replay
+            // on reconnect, see `Session::receipt_snapshots`'s doc comment)
+            // but still broadcast just this delta live — the frontend
+            // (`useReadReceipts`) already applies live `receipts:update`s
+            // incrementally, so sending the full accumulated set here too
+            // would just be redundant re-application of receipts it's
+            // already applied.
+            {
+                let mut snapshots = receipt_snapshots.lock().unwrap_or_else(|e| e.into_inner());
+                let room_receipts = snapshots.entry(room_id.clone()).or_default();
+                for receipt in &receipts {
+                    room_receipts.retain(|existing| {
+                        !(existing.user_id == receipt.user_id
+                            && receipt_type_matches(existing.receipt_type, receipt.receipt_type))
+                    });
+                }
+                room_receipts.extend(receipts.iter().cloned());
+            }
             let _ = events.send(ServerEvent::Receipts(ReceiptUpdate {
                 room_id: room_id.to_string(),
                 receipts,
