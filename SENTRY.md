@@ -27,9 +27,10 @@ frontend client back on without calling `Sentry.init()` a second time.
 When Sentry consent and `logsEnabled` are both enabled at startup, Rust installs
 a Sentry `tracing` layer after Sentry initialization. The layer is
 target-filtered to Charm-owned Rust modules, uses a short-lived cache of
-`logsEnabled` from the same store file, captures warn/error events as Sentry
-logs while log consent remains enabled, keeps info/warn/error events as
-breadcrumbs, captures error events as Sentry issues, and ignores debug logs.
+`logsEnabled` from the same store file that settings writes refresh immediately,
+captures warn/error events as Sentry logs while log consent remains enabled,
+keeps info/warn/error events as breadcrumbs, captures error events as Sentry
+issues, and ignores debug logs.
 
 ## Environment
 
