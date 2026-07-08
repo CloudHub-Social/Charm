@@ -271,25 +271,30 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
 }
 
 fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
-    let Ok(mut cache) = LOG_CONSENT_CACHE.lock() else {
-        return observability_logs_enabled_from_store(app_data_dir);
-    };
     let now = Instant::now();
-    let same_dir = cache
-        .app_data_dir
-        .as_deref()
-        .is_some_and(|cached_dir| cached_dir == app_data_dir);
-    let fresh = cache
-        .refreshed_at
-        .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
-    if same_dir && fresh && !cache.logs_enabled {
-        return cache.logs_enabled;
+    {
+        let Ok(cache) = LOG_CONSENT_CACHE.lock() else {
+            return observability_logs_enabled_from_store(app_data_dir);
+        };
+        let same_dir = cache
+            .app_data_dir
+            .as_deref()
+            .is_some_and(|cached_dir| cached_dir == app_data_dir);
+        let fresh = cache
+            .refreshed_at
+            .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
+        if same_dir && fresh && !cache.logs_enabled {
+            return cache.logs_enabled;
+        }
     }
 
-    cache.logs_enabled = observability_logs_enabled_from_store(app_data_dir);
-    cache.app_data_dir = Some(app_data_dir.to_owned());
-    cache.refreshed_at = Some(now);
-    cache.logs_enabled
+    let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
+    if let Ok(mut cache) = LOG_CONSENT_CACHE.lock() {
+        cache.logs_enabled = logs_enabled;
+        cache.app_data_dir = Some(app_data_dir.to_owned());
+        cache.refreshed_at = Some(Instant::now());
+    }
+    logs_enabled
 }
 
 fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
