@@ -14,7 +14,11 @@ type ServerEvent = {
 const webEventListeners = new Map<string, Set<EventCallback<unknown>>>();
 let webSocket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
+let reconnectAttempt = 0;
 let fallbackOperationCounter = 0;
+
+const INITIAL_RECONNECT_DELAY_MS = 1_000;
+const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export type { UnlistenFn };
 
@@ -147,10 +151,15 @@ function handleWebSocketMessage(raw: MessageEvent<unknown>): void {
 
 function scheduleWebSocketReconnect(): void {
   if (reconnectTimer !== null || webEventListeners.size === 0) return;
+  const delay = Math.min(
+    INITIAL_RECONNECT_DELAY_MS * 2 ** reconnectAttempt,
+    MAX_RECONNECT_DELAY_MS,
+  );
+  reconnectAttempt += 1;
   reconnectTimer = window.setTimeout(() => {
     reconnectTimer = null;
     ensureWebSocket();
-  }, 1_000);
+  }, delay);
 }
 
 function ensureWebSocket(): void {
@@ -163,6 +172,9 @@ function ensureWebSocket(): void {
   const socket = new WebSocket(websocketUrl());
   webSocket = socket;
   socket.addEventListener("message", handleWebSocketMessage);
+  socket.addEventListener("open", () => {
+    if (webSocket === socket) reconnectAttempt = 0;
+  });
   socket.addEventListener("close", () => {
     if (webSocket !== socket) return;
     webSocket = null;
@@ -536,6 +548,7 @@ export async function listen<T>(event: string, callback: EventCallback<T>): Prom
     if (webEventListeners.size === 0) {
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       reconnectTimer = null;
+      reconnectAttempt = 0;
       webSocket?.close();
       webSocket = null;
     }

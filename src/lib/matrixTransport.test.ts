@@ -54,6 +54,7 @@ describe("matrix web transport", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   beforeEach(() => {
@@ -556,10 +557,10 @@ describe("matrix web transport", () => {
     const roomList = vi.fn();
 
     const unlistenRoomList = await listen("room_list:update", roomList);
-    const staleSocket = MockWebSocket.instances[0] as MockWebSocket;
+    const staleSocket = MockWebSocket.instances[0];
     staleSocket.readyState = MockWebSocket.CLOSED;
     const unlistenTimeline = await listen("timeline:update", vi.fn());
-    const currentSocket = MockWebSocket.instances[1] as MockWebSocket;
+    const currentSocket = MockWebSocket.instances[1];
 
     staleSocket.dispatchEvent(new Event("error"));
     staleSocket.dispatchEvent(new Event("close"));
@@ -572,11 +573,51 @@ describe("matrix web transport", () => {
     unlistenTimeline();
   });
 
+  it("backs off WebSocket reconnect attempts while listeners remain active", async () => {
+    vi.useFakeTimers();
+    const unlisten = await listen("room_list:update", vi.fn());
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.close();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.close();
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    unlisten();
+  });
+
+  it("resets WebSocket reconnect backoff after a successful connection", async () => {
+    vi.useFakeTimers();
+    const unlisten = await listen("room_list:update", vi.fn());
+    const firstSocket = MockWebSocket.instances[0];
+
+    firstSocket.close();
+    await vi.advanceTimersByTimeAsync(1_000);
+    const secondSocket = MockWebSocket.instances[1];
+    secondSocket.dispatchEvent(new Event("open"));
+    secondSocket.close();
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    unlisten();
+  });
+
   it("ignores malformed WebSocket frames", async () => {
     const roomList = vi.fn();
 
     const unlisten = await listen("room_list:update", roomList);
-    const socket = MockWebSocket.instances[0] as MockWebSocket;
+    const socket = MockWebSocket.instances[0];
 
     expect(() => socket.emitRaw("not json")).not.toThrow();
     expect(() => socket.emitRaw(new Blob(["{}"]))).not.toThrow();
