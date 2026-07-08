@@ -122,6 +122,7 @@ async fn fetch_hierarchy_chunks(
 ) -> Result<Vec<matrix_sdk::ruma::api::client::space::SpaceHierarchyRoomsChunk>, String> {
     let mut chunks = Vec::new();
     let mut from = None;
+    let mut seen_page_tokens = HashSet::new();
 
     loop {
         let mut request = get_hierarchy::v1::Request::new(room_id.clone());
@@ -136,11 +137,26 @@ async fn fetch_hierarchy_chunks(
         if direct_children_only {
             return Ok(chunks);
         }
-        from = response.next_batch;
-        if from.is_none() {
+        from = next_hierarchy_page_token(&mut seen_page_tokens, response.next_batch)?;
+        let Some(_) = from else {
             return Ok(chunks);
-        }
+        };
     }
+}
+
+fn next_hierarchy_page_token(
+    seen_page_tokens: &mut HashSet<String>,
+    next_batch: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(token) = next_batch else {
+        return Ok(None);
+    };
+    if !seen_page_tokens.insert(token.clone()) {
+        return Err(format!(
+            "space hierarchy pagination repeated next_batch token {token}"
+        ));
+    }
+    Ok(Some(token))
 }
 
 fn chunk_to_child(
@@ -531,6 +547,24 @@ mod tests {
         assert_eq!(tree[0].child.room_id, "!room:example.org");
         assert!(!tree[0].child.is_space);
         assert!(tree[0].children.is_empty());
+    }
+
+    #[test]
+    fn repeated_hierarchy_page_tokens_are_rejected() {
+        let mut seen_page_tokens = HashSet::new();
+
+        assert_eq!(
+            next_hierarchy_page_token(&mut seen_page_tokens, Some("page-1".to_string())),
+            Ok(Some("page-1".to_string()))
+        );
+        assert_eq!(
+            next_hierarchy_page_token(&mut seen_page_tokens, Some("page-2".to_string())),
+            Ok(Some("page-2".to_string()))
+        );
+        let error = next_hierarchy_page_token(&mut seen_page_tokens, Some("page-1".to_string()))
+            .expect_err("repeated pagination token should be rejected");
+
+        assert!(error.contains("repeated next_batch token page-1"));
     }
 
     #[test]
