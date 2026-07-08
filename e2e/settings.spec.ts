@@ -105,12 +105,14 @@ test("settings: observability panel is default-off and snapshot-covered", async 
 
   await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
   await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
-  await page.getByRole("button", { name: "Send feedback" }).click();
-  await expect(
-    page.getByText(
-      "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
-    ),
-  ).toBeVisible();
+  if (!process.env.VITE_SENTRY_DSN) {
+    await page.getByRole("button", { name: "Send feedback" }).click();
+    await expect(
+      page.getByText(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      ),
+    ).toBeVisible();
+  }
   await captureSnapshot(page, "settings-observability-opted-in");
 });
 

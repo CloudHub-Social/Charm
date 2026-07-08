@@ -200,14 +200,18 @@ describe("Sentry instrumentation", () => {
   });
 
   it("returns false when the Feedback SDK returns an incomplete dialog", async () => {
-    feedbackIntegration.createForm.mockResolvedValueOnce({
+    const incompleteDialog = {
       appendToDom: vi.fn(),
-      open: vi.fn(),
-    } as unknown as typeof feedbackDialog);
+      removeFromDom: vi.fn(),
+    };
+    feedbackIntegration.createForm.mockResolvedValueOnce(
+      incompleteDialog as unknown as typeof feedbackDialog,
+    );
 
     await expect(openSentryFeedbackDialog()).resolves.toBe(false);
 
     expect(feedbackDialog.open).not.toHaveBeenCalled();
+    expect(incompleteDialog.removeFromDom).toHaveBeenCalledTimes(1);
   });
 
   it("does not show an in-flight feedback dialog after Sentry is closed", async () => {

@@ -186,7 +186,6 @@ export async function openSentryFeedbackDialog(
   const feedback = Sentry.getFeedback();
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
-  feedbackSubmissionContext = { ...options };
   const generation = feedbackDialogGeneration;
   if (!feedbackDialog && !feedbackDialogPromise) {
     feedbackDialogPromise = feedback
@@ -207,6 +206,7 @@ export async function openSentryFeedbackDialog(
           typeof dialog.open !== "function" ||
           typeof dialog.removeFromDom !== "function"
         ) {
+          removeFeedbackDialog(dialog);
           return null;
         }
         if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
@@ -238,6 +238,7 @@ export async function openSentryFeedbackDialog(
   if (!feedbackDialog) return false;
 
   try {
+    feedbackSubmissionContext = { ...options };
     feedbackDialog.open();
   } catch {
     removeFeedbackDialog(feedbackDialog);
