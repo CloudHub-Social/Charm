@@ -465,7 +465,7 @@ export function setDisplayName(displayName: string | null): Promise<void> {
   return invoke("set_display_name", { displayName });
 }
 
-/** `filePath` is read on the Rust side — same convention as {@link sendAttachment}. */
+/** Tauri uploads read a filesystem path in Rust; web uploads pass a browser `File`. */
 export function setAvatar(filePath: string | File): Promise<void> {
   return invoke("set_avatar", { filePath });
 }
@@ -589,7 +589,7 @@ export function setRoomTopic(roomId: string, topic: string): Promise<void> {
   return invoke("set_room_topic", { roomId, topic });
 }
 
-/** `filePath` comes from the avatar file picker — Rust reads and MIME-sniffs it, same convention as `sendAttachment`. */
+/** Tauri uploads read a filesystem path in Rust; web uploads pass a browser `File`. */
 export function setRoomAvatar(roomId: string, filePath: string | File): Promise<void> {
   return invoke("set_room_avatar", { roomId, filePath });
 }

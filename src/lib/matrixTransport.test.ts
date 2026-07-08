@@ -400,6 +400,16 @@ describe("matrix web transport", () => {
     unlisten();
   });
 
+  it("preserves path prefixes in configured WebSocket API base URLs", async () => {
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://example.com/charm");
+
+    const unlisten = await listen("room_list:update", vi.fn());
+
+    expect(MockWebSocket.instances[0]?.url).toBe("wss://example.com/charm/api/ws");
+
+    unlisten();
+  });
+
   it("uses browser File bodies for web uploads", async () => {
     const file = new File(["avatar"], "avatar.png", { type: "image/png" });
 

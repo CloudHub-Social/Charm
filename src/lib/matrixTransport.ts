@@ -43,7 +43,7 @@ function websocketUrl(): string {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${protocol}//${window.location.host}${path}`;
   }
-  const url = new URL(path, `${base}/`);
+  const url = new URL(`${base}${path}`, window.location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
 }

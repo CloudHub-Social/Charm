@@ -274,12 +274,16 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
     // `POST` with `Content-Type: application/json`) instead of erroring
     // loudly. Listing exactly what this API actually uses avoids the
     // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
-    // and the only non-default header any request needs to set is
+    // and the only non-default headers requests need to set are
     // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
-    // browsers set that one themselves, but it still needs to be allowed).
+    // browsers set that one themselves, but it still needs to be allowed) and
+    // `x-charm-operation-id` (used to correlate upload progress).
     let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("x-charm-operation-id"),
+        ])
         .allow_credentials(true);
 
     let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)

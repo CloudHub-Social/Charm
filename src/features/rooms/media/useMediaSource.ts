@@ -4,10 +4,9 @@ import { resolveMedia } from "@/lib/matrix";
 
 /**
  * Resolves the media attached to `(roomId, eventId)` to a webview-loadable
- * URL, via `resolve_media` (re-derives the real `MediaSource` server-side,
- * fetches/decrypts/caches in Rust) + `convertFileSrc` (Tauri's asset-protocol
- * URL for a local path — see the `assetProtocol.scope` entry for
- * `$APPDATA/media/**` in `tauri.conf.json`).
+ * URL. Tauri builds resolve to a local cached media path and convert it to an
+ * asset-protocol URL; web builds resolve directly to the companion server's
+ * `/api/...` media URL.
  *
  * Keyed by `(roomId, eventId, thumbnail)` in TanStack Query's cache, so
  * multiple components rendering the same event (e.g. a thumbnail in the

@@ -66,7 +66,7 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             branch="pr-${PR_NUMBER}"
           fi
-          npx --yes wrangler@latest pages deploy dist \
+          npx --yes wrangler@4 pages deploy dist \
             --project-name "$CLOUDFLARE_PAGES_PROJECT" \
             --branch "$branch" \
             --commit-hash "${{ github.sha }}" \
