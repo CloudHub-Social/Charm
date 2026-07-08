@@ -84,6 +84,28 @@ test("settings: deep-links to a specific section via the URL hash", async ({ pag
   await expect(page.getByText("Other session", { exact: true })).toBeVisible();
 });
 
+test("settings: observability panel is default-off and snapshot-covered", async ({ page }) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Observability" }).click();
+
+  await expect(page.getByRole("heading", { name: "Observability" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Enable Sentry observability" })).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeDisabled();
+  await captureSnapshot(page, "settings-observability-default-off");
+
+  await page.getByRole("switch", { name: "Enable Sentry observability" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeEnabled();
+
+  await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
+  await captureSnapshot(page, "settings-observability-opted-in");
+});
+
 test("settings: bulk-signs-out multiple selected devices", async ({ page }) => {
   await page.getByRole("button", { name: "Open settings" }).click();
   await page.getByRole("tab", { name: "Devices" }).click();

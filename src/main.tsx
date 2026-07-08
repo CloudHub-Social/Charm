@@ -11,13 +11,9 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
+import { bootstrapSentry } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
-
-Sentry.init({
-  dsn: import.meta.env.VITE_SENTRY_DSN,
-  enabled: Boolean(import.meta.env.VITE_SENTRY_DSN),
-});
 
 // eslint-disable-next-line @typescript-eslint/unbound-method -- Sentry's own FallbackRender type shapes resetError as a method signature, but the actual value it passes is already an arrow function (`() => this.resetErrorBoundary()`) with no `this` dependency
 function ErrorBoundaryFallback({ resetError }: { resetError: () => void }) {
@@ -46,6 +42,8 @@ function Root() {
     </Sentry.ErrorBoundary>
   );
 }
+
+await bootstrapSentry();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
