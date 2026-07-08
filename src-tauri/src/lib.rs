@@ -222,7 +222,8 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
 
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => true,
-        Err(_) => {
+        Err(error) => {
+            eprintln!("failed to install Sentry tracing subscriber: {error}");
             SENTRY_TRACING_INSTALLED.store(false, Ordering::SeqCst);
             false
         }
