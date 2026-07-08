@@ -21,9 +21,9 @@ total_unread: number,
  */
 total_highlight: number, 
 /**
- * Rollups keyed by space room id. Each value sums descendant rooms via
- * `RoomSummary.parent_space_ids`, so rooms nested under a sub-space
- * also count for every ancestor space currently present in the room
- * snapshot.
+ * Rollups keyed by space room id from `RoomSummary.parent_space_ids`.
+ * Keys can reference spaces missing from the current room snapshot;
+ * traversal only continues when that parent space's own parents are
+ * known in the same snapshot.
  */
 spaces: { [key in string]: SpaceBadgeState }, };

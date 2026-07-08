@@ -33,10 +33,10 @@ pub struct BadgeState {
     /// were mentioned N times" distinctly from ambient unread rooms.
     #[ts(type = "number")]
     pub total_highlight: u32,
-    /// Rollups keyed by parent space room id. Parent ids can be emitted even
-    /// when the parent space itself is missing from the current room snapshot;
-    /// traversal stops at that missing parent because higher ancestors are
-    /// unknown.
+    /// Rollups keyed by space room id from `RoomSummary.parent_space_ids`.
+    /// Keys can reference spaces missing from the current room snapshot;
+    /// traversal only continues when that parent space's own parents are
+    /// known in the same snapshot.
     pub spaces: std::collections::HashMap<String, SpaceBadgeState>,
 }
 

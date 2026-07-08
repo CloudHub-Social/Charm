@@ -5,10 +5,10 @@
  */
 export type SpaceBadgeState = { 
 /**
- * Number of child rooms with `has_unread() == true`.
+ * Number of descendant rooms with `has_unread() == true`.
  */
 total_unread: number, 
 /**
- * Sum of child-room `unread_count`.
+ * Sum of descendant-room `unread_count`.
  */
 total_highlight: number, };
