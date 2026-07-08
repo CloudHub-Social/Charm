@@ -1,6 +1,7 @@
 package social.cloudhub.charm
 
 import android.app.Application
+import io.sentry.SentryOptions.BeforeBreadcrumbCallback
 import io.sentry.SentryOptions.BeforeSendCallback
 import io.sentry.android.core.SentryAndroid
 import org.json.JSONObject
@@ -28,6 +29,9 @@ class CharmApplication : Application() {
             options.setSendClientReports(false)
             options.setTracesSampleRate(0.0)
             options.setEnableAutoSessionTracking(false)
+            options.setBeforeBreadcrumb(BeforeBreadcrumbCallback { breadcrumb, _ ->
+                if (sentryEnabledFromStore()) breadcrumb else null
+            })
             options.setBeforeSend(BeforeSendCallback { event, _ ->
                 if (sentryEnabledFromStore()) event else null
             })
