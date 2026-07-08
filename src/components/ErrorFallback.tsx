@@ -40,6 +40,10 @@ export function ErrorFallback({
         Charm hit an unexpected error and couldn&apos;t continue. Your conversations are safe on the
         server — reloading usually fixes this.
       </p>
+      <p className="max-w-sm text-xs text-muted-foreground">
+        Optional feedback screenshots may include visible room names, Matrix IDs, or message text
+        and are not scrubbed like text fields.
+      </p>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button type="button" variant="outline" onClick={() => void sendFeedback()}>
           Send feedback

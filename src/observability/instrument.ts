@@ -144,7 +144,7 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
       "charm.feedback.surface": surface,
       "charm.feedback.screenshot": "optional",
     };
-    if (feedbackSubmissionContext.associatedEventId) {
+    if (feedbackSubmissionContext.associatedEventId && event.contexts?.feedback) {
       event.contexts.feedback.associated_event_id = feedbackSubmissionContext.associatedEventId;
     }
     Object.assign(event, scrubSentryValue(event));
@@ -198,7 +198,7 @@ export async function openSentryFeedbackDialog(
       })
       .then((dialog) => {
         if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
-          dialog?.removeFromDom?.();
+          removeFeedbackDialog(dialog);
           return null;
         }
         if (

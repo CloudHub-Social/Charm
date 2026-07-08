@@ -110,8 +110,8 @@ describe("Sentry instrumentation", () => {
 
     type FeedbackHook = (event: {
       tags?: Record<string, string>;
-      contexts: {
-        feedback: {
+      contexts?: {
+        feedback?: {
           associated_event_id?: string;
           message: string;
         };
@@ -144,6 +144,8 @@ describe("Sentry instrumentation", () => {
         "charm.feedback.screenshot": "optional",
       }),
     );
+
+    expect(() => beforeSendFeedback?.({})).not.toThrow();
   });
 
   it("reuses an existing feedback dialog instead of appending duplicates", async () => {
