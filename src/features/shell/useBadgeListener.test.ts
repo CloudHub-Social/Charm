@@ -31,9 +31,9 @@ describe("useBadgeListener", () => {
   it("applies an incoming badge:update to badgeAtom", () => {
     const { store } = renderWithStore();
 
-    capturedCallback?.({ total_unread: 4, total_highlight: 2 });
+    capturedCallback?.({ total_unread: 4, total_highlight: 2, spaces: {} });
 
-    expect(store.get(badgeAtom)).toEqual({ total_unread: 4, total_highlight: 2 });
+    expect(store.get(badgeAtom)).toEqual({ total_unread: 4, total_highlight: 2, spaces: {} });
   });
 
   it("unlistens on unmount", async () => {

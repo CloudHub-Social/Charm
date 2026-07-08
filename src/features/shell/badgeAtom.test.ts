@@ -11,7 +11,7 @@ describe("badgeAtom", () => {
 
   it("holds the last badge:update payload applied via badgeUpdateValue", () => {
     const store = createStore();
-    const update: BadgeState = { total_unread: 3, total_highlight: 1 };
+    const update: BadgeState = { total_unread: 3, total_highlight: 1, spaces: {} };
 
     const next = badgeUpdateValue(update);
     store.set(badgeAtom, next);
@@ -22,9 +22,9 @@ describe("badgeAtom", () => {
 
   it("replaces the previous value on a subsequent update", () => {
     const store = createStore();
-    store.set(badgeAtom, badgeUpdateValue({ total_unread: 3, total_highlight: 1 }));
-    store.set(badgeAtom, badgeUpdateValue({ total_unread: 0, total_highlight: 0 }));
+    store.set(badgeAtom, badgeUpdateValue({ total_unread: 3, total_highlight: 1, spaces: {} }));
+    store.set(badgeAtom, badgeUpdateValue({ total_unread: 0, total_highlight: 0, spaces: {} }));
 
-    expect(store.get(badgeAtom)).toEqual({ total_unread: 0, total_highlight: 0 });
+    expect(store.get(badgeAtom)).toEqual({ total_unread: 0, total_highlight: 0, spaces: {} });
   });
 });

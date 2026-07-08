@@ -399,6 +399,7 @@ pub fn run() {
             matrix::rooms::set_room_marked_unread,
             matrix::rooms::set_room_manual_order,
             matrix::spaces::list_space_children,
+            matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
             matrix::spaces::knock_room,
             matrix::room_admin::get_room_details,
