@@ -29,9 +29,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: sentry-snapshots-${{ github.event.pull_request.number || github.ref }}
+  group: sentry-snapshots-${{ github.event.pull_request.number || github.sha }}
   # PR runs can be superseded by later pushes to the same PR. Main runs create
-  # baseline snapshots for future PRs, so let each one finish.
+  # baseline snapshots for future PRs, so give each SHA its own concurrency group
+  # and let each one finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
