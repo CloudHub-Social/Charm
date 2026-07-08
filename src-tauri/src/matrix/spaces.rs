@@ -65,7 +65,7 @@ pub struct SpaceHierarchyNode {
     pub children: Vec<SpaceHierarchyNode>,
 }
 
-/// Fetches the direct children of `space_id`.
+/// Fetches the first `/hierarchy` page of direct children for `space_id`.
 #[tauri::command]
 pub async fn list_space_children(
     state: State<'_, MatrixState>,
@@ -207,12 +207,18 @@ fn build_hierarchy_from_edges(
         rooms: &HashMap<String, SpaceChild>,
         edges: &HashMap<String, Vec<String>>,
         ancestors: &mut HashSet<String>,
+        emitted: &mut HashSet<String>,
     ) -> Option<SpaceHierarchyNode> {
         if !ancestors.insert(room_id.to_owned()) {
             return None;
         }
+        if !emitted.insert(room_id.to_owned()) {
+            ancestors.remove(room_id);
+            return None;
+        }
 
         let Some(child) = rooms.get(room_id).cloned() else {
+            emitted.remove(room_id);
             ancestors.remove(room_id);
             return None;
         };
@@ -220,20 +226,21 @@ fn build_hierarchy_from_edges(
             .get(room_id)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| walk(id, rooms, edges, ancestors))
+            .filter_map(|id| walk(id, rooms, edges, ancestors, emitted))
             .collect();
 
         ancestors.remove(room_id);
         Some(SpaceHierarchyNode { child, children })
     }
 
+    let mut emitted = HashSet::from([root_id.to_owned()]);
     edges
         .get(root_id)
         .into_iter()
         .flat_map(|ids| ids.iter())
         .filter_map(|id| {
             let mut ancestors = HashSet::from([root_id.to_owned()]);
-            walk(id, rooms, edges, &mut ancestors)
+            walk(id, rooms, edges, &mut ancestors, &mut emitted)
         })
         .collect()
 }
@@ -411,6 +418,52 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].child.room_id, "!sub:example.org");
         assert!(tree[0].children.is_empty());
+    }
+
+    #[test]
+    fn shared_descendants_are_emitted_once() {
+        let rooms = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                child("!space:example.org", true),
+            ),
+            (
+                "!sub-a:example.org".to_owned(),
+                child("!sub-a:example.org", true),
+            ),
+            (
+                "!sub-b:example.org".to_owned(),
+                child("!sub-b:example.org", true),
+            ),
+            (
+                "!room:example.org".to_owned(),
+                child("!room:example.org", false),
+            ),
+        ]);
+        let edges = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                vec![
+                    "!sub-a:example.org".to_owned(),
+                    "!sub-b:example.org".to_owned(),
+                ],
+            ),
+            (
+                "!sub-a:example.org".to_owned(),
+                vec!["!room:example.org".to_owned()],
+            ),
+            (
+                "!sub-b:example.org".to_owned(),
+                vec!["!room:example.org".to_owned()],
+            ),
+        ]);
+
+        let tree = build_hierarchy_from_edges("!space:example.org", &rooms, &edges);
+
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[0].children.len(), 1);
+        assert_eq!(tree[0].children[0].child.room_id, "!room:example.org");
+        assert!(tree[1].children.is_empty());
     }
 
     #[test]
