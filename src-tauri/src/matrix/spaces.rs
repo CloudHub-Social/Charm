@@ -194,6 +194,7 @@ fn sort_edges_by_response_order(
 ) {
     for children in edges.values_mut() {
         children.sort_by_key(|id| response_order.get(id).copied().unwrap_or(usize::MAX));
+        children.dedup();
     }
 }
 
@@ -207,18 +208,12 @@ fn build_hierarchy_from_edges(
         rooms: &HashMap<String, SpaceChild>,
         edges: &HashMap<String, Vec<String>>,
         ancestors: &mut HashSet<String>,
-        emitted: &mut HashSet<String>,
     ) -> Option<SpaceHierarchyNode> {
         if !ancestors.insert(room_id.to_owned()) {
             return None;
         }
-        if !emitted.insert(room_id.to_owned()) {
-            ancestors.remove(room_id);
-            return None;
-        }
 
         let Some(child) = rooms.get(room_id).cloned() else {
-            emitted.remove(room_id);
             ancestors.remove(room_id);
             return None;
         };
@@ -226,21 +221,20 @@ fn build_hierarchy_from_edges(
             .get(room_id)
             .into_iter()
             .flat_map(|ids| ids.iter())
-            .filter_map(|id| walk(id, rooms, edges, ancestors, emitted))
+            .filter_map(|id| walk(id, rooms, edges, ancestors))
             .collect();
 
         ancestors.remove(room_id);
         Some(SpaceHierarchyNode { child, children })
     }
 
-    let mut emitted = HashSet::from([root_id.to_owned()]);
     edges
         .get(root_id)
         .into_iter()
         .flat_map(|ids| ids.iter())
         .filter_map(|id| {
             let mut ancestors = HashSet::from([root_id.to_owned()]);
-            walk(id, rooms, edges, &mut ancestors, &mut emitted)
+            walk(id, rooms, edges, &mut ancestors)
         })
         .collect()
 }
@@ -421,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_descendants_are_emitted_once() {
+    fn shared_descendants_are_preserved_under_each_parent() {
         let rooms = HashMap::from([
             (
                 "!space:example.org".to_owned(),
@@ -463,7 +457,40 @@ mod tests {
         assert_eq!(tree.len(), 2);
         assert_eq!(tree[0].children.len(), 1);
         assert_eq!(tree[0].children[0].child.room_id, "!room:example.org");
-        assert!(tree[1].children.is_empty());
+        assert_eq!(tree[1].children.len(), 1);
+        assert_eq!(tree[1].children[0].child.room_id, "!room:example.org");
+    }
+
+    #[test]
+    fn duplicate_sibling_edges_are_emitted_once() {
+        let rooms = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                child("!space:example.org", true),
+            ),
+            (
+                "!room:example.org".to_owned(),
+                child("!room:example.org", false),
+            ),
+        ]);
+        let mut edges = HashMap::from([(
+            "!space:example.org".to_owned(),
+            vec![
+                "!room:example.org".to_owned(),
+                "!room:example.org".to_owned(),
+            ],
+        )]);
+        let response_order = HashMap::from([
+            ("!space:example.org".to_owned(), 0),
+            ("!room:example.org".to_owned(), 1),
+        ]);
+
+        sort_edges_by_response_order(&mut edges, &response_order);
+
+        let tree = build_hierarchy_from_edges("!space:example.org", &rooms, &edges);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].child.room_id, "!room:example.org");
     }
 
     #[test]
