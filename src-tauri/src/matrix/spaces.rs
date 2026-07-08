@@ -213,12 +213,16 @@ fn build_hierarchy_from_edges(
             ancestors.remove(room_id);
             return None;
         };
-        let children = edges
-            .get(room_id)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| walk(id, rooms, edges, ancestors))
-            .collect();
+        let children = if child.is_space {
+            edges
+                .get(room_id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| walk(id, rooms, edges, ancestors))
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         ancestors.remove(room_id);
         Some(SpaceHierarchyNode { child, children })
@@ -429,6 +433,40 @@ mod tests {
         assert_eq!(tree[0].children[0].child.room_id, "!room:example.org");
         assert_eq!(tree[1].children.len(), 1);
         assert_eq!(tree[1].children[0].child.room_id, "!room:example.org");
+    }
+
+    #[test]
+    fn non_space_rooms_are_returned_as_leaves() {
+        let rooms = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                child("!space:example.org", true),
+            ),
+            (
+                "!room:example.org".to_owned(),
+                child("!room:example.org", false),
+            ),
+            (
+                "!nested:example.org".to_owned(),
+                child("!nested:example.org", false),
+            ),
+        ]);
+        let edges = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                vec!["!room:example.org".to_owned()],
+            ),
+            (
+                "!room:example.org".to_owned(),
+                vec!["!nested:example.org".to_owned()],
+            ),
+        ]);
+
+        let tree = build_hierarchy_from_edges("!space:example.org", &rooms, &edges);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].child.room_id, "!room:example.org");
+        assert!(tree[0].children.is_empty());
     }
 
     #[test]
