@@ -44,9 +44,7 @@ class CharmApplication : Application() {
 
     private fun startSentryConsentObservers() {
         val mask = FileObserver.CLOSE_WRITE or
-            FileObserver.CREATE or
             FileObserver.DELETE or
-            FileObserver.MODIFY or
             FileObserver.MOVED_FROM or
             FileObserver.MOVED_TO
         listOf(File(applicationInfo.dataDir), filesDir)
