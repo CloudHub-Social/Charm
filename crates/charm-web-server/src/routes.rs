@@ -26,7 +26,7 @@ use charm_lib::matrix::commands::SlashCommand;
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
-use charm_lib::matrix::profiles::get_own_profile_impl;
+use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
 use charm_lib::matrix::room_admin::{
     ban_member_impl, build_room_details, enable_room_encryption_impl, get_room_member_list_impl,
     invite_member_impl, kick_member_impl, remove_room_avatar_impl, set_member_power_level_impl,
@@ -1217,7 +1217,17 @@ async fn get_own_profile(
     let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(Json(profile))
+    Ok(Json(OwnProfileResponse {
+        profile,
+        uses_oauth: session.client.oauth().user_session().is_some(),
+    }))
+}
+
+#[derive(Serialize)]
+struct OwnProfileResponse {
+    #[serde(flatten)]
+    profile: OwnProfile,
+    uses_oauth: bool,
 }
 
 // ---------------------------------------------------------------------

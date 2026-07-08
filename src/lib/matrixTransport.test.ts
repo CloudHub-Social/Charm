@@ -426,6 +426,24 @@ describe("matrix web transport", () => {
     expect(calls[2][1].body).toBeInstanceOf(FormData);
   });
 
+  it("preserves OAuth session metadata from the web profile endpoint", async () => {
+    fetchMock().mockResolvedValueOnce(
+      okJson({
+        user_id: "@alice:example.org",
+        display_name: "Alice",
+        avatar_url: "mxc://example.org/avatar",
+        avatar_path: null,
+        presence: "online",
+        uses_oauth: true,
+      }),
+    );
+
+    await expect(invoke("get_profile")).resolves.toMatchObject({
+      user_id: "@alice:example.org",
+      uses_oauth: true,
+    });
+  });
+
   it("stores the local onboarding flag in browser storage", async () => {
     await expect(invoke("get_local_onboarding_flag")).resolves.toBe(false);
     await invoke("set_local_onboarding_flag");

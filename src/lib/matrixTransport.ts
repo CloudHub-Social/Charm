@@ -382,8 +382,9 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         user_id: string;
         display_name: string | null;
         avatar_url: string | null;
+        uses_oauth: boolean;
       }>("GET", "/api/profile/me");
-      return { ...profile, uses_oauth: false } as T;
+      return profile as T;
     }
     case "get_account_data":
       return requestJson<T>("GET", `/api/account-data/${encodeSegment(String(args.eventType))}`);
