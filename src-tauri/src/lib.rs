@@ -216,7 +216,7 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
     let sentry_layer = sentry::integrations::tracing::layer()
         .event_filter(move |metadata| sentry_event_filter(metadata, &event_app_data_dir))
         .span_filter(move |metadata| {
-            cached_observability_logs_enabled(&span_app_data_dir) && sentry_span_filter(metadata)
+            sentry_span_filter(metadata) && cached_observability_logs_enabled(&span_app_data_dir)
         });
     let subscriber = tracing_subscriber::registry().with(sentry_layer);
 

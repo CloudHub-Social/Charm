@@ -31,9 +31,10 @@ target-filtered to Charm-owned Rust modules, uses a short-lived cache of
 `logsEnabled` from the same store file that settings writes refresh immediately,
 emits tracing events only while log consent is enabled, captures warn/error
 events as Sentry logs, keeps info/warn/error events as breadcrumbs, captures
-error events as Sentry issues, and ignores debug logs. The native Sentry Logs
-client support is initialized for the same-session opt-in path, but its
-`before_send_log` hook drops logs whenever runtime log consent is disabled.
+error events as Sentry issues, and ignores debug/trace tracing events. The
+native Sentry Logs client support is initialized for the same-session opt-in
+path, but its `before_send_log` hook drops logs whenever runtime log consent is
+disabled, and drops debug logs outside debug builds.
 
 ## Environment
 

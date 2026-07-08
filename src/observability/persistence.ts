@@ -3,6 +3,7 @@ import {
   normalizeObservabilitySettings,
   type ObservabilitySettings,
 } from "./settings";
+import { isTauri } from "@/lib/platform";
 
 export const OBSERVABILITY_LOCAL_STORAGE_KEY = "charm:observability";
 export const OBSERVABILITY_STORE_FILENAME = "observability.json";
@@ -59,7 +60,10 @@ async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("update_observability_log_consent", { logsEnabled });
-  } catch {
+  } catch (error) {
+    if (isTauri()) {
+      console.warn("Failed to sync Rust observability log consent", error);
+    }
     // Plain-browser runs and tests do not have Tauri IPC; Rust rereads the store as a fallback.
   }
 }
