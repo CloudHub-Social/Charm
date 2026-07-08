@@ -13,9 +13,9 @@ name: CodeQL
 # still scanned and its alerts surface on PRs.
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   merge_group:
   schedule:
     - cron: "27 3 * * 1"
@@ -55,11 +55,14 @@ jobs:
 
   analyze-rust:
     name: Analyze (rust)
-    # pull_request + schedule only — NOT merge_group or push. Kept a separate job
-    # (not a matrix entry) because a job-level `if:` can read github.event_name
-    # but not matrix. Rust uses the same buildless extractor as the others
-    # (build-mode: none), so no toolchain/system-deps/build step is needed.
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+    # pull_request + push + schedule — NOT merge_group (kept out of the queue by
+    # choice). Push is included so main/release branches get a fresh Rust baseline
+    # on every merge, not just weekly: code-scanning compares a PR's Rust alerts
+    # against the target branch's last analysis, so a stale baseline would hide
+    # newly-introduced alerts. Kept a separate job (not a matrix entry) because a
+    # job-level `if:` can read github.event_name but not matrix. Rust uses the same
+    # buildless extractor as the others (build-mode: none) — no build step needed.
+    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -97,6 +100,10 @@ jobs:
     needs: [analyze, analyze-rust]
     if: always()
     runs-on: ubuntu-latest
+    # This job only reads needs.*.result — it touches nothing in the repo, so it
+    # needs no token scopes (also satisfies CodeQL's "workflow must set
+    # permissions" rule for this job).
+    permissions: {}
     steps:
       - name: Fail if any CodeQL analysis failed or was cancelled
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
