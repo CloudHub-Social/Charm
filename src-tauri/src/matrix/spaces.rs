@@ -190,7 +190,10 @@ fn build_hierarchy_from_edges(
             return None;
         }
 
-        let child = rooms.get(room_id)?.clone();
+        let Some(child) = rooms.get(room_id).cloned() else {
+            ancestors.remove(room_id);
+            return None;
+        };
         let children = edges
             .get(room_id)
             .into_iter()
@@ -360,5 +363,56 @@ mod tests {
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].child.room_id, "!sub:example.org");
         assert!(tree[0].children.is_empty());
+    }
+
+    #[test]
+    fn missing_rooms_do_not_poison_sibling_cycle_guards() {
+        let rooms = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                child("!space:example.org", true),
+            ),
+            (
+                "!sub-a:example.org".to_owned(),
+                child("!sub-a:example.org", true),
+            ),
+            (
+                "!sub-b:example.org".to_owned(),
+                child("!sub-b:example.org", true),
+            ),
+            (
+                "!room:example.org".to_owned(),
+                child("!room:example.org", false),
+            ),
+        ]);
+        let edges = HashMap::from([
+            (
+                "!space:example.org".to_owned(),
+                vec![
+                    "!sub-a:example.org".to_owned(),
+                    "!sub-b:example.org".to_owned(),
+                ],
+            ),
+            (
+                "!sub-a:example.org".to_owned(),
+                vec!["!missing:example.org".to_owned()],
+            ),
+            (
+                "!missing:example.org".to_owned(),
+                vec!["!room:example.org".to_owned()],
+            ),
+            (
+                "!sub-b:example.org".to_owned(),
+                vec!["!missing:example.org".to_owned(), "!room:example.org".to_owned()],
+            ),
+        ]);
+
+        let tree = build_hierarchy_from_edges("!space:example.org", &rooms, &edges);
+
+        assert_eq!(tree.len(), 2);
+        assert!(tree[0].children.is_empty());
+        assert_eq!(tree[1].child.room_id, "!sub-b:example.org");
+        assert_eq!(tree[1].children.len(), 1);
+        assert_eq!(tree[1].children[0].child.room_id, "!room:example.org");
     }
 }
