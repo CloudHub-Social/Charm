@@ -87,4 +87,4 @@ Rules:
 
 ## Imported Claude Cowork project instructions
 
-This is Charm (2.0) a ground up remaking of a Matrix client. It is unrelated to Charm 1.0 in every way except name.
+This is Charm 2.0, a ground-up rewrite of a Matrix client. It is unrelated to Charm 1.0 in every way except the name.
