@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -z "${GITHUB_ENV:-}" ]; then
+  GITHUB_ENV="$(mktemp)"
+  trap 'cat "$GITHUB_ENV"; rm -f "$GITHUB_ENV"' EXIT
+fi
+
 missing=()
 required=(SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT)
 if [ "${REQUIRE_VITE_SENTRY_DSN:-false}" = "true" ]; then

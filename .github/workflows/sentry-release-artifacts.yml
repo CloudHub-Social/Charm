@@ -47,7 +47,7 @@ jobs:
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           REQUIRE_VITE_SENTRY_DSN: "true"
           WRITE_FRONTEND_UPLOAD_ENV: "true"
-        run: .github/scripts/configure-sentry-release-env.sh
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       # `vite.config.ts` wires @sentry/vite-plugin when SENTRY_UPLOAD=true and
       # the three Sentry secrets are present. Upload failures fail this build.
@@ -100,7 +100,7 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
-        run: .github/scripts/configure-sentry-release-env.sh
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri Linux app with release debuginfo
         run: pnpm tauri build
@@ -155,7 +155,7 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
-        run: .github/scripts/configure-sentry-release-env.sh
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri macOS app with release debuginfo
         run: pnpm tauri build
@@ -238,7 +238,7 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
-        run: .github/scripts/configure-sentry-release-env.sh
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri Windows app with release debuginfo
         run: pnpm tauri build
