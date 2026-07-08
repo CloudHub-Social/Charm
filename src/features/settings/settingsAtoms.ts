@@ -5,6 +5,7 @@ export type SettingsSection =
   | "notifications"
   | "devices"
   | "appearance"
+  | "observability"
   | "general"
   | "desktop"
   | "about"
@@ -18,6 +19,7 @@ const VALID_SECTIONS: readonly SettingsSection[] = [
   "notifications",
   "devices",
   "appearance",
+  "observability",
   "general",
   "desktop",
   "about",

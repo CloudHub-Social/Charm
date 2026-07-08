@@ -11,6 +11,7 @@ import { DevicesPanel } from "./DevicesPanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { NotificationsPanel } from "./NotificationsPanel";
+import { ObservabilityPanel } from "./ObservabilityPanel";
 import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
@@ -25,6 +26,7 @@ const SECTIONS: { value: SettingsSection; label: string; desktopOnly?: boolean }
   { value: "notifications", label: "Notifications" },
   { value: "devices", label: "Devices" },
   { value: "appearance", label: "Appearance" },
+  { value: "observability", label: "Observability" },
   { value: "desktop", label: "Desktop", desktopOnly: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
@@ -100,6 +102,9 @@ function SettingsBody({
         </TabsContent>
         <TabsContent value="appearance">
           <AppearancePanel />
+        </TabsContent>
+        <TabsContent value="observability">
+          <ObservabilityPanel />
         </TabsContent>
         {showDesktopSection && (
           <TabsContent value="desktop">

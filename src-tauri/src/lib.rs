@@ -8,6 +8,10 @@
 pub mod matrix;
 pub mod push;
 
+use std::borrow::Cow;
+use std::path::Path;
+use tauri::Manager;
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -29,32 +33,155 @@ static SECRET_FIELD_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     .expect("SECRET_FIELD_PATTERN is a valid static regex")
 });
 
+static MATRIX_ID_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"([!@#$#])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?"#)
+        .expect("MATRIX_ID_PATTERN is a valid static regex")
+});
+
+static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"mxc://[A-Za-z0-9.-]+/[A-Za-z0-9._~-]+"#)
+        .expect("MXC_URI_PATTERN is a valid static regex")
+});
+
 fn scrub_secrets(text: &str) -> String {
     SECRET_FIELD_PATTERN
         .replace_all(text, "$1$2[redacted]")
         .into_owned()
 }
 
+fn scrub_matrix_ids(text: &str) -> String {
+    let without_mxc = MXC_URI_PATTERN
+        .replace_all(text, "mxc://[redacted]/[redacted]")
+        .into_owned();
+    MATRIX_ID_PATTERN
+        .replace_all(&without_mxc, "$1[redacted]:[redacted]")
+        .into_owned()
+}
+
+fn scrub_sensitive_text(text: &str) -> String {
+    scrub_secrets(&scrub_matrix_ids(text))
+}
+
+fn scrub_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = scrub_sensitive_text(text);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                scrub_json_value(item);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for field in fields.values_mut() {
+                scrub_json_value(field);
+            }
+        }
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::Null => {}
+    }
+}
+
 /// Sentry `before_send` hook: redacts anything matching [`SECRET_FIELD_PATTERN`]
-/// from the event's top-level message, exception values, and breadcrumb
-/// messages before the event ever leaves the process.
+/// and Matrix identifier patterns from every serialized string field before
+/// the event ever leaves the process.
 fn scrub_event(
-    mut event: sentry::protocol::Event<'static>,
+    event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
-    if let Some(message) = &mut event.message {
-        *message = scrub_secrets(message);
+    let mut value = serde_json::to_value(&event).ok()?;
+    scrub_json_value(&mut value);
+    serde_json::from_value(value).ok()
+}
+
+fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
+    if matches!(log.level, sentry::protocol::LogLevel::Debug) && !cfg!(debug_assertions) {
+        return None;
     }
-    for exception in event.exception.iter_mut() {
-        if let Some(value) = &mut exception.value {
-            *value = scrub_secrets(value);
-        }
+    log.body = scrub_sensitive_text(&log.body);
+    for attribute in log.attributes.values_mut() {
+        scrub_json_value(&mut attribute.0);
     }
-    for breadcrumb in event.breadcrumbs.iter_mut() {
-        if let Some(message) = &mut breadcrumb.message {
-            *message = scrub_secrets(message);
-        }
+    Some(log)
+}
+
+#[allow(dead_code)]
+struct SentryGuard(sentry::ClientInitGuard);
+
+fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let Some(state) = value
+        .get("observability")
+        .and_then(|observability| observability.get("state"))
+        .or_else(|| value.get("state"))
+        .or_else(|| value.get("observability"))
+    else {
+        return false;
+    };
+
+    state
+        .get("sentryEnabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
+    let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    let state = value
+        .get("observability")
+        .and_then(|observability| observability.get("state"))
+        .or_else(|| value.get("state"))
+        .or_else(|| value.get("observability"));
+
+    state
+        .and_then(|s| s.get("logsEnabled"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
+    let dsn = std::env::var("SENTRY_DSN")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    let app_data_dir = app.path().app_data_dir().ok()?;
+    if !observability_enabled_from_store(&app_data_dir) {
+        return None;
     }
-    Some(event)
+
+    let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
+    let environment = std::env::var("SENTRY_ENVIRONMENT")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(Cow::Owned);
+    let release = std::env::var("SENTRY_RELEASE")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(Cow::Owned)
+        .or_else(|| sentry::release_name!());
+
+    Some(SentryGuard(sentry::init((
+        dsn,
+        sentry::ClientOptions {
+            release,
+            environment,
+            send_default_pii: false,
+            traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.5 },
+            auto_session_tracking: true,
+            session_mode: sentry::SessionMode::Application,
+            enable_logs: logs_enabled,
+            before_send: Some(std::sync::Arc::new(scrub_event)),
+            before_send_log: Some(std::sync::Arc::new(scrub_log)),
+            ..Default::default()
+        },
+    ))))
 }
 
 /// Builds the tray icon (with a Show/Quit menu) and, on macOS, the native app
@@ -141,15 +268,6 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let _sentry_guard = sentry::init((
-        std::env::var("SENTRY_DSN").unwrap_or_default(),
-        sentry::ClientOptions {
-            release: sentry::release_name!(),
-            before_send: Some(std::sync::Arc::new(scrub_event)),
-            ..Default::default()
-        },
-    ));
-
     let builder = tauri::Builder::default();
 
     #[cfg(desktop)]
@@ -174,6 +292,9 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(matrix::MatrixState::default())
         .setup(|app| {
+            if let Some(sentry_guard) = init_sentry_from_settings(app) {
+                app.manage(sentry_guard);
+            }
             let handle = app.handle().clone();
             // Stashed for platform push callbacks (Android's JNI
             // `onMessage`; iOS's Notification Service Extension runs as a
@@ -320,4 +441,49 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod observability_tests {
+    use super::*;
+
+    #[test]
+    fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
+        let input = r#"room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media password="secret""#;
+
+        assert_eq!(
+            scrub_sensitive_text(input),
+            r#"room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] password="[redacted]""#
+        );
+    }
+
+    #[test]
+    fn observability_store_defaults_to_disabled_when_missing() {
+        let dir =
+            std::env::temp_dir().join(format!("charm-observability-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        assert!(!observability_enabled_from_store(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn observability_store_reads_tauri_store_shape() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-observability-test-enabled-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp observability dir");
+        std::fs::write(
+            dir.join("observability.json"),
+            r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":true},"updatedAt":1}}"#,
+        )
+        .expect("observability fixture write");
+
+        assert!(observability_enabled_from_store(&dir));
+        assert!(observability_logs_enabled_from_store(&dir));
+
+        std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
+    }
 }
