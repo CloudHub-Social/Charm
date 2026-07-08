@@ -243,6 +243,7 @@ fn update_observability_log_consent<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     logs_enabled: bool,
 ) {
+    RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         update_cached_observability_logs_enabled(app_data_dir, logs_enabled);
     }
