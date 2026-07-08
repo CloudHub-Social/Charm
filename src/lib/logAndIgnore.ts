@@ -11,6 +11,7 @@
  * doesn't independently re-decide "log and swallow" is the right behavior —
  * see https://github.com/CloudHub-Social/Charm/issues/68.
  */
-export function logAndIgnore(error: unknown): void {
-  console.error(error);
-}
+// Bound directly to console.error (not wrapped in a function) so devtools
+// attributes the log to the original `.catch(...)` call site instead of to
+// this file — keeps fire-and-forget failures traceable back to their source.
+export const logAndIgnore: (error: unknown) => void = console.error.bind(console);
