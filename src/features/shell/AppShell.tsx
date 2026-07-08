@@ -99,7 +99,9 @@ export function AppShell({
         <button
           type="button"
           aria-current={
-            mobileTab === "people" && mobileView === "list" && !isSettingsActive ? "page" : undefined
+            mobileTab === "people" && mobileView === "list" && !isSettingsActive
+              ? "page"
+              : undefined
           }
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
