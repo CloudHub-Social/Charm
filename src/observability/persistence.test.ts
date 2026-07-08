@@ -94,6 +94,21 @@ describe("observability persistence", () => {
     );
   });
 
+  it("warns when Tauri store persistence fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = new Error("store failed");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockRejectedValue(error);
+
+    await persistObservabilitySettings(DEFAULT_OBSERVABILITY_SETTINGS, 42);
+
+    expect(warn).toHaveBeenCalledWith(
+      "Failed to persist observability settings to the Tauri store",
+      error,
+    );
+    warn.mockRestore();
+  });
+
   it("syncs log opt-outs to Rust before awaiting durable persistence", async () => {
     let resolveStoreWrite!: () => void;
     const storeWrite = new Promise<void>((resolve) => {
