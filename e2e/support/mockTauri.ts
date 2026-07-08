@@ -25,6 +25,7 @@ declare global {
       unregisterCallback: (id: number) => void;
       convertFileSrc: (filePath: string) => string;
     };
+    __e2eEmit: (event: string, payload: unknown) => void;
   }
 }
 
@@ -61,6 +62,8 @@ export function installMockTauri(seed: {
   filePickerResult?: string | null;
   /** `list_space_children` results, keyed by the space's `room_id`. */
   spaceChildren?: Record<string, Record<string, unknown>[]>;
+  /** `list_space_hierarchy` results, keyed by the root space's `room_id`. */
+  spaceHierarchy?: Record<string, Record<string, unknown>[]>;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -112,6 +115,7 @@ export function installMockTauri(seed: {
   });
   const allRooms: Record<string, unknown>[] = [room, ...extraRooms];
   const spaceChildren = new Map(Object.entries(seed.spaceChildren ?? {}));
+  const spaceHierarchy = new Map(Object.entries(seed.spaceHierarchy ?? {}));
   type Listener = (payload: unknown) => void;
 
   const listenersByEvent = new Map<string, Set<number>>();
@@ -130,7 +134,7 @@ export function installMockTauri(seed: {
   // scenario needs to simulate something the fake command handlers below
   // don't already emit as a side effect.
   // oxlint-disable-next-line no-underscore-dangle
-  (window as unknown as { __e2eEmit: typeof emit }).__e2eEmit = emit;
+  window.__e2eEmit = emit;
 
   let nextTxnId = 1;
   let nextEventId = 1;
@@ -424,6 +428,7 @@ export function installMockTauri(seed: {
       return undefined;
     },
     list_space_children: (args) => spaceChildren.get(args.spaceId as string) ?? [],
+    list_space_hierarchy: (args) => spaceHierarchy.get(args.spaceId as string) ?? [],
     join_room: () => undefined,
     knock_room: () => undefined,
 
