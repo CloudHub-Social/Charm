@@ -32,22 +32,22 @@ describe("ObservabilityPanel", () => {
   it("renders Sentry opt-in off by default with sub-toggles disabled", async () => {
     renderPanel();
 
-    const sentryToggle = await screen.findByRole("checkbox", {
+    const sentryToggle = await screen.findByRole("switch", {
       name: "Enable Sentry observability",
     });
     expect(sentryToggle).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Enable Sentry session replay" })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "Enable Sentry profiling" })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "Enable Sentry structured logs" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Enable Sentry session replay" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Enable Sentry profiling" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeDisabled();
   });
 
   it("enables sub-toggles after primary opt-in", async () => {
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Enable Sentry observability" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
 
     expect(
-      await screen.findByRole("checkbox", { name: "Enable Sentry session replay" }),
+      await screen.findByRole("switch", { name: "Enable Sentry session replay" }),
     ).toBeEnabled();
   });
 });

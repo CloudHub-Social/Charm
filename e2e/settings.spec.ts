@@ -89,24 +89,20 @@ test("settings: observability panel is default-off and snapshot-covered", async 
   await page.getByRole("tab", { name: "Observability" }).click();
 
   await expect(page.getByRole("heading", { name: "Observability" })).toBeVisible();
-  await expect(
-    page.getByRole("checkbox", { name: "Enable Sentry observability" }),
-  ).not.toBeChecked();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry session replay" })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry canvas replay" })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry profiling" })).toBeDisabled();
-  await expect(
-    page.getByRole("checkbox", { name: "Enable Sentry structured logs" }),
-  ).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry observability" })).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeDisabled();
   await captureSnapshot(page, "settings-observability-default-off");
 
-  await page.getByRole("checkbox", { name: "Enable Sentry observability" }).check();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry session replay" })).toBeEnabled();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry profiling" })).toBeEnabled();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry structured logs" })).toBeEnabled();
+  await page.getByRole("switch", { name: "Enable Sentry observability" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeEnabled();
 
-  await page.getByRole("checkbox", { name: "Enable Sentry session replay" }).check();
-  await expect(page.getByRole("checkbox", { name: "Enable Sentry canvas replay" })).toBeEnabled();
+  await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
   await captureSnapshot(page, "settings-observability-opted-in");
 });
 

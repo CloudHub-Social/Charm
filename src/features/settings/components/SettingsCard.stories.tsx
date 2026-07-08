@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { SettingsCard, SettingTile } from "./SettingsCard";
 
 const meta = {
@@ -36,6 +37,26 @@ export const WithDescription: Story = {
               Dark
             </Button>
           }
+        />
+      </SettingsCard>
+    </div>
+  ),
+};
+
+export const WithSwitch: Story = {
+  args: { children: null },
+  render: () => (
+    <div className="max-w-md">
+      <SettingsCard heading="Notifications">
+        <SettingTile
+          title="Do not disturb"
+          description="Mute notification delivery until this setting is turned off."
+          control={<Switch aria-label="Mute all rooms" defaultChecked />}
+        />
+        <SettingTile
+          title="Sound"
+          description="Play a sound when a notification arrives."
+          control={<Switch aria-label="Play a sound for notifications" defaultChecked />}
         />
       </SettingsCard>
     </div>

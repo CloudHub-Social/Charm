@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Switch } from "@/components/ui/switch";
 import { closeSentry, initializeSentry } from "@/observability/instrument";
 import {
   persistObservabilitySettings,
@@ -14,28 +15,6 @@ import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const OBSERVABILITY_QUERY_KEY = ["settings", "observability"];
 const PRIVACY_URL = "https://github.com/CloudHub-Social/Charm/blob/main/PRIVACY.md";
-
-function Checkbox({
-  label,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <input
-      type="checkbox"
-      aria-label={label}
-      checked={checked}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.checked)}
-    />
-  );
-}
 
 function constrain(settings: ObservabilitySettings): ObservabilitySettings {
   if (!settings.sentryEnabled) {
@@ -115,10 +94,10 @@ export function ObservabilityPanel() {
           title="Error monitoring"
           description="Send redacted crashes, errors, performance traces, release-health sessions, and breadcrumbs to Sentry. Off by default."
           control={
-            <Checkbox
-              label="Enable Sentry observability"
+            <Switch
+              aria-label="Enable Sentry observability"
               checked={settings.sentryEnabled}
-              onChange={(checked) => setSetting({ sentryEnabled: checked })}
+              onCheckedChange={(checked) => setSetting({ sentryEnabled: checked })}
             />
           }
         />
@@ -126,11 +105,11 @@ export function ObservabilityPanel() {
           title="Session replay"
           description="Record masked DOM sessions for debugging. Text, inputs, and media stay masked or blocked."
           control={
-            <Checkbox
-              label="Enable Sentry session replay"
+            <Switch
+              aria-label="Enable Sentry session replay"
               checked={settings.replayEnabled}
               disabled={subDisabled}
-              onChange={(checked) => setSetting({ replayEnabled: checked })}
+              onCheckedChange={(checked) => setSetting({ replayEnabled: checked })}
             />
           }
         />
@@ -138,11 +117,11 @@ export function ObservabilityPanel() {
           title="Canvas replay"
           description="Allow replay to capture canvas interactions when session replay is on."
           control={
-            <Checkbox
-              label="Enable Sentry canvas replay"
+            <Switch
+              aria-label="Enable Sentry canvas replay"
               checked={settings.canvasReplayEnabled}
               disabled={canvasDisabled}
-              onChange={(checked) => setSetting({ canvasReplayEnabled: checked })}
+              onCheckedChange={(checked) => setSetting({ canvasReplayEnabled: checked })}
             />
           }
         />
@@ -150,11 +129,11 @@ export function ObservabilityPanel() {
           title="Profiling"
           description="Sample JavaScript performance profiles attached to traces."
           control={
-            <Checkbox
-              label="Enable Sentry profiling"
+            <Switch
+              aria-label="Enable Sentry profiling"
               checked={settings.profilingEnabled}
               disabled={subDisabled}
-              onChange={(checked) => setSetting({ profilingEnabled: checked })}
+              onCheckedChange={(checked) => setSetting({ profilingEnabled: checked })}
             />
           }
         />
@@ -162,11 +141,11 @@ export function ObservabilityPanel() {
           title="Structured logs"
           description="Send warning and error logs after Matrix IDs and known secret fields are redacted."
           control={
-            <Checkbox
-              label="Enable Sentry structured logs"
+            <Switch
+              aria-label="Enable Sentry structured logs"
               checked={settings.logsEnabled}
               disabled={subDisabled}
-              onChange={(checked) => setSetting({ logsEnabled: checked })}
+              onCheckedChange={(checked) => setSetting({ logsEnabled: checked })}
             />
           }
         />
