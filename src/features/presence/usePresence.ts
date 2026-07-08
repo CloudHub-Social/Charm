@@ -61,7 +61,7 @@ export function usePresence(userId: string | null): PresenceUpdate | null {
       cancelled = true;
       unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `store`/`setPresenceAtom` are stable refs from jotai's useStore/useSetAtom; `presence` is deliberately excluded so this one-shot fetch only re-runs on `userId` change, not on every atom update
   }, [userId]);
 
   return userId ? presence : null;

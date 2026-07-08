@@ -188,7 +188,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // down) covers "every keystroke".
   useEffect(() => {
     draft.getDraft();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `draft` (useRoomDraft(roomId)) is a fresh object every render; including it would re-run this every render instead of only on an actual room switch
   }, [roomId]);
 
   useEffect(() => {
@@ -295,7 +295,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }),
       Placeholder.configure({ placeholder }),
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally created once: tiptap extensions need a stable identity (recreating resets editor state); live data is read via membersRef/roomsRef/the menu bridge inside each suggestion's items/render, not captured in this closure
     [],
   );
 
