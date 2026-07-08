@@ -1,6 +1,7 @@
 package social.cloudhub.charm
 
 import android.app.Application
+import android.util.Log
 import io.sentry.SentryOptions.BeforeBreadcrumbCallback
 import io.sentry.SentryOptions.BeforeSendCallback
 import io.sentry.android.core.SentryAndroid
@@ -11,6 +12,7 @@ class CharmApplication : Application() {
     private var cachedSentryConsentFile: File? = null
     private var cachedSentryConsentLastModified: Long = Long.MIN_VALUE
     private var cachedSentryConsentEnabled: Boolean = false
+    private var warnedSentryConsentTimestampUnavailable: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
@@ -54,6 +56,10 @@ class CharmApplication : Application() {
         }
         val lastModified = file.lastModified()
         val canUseCachedTimestamp = lastModified > 0L
+        if (!canUseCachedTimestamp && !warnedSentryConsentTimestampUnavailable) {
+            Log.w("CharmApplication", "Sentry consent cache timestamp unavailable; reading consent file each time")
+            warnedSentryConsentTimestampUnavailable = true
+        }
         if (
             canUseCachedTimestamp &&
             file == cachedSentryConsentFile &&
