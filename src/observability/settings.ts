@@ -37,11 +37,21 @@ export function normalizeObservabilitySettings(value: unknown): ObservabilitySet
 
 export function withAnonymousUserId(settings: ObservabilitySettings): ObservabilitySettings {
   if (!settings.sentryEnabled || settings.anonymousUserId) return settings;
+
+  let anonymousUserId: string | null = null;
+  if (typeof crypto.randomUUID === "function") {
+    anonymousUserId = crypto.randomUUID();
+  } else if (typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    anonymousUserId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
   return {
     ...settings,
-    anonymousUserId:
-      typeof crypto.randomUUID === "function"
-        ? crypto.randomUUID()
-        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    anonymousUserId,
   };
 }
