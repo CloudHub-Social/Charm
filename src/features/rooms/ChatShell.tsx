@@ -297,25 +297,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     const sentinel = bottomSentinelRef.current;
     if (!sentinel) return undefined;
 
-    const onIntersect: IntersectionObserverCallback = (entries) => {
-      const isVisible = entries.some((entry) => entry.isIntersecting);
-      if (!isVisible) return;
-      if (lastMarkedReadEventId.current === latestEventId) return;
-      lastMarkedReadEventId.current = latestEventId;
-      markRoomRead(room.room_id).catch(logAndIgnore);
-    };
-
-    let observer: IntersectionObserver;
-    try {
-      observer = new IntersectionObserver();
-    } catch {
-      observer = new IntersectionObserver();
-    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const isVisible = entries.some((entry) => entry.isIntersecting);
+        if (!isVisible) return;
+        if (lastMarkedReadEventId.current === latestEventId) return;
+        lastMarkedReadEventId.current = latestEventId;
+        markRoomRead(room.room_id).catch(logAndIgnore);
+      },
+      { threshold: 1 },
+    );
     observer.observe(sentinel);
-    if (lastMarkedReadEventId.current !== latestEventId) {
-      lastMarkedReadEventId.current = latestEventId;
-      markRoomRead(room.room_id).catch(logAndIgnore);
-    }
     return () => observer.disconnect();
   }, [room, latestEventId, roomSettingsOpen]);
 
