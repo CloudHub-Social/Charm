@@ -95,7 +95,7 @@ export function ObservabilityPanel() {
 
   const openFeedback = async () => {
     setFeedbackStatus(null);
-    const opened = await openSentryFeedbackDialog();
+    const opened = await openSentryFeedbackDialog({ surface: "settings" });
     if (!opened) {
       setFeedbackStatus(
         "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
@@ -186,7 +186,7 @@ export function ObservabilityPanel() {
         />
         {feedbackStatus ? (
           <SettingTile>
-            <output role="status" aria-live="polite" className="text-sm text-muted-foreground">
+            <output aria-live="polite" className="text-sm text-muted-foreground">
               {feedbackStatus}
             </output>
           </SettingTile>

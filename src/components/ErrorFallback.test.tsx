@@ -14,11 +14,15 @@ beforeEach(() => {
 
 describe("ErrorFallback", () => {
   it("opens the Sentry feedback form from the crash screen", () => {
-    render(<ErrorFallback resetError={vi.fn()} />);
+    render(<ErrorFallback resetError={vi.fn()} sentryEventId="event-123" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
 
     expect(openSentryFeedbackDialog).toHaveBeenCalledTimes(1);
+    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({
+      associatedEventId: "event-123",
+      surface: "crash-fallback",
+    });
   });
 
   it("explains when feedback is unavailable", async () => {

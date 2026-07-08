@@ -20,6 +20,7 @@ const feedbackIntegration = {
 };
 const client = {
   getOptions: vi.fn(() => clientOptions),
+  on: vi.fn(),
 };
 
 vi.mock("@sentry/react", () => ({
@@ -77,18 +78,72 @@ describe("Sentry instrumentation", () => {
   });
 
   it("opens the screenshot-capable feedback dialog when the client is enabled", async () => {
-    await expect(openSentryFeedbackDialog()).resolves.toBe(true);
+    await expect(
+      openSentryFeedbackDialog({
+        associatedEventId: "event-123",
+        surface: "crash-fallback",
+      }),
+    ).resolves.toBe(true);
 
     expect(feedbackIntegration.createForm).toHaveBeenCalledWith(
       expect.objectContaining({
         tags: expect.objectContaining({
-          "charm.feedback.surface": "manual",
+          "charm.feedback.surface": "crash-fallback",
           "charm.feedback.screenshot": "optional",
         }),
       }),
     );
     expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
     expect(feedbackDialog.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("scrubs feedback events and associates crash feedback with the captured event", async () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    await openSentryFeedbackDialog({
+      associatedEventId: "event-123",
+      surface: "crash-fallback",
+    });
+
+    type FeedbackHook = (event: {
+      tags?: Record<string, string>;
+      contexts: {
+        feedback: {
+          associated_event_id?: string;
+          message: string;
+        };
+      };
+    }) => void;
+    const beforeSendFeedback = client.on.mock.calls.find(
+      ([hook]) => hook === "beforeSendFeedback",
+    )?.[1] as FeedbackHook | undefined;
+    expect(beforeSendFeedback).toBeDefined();
+
+    const event = {
+      contexts: {
+        feedback: {
+          message: "Crash in !room:example.org with access_token=secret",
+        },
+      },
+      tags: {},
+    };
+    beforeSendFeedback?.(event);
+
+    expect(event.contexts.feedback).toEqual(
+      expect.objectContaining({
+        associated_event_id: "event-123",
+        message: "Crash in ![redacted]:[redacted] with access_token=[redacted]",
+      }),
+    );
+    expect(event.tags).toEqual(
+      expect.objectContaining({
+        "charm.feedback.surface": "crash-fallback",
+        "charm.feedback.screenshot": "optional",
+      }),
+    );
   });
 
   it("reuses an existing feedback dialog instead of appending duplicates", async () => {
@@ -126,6 +181,28 @@ describe("Sentry instrumentation", () => {
     await openSentryFeedbackDialog();
     await closeSentry();
 
+    expect(feedbackDialog.removeFromDom).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show an in-flight feedback dialog after Sentry is closed", async () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+    let resolveForm!: (dialog: typeof feedbackDialog) => void;
+    feedbackIntegration.createForm.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveForm = resolve;
+      }),
+    );
+
+    const open = openSentryFeedbackDialog();
+    await closeSentry();
+    resolveForm(feedbackDialog);
+
+    await expect(open).resolves.toBe(false);
+    expect(feedbackDialog.appendToDom).not.toHaveBeenCalled();
+    expect(feedbackDialog.open).not.toHaveBeenCalled();
     expect(feedbackDialog.removeFromDom).toHaveBeenCalledTimes(1);
   });
 

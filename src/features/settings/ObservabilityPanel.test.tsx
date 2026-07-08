@@ -65,6 +65,7 @@ describe("ObservabilityPanel", () => {
     fireEvent.click(feedbackButton);
 
     expect(openSentryFeedbackDialog).toHaveBeenCalledTimes(1);
+    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({ surface: "settings" });
   });
 
   it("announces feedback availability failures", async () => {

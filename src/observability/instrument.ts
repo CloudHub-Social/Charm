@@ -13,6 +13,13 @@ type FeedbackDialog = Awaited<
 >;
 let feedbackDialog: FeedbackDialog | null = null;
 let feedbackDialogPromise: Promise<FeedbackDialog | null> | null = null;
+let feedbackDialogGeneration = 0;
+let feedbackSubmissionContext: SentryFeedbackDialogOptions = {};
+
+export interface SentryFeedbackDialogOptions {
+  associatedEventId?: string;
+  surface?: "crash-fallback" | "manual" | "settings";
+}
 
 type SentryIntegration =
   | ReturnType<typeof Sentry.browserTracingIntegration>
@@ -121,6 +128,18 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
       return scrubSentryValue(log);
     },
   });
+  Sentry.getClient()?.on("beforeSendFeedback", (event) => {
+    const surface = feedbackSubmissionContext.surface ?? "manual";
+    event.tags = {
+      ...event.tags,
+      "charm.feedback.surface": surface,
+      "charm.feedback.screenshot": "optional",
+    };
+    if (feedbackSubmissionContext.associatedEventId) {
+      event.contexts.feedback.associated_event_id = feedbackSubmissionContext.associatedEventId;
+    }
+    Object.assign(event, scrubSentryValue(event));
+  });
   Sentry.setTag("platform", "webview");
   initialized = true;
   return true;
@@ -141,27 +160,37 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
 export async function closeSentry(): Promise<void> {
   if (!initialized) return;
   sentErrorCount = 0;
+  feedbackDialogGeneration += 1;
   setSentryClientEnabled(false);
+  feedbackDialogPromise = null;
   feedbackDialog?.removeFromDom();
   feedbackDialog = null;
 }
 
-export async function openSentryFeedbackDialog(): Promise<boolean> {
+export async function openSentryFeedbackDialog(
+  options: SentryFeedbackDialogOptions = {},
+): Promise<boolean> {
   const client = Sentry.getClient();
   if (!client?.getOptions().enabled) return false;
 
   const feedback = Sentry.getFeedback();
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
+  feedbackSubmissionContext = { ...options };
+  const generation = feedbackDialogGeneration;
   if (!feedbackDialog && !feedbackDialogPromise) {
     feedbackDialogPromise = feedback
       .createForm({
         tags: {
-          "charm.feedback.surface": "manual",
+          "charm.feedback.surface": options.surface ?? "manual",
           "charm.feedback.screenshot": "optional",
         },
       })
       .then((dialog) => {
+        if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
+          dialog?.removeFromDom?.();
+          return null;
+        }
         if (
           !dialog ||
           typeof dialog.appendToDom !== "function" ||
@@ -174,11 +203,18 @@ export async function openSentryFeedbackDialog(): Promise<boolean> {
       })
       .catch(() => null)
       .finally(() => {
-        feedbackDialogPromise = null;
+        if (generation === feedbackDialogGeneration) {
+          feedbackDialogPromise = null;
+        }
       });
   }
 
-  feedbackDialog ??= await feedbackDialogPromise;
+  const dialog = feedbackDialog ?? (await feedbackDialogPromise);
+  if (generation !== feedbackDialogGeneration || !client.getOptions().enabled) {
+    dialog?.removeFromDom();
+    return false;
+  }
+  feedbackDialog = dialog;
   if (!feedbackDialog) return false;
 
   try {
@@ -197,6 +233,8 @@ export const observabilityTestHooks = {
     sentErrorCount = 0;
     feedbackDialog = null;
     feedbackDialogPromise = null;
+    feedbackDialogGeneration = 0;
+    feedbackSubmissionContext = {};
   },
   scrubSensitiveText,
   defaultSettings: DEFAULT_OBSERVABILITY_SETTINGS,

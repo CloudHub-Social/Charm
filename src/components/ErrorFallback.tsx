@@ -11,12 +11,21 @@ import { openSentryFeedbackDialog } from "@/observability/instrument";
  * and the build has a Sentry DSN, the surrounding boundary captures the error
  * before this renders.
  */
-export function ErrorFallback({ resetError }: { resetError: () => void }) {
+export function ErrorFallback({
+  resetError,
+  sentryEventId,
+}: {
+  resetError: () => void;
+  sentryEventId?: string;
+}) {
   const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
 
   const sendFeedback = async () => {
     setFeedbackStatus(null);
-    const opened = await openSentryFeedbackDialog();
+    const opened = await openSentryFeedbackDialog({
+      associatedEventId: sentryEventId,
+      surface: "crash-fallback",
+    });
     if (!opened) {
       setFeedbackStatus(
         "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
@@ -45,7 +54,7 @@ export function ErrorFallback({ resetError }: { resetError: () => void }) {
         </Button>
       </div>
       {feedbackStatus ? (
-        <output role="status" aria-live="polite" className="max-w-sm text-sm text-muted-foreground">
+        <output aria-live="polite" className="max-w-sm text-sm text-muted-foreground">
           {feedbackStatus}
         </output>
       ) : null}
