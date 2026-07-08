@@ -136,6 +136,8 @@ describe("AppShell", () => {
       "aria-current",
       "page",
     );
+    expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /people/i })).not.toHaveAttribute("aria-current");
   });
 
   it("reopens the detail view when selectionRequestId bumps for the already-active room", () => {

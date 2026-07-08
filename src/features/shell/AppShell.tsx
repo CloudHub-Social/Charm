@@ -84,7 +84,9 @@ export function AppShell({
       <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
         <button
           type="button"
-          aria-current={mobileTab === "chats" && mobileView === "list" ? "page" : undefined}
+          aria-current={
+            mobileTab === "chats" && mobileView === "list" && !isSettingsActive ? "page" : undefined
+          }
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("chats");
@@ -96,7 +98,9 @@ export function AppShell({
         </button>
         <button
           type="button"
-          aria-current={mobileTab === "people" && mobileView === "list" ? "page" : undefined}
+          aria-current={
+            mobileTab === "people" && mobileView === "list" && !isSettingsActive ? "page" : undefined
+          }
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("people");
