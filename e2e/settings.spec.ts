@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "../src/observability/messages";
 import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
 
@@ -107,11 +108,7 @@ test("settings: observability panel is default-off and snapshot-covered", async 
   await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
   if (!process.env.VITE_SENTRY_DSN) {
     await page.getByRole("button", { name: "Send feedback" }).click();
-    await expect(
-      page.getByText(
-        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
-      ),
-    ).toBeVisible();
+    await expect(page.getByText(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE)).toBeVisible();
   }
   await captureSnapshot(page, "settings-observability-opted-in");
 });

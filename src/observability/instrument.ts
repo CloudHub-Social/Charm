@@ -13,6 +13,7 @@ type FeedbackDialog = Awaited<
 >;
 let feedbackDialog: FeedbackDialog | null = null;
 let feedbackDialogPromise: Promise<FeedbackDialog | null> | null = null;
+let feedbackDialogPromiseKey: string | null = null;
 let feedbackDialogGeneration = 0;
 let feedbackSubmissionContext: SentryFeedbackDialogOptions = {};
 
@@ -28,6 +29,10 @@ function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undef
   } catch {
     // Closing observability should not fail the settings flow.
   }
+}
+
+function feedbackOptionsKey(options: SentryFeedbackDialogOptions): string {
+  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}`;
 }
 
 type SentryIntegration =
@@ -172,6 +177,7 @@ export async function closeSentry(): Promise<void> {
   feedbackDialogGeneration += 1;
   setSentryClientEnabled(false);
   feedbackDialogPromise = null;
+  feedbackDialogPromiseKey = null;
   const dialog = feedbackDialog;
   feedbackDialog = null;
   removeFeedbackDialog(dialog);
@@ -187,6 +193,10 @@ export async function openSentryFeedbackDialog(
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
   const generation = feedbackDialogGeneration;
+  const optionsKey = feedbackOptionsKey(options);
+  if (feedbackDialogPromise && feedbackDialogPromiseKey !== optionsKey) {
+    return false;
+  }
   if (feedbackDialog && !feedbackDialogPromise) {
     const dialog = feedbackDialog;
     feedbackDialog = null;
@@ -238,10 +248,13 @@ export async function openSentryFeedbackDialog(
         .finally(() => {
           if (generation === feedbackDialogGeneration) {
             feedbackDialogPromise = null;
+            feedbackDialogPromiseKey = null;
           }
         });
+      feedbackDialogPromiseKey = optionsKey;
     } catch {
       feedbackDialogPromise = null;
+      feedbackDialogPromiseKey = null;
       return false;
     }
   }
@@ -271,6 +284,7 @@ export const observabilityTestHooks = {
     sentErrorCount = 0;
     feedbackDialog = null;
     feedbackDialogPromise = null;
+    feedbackDialogPromiseKey = null;
     feedbackDialogGeneration = 0;
     feedbackSubmissionContext = {};
   },

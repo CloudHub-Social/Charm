@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { openSentryFeedbackDialog } from "@/observability/instrument";
+import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "@/observability/messages";
 
 /**
  * Rendered by the top-level `Sentry.ErrorBoundary` (see `main.tsx`) in place
@@ -27,9 +28,7 @@ export function ErrorFallback({
       surface: "crash-fallback",
     });
     if (!opened) {
-      setFeedbackStatus(
-        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
-      );
+      setFeedbackStatus(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE);
     }
   };
 

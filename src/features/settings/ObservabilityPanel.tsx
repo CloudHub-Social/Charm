@@ -8,6 +8,7 @@ import {
   initializeSentry,
   openSentryFeedbackDialog,
 } from "@/observability/instrument";
+import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "@/observability/messages";
 import {
   persistObservabilitySettings,
   readObservabilitySettings,
@@ -97,9 +98,7 @@ export function ObservabilityPanel() {
     setFeedbackStatus(null);
     const opened = await openSentryFeedbackDialog({ surface: "settings" });
     if (!opened) {
-      setFeedbackStatus(
-        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
-      );
+      setFeedbackStatus(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE);
     }
   };
 
