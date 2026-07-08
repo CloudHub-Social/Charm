@@ -396,6 +396,9 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          # Feed native Android BuildConfig only; keep VITE_* unset here so the
+          # Android WebView Sentry client stays disabled until CSP/sourcemap
+          # wiring is handled explicitly.
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
