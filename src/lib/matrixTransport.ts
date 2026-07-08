@@ -533,7 +533,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
 
 export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
   if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args);
-  return invokeWeb<T>(command, args);
+  return invokeWeb<T>(command, args ?? {});
 }
 
 export async function listen<T>(event: string, callback: EventCallback<T>): Promise<UnlistenFn> {
