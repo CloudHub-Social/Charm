@@ -23,19 +23,16 @@ on:
       - ".github/workflows/sentry-snapshots.yml"
   push:
     branches: [main]
-    paths:
-      - "src/**"
-      - "e2e/**"
-      - ".storybook/**"
-      - "playwright.config.ts"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - ".github/workflows/sentry-snapshots.yml"
+    # Sentry needs a baseline upload for the exact main commit a PR is based on.
+    # Do not path-filter main pushes: even a docs-only commit can become the PR
+    # base, and skipping its upload leaves PR runs with "missing base snapshots".
   workflow_dispatch:
 
 concurrency:
   group: sentry-snapshots-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # PR runs can be superseded by later pushes to the same PR. Main runs create
+  # baseline snapshots for future PRs, so let each one finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   snapshots:
