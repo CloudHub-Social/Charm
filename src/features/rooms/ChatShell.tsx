@@ -31,9 +31,18 @@ import { type MessageActionsHandle } from "./MessageActions";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray, type PendingUpload } from "./UploadTray";
-import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
+import {
+  activeReplyTargetAtomFamily,
+  editingEventIdAtomFamily,
+  noRoomActiveReplyTargetAtom,
+  noRoomEditingEventIdAtom,
+} from "./messageActionAtoms";
 import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
-import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import {
+  membersDrawerOpenAtomFamily,
+  noRoomMembersDrawerOpenAtom,
+  roomSettingsAtom,
+} from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
@@ -141,9 +150,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
   currentRoomIdRef.current = roomId;
-  const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
-  const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
-  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(membersDrawerOpenAtomFamily(roomId));
+  const [replyTarget, setReplyTarget] = useAtom(
+    room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
+  );
+  const [editingEventId, setEditingEventId] = useAtom(
+    room ? editingEventIdAtomFamily(roomId) : noRoomEditingEventIdAtom,
+  );
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
+  );
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
