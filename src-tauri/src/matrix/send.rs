@@ -405,7 +405,7 @@ pub async fn send_attachment(
                 Some(duration_ms),
             );
             Err(error.to_string())
-        }
+            Err(error)
     }
 }
 
