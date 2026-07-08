@@ -17,6 +17,7 @@ import {
   type RoomSummary,
 } from "@/lib/matrix";
 import { usePush } from "@/features/push/usePush";
+import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { useNotificationSettings, useNotificationSettingsActions } from "./useNotificationSettings";
 
 const TRANSPORT_LABELS: Record<PusherKind, string> = {
@@ -26,7 +27,7 @@ const TRANSPORT_LABELS: Record<PusherKind, string> = {
   none: "Not registered yet",
 };
 
-function PushTransportSection() {
+function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
 
@@ -44,25 +45,27 @@ function PushTransportSection() {
   }
 
   return (
-    <section>
-      <h2 className="mb-2 text-lg font-bold text-foreground">Push notifications</h2>
-      <p className="mb-3 text-sm text-muted-foreground">
-        Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
-        {TRANSPORT_LABELS[transport]}.
-      </p>
-      {/* `status?.available` (not `transport === "none"`) is what actually
-          distinguishes "this platform can never do push" (desktop) from
-          "this is mobile, nothing has registered yet" — before the first
-          register, `transport` reads "none" in both cases. */}
-      {!status?.available ? (
-        <p className="text-sm text-muted-foreground">
-          Not available on this platform — desktop relies on the always-on sync loop instead.
-        </p>
-      ) : (
-        <div className="flex items-center gap-3">
-          {status?.registered ? (
+    <SettingTile
+      title="Push notifications"
+      description={
+        !status?.available ? (
+          "Not available on this platform — desktop relies on the always-on sync loop instead."
+        ) : (
+          <>
+            Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
+            {TRANSPORT_LABELS[transport]}.
+            {status?.last_error && (
+              <span className="mt-1 block text-destructive">{status.last_error}</span>
+            )}
+          </>
+        )
+      }
+      control={
+        status?.available ? (
+          status?.registered ? (
             <Button
               variant="outline"
+              size="sm"
               onClick={() => unregister.mutate()}
               disabled={unregister.isPending}
             >
@@ -71,18 +74,16 @@ function PushTransportSection() {
           ) : (
             <Button
               variant="outline"
+              size="sm"
               onClick={() => void handleEnable()}
               disabled={register.isPending}
             >
               Turn on push notifications
             </Button>
-          )}
-          {status?.last_error && (
-            <span className="text-sm text-destructive">{status.last_error}</span>
-          )}
-        </div>
-      )}
-    </section>
+          )
+        ) : undefined
+      }
+    />
   );
 }
 
@@ -198,14 +199,16 @@ function RoomModeRow({
   const currentMode: RoomNotificationModeKind = room.notification_mode ?? "all_messages";
 
   return (
-    <div className="flex items-center justify-between py-2">
-      <span className="truncate text-sm text-foreground">{room.name ?? room.room_id}</span>
-      <ModePicker
-        value={currentMode}
-        onChange={(mode) => onChangeMode(room.room_id, mode)}
-        disabled={disabled}
-      />
-    </div>
+    <SettingTile
+      title={room.name ?? room.room_id}
+      control={
+        <ModePicker
+          value={currentMode}
+          onChange={(mode) => onChangeMode(room.room_id, mode)}
+          disabled={disabled}
+        />
+      }
+    />
   );
 }
 
@@ -219,84 +222,75 @@ export function NotificationsPanel() {
   });
 
   return (
-    <div className="max-w-lg space-y-8">
-      <PushTransportSection />
+    <div className="max-w-lg space-y-6">
+      <h1 className="text-lg font-bold text-foreground">Notifications</h1>
 
-      <section>
-        <h2 className="mb-2 text-lg font-bold text-foreground">Default notification mode</h2>
-        <p className="mb-3 text-sm text-muted-foreground">
-          Applies to any room without its own override below.
-        </p>
-        {settings && (
-          <ModePicker
-            value={settings.default_mode}
-            onChange={(mode) => setDefaultMode.mutate(mode)}
-            disabled={setDefaultMode.isPending}
-          />
-        )}
-      </section>
-
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-foreground">Do not disturb</h2>
-          <label className="flex items-center gap-2 text-sm text-foreground">
+      <SettingsCard>
+        <PushTransportTile />
+        <SettingTile
+          title="Default notification mode"
+          description="Applies to any room without its own override below."
+          control={
+            settings && (
+              <ModePicker
+                value={settings.default_mode}
+                onChange={(mode) => setDefaultMode.mutate(mode)}
+                disabled={setDefaultMode.isPending}
+              />
+            )
+          }
+        />
+        <SettingTile
+          title="Do not disturb"
+          description="Overrides the default mode above with Mute while on. Turning it off restores your previous default. This device must be online for the override to apply."
+          control={
             <input
               type="checkbox"
+              aria-label="Mute all rooms"
               checked={settings?.global_mute ?? false}
               onChange={(e) => setMute.mutate(e.target.checked)}
               disabled={setMute.isPending}
             />
-            Mute all rooms
-          </label>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Overrides the default mode above with Mute while on. Turning it off restores your previous
-          default. This device must be online for the override to apply.
-        </p>
-      </section>
-
-      <section>
-        <h2 className="mb-2 text-lg font-bold text-foreground">Keyword alerts</h2>
-        <KeywordEditor
-          keywords={settings?.keywords ?? []}
-          onAdd={(keyword) => addKeyword.mutate(keyword)}
-          onRemove={(keyword) => removeKeyword.mutate(keyword)}
+          }
         />
-      </section>
-
-      <section>
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-foreground">Sound</h2>
-          <label className="flex items-center gap-2 text-sm text-foreground">
+        <SettingTile
+          title="Sound"
+          description="Playback depends on push delivery, which isn't wired up yet — this only stores your preference for when it is."
+          control={
             <input
               type="checkbox"
+              aria-label="Play a sound for notifications"
               checked={settings?.sound_enabled ?? true}
               onChange={(e) => setSound.mutate(e.target.checked)}
               disabled={setSound.isPending}
             />
-            Play a sound for notifications
-          </label>
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Playback depends on push delivery, which isn't wired up yet — this only stores your
-          preference for when it is.
-        </p>
-      </section>
+          }
+        />
+      </SettingsCard>
 
-      <section>
-        <h2 className="mb-2 text-lg font-bold text-foreground">Per-room overrides</h2>
-        <div className="divide-y divide-border">
-          {(rooms ?? []).map((room) => (
-            <RoomModeRow
-              key={room.room_id}
-              room={room}
-              onChangeMode={(roomId, mode) => setRoomMode.mutate({ roomId, mode })}
-              disabled={setRoomMode.isPending}
-            />
-          ))}
-          {rooms?.length === 0 && <p className="text-sm text-muted-foreground">No rooms yet.</p>}
-        </div>
-      </section>
+      <SettingsCard heading="Keyword alerts">
+        <SettingTile>
+          <KeywordEditor
+            keywords={settings?.keywords ?? []}
+            onAdd={(keyword) => addKeyword.mutate(keyword)}
+            onRemove={(keyword) => removeKeyword.mutate(keyword)}
+          />
+        </SettingTile>
+      </SettingsCard>
+
+      <SettingsCard heading="Per-room overrides">
+        {(rooms ?? []).map((room) => (
+          <RoomModeRow
+            key={room.room_id}
+            room={room}
+            onChangeMode={(roomId, mode) => setRoomMode.mutate({ roomId, mode })}
+            disabled={setRoomMode.isPending}
+          />
+        ))}
+        {rooms?.length === 0 && (
+          <SettingTile title={<span className="text-muted-foreground">No rooms yet.</span>} />
+        )}
+      </SettingsCard>
     </div>
   );
 }

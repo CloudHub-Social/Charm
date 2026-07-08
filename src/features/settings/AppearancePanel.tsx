@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Density, FontSize, ReducedMotion, Theme } from "@/features/appearance/atoms";
 import { useAppearance } from "@/features/appearance/useAppearance";
+import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const THEME_LABELS: Record<Theme, string> = {
   dark: "Dark",
@@ -34,37 +35,32 @@ const REDUCED_MOTION_LABELS: Record<ReducedMotion, string> = {
   off: "Full motion",
 };
 
-function PickerRow<T extends string>({
-  label,
+function PickerControl<T extends string>({
   value,
   labels,
   onChange,
 }: {
-  label: string;
   value: T;
   labels: Record<T, string>;
   onChange: (next: T) => void;
 }) {
   return (
-    <div className="flex items-center justify-between py-2">
-      <span className="text-sm text-foreground">{label}</span>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
-            {labels[value]}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuRadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
-            {(Object.keys(labels) as T[]).map((option) => (
-              <DropdownMenuRadioItem key={option} value={option}>
-                {labels[option]}
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm">
+          {labels[value]}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuRadioGroup value={value} onValueChange={(next) => onChange(next as T)}>
+          {(Object.keys(labels) as T[]).map((option) => (
+            <DropdownMenuRadioItem key={option} value={option}>
+              {labels[option]}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -87,32 +83,39 @@ export function AppearancePanel() {
   } = useAppearance();
 
   return (
-    <div className="max-w-md">
-      <h2 className="mb-2 text-lg font-bold text-foreground">Appearance</h2>
-      <p className="mb-4 text-sm text-muted-foreground">
-        Changes apply immediately and are remembered on this device.
-      </p>
-      <div className="divide-y divide-border">
-        <PickerRow label="Theme" value={theme} labels={THEME_LABELS} onChange={setTheme} />
-        <PickerRow
-          label="Font size"
-          value={fontSize}
-          labels={FONT_SIZE_LABELS}
-          onChange={setFontSize}
-        />
-        <PickerRow
-          label="Message density"
-          value={density}
-          labels={DENSITY_LABELS}
-          onChange={setDensity}
-        />
-        <PickerRow
-          label="Motion"
-          value={reducedMotion}
-          labels={REDUCED_MOTION_LABELS}
-          onChange={setReducedMotion}
-        />
+    <div className="max-w-md space-y-6">
+      <div>
+        <h1 className="mb-1 text-lg font-bold text-foreground">Appearance</h1>
+        <p className="text-sm text-muted-foreground">
+          Changes apply immediately and are remembered on this device.
+        </p>
       </div>
+      <SettingsCard>
+        <SettingTile
+          title="Theme"
+          control={<PickerControl value={theme} labels={THEME_LABELS} onChange={setTheme} />}
+        />
+        <SettingTile
+          title="Font size"
+          control={
+            <PickerControl value={fontSize} labels={FONT_SIZE_LABELS} onChange={setFontSize} />
+          }
+        />
+        <SettingTile
+          title="Message density"
+          control={<PickerControl value={density} labels={DENSITY_LABELS} onChange={setDensity} />}
+        />
+        <SettingTile
+          title="Motion"
+          control={
+            <PickerControl
+              value={reducedMotion}
+              labels={REDUCED_MOTION_LABELS}
+              onChange={setReducedMotion}
+            />
+          }
+        />
+      </SettingsCard>
     </div>
   );
 }

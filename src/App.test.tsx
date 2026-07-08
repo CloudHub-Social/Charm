@@ -67,6 +67,17 @@ describe("App", () => {
     clearSpy.mockRestore();
   });
 
+  it("clears a lingering #/settings/<section> hash on logout, so signing back in doesn't reopen it", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
+    window.location.hash = "#/settings/devices";
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "trigger logout" }));
+
+    await screen.findByText("login screen");
+    expect(window.location.hash).toBe("");
+  });
+
   it("calls the onLoggedOut prop so a caller can reset state App doesn't own (e.g. main.tsx's Jotai store)", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@me:localhost", device_id: "DEVICE1" });
     const onLoggedOut = vi.fn();
