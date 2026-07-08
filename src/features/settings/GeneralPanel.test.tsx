@@ -4,14 +4,6 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GeneralPanel } from "./GeneralPanel";
 
-const getAutostart = vi.fn();
-const setAutostart = vi.fn();
-
-vi.mock("@/lib/matrix", () => ({
-  getAutostart: (...args: unknown[]) => getAutostart(...args),
-  setAutostart: (...args: unknown[]) => setAutostart(...args),
-}));
-
 const isPermissionGranted = vi.fn();
 const requestPermission = vi.fn();
 
@@ -26,34 +18,11 @@ function renderWithProviders(children: ReactNode) {
 }
 
 beforeEach(() => {
-  getAutostart.mockReset().mockResolvedValue(false);
-  setAutostart.mockReset().mockResolvedValue(undefined);
   isPermissionGranted.mockReset().mockResolvedValue(false);
   requestPermission.mockReset().mockResolvedValue("granted");
 });
 
 describe("GeneralPanel", () => {
-  it("reflects the current autostart state", async () => {
-    getAutostart.mockResolvedValue(true);
-    renderWithProviders(<GeneralPanel />);
-
-    const checkbox = await screen.findByRole("checkbox", { name: /launch charm when i log in/i });
-    await waitFor(() => expect(checkbox).toBeChecked());
-  });
-
-  it("toggling the checkbox calls setAutostart", async () => {
-    renderWithProviders(<GeneralPanel />);
-    const checkbox = await screen.findByRole("checkbox", { name: /launch charm when i log in/i });
-
-    fireEvent.click(checkbox);
-
-    // react-query's `mutationFn` is called with the mutation variable as its
-    // first argument plus an internal context object as a second — assert
-    // only the variable we actually care about, not react-query's internals.
-    await waitFor(() => expect(setAutostart).toHaveBeenCalled());
-    expect(setAutostart.mock.calls[0][0]).toBe(true);
-  });
-
   it("shows an Enable button when notifications aren't granted", async () => {
     renderWithProviders(<GeneralPanel />);
     expect(await screen.findByRole("button", { name: "Enable" })).toBeInTheDocument();

@@ -16,11 +16,13 @@ function Harness({
   selectionRequestId = 0,
   rightPanel = null,
   initialMobileView = "list",
+  isSettingsActive = false,
 }: {
   activeRoomId: string | null;
   selectionRequestId?: number;
   rightPanel?: ReactNode;
   initialMobileView?: MobileView;
+  isSettingsActive?: boolean;
 }) {
   const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
   return (
@@ -29,6 +31,7 @@ function Harness({
       selectionRequestId={selectionRequestId}
       mobileView={mobileView}
       onMobileViewChange={setMobileView}
+      isSettingsActive={isSettingsActive}
       roomList={<div>room-list</div>}
       peopleList={<div>people-list</div>}
       content={<div>chat-content</div>}
@@ -120,6 +123,21 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
     expect(store.get(settingsOpenAtom)).toBe("account");
+  });
+
+  it("marks Settings as current when isSettingsActive is true", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const store = createStore();
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(Provider, { store }, children);
+    render(<Harness activeRoomId={null} isSettingsActive />, { wrapper });
+
+    expect(screen.getByRole("button", { name: /settings/i })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("button", { name: /people/i })).not.toHaveAttribute("aria-current");
   });
 
   it("reopens the detail view when selectionRequestId bumps for the already-active room", () => {

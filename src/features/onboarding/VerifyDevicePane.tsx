@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCrossSigningResetUrl } from "@/features/settings/useDevices";
+import { useUiaRetry } from "@/features/settings/useUiaRetry";
 import { bootstrapCrossSigning } from "@/lib/matrix";
 
 interface VerifyDevicePaneProps {
@@ -22,27 +23,14 @@ interface VerifyDevicePaneProps {
 export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
   const queryClient = useQueryClient();
   const { data: resetUrl } = useCrossSigningResetUrl();
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
+  const { needsPassword, password, setPassword, error, submitting } = uia;
 
   async function handleSetUp() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await bootstrapCrossSigning(needsPassword ? password : undefined);
+    if (await uia.submit()) {
       queryClient.invalidateQueries({ queryKey: ["crossSigningStatus"] });
       setDone(true);
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
     }
   }
 

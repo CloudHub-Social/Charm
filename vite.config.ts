@@ -9,13 +9,18 @@ const procEnv = process.env as Record<string, string | undefined>;
 
 const host = procEnv.TAURI_DEV_HOST;
 
-// Source-map upload + Sentry release only run when a build provides all three
-// credentials (the release build passes them). Absent them — every dev run and every PR
-// CI build — the plugin isn't added and the build is unchanged, so PR builds never
-// create Sentry releases or emit source maps.
-const sentryEnabled = Boolean(
+// Source-map upload + Sentry release only run when an explicit release build
+// requests upload and provides all three credentials. Every dev run and normal
+// PR CI build leaves this unset, so the plugin is not added and the build does
+// not create Sentry releases or emit source maps.
+const sentryUploadRequested = procEnv.SENTRY_UPLOAD === "true";
+const sentryUploadConfigured = Boolean(
   procEnv.SENTRY_AUTH_TOKEN && procEnv.SENTRY_ORG && procEnv.SENTRY_PROJECT,
 );
+const sentryEnabled = sentryUploadRequested && sentryUploadConfigured;
+if (sentryUploadRequested && !sentryUploadConfigured) {
+  throw new Error("SENTRY_UPLOAD=true requires SENTRY_AUTH_TOKEN, SENTRY_ORG, and SENTRY_PROJECT");
+}
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({

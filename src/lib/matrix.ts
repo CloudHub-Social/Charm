@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { BadgeState } from "@bindings/BadgeState";
 import type { CommandResult } from "@bindings/CommandResult";
@@ -19,6 +18,7 @@ import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
 import type { ProfileSummary } from "@bindings/ProfileSummary";
+import type { ThirdPartyIdSummary } from "@bindings/ThirdPartyIdSummary";
 import type { PusherKind } from "@bindings/PusherKind";
 import type { PushRegistration } from "@bindings/PushRegistration";
 import type { PushStatus } from "@bindings/PushStatus";
@@ -47,6 +47,7 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
+import { invoke } from "@/observability/ipc";
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see
@@ -180,6 +181,11 @@ export function setBadgeCount(count: number): Promise<void> {
 
 export function onBadgeUpdate(callback: (badge: BadgeState) => void): Promise<UnlistenFn> {
   return listen<BadgeState>("badge:update", (e) => callback(e.payload));
+}
+
+/** Whether this build targets a desktop OS (macOS/Windows/Linux), not mobile — see the Rust command's doc comment. */
+export function isDesktopPlatform(): Promise<boolean> {
+  return invoke("is_desktop_platform");
 }
 
 export function getAutostart(): Promise<boolean> {
@@ -489,6 +495,24 @@ export function getAccountDeactivateUrl(): Promise<string | null> {
 
 export function listDevices(): Promise<DeviceSummary[]> {
   return invoke("list_devices");
+}
+
+/** Confirmed email/phone contact methods — display only (Spec 18). */
+export function get3pids(): Promise<ThirdPartyIdSummary[]> {
+  return invoke("get_3pids");
+}
+
+/** Matrix user ids on this account's ignore list (Spec 18). */
+export function getIgnoredUsers(): Promise<string[]> {
+  return invoke("get_ignored_users");
+}
+
+export function ignoreUser(userId: string): Promise<void> {
+  return invoke("ignore_user", { userId });
+}
+
+export function unignoreUser(userId: string): Promise<void> {
+  return invoke("unignore_user", { userId });
 }
 
 /** Same UIA retry convention as {@link changePassword}. */

@@ -225,20 +225,96 @@ async fn notify_unopened_room_messages(
     }
 }
 
+/// Stops the currently-running sync loop, every live per-room timeline
+/// listener, and drops the active `Client` (if any) without starting
+/// replacements — call this and *await* it just before a login flow is
+/// about to supersede the current account's on-disk store (see
+/// `persistence::relocate_store_and_save_session`), so nothing is still
+/// mid-`/sync`, mid-timeline-diff-stream, or holding the store's SQLite
+/// files open when the directory gets renamed out from under it.
+/// `spawn_sync_loop` already does its own version of the sync-loop abort
+/// when it starts a *new* loop, but that happens *after* the store swap on
+/// a re-login for an already-active account — too late to prevent the old
+/// loop from touching the directory during the rename itself. Each opened
+/// room's `Timeline` has its own listener task holding its own `Client`
+/// clone (see `timeline::spawn_timeline_listener`) — stopping the sync loop
+/// and clearing `MatrixState::client` alone would still leave those running
+/// against the old store.
+///
+/// Genuinely waits for every aborted task to stop (not just requests
+/// cancellation and moves on): `JoinHandle::abort` only requests
+/// cancellation at the task's next `.await` point, so a task using
+/// `spawn_blocking`-free async I/O like this one's `sync_once`/`sync_with_callback`
+/// calls does stop promptly, but only once actually polled again — awaiting
+/// the handle here (and ignoring the resulting `Cancelled` error, which is
+/// the expected outcome of a deliberate abort) is what actually blocks until
+/// that's happened, rather than racing ahead while the task might still hold
+/// its `Client` (and the SQLite handles under it) for a few more
+/// microseconds. `MatrixState::clear_timelines` applies the same rigor to
+/// the timeline listeners.
+pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
+    let previous_sync = app
+        .state::<MatrixState>()
+        .sync_loop_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(previous_sync) = previous_sync {
+        previous_sync.abort();
+        let _ = previous_sync.await;
+    }
+    // The detached presence-report task also holds its own `Client` clone
+    // (see `spawn_sync_loop`'s doc comment) — same handle-safety rationale
+    // as the sync loop above, just a second, separate task to stop.
+    let previous_presence = app
+        .state::<MatrixState>()
+        .presence_task_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(previous_presence) = previous_presence {
+        previous_presence.abort();
+        let _ = previous_presence.await;
+    }
+    app.state::<MatrixState>().clear_timelines().await;
+    *app.state::<MatrixState>().client.lock().await = None;
+}
+
 pub(crate) fn spawn_sync_loop(app: AppHandle, client: Client) {
     verification::register_verification_handler(app.clone(), &client);
     presence::register_presence_handler(app.clone(), &client);
     profiles::register_self_profile_handler(app.clone(), &client);
+    spawn_sync_task(app, client);
+}
 
+/// The sync-task-spawning half of [`spawn_sync_loop`], without the
+/// `register_*_handler` calls — use this (not `spawn_sync_loop`) to *resume*
+/// a `Client` that already had those registered by an earlier
+/// `spawn_sync_loop` call (e.g. restoring the previous session after a
+/// failed re-login attempt). matrix-sdk's event handlers accumulate rather
+/// than replace on repeated registration, so calling `spawn_sync_loop` again
+/// on the same `Client` would leave it with duplicate handlers, emitting
+/// duplicate presence/profile updates and verification requests on every
+/// subsequent event.
+pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
     let app_for_handle = app.clone();
 
     // Best-effort: some homeservers disable presence entirely, and a failure
     // here shouldn't ever block or fail login/session-restore.
     {
         let client = client.clone();
-        tokio::spawn(async move {
+        let presence_task = tokio::spawn(async move {
             let _ = presence::set_presence_online(&client).await;
         });
+        let previous = app_for_handle
+            .state::<MatrixState>()
+            .presence_task_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(presence_task);
+        if let Some(previous) = previous {
+            previous.abort();
+        }
     }
 
     let handle = tokio::spawn(async move {

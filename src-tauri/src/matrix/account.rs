@@ -12,7 +12,8 @@ use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata:
 use matrix_sdk::ruma::api::client::uiaa::{
     AuthData, MatrixUserIdentifier, Password, UserIdentifier,
 };
-use matrix_sdk::ruma::UserId;
+use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -22,6 +23,7 @@ use super::media;
 use super::persistence;
 use super::presence;
 use super::shell;
+use super::sync;
 use super::MatrixState;
 
 /// Square thumbnail size (px) requested when resolving a profile avatar's
@@ -45,6 +47,112 @@ pub struct ProfileSummary {
     pub uses_oauth: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct ThirdPartyIdSummary {
+    pub medium: String,
+    pub address: String,
+}
+
+/// The account's confirmed email/phone contact methods, for the Account
+/// panel's Contact Information section (Spec 18) — a thin read-only
+/// projection of `get_3pids`' `medium`/`address` fields; the homeserver-side
+/// add/remove flow (email verification tokens, etc.) is Day-2 (see Spec 18's
+/// non-goals; only display is in scope here).
+#[tauri::command]
+pub async fn get_3pids(state: State<'_, MatrixState>) -> Result<Vec<ThirdPartyIdSummary>, String> {
+    let client = state.require_client().await?;
+    let response = client
+        .account()
+        .get_3pids()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(response
+        .threepids
+        .into_iter()
+        .map(|t| ThirdPartyIdSummary {
+            medium: t.medium.to_string(),
+            address: t.address,
+        })
+        .collect())
+}
+
+/// Reads the account's `m.ignored_user_list` account data event directly
+/// (rather than `Client::subscribe_to_ignore_user_list_changes`, which only
+/// yields a value on the next change, not the current one) — same pattern
+/// as `matrix_sdk::Account::ignore_user`'s own internal lookup.
+async fn ignored_user_ids(client: &Client) -> Result<Vec<OwnedUserId>, String> {
+    let content = client
+        .account()
+        .account_data::<IgnoredUserListEventContent>()
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = content else {
+        return Ok(Vec::new());
+    };
+    let content = raw.deserialize().map_err(|e| e.to_string())?;
+    Ok(content.ignored_users.into_keys().collect())
+}
+
+#[tauri::command]
+pub async fn get_ignored_users(state: State<'_, MatrixState>) -> Result<Vec<String>, String> {
+    let client = state.require_client().await?;
+    Ok(ignored_user_ids(&client)
+        .await?
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect())
+}
+
+#[tauri::command]
+pub async fn ignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    client
+        .account()
+        .ignore_user(user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn unignore_user(state: State<'_, MatrixState>, user_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    let user_id = <&UserId>::try_from(user_id.as_str()).map_err(|e| e.to_string())?;
+    client
+        .account()
+        .unignore_user(user_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Structured error for the four UIA-gated settings commands
+/// (`change_password`, `deactivate_account`, `delete_device`,
+/// `bootstrap_cross_signing`), carrying the UIA-vs-other distinction
+/// `retry_uia_with_session` already computes across the Tauri IPC boundary.
+///
+/// `UiaChallenge` means the homeserver wants re-authentication — the
+/// frontend should prompt for a password and retry. `Other` means a real,
+/// unrelated failure (network error, 500, "not logged in", etc.) — the
+/// frontend should surface it as-is, not treat it as a password prompt.
+///
+/// Deliberately minimal (two variants) rather than a general error taxonomy
+/// — resist splitting `Other` further (e.g. network vs. server error) unless
+/// a concrete frontend need shows up.
+#[derive(Debug, Serialize, TS)]
+#[serde(tag = "kind")]
+#[ts(export, export_to = "../src/bindings/")]
+pub enum UiaCommandError {
+    UiaChallenge,
+    Other { message: String },
+}
+
+impl From<String> for UiaCommandError {
+    fn from(message: String) -> Self {
+        UiaCommandError::Other { message }
+    }
+}
+
 /// Runs a UIA-gated `call` (`change_password`/`deactivate`/`delete_devices`),
 /// threading a real session id through the retry when `password` is given.
 ///
@@ -61,13 +169,18 @@ pub(crate) async fn retry_uia_with_session<T, F, Fut>(
     user_id: &UserId,
     password: Option<String>,
     mut call: F,
-) -> Result<T, String>
+) -> Result<T, UiaCommandError>
 where
     F: FnMut(Option<AuthData>) -> Fut,
     Fut: std::future::Future<Output = matrix_sdk::Result<T>>,
 {
     let Some(password) = password else {
-        return call(None).await.map_err(|e| e.to_string());
+        return call(None).await.map_err(|e| match e.as_uiaa_response() {
+            Some(_) => UiaCommandError::UiaChallenge,
+            None => UiaCommandError::Other {
+                message: e.to_string(),
+            },
+        });
     };
 
     let session = match call(None).await {
@@ -78,7 +191,11 @@ where
             // with a password would just produce a second, unrelated failure
             // that the frontend can only render as "incorrect password",
             // masking what actually went wrong.
-            None => return Err(e.to_string()),
+            None => {
+                return Err(UiaCommandError::Other {
+                    message: e.to_string(),
+                })
+            }
         },
     };
 
@@ -89,7 +206,9 @@ where
     auth.session = session;
     call(Some(AuthData::Password(auth)))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| UiaCommandError::Other {
+            message: e.to_string(),
+        })
 }
 
 /// Tears down the local session identically for `logout` and
@@ -119,34 +238,34 @@ async fn clear_local_session(
 
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
+
+    // Cleared *before* the awaited teardown below, not after: `state.client`
+    // is what `MatrixState::require_client` hands to any other Tauri command
+    // that happens to run concurrently, and by this point the persisted
+    // session those two `clear_*` calls just deleted is already gone — a
+    // command that grabbed the old client during the (now-multi-await)
+    // teardown window would let the signed-out account keep sending/fetching
+    // until the next launch.
     *state.client.lock().await = None;
 
     // The sync loop drives the native dock/taskbar/tray badge from its own
-    // snapshots (Spec 10) — aborting it below (a couple of lines down) stops
-    // it updating that badge, but doesn't itself zero it out. Without this, a
-    // sign-out with unread rooms leaves the last nonzero badge showing on the
-    // login screen, and potentially into the next signed-in account until its
-    // first sync.
+    // snapshots (Spec 10) — stopping it below zeroes the client but doesn't
+    // itself zero the badge. Without this, a sign-out with unread rooms
+    // leaves the last nonzero badge showing on the login screen, and
+    // potentially into the next signed-in account until its first sync.
     let _ = shell::apply_native_badge(app, 0);
 
-    // The background sync loop (`sync::spawn_sync_loop`) holds its own clone
-    // of the `Client`, independent of the one just cleared above — without
-    // this, it keeps syncing (and emitting `room_list:update`/`sync:state`)
-    // for the now-signed-out account until it happens to fail on its own.
-    if let Some(handle) = state
-        .sync_loop_handle
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .take()
-    {
-        handle.abort();
-    }
-
-    // The live-timeline cache (`MatrixState::get_or_create_timeline`) is
-    // keyed by bare `room_id`, independent of which client built it — without
-    // this, a later login to a different account could be served a room's
-    // Timeline still bound to this account's now-cleared client.
-    state.clear_timelines().await;
+    // `sync::abort_current_sync_loop` (not a bespoke abort here) — genuinely
+    // stops and *awaits* the sync loop, the detached presence-report task,
+    // and every live timeline listener (and redundantly re-clears
+    // `state.client`, already `None` above — harmless). A plain
+    // `handle.abort()` without awaiting (what this used to do) left the
+    // aborted task possibly still unwinding — holding its own `Client` clone,
+    // and the store's open file handles under it — if the user immediately
+    // logged back in: a fresh login's relocation would find the sync-loop
+    // slot already empty (this function had taken it) and have nothing left
+    // to await, but the task itself could still be running.
+    sync::abort_current_sync_loop(app).await;
 
     // `sync_presence` is read fresh by `sync::spawn_sync_loop` on every
     // iteration and isn't tied to any particular client — without resetting
@@ -341,7 +460,7 @@ pub async fn change_password(
     state: State<'_, MatrixState>,
     new_password: String,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -372,7 +491,7 @@ pub async fn deactivate_account(
     app: AppHandle,
     state: State<'_, MatrixState>,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -385,7 +504,9 @@ pub async fn deactivate_account(
     })
     .await?;
 
-    clear_local_session(&app, &state, user_id.as_str()).await
+    clear_local_session(&app, &state, user_id.as_str())
+        .await
+        .map_err(UiaCommandError::from)
 }
 
 #[cfg(test)]
@@ -450,6 +571,15 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
+        let first_attempt_via_helper = retry_uia_with_session(&user_id, None, |auth| {
+            account.change_password("new-password", auth)
+        })
+        .await;
+        assert!(
+            matches!(first_attempt_via_helper, Err(UiaCommandError::UiaChallenge)),
+            "expected the password-less attempt to surface as UiaCommandError::UiaChallenge, got {first_attempt_via_helper:?}"
+        );
+
         let retry =
             retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
                 account.change_password("new-password", auth)
@@ -458,6 +588,35 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// A non-UIA failure (network error, 500, etc.) on the first attempt must
+    /// surface as `UiaCommandError::Other`, not be misclassified as a
+    /// password challenge — see the spec's acceptance criteria.
+    #[tokio::test]
+    async fn change_password_non_uia_error_on_first_attempt_is_not_a_challenge() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/account/password";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
+
+        let result = retry_uia_with_session(&user_id, None, |auth| {
+            account.change_password("new-password", auth)
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(UiaCommandError::Other { .. })),
+            "expected a non-UIA server error to surface as UiaCommandError::Other, got {result:?}"
         );
     }
 
@@ -534,6 +693,14 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
+        let first_attempt_via_helper =
+            retry_uia_with_session(&user_id, None, |auth| account.deactivate(None, auth, false))
+                .await;
+        assert!(
+            matches!(first_attempt_via_helper, Err(UiaCommandError::UiaChallenge)),
+            "expected the password-less attempt to surface as UiaCommandError::UiaChallenge, got {first_attempt_via_helper:?}"
+        );
+
         let retry =
             retry_uia_with_session(&user_id, Some("current-password".to_string()), |auth| {
                 account.deactivate(None, auth, false)
@@ -542,6 +709,34 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// A non-UIA failure on the first attempt must surface as
+    /// `UiaCommandError::Other`, not be misclassified as a password
+    /// challenge.
+    #[tokio::test]
+    async fn deactivate_account_non_uia_error_on_first_attempt_is_not_a_challenge() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/account/deactivate";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+        let account = client.account();
+
+        let result =
+            retry_uia_with_session(&user_id, None, |auth| account.deactivate(None, auth, false))
+                .await;
+
+        assert!(
+            matches!(result, Err(UiaCommandError::Other { .. })),
+            "expected a non-UIA server error to surface as UiaCommandError::Other, got {result:?}"
         );
     }
 

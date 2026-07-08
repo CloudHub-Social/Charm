@@ -106,17 +106,69 @@ pub async fn login(
     // Persist the *resolved* URL (not the raw server-name-or-URL input) so
     // `try_restore_session` doesn't need to re-run discovery on every launch.
     let homeserver_url = client.homeserver().to_string();
-    let client = relocate_or_reuse_matrix_auth_store(
+
+    // Held for the rest of this function: serializes stopping the previous
+    // sync loop/client, relocating the store, saving the session, and
+    // adopting the new client against any *other* interactive login
+    // completing for this same account at the same time — see
+    // `MatrixState::login_completion_lock`'s doc comment for why a narrower
+    // lock (or none) lets one completion's cleanup clobber another's
+    // already-adopted client.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // Captured before tearing anything down: if this attempt's relocation
+    // fails below, whatever was already working gets restored rather than
+    // left logged out over a failure unrelated to that previous session
+    // (e.g. a transient keychain error relocating *this* login's store).
+    let previous_client = state.client.lock().await.clone();
+
+    // Stop any sync loop already running for this account *before*
+    // relocating its store — otherwise a live client from an earlier login
+    // (e.g. a double-submitted login button) could still be mid-`/sync` and
+    // writing to the directory this is about to rename out from under it.
+    sync::abort_current_sync_loop(&app).await;
+    if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
-        client,
         &temp_key,
         &account_key,
         &homeserver_url,
         &session,
-    )
-    .await?;
+    ) {
+        // Only resume `previous_client` if relocation's own rollback left
+        // the account's on-disk store consistent with it — otherwise doing
+        // so would paper over a half-restored store neither this client nor
+        // anything else can reliably decrypt. See `RelocationFailure`'s doc
+        // comment.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
+        }
+        return Err(e.into());
+    }
 
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    // With `login_completion_lock` held for the whole sequence, no other
+    // completion for this account can run concurrently — so this should
+    // always hold. Kept as a cheap defense-in-depth assertion rather than
+    // load-bearing synchronization (which is now `login_completion_lock`'s
+    // job): if it ever *did* somehow fail, the fallback is the same as
+    // before — report the loss rather than a losing `Ok`, since
+    // `LoginScreen` treats any `Ok` response as signed-in-and-adopted.
+    if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See the identical restore-on-failure step above this check: this
+        // is the same "don't leave a working session logged out over this
+        // completion's own failure" rationale, just for the later failure
+        // point rather than the relocation itself.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
+        return Err(
+            "login succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
+    }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -144,6 +196,15 @@ pub async fn try_restore_session(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Option<LoginResponse>, String> {
+    // Held for the whole restore attempt: without this, a startup restore
+    // building a client against `account_key`'s store could overlap an
+    // interactive login relocating that same store — on Windows this can
+    // make the relocation's rename fail (this restore's client still has
+    // the store open), and either platform could end up publishing a
+    // client backed by a store that's since been superseded. See
+    // `MatrixState::login_completion_lock`'s doc comment.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
     // Which account (if any) has a session worth restoring isn't known
     // up front — iterate every account this install has a store for and
     // restore the first one with a live saved session. Single-active-client
@@ -174,7 +235,14 @@ pub async fn try_restore_session(
                 Ok(None) => {}
                 Err(e) => eprintln!("failed to restore oauth session for {account_key}: {e}"),
             }
-            continue;
+            // Deliberately *not* `continue` here: an OAuth session that
+            // exists but didn't yield a live restore isn't proof this
+            // account has no restorable session at all — a crash between a
+            // password/SSO login's store-swap commit and its follow-up
+            // `clear_oauth_session` call can leave a stale OAuth entry
+            // sitting alongside a perfectly valid, freshly-committed Matrix
+            // session for this same account. Fall through to check that
+            // before moving on to the next account.
         }
 
         let saved = match persistence::load_session(&account_key) {
@@ -271,6 +339,17 @@ async fn restore_oauth_session(
 /// see `persistence::SavedOAuthSession`'s doc comment for why they're
 /// unrelated types here), returning `None` (not an error) if this account has
 /// no saved session or a saved one that no longer restores.
+/// Caller must hold `MatrixState::login_completion_lock` for as long as the
+/// returned `Client` stays in use, not just for this call — building it
+/// against `account_key`'s store only needs protection from a concurrent
+/// interactive login relocating that store *while this function runs*; the
+/// caller's own subsequent use of the client (fetching/decrypting a room
+/// event) is exactly the same open-handle hazard and needs the same lock
+/// held across it. This function doesn't acquire the lock itself for that
+/// reason — doing so here and releasing it on return would protect the
+/// build but not the use, and a non-reentrant `tokio::sync::Mutex` means
+/// the caller holding its own guard across this call would deadlock if this
+/// function tried to acquire the same lock again.
 pub(crate) async fn restore_session_for_push(
     app: &AppHandle,
     account_key: &str,
@@ -282,11 +361,14 @@ pub(crate) async fn restore_session_for_push(
             .oauth()
             .restore_session(session, RoomLoadSettings::default())
             .await
-            .is_err()
+            .is_ok()
         {
-            return Ok(None);
+            return Ok(Some(client));
         }
-        return Ok(Some(client));
+        // Deliberately not returning here: see `try_restore_session`'s
+        // identical fall-through for why a stale OAuth entry that fails to
+        // restore isn't proof this account has no restorable session —
+        // fall through to check the Matrix session too.
     }
 
     let Some(saved) = persistence::load_session(account_key)? else {
@@ -321,49 +403,6 @@ pub(crate) async fn build_client(
         .build()
         .await
         .map_err(|e| e.to_string())
-}
-
-/// Relocates a temp-backed login's store to its per-account path, and — if
-/// [`persistence::relocate_store`] reports that account already had a store
-/// (a re-login) — swaps `client` out for a fresh one built against the
-/// *existing* store with `session` restored onto it.
-///
-/// This distinction matters: `relocate_store` discards the temp directory
-/// outright when the account already has a store (reusing the existing one
-/// rather than overwriting it — matrix-rust-sdk binds a store to whichever
-/// account first opened it, so relocating on top of a differently-bound
-/// existing store would reintroduce the very collision this module fixes).
-/// But `client` was already built against that now-deleted temp directory;
-/// continuing to use it would mean every write this session makes (sync
-/// state, crypto/device data) goes to files that no longer exist on disk
-/// once their handles close, silently lost.
-///
-/// Deliberately branches on `relocate_store`'s *return value*, not a
-/// separate pre-check of whether the account store exists: checking that
-/// beforehand and then calling `relocate_store` separately would race — a
-/// concurrent login for the same account could create the account store in
-/// the gap between those two calls, so the pre-check result wouldn't
-/// necessarily match what `relocate_store` actually did.
-async fn relocate_or_reuse_matrix_auth_store(
-    app: &AppHandle,
-    client: Client,
-    temp_key: &str,
-    account_key: &str,
-    homeserver_url: &str,
-    session: &matrix_sdk::authentication::matrix::MatrixSession,
-) -> Result<Client, String> {
-    let outcome = persistence::relocate_store(app, temp_key, account_key)?;
-    let persistence::RelocateOutcome::Reused(_) = outcome else {
-        return Ok(client);
-    };
-
-    let existing_client = build_client(app, homeserver_url, account_key).await?;
-    existing_client
-        .matrix_auth()
-        .restore_session(session.clone(), RoomLoadSettings::default())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(existing_client)
 }
 
 /// Resolves a server name or homeserver URL for live feedback on the
@@ -410,17 +449,48 @@ pub async fn register(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
-    let client = relocate_or_reuse_matrix_auth_store(
+
+    // See `login`'s identical guard and its doc comment on
+    // `MatrixState::login_completion_lock`.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // See `login`'s identical capture-and-restore-on-failure rationale.
+    let previous_client = state.client.lock().await.clone();
+
+    // See `login`'s identical step: stop any sync loop already running for
+    // this account before its store gets relocated out from under it.
+    sync::abort_current_sync_loop(&app).await;
+    if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
-        client,
         &temp_key,
         &account_key,
         &homeserver_url,
         &session,
-    )
-    .await?;
+    ) {
+        // See `login`'s identical safe_to_resume_previous check.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
+        }
+        return Err(e.into());
+    }
 
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    // See `login`'s identical check and rationale for returning `Err` rather
+    // than a losing `Ok` response: with `login_completion_lock` held for the
+    // whole sequence this should always hold, kept as defense-in-depth.
+    if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See `login`'s identical restore-on-failure step.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
+        return Err(
+            "registration succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
+    }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.
@@ -639,17 +709,50 @@ pub async fn complete_sso_login(
 
     let account_key = persistence::account_key(session.meta.user_id.as_str());
     let homeserver_url = client.homeserver().to_string();
-    let client = relocate_or_reuse_matrix_auth_store(
+
+    // See `login`'s identical guard and its doc comment on
+    // `MatrixState::login_completion_lock`. Safe to acquire here: the
+    // `pending_sso` lock taken earlier in this function was already
+    // `drop`-ped before this point.
+    let _completion_guard = state.login_completion_lock.lock().await;
+
+    // See `login`'s identical capture-and-restore-on-failure rationale.
+    let previous_client = state.client.lock().await.clone();
+
+    // See `login`'s identical step: stop any sync loop already running for
+    // this account before its store gets relocated out from under it.
+    sync::abort_current_sync_loop(&app).await;
+    if let Err(e) = persistence::relocate_store_and_save_session(
         &app,
-        client,
         &pending.store_key,
         &account_key,
         &homeserver_url,
         &session,
-    )
-    .await?;
+    ) {
+        // See `login`'s identical safe_to_resume_previous check.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
+        }
+        return Err(e.into());
+    }
 
-    persistence::save_session(&account_key, &homeserver_url, &session)?;
+    // See `login`'s identical check and rationale for returning `Err` rather
+    // than a losing `Ok` response: with `login_completion_lock` held for the
+    // whole sequence this should always hold, kept as defense-in-depth.
+    if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+        // See `login`'s identical restore-on-failure step.
+        if let Some(previous_client) = previous_client {
+            *state.client.lock().await = Some(previous_client.clone());
+            sync::spawn_sync_task(app, previous_client);
+        }
+        return Err(
+            "SSO login succeeded but was superseded by a concurrent login for the same account"
+                .to_string(),
+        );
+    }
     // Enforces the single-account invariant: only one session kind
     // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
     // present at a time.

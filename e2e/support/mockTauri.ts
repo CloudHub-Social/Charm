@@ -34,6 +34,7 @@ export function installMockTauri(seed: {
   room: { room_id: string; name: string | null; unread_count: number };
   members?: { user_id: string; display_name: string | null }[];
   otherDevices?: { device_id: string; display_name: string | null; is_verified: boolean }[];
+  ignoredUsers?: string[];
   roomDetails?: Record<string, unknown>;
   /**
    * `false` for onboarding.spec.ts's "brand-new account" scenario — every
@@ -154,6 +155,7 @@ export function installMockTauri(seed: {
   ];
   let crossSigningBootstrapped = true;
   let autostartEnabled = false;
+  const ignoredUsers: string[] = [...(seed.ignoredUsers ?? [])];
   const notificationSettings = {
     default_mode: "all_messages",
     keywords: [] as string[],
@@ -466,6 +468,18 @@ export function installMockTauri(seed: {
     }),
     bootstrap_cross_signing: () => {
       crossSigningBootstrapped = true;
+      return undefined;
+    },
+    get_3pids: () => [],
+    get_ignored_users: () => [...ignoredUsers],
+    ignore_user: (args) => {
+      const userId = args.userId as string;
+      if (!ignoredUsers.includes(userId)) ignoredUsers.push(userId);
+      return undefined;
+    },
+    unignore_user: (args) => {
+      const index = ignoredUsers.indexOf(args.userId as string);
+      if (index !== -1) ignoredUsers.splice(index, 1);
       return undefined;
     },
     get_notification_settings: () => ({ ...notificationSettings }),

@@ -70,7 +70,7 @@ fn presence_state_to_dto(state: &PresenceState) -> PresenceStateDto {
 }
 
 /// Maps an incoming `m.presence` event to the DTO pushed to the frontend.
-pub(crate) fn presence_event_to_update(event: &PresenceEvent) -> PresenceUpdate {
+pub fn presence_event_to_update(event: &PresenceEvent) -> PresenceUpdate {
     PresenceUpdate {
         user_id: event.sender.to_string(),
         presence: presence_state_to_dto(&event.content.presence),

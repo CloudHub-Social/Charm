@@ -50,4 +50,75 @@ test("settings: verifying another session opens the verification overlay", async
 
   await expect(page.getByText("Verify new sign-in")).toBeVisible();
   await captureSnapshot(page, "settings-verify-overlay");
+
+  // Settings (a Radix Dialog on desktop) must close once verification
+  // starts — Radix applies aria-hidden to everything outside its own portal
+  // while open, and traps focus there. Left open, the overlay would be
+  // invisible to assistive tech and unreachable by keyboard despite being
+  // visually on top; leaving it open isn't a fixable z-index/pointer-events
+  // problem, so this asserts the dialog is actually gone instead.
+  await expect(page.getByRole("dialog", { name: "Settings" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Accept" }).click();
+  await expect(page.getByText("Waiting for the other device…")).toBeVisible();
+});
+
+test("settings: shows a centered dialog on desktop widths", async ({ page }) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+
+  await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+});
+
+test("settings: switches to a full page (no dialog) at mobile widths", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Close settings" })).toBeVisible();
+});
+
+test("settings: deep-links to a specific section via the URL hash", async ({ page }) => {
+  await page.evaluate(() => {
+    window.location.hash = "#/settings/devices";
+  });
+
+  await expect(page.getByText("Other session", { exact: true })).toBeVisible();
+});
+
+test("settings: observability panel is default-off and snapshot-covered", async ({ page }) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Observability" }).click();
+
+  await expect(page.getByRole("heading", { name: "Observability" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Enable Sentry observability" })).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeDisabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeDisabled();
+  await captureSnapshot(page, "settings-observability-default-off");
+
+  await page.getByRole("switch", { name: "Enable Sentry observability" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeEnabled();
+  await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeEnabled();
+
+  await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
+  await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
+  await captureSnapshot(page, "settings-observability-opted-in");
+});
+
+test("settings: bulk-signs-out multiple selected devices", async ({ page }) => {
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Devices" }).click();
+  await expect(page.getByText("Other session", { exact: true })).toBeVisible();
+
+  await page.getByRole("checkbox", { name: "Select Other session" }).check();
+  await expect(page.getByText("1 device selected")).toBeVisible();
+
+  await page.getByRole("button", { name: "Sign out selected" }).click();
+  await page
+    .getByRole("dialog", { name: "Sign out 1 device?" })
+    .getByRole("button", { name: "Sign out" })
+    .click();
+
+  await expect(page.getByText("Other session", { exact: true })).toHaveCount(0);
 });

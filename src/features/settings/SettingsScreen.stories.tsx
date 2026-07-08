@@ -60,6 +60,10 @@ function withSeededData() {
     sound_enabled: true,
   });
   client.setQueryData(["rooms", "notifications-panel"], []);
+  client.setQueryData(["settings", "3pids"], []);
+  client.setQueryData(["settings", "ignored-users"], []);
+  client.setQueryData(["settings", "autostart"], false);
+  client.setQueryData(["settings", "notification-permission"], true);
   return client;
 }
 
@@ -93,6 +97,34 @@ export const DevicesSection: Story = {
     return (
       <QueryClientProvider client={client}>
         <HydrateSettingsOpen section="devices">
+          <SettingsScreen {...args} />
+        </HydrateSettingsOpen>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const AboutSection: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData();
+    return (
+      <QueryClientProvider client={client}>
+        <HydrateSettingsOpen section="about">
+          <SettingsScreen {...args} />
+        </HydrateSettingsOpen>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const KeyboardShortcutsSection: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData();
+    return (
+      <QueryClientProvider client={client}>
+        <HydrateSettingsOpen section="keyboard-shortcuts">
           <SettingsScreen {...args} />
         </HydrateSettingsOpen>
       </QueryClientProvider>
