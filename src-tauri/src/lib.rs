@@ -288,13 +288,13 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.5 },
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
-            enable_logs: logs_enabled,
+            enable_logs: true,
             before_send: Some(std::sync::Arc::new(scrub_event)),
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
     ));
-    let tracing_installed = logs_enabled && install_sentry_tracing(app_data_dir);
+    let tracing_installed = install_sentry_tracing(app_data_dir);
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
