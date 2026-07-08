@@ -320,6 +320,7 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
