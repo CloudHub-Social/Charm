@@ -1,5 +1,4 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +11,7 @@ import {
   useDevices,
 } from "./useDevices";
 import { useProfile } from "./useProfile";
+import { useUiaRetry } from "./useUiaRetry";
 
 function groupDevices(devices: DeviceSummary[]) {
   return {
@@ -28,10 +28,14 @@ export function DevicesPanel() {
   const { data: resetUrl } = useCrossSigningResetUrl();
   const { revoke, verify, invalidateCrossSigning } = useDeviceActions();
   const usesOAuth = Boolean(profile?.uses_oauth);
-  const [bootstrapping, setBootstrapping] = useState(false);
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
-  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
+  const {
+    needsPassword,
+    password,
+    setPassword,
+    error: bootstrapError,
+    submitting: bootstrapping,
+  } = uia;
 
   // All three keys, not just the master key — an interrupted/reset bootstrap
   // can leave a master key in place without the self-signing/user-signing
@@ -42,21 +46,9 @@ export function DevicesPanel() {
   const groups = groupDevices(devices ?? []);
 
   async function handleBootstrap() {
-    setBootstrapping(true);
-    setBootstrapError(null);
-    try {
-      await bootstrapCrossSigning(needsPassword ? password : undefined);
-      setNeedsPassword(false);
-      setPassword("");
+    if (await uia.submit()) {
+      uia.reset();
       invalidateCrossSigning();
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        setBootstrapError(String(err));
-      }
-    } finally {
-      setBootstrapping(false);
     }
   }
 

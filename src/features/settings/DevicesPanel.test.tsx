@@ -127,7 +127,9 @@ describe("DevicesPanel", () => {
       has_self_signing_key: false,
       has_user_signing_key: false,
     });
-    bootstrapCrossSigning.mockRejectedValueOnce(new Error("uia")).mockResolvedValueOnce(undefined);
+    bootstrapCrossSigning
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockResolvedValueOnce(undefined);
     renderWithProviders(<DevicesPanel />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
@@ -140,6 +142,21 @@ describe("DevicesPanel", () => {
     // Cross-signing status must be refetched so `isBootstrapped` picks up
     // the change instead of continuing to show "Set up".
     await waitFor(() => expect(crossSigningStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it("surfaces a non-UIA bootstrap error on the first attempt instead of prompting for a password", async () => {
+    crossSigningStatus.mockResolvedValueOnce({
+      has_master_key: false,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    });
+    bootstrapCrossSigning.mockRejectedValueOnce({ kind: "Other", message: "network error" });
+    renderWithProviders(<DevicesPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
+
+    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
   });
 
   it("shows a Reset link when the homeserver offers an account-management URL", async () => {
