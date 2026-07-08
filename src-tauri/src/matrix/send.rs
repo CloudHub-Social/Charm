@@ -396,6 +396,7 @@ pub async fn send_attachment(
     .await;
 
     let duration_ms = started_at.elapsed().as_millis();
+    let tracing_duration_ms = u64::try_from(duration_ms).unwrap_or(u64::MAX);
     match result {
         Ok(_) => {
             add_attachment_ipc_breadcrumb(
@@ -411,7 +412,7 @@ pub async fn send_attachment(
                 status = "succeeded",
                 total_bytes = ?breadcrumb_total_bytes,
                 mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms = duration_ms as u64,
+                duration_ms = tracing_duration_ms,
                 "Attachment IPC succeeded"
             );
             Ok(())
@@ -430,7 +431,7 @@ pub async fn send_attachment(
                 status = "failed",
                 total_bytes = ?breadcrumb_total_bytes,
                 mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms = duration_ms as u64,
+                duration_ms = tracing_duration_ms,
                 "Attachment IPC failed"
             );
             Err(error)
