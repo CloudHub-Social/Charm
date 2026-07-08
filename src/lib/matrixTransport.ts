@@ -27,20 +27,34 @@ class HttpError extends Error {
   }
 }
 
+class WebCommandError extends Error {
+  constructor(
+    readonly kind: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
 }
 
-async function readErrorResponse(
-  response: Response,
-  fallback: string,
-): Promise<Error | Record<string, unknown>> {
+async function readErrorResponse(response: Response, fallback: string): Promise<Error> {
   const text = await response.text();
   if (text) {
     try {
       const body = JSON.parse(text) as unknown;
       if (isRecord(body)) {
-        if (typeof body.kind === "string") return body;
+        if (typeof body.kind === "string") {
+          const message =
+            typeof body.message === "string"
+              ? body.message
+              : typeof body.error === "string"
+                ? body.error
+                : body.kind;
+          return new WebCommandError(body.kind, message);
+        }
         if (typeof body.error === "string") return new HttpError(body.error, response.status);
         if (typeof body.message === "string") return new HttpError(body.message, response.status);
       }
@@ -183,7 +197,7 @@ async function requestBytes<T>(
   body?: BodyInit,
   contentType?: string,
 ): Promise<T> {
-  const headers: HeadersInit = { "x-charm-operation-id": operationId() };
+  const headers: Record<string, string> = { "x-charm-operation-id": operationId() };
   if (contentType) headers["content-type"] = contentType;
   const response = await fetch(`${apiBase()}${path}`, {
     method,
