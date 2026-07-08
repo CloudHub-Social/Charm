@@ -193,6 +193,12 @@ function maybeFile(value: unknown): File | null {
   return typeof File !== "undefined" && value instanceof File ? value : null;
 }
 
+function requireWebFile(command: string, value: unknown): File {
+  const file = maybeFile(value);
+  if (file) return file;
+  throw new Error(`The web companion transport requires a browser File for '${command}'.`);
+}
+
 async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> {
   switch (command) {
     case "discover_homeserver":
@@ -408,8 +414,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "resolve_avatar":
       return `${apiBase()}/api/media/avatar${query({ mxc: args.mxcUrl as string })}` as T;
     case "send_attachment": {
-      const file = maybeFile(args.filePath);
-      if (!file) unsupported(command);
+      const file = requireWebFile(command, args.filePath);
       const form = new FormData();
       form.set("file", file);
       if (typeof args.caption === "string") form.set("caption", args.caption);

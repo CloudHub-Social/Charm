@@ -476,7 +476,7 @@ describe("matrix web transport", () => {
         filePath: "/tmp/file.png",
         txnId: "t",
       }),
-    ).rejects.toThrow("does not support 'send_attachment'");
+    ).rejects.toThrow("requires a browser File for 'send_attachment'");
   });
 
   it("surfaces HTTP error response text", async () => {
