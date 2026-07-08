@@ -31,10 +31,20 @@ import { type MessageActionsHandle } from "./MessageActions";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray, type PendingUpload } from "./UploadTray";
-import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
+import {
+  activeReplyTargetAtomFamily,
+  editingEventIdAtomFamily,
+  noRoomActiveReplyTargetAtom,
+  noRoomEditingEventIdAtom,
+} from "./messageActionAtoms";
 import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
-import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import {
+  membersDrawerOpenAtomFamily,
+  noRoomMembersDrawerOpenAtom,
+  roomSettingsAtom,
+} from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -109,7 +119,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
           if (requestedRoomIdRef.current !== requestedForRoomId) return;
           setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
         })
-        .catch(console.error);
+        .catch(logAndIgnore);
     }
   }, [roomId, currentUserId, uniqueSenderKey]);
 
@@ -140,9 +150,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
   currentRoomIdRef.current = roomId;
-  const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
-  const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
-  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(membersDrawerOpenAtomFamily(roomId));
+  const [replyTarget, setReplyTarget] = useAtom(
+    room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
+  );
+  const [editingEventId, setEditingEventId] = useAtom(
+    room ? editingEventIdAtomFamily(roomId) : noRoomEditingEventIdAtom,
+  );
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
+  );
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
@@ -180,7 +196,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // and needed reversing.
     getTimelinePage(timelineRoomId)
       .then((page) => setMessages(page.messages))
-      .catch(console.error)
+      .catch(logAndIgnore)
       .finally(() => setLoading(false));
   }, [room?.room_id]);
 
@@ -200,7 +216,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setMessages(update.messages);
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [room]);
 
@@ -225,7 +241,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       });
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
 
@@ -246,7 +262,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [room?.room_id, currentUserId]);
 
@@ -268,7 +284,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
-    markRoomRead(room.room_id).catch(console.error);
+    markRoomRead(room.room_id).catch(logAndIgnore);
   }, [room, roomSettingsOpen]);
 
   useEffect(() => {
@@ -287,7 +303,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         if (!isVisible) return;
         if (lastMarkedReadEventId.current === latestEventId) return;
         lastMarkedReadEventId.current = latestEventId;
-        markRoomRead(room.room_id).catch(console.error);
+        markRoomRead(room.room_id).catch(logAndIgnore);
       },
       { threshold: 1 },
     );
@@ -306,7 +322,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // in room B, since the throttle was keyed globally rather than per room.
     lastTypingSentAt.current = 0;
     return () => {
-      if (typingRoomId) sendTyping(typingRoomId, false).catch(console.error);
+      if (typingRoomId) sendTyping(typingRoomId, false).catch(logAndIgnore);
     };
   }, [room?.room_id]);
 
@@ -314,7 +330,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
-    sendTyping(typingRoomId, true).catch(console.error);
+    sendTyping(typingRoomId, true).catch(logAndIgnore);
   }
 
   const typingText = useMemo(() => typingLabel(typingUserIds), [typingUserIds]);
@@ -341,7 +357,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (editingEventId) {
       const eventId = editingEventId;
       setEditingEventId(null);
-      sendTyping(targetRoom.room_id, false).catch(console.error);
+      sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
       try {
         await editMessage(targetRoom.room_id, eventId, content.body);
       } catch (err) {
@@ -352,7 +368,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
     const replyingTo = replyTarget;
     setReplyTarget(null);
-    sendTyping(targetRoom.room_id, false).catch(console.error);
+    sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
 
     // No client-side optimistic echo any more (Spec 14): the room's live
     // `Timeline` creates the local echo itself the moment the send is queued
@@ -384,7 +400,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   async function handleSlashCommand(parsed: ParsedSlashCommand) {
     if (!room) return;
     const targetRoomId = room.room_id;
-    sendTyping(targetRoomId, false).catch(console.error);
+    sendTyping(targetRoomId, false).catch(logAndIgnore);
     try {
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
@@ -639,7 +655,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               else if (replyTarget) setReplyTarget(null);
             }}
             onTypingInput={() => handleTypingInput(room.room_id)}
-            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
+            onBlur={() => sendTyping(room.room_id, false).catch(logAndIgnore)}
           />
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css. */}
