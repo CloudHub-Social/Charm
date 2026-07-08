@@ -46,6 +46,18 @@ remain disabled until Charm has the corresponding SDK integration and a native
 consent bridge that can shut down or reconfigure the SDK immediately when a user
 opts out.
 
+When Sentry consent is enabled, Rust installs a Sentry `tracing` layer after
+Sentry initialization, even if `logsEnabled` is false at startup, so
+same-session log opt-in can start native tracing without a restart. The layer is
+target-filtered to Charm-owned Rust modules, uses runtime `logsEnabled` consent
+seeded from the store and refreshed immediately by settings IPC, emits tracing
+events only while log consent is enabled, captures warn/error events as Sentry
+logs, keeps info/warn/error events as breadcrumbs, captures error events as
+Sentry issues, and ignores debug/trace tracing events. The native Sentry Logs
+client support is initialized for the same-session opt-in path, but its
+`before_send_log` hook drops logs whenever runtime log consent is disabled, and
+drops debug logs outside debug builds.
+
 ## Environment
 
 Use these variables for local or release builds:
@@ -140,10 +152,15 @@ This implementation covers the foundation: consent, settings UI, Sentry init,
 release/environment/platform tags, release-health sessions, basic tracing,
 scrubbing, docs, and the opt-in frontend configuration for replay, canvas
 replay, profiling, warning/error console logs, frontend Tauri IPC breadcrumbs,
-and Rust attachment-upload IPC breadcrumbs correlated by the frontend operation
-ID header. It also covers opt-in user feedback from settings and the crash
-fallback, with optional SDK-provided screenshot capture when supported.
+Rust attachment-upload IPC breadcrumbs correlated by the frontend operation ID
+header, and a consent-gated Rust `tracing`/Sentry Logs bridge for startup,
+attachment IPC, and push decrypt fallback events. It also covers opt-in user
+feedback from settings and the crash fallback, with optional SDK-provided
+screenshot capture when supported.
 
 Broader Rust tracing/log bridges, NDK/native Android crash capture, Android
 Mobile Vitals, and signed iOS device-release dSYMs remain separate follow-up
 phases from Spec 21.
+Broader per-command Rust instrumentation is still intentionally incremental;
+new producers should stay Charm-targeted and avoid raw Matrix identifiers, file
+paths, and secrets.

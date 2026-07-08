@@ -6,15 +6,33 @@ import {
 } from "./persistence";
 import { DEFAULT_OBSERVABILITY_SETTINGS } from "./settings";
 
-const load = vi.hoisted(() => vi.fn());
+const mocks = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(),
+  load: vi.fn(),
+  storeSet: vi.fn(),
+  storeSave: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
-  load: (...args: unknown[]) => load(...args),
+  load: (...args: unknown[]) => mocks.load(...args),
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
+
+vi.mock("@/lib/platform", () => ({
+  isTauri: () => mocks.isTauri(),
 }));
 
 beforeEach(() => {
   localStorage.clear();
-  load.mockReset().mockRejectedValue(new Error("store unavailable"));
+  mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.isTauri.mockReset().mockReturnValue(false);
+  mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
+  mocks.storeSet.mockReset().mockResolvedValue(undefined);
+  mocks.storeSave.mockReset().mockResolvedValue(undefined);
 });
 
 describe("observability persistence", () => {
@@ -57,9 +75,7 @@ describe("observability persistence", () => {
   });
 
   it("flushes successful store writes", async () => {
-    const storeSet = vi.fn().mockResolvedValue(undefined);
-    const storeSave = vi.fn().mockResolvedValue(undefined);
-    load.mockResolvedValue({ get: vi.fn(), set: storeSet, save: storeSave });
+    mocks.load.mockResolvedValue({ get: vi.fn(), set: mocks.storeSet, save: mocks.storeSave });
 
     const settings = {
       ...DEFAULT_OBSERVABILITY_SETTINGS,
@@ -68,10 +84,82 @@ describe("observability persistence", () => {
     };
     await persistObservabilitySettings(settings, 42);
 
-    expect(storeSet).toHaveBeenCalledWith("observability", { state: settings, updatedAt: 42 });
-    expect(storeSave).toHaveBeenCalledOnce();
-    expect(storeSet.mock.invocationCallOrder[0]).toBeLessThan(
-      storeSave.mock.invocationCallOrder[0],
+    expect(mocks.storeSet).toHaveBeenCalledWith("observability", {
+      state: settings,
+      updatedAt: 42,
+    });
+    expect(mocks.storeSave).toHaveBeenCalledOnce();
+    expect(mocks.storeSet.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.storeSave.mock.invocationCallOrder[0],
     );
+  });
+
+  it("syncs log opt-outs to Rust before awaiting durable persistence", async () => {
+    let resolveStoreWrite!: () => void;
+    const storeWrite = new Promise<void>((resolve) => {
+      resolveStoreWrite = resolve;
+    });
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({ set: mocks.storeSet, save: mocks.storeSave });
+    mocks.storeSet.mockReturnValue(storeWrite);
+
+    const persist = persistObservabilitySettings(
+      {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        logsEnabled: false,
+      },
+      100,
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
+        logsEnabled: false,
+      });
+    });
+    expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.storeSet.mock.invocationCallOrder[0],
+    );
+
+    resolveStoreWrite();
+    await persist;
+  });
+
+  it("does not let an older opt-in overwrite a newer opt-out IPC sync", async () => {
+    let resolveFirstWrite!: () => void;
+    const firstWrite = new Promise<void>((resolve) => {
+      resolveFirstWrite = resolve;
+    });
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({ set: mocks.storeSet, save: mocks.storeSave });
+    mocks.storeSet.mockReturnValueOnce(firstWrite).mockResolvedValueOnce(undefined);
+
+    const optIn = persistObservabilitySettings(
+      {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        logsEnabled: true,
+      },
+      100,
+    );
+    await vi.waitFor(() => {
+      expect(mocks.storeSet).toHaveBeenCalledTimes(1);
+    });
+
+    await persistObservabilitySettings(
+      {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        logsEnabled: false,
+      },
+      101,
+    );
+    resolveFirstWrite();
+    await optIn;
+
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
+      logsEnabled: false,
+    });
   });
 });

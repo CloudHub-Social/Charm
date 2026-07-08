@@ -3,6 +3,7 @@ import {
   normalizeObservabilitySettings,
   type ObservabilitySettings,
 } from "./settings";
+import { isTauri } from "@/lib/platform";
 
 export const OBSERVABILITY_LOCAL_STORAGE_KEY = "charm:observability";
 export const OBSERVABILITY_STORE_FILENAME = "observability.json";
@@ -12,6 +13,8 @@ interface PersistedEnvelope {
   state: ObservabilitySettings;
   updatedAt: number;
 }
+
+let persistMutationId = 0;
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
@@ -55,6 +58,19 @@ async function getStore() {
   return load(OBSERVABILITY_STORE_FILENAME, { autoSave: true, defaults: {} });
 }
 
+async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("update_observability_log_consent", { logsEnabled });
+  } catch (error) {
+    console.warn("Failed to sync Rust observability log consent", error);
+    // Rust reads the persisted store on the next app start if same-session IPC is unavailable.
+  }
+}
+
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
   try {
     const store = await getStore();
@@ -78,16 +94,23 @@ export async function persistObservabilitySettings(
   settings: ObservabilitySettings,
   updatedAt: number = Date.now(),
 ): Promise<void> {
+  const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = {
     state: normalizeObservabilitySettings(settings),
     updatedAt,
   };
   writeLocalEnvelope(envelope);
+  if (!envelope.state.logsEnabled) {
+    await syncRustLogConsent(false);
+  }
   try {
     const store = await getStore();
     await store.set(OBSERVABILITY_STORE_KEY, envelope);
     await store.save();
   } catch {
     // The local mirror already landed; plain-browser tests and dev previews use it.
+  }
+  if (mutationId === persistMutationId && envelope.state.logsEnabled) {
+    await syncRustLogConsent(true);
   }
 }
