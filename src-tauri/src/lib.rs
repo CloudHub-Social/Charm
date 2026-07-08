@@ -196,11 +196,10 @@ fn sentry_event_filter(
     }
 
     match *metadata.level() {
-        tracing::Level::ERROR | tracing::Level::WARN => {
+        tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO => {
             let logs_enabled = cached_observability_logs_enabled(app_data_dir);
             sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
         }
-        tracing::Level::INFO => EventFilter::Breadcrumb,
         tracing::Level::DEBUG | tracing::Level::TRACE => EventFilter::Ignore,
     }
 }
