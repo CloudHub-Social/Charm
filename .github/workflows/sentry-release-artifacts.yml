@@ -19,11 +19,6 @@ on:
 permissions:
   contents: read
 
-env:
-  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-  SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-  SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-
 jobs:
   frontend-sourcemaps:
     name: Frontend sourcemaps
@@ -43,9 +38,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Configure Sentry release upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          ENVIRONMENT_INPUT: ${{ github.event.inputs.environment }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: |
           missing=()
-          for name in SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT; do
+          for name in SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT VITE_SENTRY_DSN; do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
@@ -55,7 +57,7 @@ jobs:
             exit 1
           fi
 
-          release="${{ github.event.inputs.release }}"
+          release="$RELEASE_INPUT"
           if [ -z "$release" ]; then
             if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
               release="${GITHUB_REF_NAME}"
@@ -63,22 +65,35 @@ jobs:
               release="${GITHUB_SHA}"
             fi
           fi
-          environment="${{ github.event.inputs.environment }}"
+          environment="$ENVIRONMENT_INPUT"
           if [ -z "$environment" ]; then
             environment="production"
           fi
+          if [[ "$release" == *$'\n'* || "$release" == *$'\r'* ]]; then
+            echo "::error::Sentry release names must be single-line values"
+            exit 1
+          fi
+          if [[ "$environment" == *$'\n'* || "$environment" == *$'\r'* ]]; then
+            echo "::error::Sentry environment names must be single-line values"
+            exit 1
+          fi
 
           {
-            echo "SENTRY_UPLOAD=true"
-            echo "SENTRY_RELEASE=$release"
-            echo "VITE_SENTRY_RELEASE=$release"
-            echo "SENTRY_ENVIRONMENT=$environment"
-            echo "VITE_SENTRY_ENVIRONMENT=$environment"
+            printf 'SENTRY_UPLOAD=true\n'
+            printf 'SENTRY_RELEASE=%s\n' "$release"
+            printf 'VITE_SENTRY_RELEASE=%s\n' "$release"
+            printf 'SENTRY_ENVIRONMENT=%s\n' "$environment"
+            printf 'VITE_SENTRY_ENVIRONMENT=%s\n' "$environment"
           } >> "$GITHUB_ENV"
 
       # `vite.config.ts` wires @sentry/vite-plugin when SENTRY_UPLOAD=true and
       # the three Sentry secrets are present. Upload failures fail this build.
       - name: Build and upload frontend sourcemaps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: pnpm build
 
       - name: Verify sourcemaps are not left in dist
@@ -113,7 +128,14 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - run: pnpm install --frozen-lockfile
+
       - name: Configure Sentry debug-file upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         run: |
           missing=()
           for name in SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT; do
@@ -126,7 +148,7 @@ jobs:
             exit 1
           fi
 
-          release="${{ github.event.inputs.release }}"
+          release="$RELEASE_INPUT"
           if [ -z "$release" ]; then
             if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
               release="${GITHUB_REF_NAME}"
@@ -134,14 +156,18 @@ jobs:
               release="${GITHUB_SHA}"
             fi
           fi
+          if [[ "$release" == *$'\n'* || "$release" == *$'\r'* ]]; then
+            echo "::error::Sentry release names must be single-line values"
+            exit 1
+          fi
 
           {
-            echo "SENTRY_RELEASE=$release"
-            echo "CARGO_PROFILE_RELEASE_DEBUG=1"
+            printf 'SENTRY_RELEASE=%s\n' "$release"
+            printf 'CARGO_PROFILE_RELEASE_DEBUG=1\n'
           } >> "$GITHUB_ENV"
 
-      - name: Build Rust core with release debuginfo
-        run: cargo build --release -p charm
+      - name: Build Tauri Linux app with release debuginfo
+        run: pnpm tauri build
 
       - name: Resolve Cargo target directory
         id: cargo-target
@@ -150,6 +176,10 @@ jobs:
           echo "dir=$target_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload Rust debug information files
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
         run: >
           pnpm dlx @sentry/cli@3.5.1 debug-files upload
           --org "$SENTRY_ORG"
