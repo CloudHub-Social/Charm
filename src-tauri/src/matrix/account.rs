@@ -121,6 +121,15 @@ async fn clear_local_session(
     persistence::clear_session(&account_key)?;
     persistence::clear_oauth_session(&account_key)?;
 
+    // Cleared *before* the awaited teardown below, not after: `state.client`
+    // is what `MatrixState::require_client` hands to any other Tauri command
+    // that happens to run concurrently, and by this point the persisted
+    // session those two `clear_*` calls just deleted is already gone — a
+    // command that grabbed the old client during the (now-multi-await)
+    // teardown window would let the signed-out account keep sending/fetching
+    // until the next launch.
+    *state.client.lock().await = None;
+
     // The sync loop drives the native dock/taskbar/tray badge from its own
     // snapshots (Spec 10) — stopping it below zeroes the client but doesn't
     // itself zero the badge. Without this, a sign-out with unread rooms
@@ -130,7 +139,8 @@ async fn clear_local_session(
 
     // `sync::abort_current_sync_loop` (not a bespoke abort here) — genuinely
     // stops and *awaits* the sync loop, the detached presence-report task,
-    // and every live timeline listener, then clears `state.client`. A plain
+    // and every live timeline listener (and redundantly re-clears
+    // `state.client`, already `None` above — harmless). A plain
     // `handle.abort()` without awaiting (what this used to do) left the
     // aborted task possibly still unwinding — holding its own `Client` clone,
     // and the store's open file handles under it — if the user immediately

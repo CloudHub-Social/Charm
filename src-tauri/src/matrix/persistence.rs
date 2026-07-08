@@ -521,11 +521,14 @@ pub fn relocate_store_and_save_session(
     account_key: &str,
     homeserver_url: &str,
     session: &MatrixSession,
-) -> Result<RelocateOutcome, String> {
+) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(&matrix_store_root(app)?, temp_key, account_key, || {
-        save_session(account_key, homeserver_url, session)
-    })
+    relocate_store_at_locked_with(
+        &matrix_store_root(app).map_err(RelocationFailure::safe)?,
+        temp_key,
+        account_key,
+        || save_session(account_key, homeserver_url, session),
+    )
 }
 
 /// OAuth-session counterpart of [`relocate_store_and_save_session`], for the
@@ -537,11 +540,48 @@ pub fn relocate_store_and_save_oauth_session(
     account_key: &str,
     homeserver_url: &str,
     session: &OAuthSession,
-) -> Result<RelocateOutcome, String> {
+) -> Result<RelocateOutcome, RelocationFailure> {
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    relocate_store_at_locked_with(&matrix_store_root(app)?, temp_key, account_key, || {
-        save_oauth_session(account_key, homeserver_url, session)
-    })
+    relocate_store_at_locked_with(
+        &matrix_store_root(app).map_err(RelocationFailure::safe)?,
+        temp_key,
+        account_key,
+        || save_oauth_session(account_key, homeserver_url, session),
+    )
+}
+
+/// Error from a failed [`relocate_store_and_save_session`]/
+/// [`relocate_store_and_save_oauth_session`] call, carrying whether it's
+/// safe for the caller to keep using/resume a previously-active `Client`
+/// for this account afterward — see each construction site for what makes
+/// a given failure safe or not.
+pub struct RelocationFailure {
+    pub message: String,
+    /// `true` if the account's on-disk store ended up in a state consistent
+    /// with whatever a previously-active client already has open: either
+    /// nothing was touched (the failure happened before any existing store
+    /// was moved), or an in-process rollback fully restored the original
+    /// store and its passphrase. `false` means the swap or its rollback
+    /// left things inconsistent (e.g. couldn't remove the newly-installed
+    /// store because the caller's client still had it open, or couldn't
+    /// restore the old passphrase) — resuming a previous client in that
+    /// case would paper over on-disk state nothing can reliably decrypt.
+    pub safe_to_resume_previous: bool,
+}
+
+impl RelocationFailure {
+    fn safe(message: impl ToString) -> Self {
+        Self {
+            message: message.to_string(),
+            safe_to_resume_previous: true,
+        }
+    }
+}
+
+impl From<RelocationFailure> for String {
+    fn from(e: RelocationFailure) -> String {
+        e.message
+    }
 }
 
 /// Serializes [`relocate_store_at_locked`] (and, transitively, the session
@@ -586,7 +626,7 @@ fn relocate_store_at_locked(
     temp_key: &str,
     account_key: &str,
 ) -> Result<RelocateOutcome, String> {
-    relocate_store_at_locked_with(root, temp_key, account_key, || Ok(()))
+    relocate_store_at_locked_with(root, temp_key, account_key, || Ok(())).map_err(String::from)
 }
 
 /// Relocates the temp store to `account_key`'s path, then runs `on_commit`
@@ -606,7 +646,7 @@ fn relocate_store_at_locked_with(
     temp_key: &str,
     account_key: &str,
     on_commit: impl FnOnce() -> Result<(), String>,
-) -> Result<RelocateOutcome, String> {
+) -> Result<RelocateOutcome, RelocationFailure> {
     let temp_path = root.join(temp_key);
     let account_path = root.join(account_key);
     let backup_key = format!("{account_key}{STALE_BACKUP_SUFFIX}");
@@ -628,17 +668,18 @@ fn relocate_store_at_locked_with(
     if backup_path.exists()
         && !recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path)
     {
-        return Err(format!(
+        // Safe: this attempt hasn't touched `account_path` at all yet.
+        return Err(RelocationFailure::safe(format!(
             "a leftover stale-backup for {account_key} could not be resolved — aborting rather than risk overwriting it"
-        ));
+        )));
     }
 
     let account_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(account_key))
-            .map_err(|e| e.to_string())?;
+            .map_err(RelocationFailure::safe)?;
     let backup_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&backup_key))
-            .map_err(|e| e.to_string())?;
+            .map_err(RelocationFailure::safe)?;
 
     // A stale store from an incomplete previous login/logout can never
     // correctly host the session that was just authenticated (see this
@@ -658,14 +699,16 @@ fn relocate_store_at_locked_with(
     // we're here again, that backup is superseded by *this* attempt's stale
     // store.
     let existed = account_path.exists();
-    let original_passphrase =
-        if existed {
-            Some(account_passphrase_entry.get_password().map_err(|e| {
-                format!("failed to read existing passphrase for {account_key}: {e}")
-            })?)
-        } else {
-            None
-        };
+    let original_passphrase = if existed {
+        // Safe: nothing has been touched yet.
+        Some(account_passphrase_entry.get_password().map_err(|e| {
+            RelocationFailure::safe(format!(
+                "failed to read existing passphrase for {account_key}: {e}"
+            ))
+        })?)
+    } else {
+        None
+    };
     if existed {
         // Written *before* the directory move below, not after: this way a
         // crash between the two can never land in a gap where the backup
@@ -676,11 +719,15 @@ fn relocate_store_at_locked_with(
         // present for anything `recover_or_discard_stale_backup` might find
         // afterward). A *hard* requirement, not best-effort: if this write
         // fails, bail before touching anything else — no rollback machinery
-        // needed for a step this early, since nothing has moved yet.
+        // needed for a step this early, since nothing has moved yet (safe).
         if let Some(ref passphrase) = original_passphrase {
-            backup_passphrase_entry.set_password(passphrase).map_err(|e| {
-                format!("failed to durably save the existing store's passphrase for {account_key}: {e}")
-            })?;
+            backup_passphrase_entry
+                .set_password(passphrase)
+                .map_err(|e| {
+                    RelocationFailure::safe(format!(
+                    "failed to durably save the existing store's passphrase for {account_key}: {e}"
+                ))
+                })?;
         }
 
         if backup_path.exists() {
@@ -688,10 +735,12 @@ fn relocate_store_at_locked_with(
         }
         if let Err(e) = std::fs::rename(&account_path, &backup_path) {
             let _ = backup_passphrase_entry.delete_credential();
-            return Err(format!(
+            // Safe: the rename itself failed, so account_path's original
+            // content never moved.
+            return Err(RelocationFailure::safe(format!(
                 "failed to back up stale store for {account_key} at {}: {e}",
                 account_path.display()
-            ));
+            )));
         }
     }
 
@@ -699,7 +748,8 @@ fn relocate_store_at_locked_with(
     // if one existed, so a failure anywhere below leaves the account back in
     // its pre-relocation state instead of stranded between two half-installed
     // stores.
-    let roll_back = |err: String| -> String {
+    let roll_back = |err: String| -> RelocationFailure {
+        let mut fully_restored = !existed;
         if existed {
             // The just-authenticated `Client` the caller is still holding
             // is (at the OS level) whatever's currently at `account_path` —
@@ -748,10 +798,14 @@ fn relocate_store_at_locked_with(
                 };
                 if passphrase_restored && std::fs::rename(&backup_path, &account_path).is_ok() {
                     let _ = backup_passphrase_entry.delete_credential();
+                    fully_restored = true;
                 }
             }
         }
-        err
+        RelocationFailure {
+            message: err,
+            safe_to_resume_previous: fully_restored,
+        }
     };
 
     let passphrase = match get_or_create_passphrase(temp_key) {
@@ -931,27 +985,41 @@ pub fn clear_oauth_session(account_key: &str) -> Result<(), String> {
 /// point — this is defense-in-depth, not load-bearing synchronization
 /// (see that lock's doc comment for what closed the actual race).
 ///
-/// A `load_session` error (a transient keychain read glitch, a corrupt
+/// A `load_session` *error* (a transient keychain read glitch, a corrupt
 /// saved-JSON blob) is treated as "still current" — `true` — rather than
 /// "superseded": with the lock in place, there is no legitimate scenario
-/// where this call fails to read what this same completion just wrote a
-/// moment ago, so failing here almost certainly means a flaky read, not an
+/// where this call fails to *read* what this same completion just wrote a
+/// moment ago, so an `Err` here almost certainly means a flaky read, not an
 /// actual supersession. Treating it as superseded would tell the frontend a
 /// login that fully succeeded and committed did not, discarding a good
 /// session over a glitch in a check that's now just a sanity net.
+///
+/// A clean `Ok(None)` — the entry is verifiably *absent*, not just
+/// unreadable — is a different story and is treated as "superseded"
+/// (`false`): unlike a read error, this has a real, reachable, non-glitch
+/// cause `login_completion_lock` does *not* guard against — `clear_session`
+/// (logout/deactivate) isn't itself gated by that lock, so a user logging
+/// out while a completion for the same account is between saving its
+/// session and reaching this check can legitimately delete the very entry
+/// this is looking for. Proceeding to adopt a client in that case would
+/// leave the app signed in only in memory, with no persisted session behind
+/// it — undone the moment the process restarts, without ever having told
+/// the user their logout raced a login.
 pub fn session_is_current(account_key: &str, device_id: &str) -> bool {
     match load_session(account_key) {
-        Ok(saved) => saved.is_none_or(|saved| saved.session.meta.device_id.as_str() == device_id),
+        Ok(Some(saved)) => saved.session.meta.device_id.as_str() == device_id,
+        Ok(None) => false,
         Err(_) => true,
     }
 }
 
 /// OAuth-session counterpart of [`session_is_current`], for the QR login
-/// flow. See its doc comment for the same "read failure counts as still
-/// current" rationale.
+/// flow. See its doc comment for the same "read error counts as still
+/// current, but a clean absence counts as superseded" rationale.
 pub fn oauth_session_is_current(account_key: &str, device_id: &str) -> bool {
     match load_oauth_session(account_key) {
-        Ok(saved) => saved.is_none_or(|saved| saved.user.meta.device_id.as_str() == device_id),
+        Ok(Some(saved)) => saved.user.meta.device_id.as_str() == device_id,
+        Ok(None) => false,
         Err(_) => true,
     }
 }
@@ -1266,7 +1334,11 @@ mod tests {
             Err("simulated session save failure".to_string())
         });
 
-        assert_eq!(result, Err("simulated session save failure".to_string()));
+        let err = result.expect_err("expected rollback to surface the commit failure");
+        assert_eq!(err.message, "simulated session save failure");
+        // The rollback fully succeeded (old store + passphrase restored), so
+        // it's safe for a caller to resume using a previously-active client.
+        assert!(err.safe_to_resume_previous);
 
         // The account is back on its original store, not the new one, and
         // not stranded with neither.

@@ -134,11 +134,18 @@ pub async fn login(
         &homeserver_url,
         &session,
     ) {
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+        // Only resume `previous_client` if relocation's own rollback left
+        // the account's on-disk store consistent with it — otherwise doing
+        // so would paper over a half-restored store neither this client nor
+        // anything else can reliably decrypt. See `RelocationFailure`'s doc
+        // comment.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
         }
-        return Err(e);
+        return Err(e.into());
     }
 
     // With `login_completion_lock` held for the whole sequence, no other
@@ -460,11 +467,14 @@ pub async fn register(
         &homeserver_url,
         &session,
     ) {
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+        // See `login`'s identical safe_to_resume_previous check.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
         }
-        return Err(e);
+        return Err(e.into());
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
@@ -719,11 +729,14 @@ pub async fn complete_sso_login(
         &homeserver_url,
         &session,
     ) {
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
+        // See `login`'s identical safe_to_resume_previous check.
+        if e.safe_to_resume_previous {
+            if let Some(previous_client) = previous_client {
+                *state.client.lock().await = Some(previous_client.clone());
+                sync::spawn_sync_task(app, previous_client);
+            }
         }
-        return Err(e);
+        return Err(e.into());
     }
 
     // See `login`'s identical check and rationale for returning `Err` rather
