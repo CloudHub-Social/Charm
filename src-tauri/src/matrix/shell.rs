@@ -105,45 +105,40 @@ fn compute_space_badge_states(
         if !has_unread && highlight == 0 {
             continue;
         }
-        for space_id in ancestor_space_ids(&room.room_id, &parents_by_room) {
-            let badge: &mut SpaceBadgeState = badges.entry(space_id.clone()).or_default();
+        for_each_ancestor_space_id(&room.room_id, &parents_by_room, |space_id| {
+            let badge: &mut SpaceBadgeState = badges.entry(space_id.to_owned()).or_default();
             if has_unread {
                 badge.total_unread = badge.total_unread.saturating_add(1);
             }
             badge.total_highlight = badge.total_highlight.saturating_add(highlight);
-        }
+        });
     }
     badges
 }
 
-fn ancestor_space_ids(
+fn for_each_ancestor_space_id(
     room_id: &str,
     parents_by_room: &std::collections::HashMap<&str, &[String]>,
-) -> Vec<String> {
-    fn visit(
-        room_id: &str,
-        parents_by_room: &std::collections::HashMap<&str, &[String]>,
-        seen: &mut std::collections::HashSet<String>,
-        ancestors: &mut Vec<String>,
-    ) {
-        let Some(parents) = parents_by_room.get(room_id) else {
+    mut visit_ancestor: impl FnMut(&str),
+) {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![room_id];
+
+    while let Some(current_room_id) = stack.pop() {
+        let Some(parents) = parents_by_room.get(current_room_id) else {
             eprintln!(
-                "warning: space badge ancestor traversal stopped at missing parent room {room_id}"
+                "warning: space badge ancestor traversal stopped at missing parent room {current_room_id}"
             );
-            return;
+            continue;
         };
-        for parent in *parents {
-            if seen.insert(parent.clone()) {
-                ancestors.push(parent.clone());
-                visit(parent, parents_by_room, seen, ancestors);
+        for parent in parents.iter().rev() {
+            let parent_id = parent.as_str();
+            if seen.insert(parent_id) {
+                visit_ancestor(parent_id);
+                stack.push(parent_id);
             }
         }
     }
-
-    let mut seen = std::collections::HashSet::new();
-    let mut ancestors = Vec::new();
-    visit(room_id, parents_by_room, &mut seen, &mut ancestors);
-    ancestors
 }
 
 /// Whether a new message in `event_room_id` should produce a local
