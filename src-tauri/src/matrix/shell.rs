@@ -127,6 +127,9 @@ fn ancestor_space_ids(
         ancestors: &mut Vec<String>,
     ) {
         let Some(parents) = parents_by_room.get(room_id) else {
+            eprintln!(
+                "warning: space badge ancestor traversal stopped at missing parent room {room_id}"
+            );
             return;
         };
         for parent in *parents {
@@ -594,6 +597,28 @@ mod tests {
                 total_highlight: 1
             })
         );
+    }
+
+    #[test]
+    fn space_badges_keep_direct_parent_when_intermediate_space_is_missing() {
+        let mut nested_room = room(1, 1, false, false);
+        nested_room.room_id = "!nested-room:example.org".to_string();
+        nested_room.parent_space_ids = vec!["!missing-subspace:example.org".to_string()];
+
+        let mut root = room(0, 0, false, false);
+        root.room_id = "!root-space:example.org".to_string();
+        root.is_space = true;
+
+        let badge = compute_badge_state(&[root, nested_room]);
+
+        assert_eq!(
+            badge.spaces.get("!missing-subspace:example.org"),
+            Some(&SpaceBadgeState {
+                total_unread: 1,
+                total_highlight: 1
+            })
+        );
+        assert!(!badge.spaces.contains_key("!root-space:example.org"));
     }
 
     #[test]
