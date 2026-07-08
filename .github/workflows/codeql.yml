@@ -43,13 +43,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           languages: ${{ matrix.language }}
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:${{ matrix.language }}"
 
@@ -70,12 +70,36 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        uses: github/codeql-action/init@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           languages: rust
           build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:rust"
+
+  # Stable required status check for the merge queue. Branch protection should
+  # require THIS context (not "CodeQL") because:
+  #  - the code-scanning "CodeQL" results check is not produced on merge_group
+  #    commits (code-scanning rules don't apply to merge queue groups), so
+  #    requiring it would stall the queue; and
+  #  - the analyze matrix emits per-language "Analyze (…)" contexts, not a single
+  #    one, so there is no stable "CodeQL" workflow context to require.
+  # This job runs on every event (including merge_group), needs the no-build
+  # `analyze` matrix (which does run on merge_group) plus the PR/schedule-only
+  # `analyze-rust`, and turns red only if one actually failed or was cancelled —
+  # a skipped analyze-rust on merge_group passes. Mirrors `rust-required` in
+  # quality-checks.yml; `if: always()` is load-bearing for the same reason.
+  codeql-required:
+    name: CodeQL (required)
+    needs: [analyze, analyze-rust]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any CodeQL analysis failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A CodeQL analysis job did not succeed: ${{ join(needs.*.result, ', ') }}"
+          exit 1
