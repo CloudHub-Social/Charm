@@ -253,6 +253,7 @@ describe("matrix web transport", () => {
       undefined,
     ],
     ["get_own_profile", {}, "GET", "/api/profile/me", undefined],
+    ["set_display_name", { displayName: "Alice" }, "PUT", "/api/profile/display-name", "Alice"],
     [
       "get_account_data",
       { eventType: "social.cloudhub.charm.onboarding" },
@@ -459,6 +460,11 @@ describe("matrix web transport", () => {
     await expect(invoke("get_local_onboarding_flag")).resolves.toBe(true);
   });
 
+  it("returns null for account deactivation links when the web companion has none", async () => {
+    await expect(invoke("get_account_deactivate_url")).resolves.toBeNull();
+    expect(fetchMock()).not.toHaveBeenCalled();
+  });
+
   it("returns web-safe values for shell-only no-op commands", async () => {
     await expect(invoke("is_desktop_platform")).resolves.toBe(false);
     await expect(invoke("get_autostart")).resolves.toBe(false);
@@ -469,7 +475,10 @@ describe("matrix web transport", () => {
   it("rejects commands and uploads that the web transport cannot support yet", async () => {
     await expect(
       invoke("start_qr_login", { homeserverUrl: "https://example.org" }),
-    ).rejects.toThrow("does not support 'start_qr_login'");
+    ).rejects.toMatchObject({
+      kind: "UnsupportedCommand",
+      message: "The web companion transport does not support 'start_qr_login' yet.",
+    });
     await expect(
       invoke("send_attachment", {
         roomId: "!r:example.org",

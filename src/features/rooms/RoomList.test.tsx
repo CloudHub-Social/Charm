@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
@@ -58,6 +58,10 @@ vi.mock("@/lib/matrix", () => ({
 vi.mock("@use-gesture/react", () => ({
   useDrag: () => () => ({}),
 }));
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("RoomList", () => {
   it("shows the empty state when there are no rooms", () => {
@@ -125,6 +129,17 @@ describe("RoomList", () => {
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Mark as unread"));
     expect(setRoomMarkedUnread).toHaveBeenCalledWith(room.room_id, true);
+  });
+
+  it("hides the mute action in web builds while the companion lacks notification prefs", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const room = makeRoomSummary({ name: "general" });
+    renderRoomList(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+
+    expect(await screen.findByText("Add to Favourites")).toBeInTheDocument();
+    expect(screen.queryByText("Mute")).not.toBeInTheDocument();
   });
 
   it("shows no badge when badgeAtom is null or total_unread is zero", () => {

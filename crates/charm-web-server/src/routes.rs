@@ -169,6 +169,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/presence", put(set_presence))
         .route("/api/presence/{user_id}", get(get_presence))
         .route("/api/profile/me", get(get_own_profile))
+        .route("/api/profile/display-name", put(set_display_name))
         // -- account data --
         .route(
             "/api/account-data/{event_type}",
@@ -1849,6 +1850,21 @@ async fn set_avatar(
         .client
         .account()
         .upload_avatar(&mime, body.to_vec())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_display_name(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(display_name): Json<Option<String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    session
+        .client
+        .account()
+        .set_display_name(display_name.as_deref())
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(StatusCode::NO_CONTENT)

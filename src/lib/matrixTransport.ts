@@ -107,7 +107,10 @@ function jsonHeaders(): HeadersInit {
 }
 
 function unsupported(command: string): never {
-  throw new Error(`The web companion transport does not support '${command}' yet.`);
+  throw new WebCommandError(
+    "UnsupportedCommand",
+    `The web companion transport does not support '${command}' yet.`,
+  );
 }
 
 function dispatchWebEvent(event: string, payload: unknown): void {
@@ -425,6 +428,10 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       }>("GET", "/api/profile/me");
       return profile as T;
     }
+    case "set_display_name":
+      return requestJson<T>("PUT", "/api/profile/display-name", args.displayName);
+    case "get_account_deactivate_url":
+      return null as T;
     case "get_account_data":
       return requestJson<T>("GET", `/api/account-data/${encodeSegment(String(args.eventType))}`);
     case "set_account_data":

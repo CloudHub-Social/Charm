@@ -17,6 +17,7 @@ import {
   setRoomMuted,
   type RoomSummary,
 } from "@/lib/matrix";
+import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
@@ -233,7 +234,11 @@ function DraggableRoomRow({
       onToggleLowPriority={() =>
         setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
       }
-      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)}
+      onToggleMuted={
+        isWebBuild()
+          ? undefined
+          : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
+      }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       dragHandleProps={bind()}
