@@ -14,6 +14,8 @@ use ts_rs::TS;
 
 use super::MatrixState;
 
+const RECURSIVE_HIERARCHY_MAX_DEPTH: u32 = 50;
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 #[serde(rename_all = "snake_case")]
@@ -108,7 +110,7 @@ pub async fn list_space_hierarchy_impl(
     let parsed_space_id = RoomId::parse(space_id).map_err(|e| e.to_string())?;
     let chunks = fetch_hierarchy_chunks(client, parsed_space_id.clone(), false).await?;
     Ok(build_hierarchy_from_chunks(
-        &parsed_space_id.to_string(),
+        parsed_space_id.as_ref(),
         chunks,
     ))
 }
@@ -124,7 +126,11 @@ async fn fetch_hierarchy_chunks(
     loop {
         let mut request = get_hierarchy::v1::Request::new(room_id.clone());
         request.from = from;
-        request.max_depth = direct_children_only.then_some(uint!(1));
+        request.max_depth = Some(if direct_children_only {
+            uint!(1)
+        } else {
+            RECURSIVE_HIERARCHY_MAX_DEPTH.into()
+        });
         let response = client.send(request).await.map_err(|e| e.to_string())?;
         chunks.extend(response.rooms);
         from = response.next_batch;
@@ -157,9 +163,11 @@ fn build_hierarchy_from_chunks(
 ) -> Vec<SpaceHierarchyNode> {
     let mut rooms = HashMap::new();
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+    let mut response_order = HashMap::new();
 
-    for chunk in chunks {
+    for (index, chunk) in chunks.into_iter().enumerate() {
         let parent_id = chunk.summary.room_id.to_string();
+        response_order.insert(parent_id.clone(), index);
         let children = chunk
             .children_state
             .iter()
@@ -172,7 +180,18 @@ fn build_hierarchy_from_chunks(
         rooms.insert(parent_id, chunk_to_child(chunk));
     }
 
+    sort_edges_by_response_order(&mut edges, &response_order);
+
     build_hierarchy_from_edges(root_id, &rooms, &edges)
+}
+
+fn sort_edges_by_response_order(
+    edges: &mut HashMap<String, Vec<String>>,
+    response_order: &HashMap<String, usize>,
+) {
+    for children in edges.values_mut() {
+        children.sort_by_key(|id| response_order.get(id).copied().unwrap_or(usize::MAX));
+    }
 }
 
 fn build_hierarchy_from_edges(
@@ -336,6 +355,32 @@ mod tests {
     }
 
     #[test]
+    fn sorts_children_by_hierarchy_response_order() {
+        let mut edges = HashMap::from([(
+            "!space:example.org".to_owned(),
+            vec![
+                "!second:example.org".to_owned(),
+                "!first:example.org".to_owned(),
+            ],
+        )]);
+        let response_order = HashMap::from([
+            ("!space:example.org".to_owned(), 0),
+            ("!first:example.org".to_owned(), 1),
+            ("!second:example.org".to_owned(), 2),
+        ]);
+
+        sort_edges_by_response_order(&mut edges, &response_order);
+
+        assert_eq!(
+            edges["!space:example.org"],
+            vec![
+                "!first:example.org".to_owned(),
+                "!second:example.org".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
     fn cycle_guard_skips_back_edges() {
         let rooms = HashMap::from([
             (
@@ -403,7 +448,10 @@ mod tests {
             ),
             (
                 "!sub-b:example.org".to_owned(),
-                vec!["!missing:example.org".to_owned(), "!room:example.org".to_owned()],
+                vec![
+                    "!missing:example.org".to_owned(),
+                    "!room:example.org".to_owned(),
+                ],
             ),
         ]);
 
