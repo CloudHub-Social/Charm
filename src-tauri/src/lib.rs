@@ -171,8 +171,20 @@ fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
     app_data_dir: &Path,
 ) -> sentry::integrations::tracing::EventFilter {
-    let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
-    sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
+    use sentry::integrations::tracing::EventFilter;
+
+    if !is_charm_tracing_target(metadata.target()) {
+        return EventFilter::Ignore;
+    }
+
+    match *metadata.level() {
+        tracing::Level::ERROR | tracing::Level::WARN => {
+            let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
+            sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
+        }
+        tracing::Level::INFO => EventFilter::Breadcrumb,
+        tracing::Level::DEBUG | tracing::Level::TRACE => EventFilter::Ignore,
+    }
 }
 
 fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
