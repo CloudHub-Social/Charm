@@ -449,8 +449,8 @@ async fn timeline_item_to_summary(
     // Common to every branch below — assembled once via struct-update (`..base`)
     // so a future field addition only has to be threaded through here instead
     // of at each match arm (see the `timeline_item_to_summary` doc comment).
-    // The per-branch-varying fields are given inert placeholders here and
-    // always overridden by every arm below.
+    // The per-branch-varying fields are given neutral default placeholders
+    // here and overridden only where a given arm actually needs to.
     let base = RoomMessageSummary {
         event_id,
         sender,
