@@ -32,9 +32,12 @@ jobs:
     outputs:
       platform: ${{ steps.filter.outputs.platform }}
     steps:
+      # Shallow checkout (default depth 1). This job only needs a two-tree
+      # `git diff base..head`, which compares the two commits' trees directly
+      # and needs no shared ancestry — so instead of fetch-depth: 0 cloning the
+      # entire history, the filter step fetches just the base commit at depth 1
+      # per event type. Head is already the checked-out commit.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
 
       # Plain git/bash rather than a path-filter action — this repo's Actions
       # permissions only allow a specific set of non-GitHub-owned actions
@@ -51,14 +54,26 @@ jobs:
         run: |
           pattern='^(src-tauri/|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
           zero_sha="0000000000000000000000000000000000000000"
+
+          # Fetch just the base commit (depth 1) then two-tree diff it against
+          # the already-checked-out head. A depth-1 fetch carries that commit's
+          # full tree, so the diff is complete without any history. On any
+          # fetch/diff failure, fall back to running the platform jobs (safe
+          # default) rather than silently skipping them — the fallback can only
+          # over-run, never wrongly skip.
+          diff_from() {
+            git fetch --no-tags --depth=1 origin "$1" >/dev/null 2>&1 \
+              && git diff --name-only "$1" "${{ github.sha }}"
+          }
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+            changed=$(diff_from "${{ github.event.pull_request.base.sha }}") || changed="src-tauri/"
           elif [ "${{ github.event_name }}" = "merge_group" ]; then
             # A merge-queue run validates a synthetic commit combining the PR
             # with the current tip of main — diff against the queue entry's
             # own recorded base, not github.event.pull_request (which doesn't
             # exist for this event type).
-            changed=$(git diff --name-only "${{ github.event.merge_group.base_sha }}" "${{ github.sha }}")
+            changed=$(diff_from "${{ github.event.merge_group.base_sha }}") || changed="src-tauri/"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
             # infra fix) always runs them — there's no "changed files" concept.
@@ -69,10 +84,8 @@ jobs:
             # the platform jobs rather than silently skip them.
             changed="src-tauri/"
           else
-            # push to main: diff against the pre-push tip. Falls back to
-            # running the platform jobs (safe default) on any other
-            # unexpected git failure rather than silently skipping them.
-            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}") || changed="src-tauri/"
+            # push to main: diff against the pre-push tip.
+            changed=$(diff_from "${{ github.event.before }}") || changed="src-tauri/"
           fi
           if echo "$changed" | grep -qE "$pattern"; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
