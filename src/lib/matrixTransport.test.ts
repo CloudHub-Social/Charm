@@ -553,6 +553,32 @@ describe("matrix web transport", () => {
     unlistenSas();
   });
 
+  it("keeps dispatching WebSocket events when one listener throws", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const throwingSasUpdate = vi.fn(() => {
+      throw new Error("listener failed");
+    });
+    const sasUpdate = vi.fn();
+
+    const unlistenThrowing = await listen("verification:sas_update", throwingSasUpdate);
+    const unlistenSas = await listen("verification:sas_update:flow1", sasUpdate);
+    const socket = MockWebSocket.instances[0];
+
+    socket?.emit({
+      event: "verification:sas_update",
+      data: { flow_id: "flow1", state: "started" },
+    });
+
+    expect(throwingSasUpdate).toHaveBeenCalledWith({
+      payload: { flow_id: "flow1", state: "started" },
+    });
+    expect(sasUpdate).toHaveBeenCalledWith({ payload: { flow_id: "flow1", state: "started" } });
+    expect(consoleError).toHaveBeenCalledWith(expect.any(Error));
+
+    unlistenThrowing();
+    unlistenSas();
+  });
+
   it("ignores stale WebSocket close and error events after reconnecting", async () => {
     const roomList = vi.fn();
 

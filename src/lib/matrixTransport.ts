@@ -118,7 +118,15 @@ function unsupported(command: string): never {
 }
 
 function dispatchWebEvent(event: string, payload: unknown): void {
-  webEventListeners.get(event)?.forEach((callback) => callback({ payload }));
+  const listeners = webEventListeners.get(event);
+  if (!listeners) return;
+  for (const callback of listeners) {
+    try {
+      callback({ payload });
+    } catch (err) {
+      console.error(err);
+    }
+  }
 }
 
 function handleWebSocketMessage(raw: MessageEvent<unknown>): void {
