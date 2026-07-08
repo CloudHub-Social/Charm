@@ -149,9 +149,9 @@ fn sentry_event_filter_for_level_target(
     match *level {
         tracing::Level::ERROR => {
             if logs_enabled {
-                EventFilter::Event | EventFilter::Log
+                EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log
             } else {
-                EventFilter::Event
+                EventFilter::Event | EventFilter::Breadcrumb
             }
         }
         tracing::Level::WARN => {
@@ -161,7 +161,13 @@ fn sentry_event_filter_for_level_target(
                 EventFilter::Breadcrumb
             }
         }
-        tracing::Level::INFO => EventFilter::Breadcrumb,
+        tracing::Level::INFO => {
+            if logs_enabled {
+                EventFilter::Breadcrumb | EventFilter::Log
+            } else {
+                EventFilter::Breadcrumb
+            }
+        }
         tracing::Level::DEBUG => EventFilter::Ignore,
         tracing::Level::TRACE => EventFilter::Ignore,
     }
@@ -647,7 +653,7 @@ mod observability_tests {
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", true),
-            EventFilter::Breadcrumb,
+            EventFilter::Breadcrumb | EventFilter::Log,
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", true),
@@ -655,7 +661,7 @@ mod observability_tests {
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::ERROR, "charm_lib::matrix", true),
-            EventFilter::Event | EventFilter::Log,
+            EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", false),

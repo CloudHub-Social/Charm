@@ -409,9 +409,9 @@ pub async fn send_attachment(
             tracing::info!(
                 command = "send_attachment",
                 status = "succeeded",
-                total_bytes = breadcrumb_total_bytes,
-                mime_class = breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms,
+                total_bytes = ?breadcrumb_total_bytes,
+                mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                duration_ms = duration_ms as u64,
                 "Attachment IPC succeeded"
             );
             Ok(())
@@ -428,9 +428,9 @@ pub async fn send_attachment(
             tracing::warn!(
                 command = "send_attachment",
                 status = "failed",
-                total_bytes = breadcrumb_total_bytes,
-                mime_class = breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
-                duration_ms,
+                total_bytes = ?breadcrumb_total_bytes,
+                mime_class = ?breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                duration_ms = duration_ms as u64,
                 "Attachment IPC failed"
             );
             Err(error)
