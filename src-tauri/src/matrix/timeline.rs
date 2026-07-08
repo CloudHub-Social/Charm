@@ -446,40 +446,42 @@ async fn timeline_item_to_summary(
         None => None,
     };
 
+    // Common to every branch below — assembled once via struct-update (`..base`)
+    // so a future field addition only has to be threaded through here instead
+    // of at each match arm (see the `timeline_item_to_summary` doc comment).
+    // The per-branch-varying fields are given neutral default placeholders
+    // here and overridden only where a given arm actually needs to.
+    let base = RoomMessageSummary {
+        event_id,
+        sender,
+        sender_display_name,
+        sender_avatar_url,
+        sender_avatar_path,
+        transaction_id,
+        send_state,
+        timestamp_ms,
+        body: String::new(),
+        formatted_body: None,
+        edited: false,
+        redacted: false,
+        reactions: Vec::new(),
+        in_reply_to: None,
+        media: None,
+    };
+
     match &msglike.kind {
         MsgLikeKind::Message(message) => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
             body: message.body().to_string(),
             formatted_body: formatted_html_body(message.msgtype()),
-            timestamp_ms,
             edited: message.is_edited(),
-            redacted: false,
             reactions,
             in_reply_to,
-            transaction_id,
-            send_state,
             media: message_type_to_media(message.msgtype()),
+            ..base
         }),
         MsgLikeKind::Redacted => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
-            body: String::new(),
-            formatted_body: None,
-            timestamp_ms,
-            edited: false,
             redacted: true,
-            reactions: Vec::new(),
-            in_reply_to: None,
-            transaction_id,
-            send_state,
-            media: None,
+            ..base
         }),
         // Decryption retries land as a fresh diff once the key arrives — see
         // `Timeline::retry_decryption`, invoked by matrix-sdk-ui's own crypto
@@ -487,21 +489,10 @@ async fn timeline_item_to_summary(
         // real `MsgLikeKind::Message` content, replacing this placeholder in
         // place via the normal diff -> re-snapshot -> `timeline:update` path.
         MsgLikeKind::UnableToDecrypt(_) => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
             body: UNABLE_TO_DECRYPT_BODY.to_string(),
-            formatted_body: None,
-            timestamp_ms,
-            edited: false,
-            redacted: false,
             reactions,
             in_reply_to,
-            transaction_id,
-            send_state,
-            media: None,
+            ..base
         }),
         // Stickers/polls/live-locations/custom message-likes aren't part of
         // this DTO shape yet — out of scope for a like-for-like engine swap
@@ -511,6 +502,163 @@ async fn timeline_item_to_summary(
         | MsgLikeKind::Poll(_)
         | MsgLikeKind::Other(_)
         | MsgLikeKind::LiveLocation(_) => None,
+    }
+}
+
+/// The "is this genuinely a new message worth a notification" decision for
+/// `spawn_timeline_listener`, isolated so the subtle correctness of that
+/// decision can be unit-tested directly instead of resting entirely on the
+/// comments around it.
+///
+/// Two checks, both required:
+/// - `event_id` membership: guards against re-notifying a message this
+///   listener has already accounted for (e.g. it comes back around in a
+///   later diff batch unchanged).
+/// - `timestamp_ms >= max seen so far`: guards against backward pagination
+///   (scrolling up to load older history), which inserts messages at the
+///   *front* of the timeline's items that were never in `seen_event_ids`
+///   either, since they'd never been loaded before. An id-membership check
+///   alone can't tell "message arrived at the tail just now" apart from
+///   "history revealed by scrolling up" — it would wrongly fire a
+///   notification for old content the first time a room's history is paged
+///   into. Older-history messages always have a timestamp at or before
+///   everything already loaded, so gating on the timestamp too (in addition
+///   to the id check) excludes them while still catching genuine new
+///   arrivals (always time-ordered after the newest thing loaded so far).
+///
+/// The timestamp comparison is deliberately `>=`, not `>`: two genuinely new
+/// messages can share the same millisecond timestamp (e.g. back-to-back
+/// sends), and a strict `>` would wrongly suppress the second one just for
+/// tying the running max. `seen_event_ids` is what actually guards against
+/// re-notifying a message already accounted for, so admitting ties here is
+/// safe — this was a real, previously-fixed bug (a `>` here dropped a
+/// same-millisecond second message's notification).
+///
+/// `seen_event_ids` only ever grows (`record` extends it, `seeded_from`/`record`
+/// never clear or replace it) — same rationale as `max_seen_timestamp_ms`
+/// only ever moving forward via `.max(..)`.
+#[derive(Debug, Default)]
+struct NotificationDedup {
+    seen_event_ids: std::collections::HashSet<String>,
+    max_seen_timestamp_ms: u64,
+}
+
+impl NotificationDedup {
+    /// Seeds from every message already present before the caller started
+    /// watching for new arrivals (e.g. a room's already-loaded history) —
+    /// none of these should ever be treated as "new".
+    fn seeded_from(summaries: &[RoomMessageSummary]) -> Self {
+        let mut dedup = Self::default();
+        dedup.record(summaries);
+        dedup
+    }
+
+    /// Whether `message` is a genuinely new arrival that hasn't been
+    /// accounted for yet (see the type-level doc comment for the full
+    /// rationale). Does not itself mark `message` as seen — call `record`
+    /// once the whole batch containing it has been decided on.
+    fn is_new(&self, message: &RoomMessageSummary) -> bool {
+        !self.seen_event_ids.contains(&message.event_id)
+            && message.timestamp_ms >= self.max_seen_timestamp_ms
+    }
+
+    /// Marks every message in `summaries` as seen and advances the
+    /// high-water mark. Idempotent to call with messages already recorded.
+    fn record(&mut self, summaries: &[RoomMessageSummary]) {
+        self.seen_event_ids
+            .extend(summaries.iter().map(|m| m.event_id.clone()));
+        self.max_seen_timestamp_ms = self
+            .max_seen_timestamp_ms
+            .max(summaries.iter().map(|m| m.timestamp_ms).max().unwrap_or(0));
+    }
+}
+
+#[cfg(test)]
+mod notification_dedup_tests {
+    use super::*;
+
+    fn summary(event_id: &str, timestamp_ms: u64) -> RoomMessageSummary {
+        RoomMessageSummary {
+            event_id: event_id.to_string(),
+            sender: "@alice:example.org".to_string(),
+            sender_display_name: None,
+            sender_avatar_url: None,
+            sender_avatar_path: None,
+            body: "hello".to_string(),
+            formatted_body: None,
+            timestamp_ms,
+            edited: false,
+            redacted: false,
+            reactions: Vec::new(),
+            in_reply_to: None,
+            transaction_id: None,
+            send_state: SendState::Sent,
+            media: None,
+        }
+    }
+
+    #[test]
+    fn seeded_history_is_never_new() {
+        let history = vec![summary("$a", 100), summary("$b", 200)];
+        let dedup = NotificationDedup::seeded_from(&history);
+        assert!(!dedup.is_new(&summary("$a", 100)));
+        assert!(!dedup.is_new(&summary("$b", 200)));
+    }
+
+    #[test]
+    fn a_later_message_after_seeding_is_new() {
+        let dedup = NotificationDedup::seeded_from(&[summary("$a", 100)]);
+        assert!(dedup.is_new(&summary("$c", 150)));
+    }
+
+    #[test]
+    fn same_millisecond_tie_is_still_new_not_suppressed() {
+        // Regression test for the `>` vs `>=` bug called out in #67: two
+        // genuinely new messages landing in the same diff batch can share a
+        // timestamp, and both must still count as new.
+        let mut dedup = NotificationDedup::seeded_from(&[summary("$a", 100)]);
+        let batch = vec![summary("$b", 150), summary("$c", 150)];
+        assert!(dedup.is_new(&batch[0]));
+        assert!(dedup.is_new(&batch[1]));
+        dedup.record(&batch);
+        // Once recorded, neither is "new" again on a later re-check.
+        assert!(!dedup.is_new(&batch[0]));
+        assert!(!dedup.is_new(&batch[1]));
+    }
+
+    #[test]
+    fn message_at_exact_high_water_mark_is_still_new() {
+        // The actual `>` vs `>=` boundary: unlike the test above (150 > 100
+        // passes under either operator), this checks a message whose
+        // timestamp exactly equals `max_seen_timestamp_ms` already recorded
+        // from a prior message — the case `>` would wrongly reject.
+        let dedup = NotificationDedup::seeded_from(&[summary("$a", 150)]);
+        assert!(dedup.is_new(&summary("$b", 150)));
+    }
+
+    #[test]
+    fn backward_pagination_of_older_history_is_not_new() {
+        // Simulates scrolling up: older messages inserted at the front of
+        // `items`, never previously in `seen_event_ids`, with a timestamp
+        // strictly before the high-water mark.
+        let mut dedup = NotificationDedup::seeded_from(&[summary("$recent", 500)]);
+        let older_page = vec![summary("$older_1", 100), summary("$older_2", 200)];
+        assert!(!dedup.is_new(&older_page[0]));
+        assert!(!dedup.is_new(&older_page[1]));
+        dedup.record(&older_page);
+        // Recording older history must not roll the high-water mark
+        // backwards — a message arriving later, after paging, still counts
+        // as new relative to the most recent thing ever seen.
+        assert!(dedup.is_new(&summary("$new", 501)));
+    }
+
+    #[test]
+    fn already_seen_event_id_is_not_new_even_with_a_higher_timestamp() {
+        // Defends the `seen_event_ids` half of the check independently of
+        // the timestamp half (e.g. an edit re-emitting the same event id).
+        let mut dedup = NotificationDedup::seeded_from(&[summary("$a", 100)]);
+        dedup.record(&[summary("$a", 100)]);
+        assert!(!dedup.is_new(&summary("$a", 999)));
     }
 }
 
@@ -535,7 +683,7 @@ pub(crate) fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     client: Client,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-) {
+) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     use tauri::Manager;
 
@@ -562,32 +710,12 @@ pub(crate) fn spawn_timeline_listener(
         let media_cache = state.require_media_cache(&app).await.ok();
         let initial_summaries =
             items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
-        // Seed with every event id already present before this listener
-        // subscribed — the initial `timeline:update` for a room the user
-        // just opened is existing history, never a "new message" worth a
-        // notification. Additive only (never replaced/shrunk) — see
-        // `max_seen_timestamp_ms` below for why replacing it was a bug.
-        let mut seen_event_ids: std::collections::HashSet<String> = initial_summaries
-            .iter()
-            .map(|m| m.event_id.clone())
-            .collect();
-        // The other half of the "is this genuinely new" check: backward
-        // pagination (scrolling up to load older history) inserts messages
-        // at the *front* of `items` that were never in `seen_event_ids`
-        // either, since they'd never been loaded before — an id-membership
-        // check alone can't tell "message arrived at the tail just now" apart
-        // from "history revealed by scrolling up", and would fire a
-        // notification for old content the first time a room's history is
-        // paged into. Older-history messages always have a timestamp at or
-        // before everything already loaded, so gating on strictly-greater
-        // timestamp (in addition to the id check) correctly excludes them
-        // while still catching genuine new arrivals (always time-ordered
-        // after the newest thing loaded so far).
-        let mut max_seen_timestamp_ms: u64 = initial_summaries
-            .iter()
-            .map(|m| m.timestamp_ms)
-            .max()
-            .unwrap_or(0);
+        // Seed with every event id (and the latest timestamp) already present
+        // before this listener subscribed — the initial `timeline:update` for
+        // a room the user just opened is existing history, never a "new
+        // message" worth a notification. See `NotificationDedup`'s doc
+        // comment for the full rationale, including why this is additive-only.
+        let mut dedup = NotificationDedup::seeded_from(&initial_summaries);
         let _ = app.emit(
             "timeline:update",
             RoomTimelineUpdate {
@@ -616,25 +744,13 @@ pub(crate) fn spawn_timeline_listener(
             let summaries =
                 items_to_summaries(&items, own_user_id.as_deref(), &client, media_cache).await;
 
-            let new_messages: Vec<&RoomMessageSummary> = summaries
-                .iter()
-                .filter(|m| {
-                    // `>=`, not `>`: two genuinely new messages can share the
-                    // same millisecond timestamp (e.g. back-to-back sends),
-                    // and a strict `>` would wrongly suppress the second one
-                    // just for tying the running max. `seen_event_ids` is
-                    // what actually guards against re-notifying a message
-                    // already accounted for, so this can safely admit ties.
-                    !seen_event_ids.contains(&m.event_id) && m.timestamp_ms >= max_seen_timestamp_ms
-                })
-                .collect();
+            let new_messages: Vec<&RoomMessageSummary> =
+                summaries.iter().filter(|m| dedup.is_new(m)).collect();
             for message in &new_messages {
                 maybe_notify_new_message(&app, &client, &room_id, own_user_id.as_deref(), message)
                     .await;
             }
-            seen_event_ids.extend(summaries.iter().map(|m| m.event_id.clone()));
-            max_seen_timestamp_ms = max_seen_timestamp_ms
-                .max(summaries.iter().map(|m| m.timestamp_ms).max().unwrap_or(0));
+            dedup.record(&summaries);
 
             let _ = app.emit(
                 "timeline:update",
@@ -644,7 +760,7 @@ pub(crate) fn spawn_timeline_listener(
                 },
             );
         }
-    });
+    })
 }
 
 /// Fires a local OS notification for `message` if it warrants one: not our

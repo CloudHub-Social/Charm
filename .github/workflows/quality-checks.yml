@@ -4,7 +4,27 @@ on:
   pull_request:
   push:
     branches: [main]
+  merge_group:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel a PR's in-flight run when a new push supersedes it — without this, a
+# PR that gets pushed to several times in quick succession piles up redundant
+# queued runs (each ~12 jobs, several of them expensive macOS/Windows/iOS/
+# Android builds) instead of only the latest push's result mattering. Same
+# pattern sentry-snapshots.yml already uses.
+#
+# cancel-in-progress is deliberately conditional on being a pull_request event:
+# for a push to main, the group key falls back to github.ref, which is the
+# same constant value (`refs/heads/main`) for every push — unconditional
+# cancellation would kill an in-flight main run the moment a second push
+# landed, silently leaving that first merged commit untested. PRs don't have
+# this problem since each PR's own number keys its group.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -14,10 +34,14 @@ jobs:
       contents: read
     outputs:
       platform: ${{ steps.filter.outputs.platform }}
+      integration: ${{ steps.filter.outputs.integration }}
     steps:
+      # Shallow checkout (default depth 1). This job only needs a two-tree
+      # `git diff base..head`, which compares the two commits' trees directly
+      # and needs no shared ancestry — so instead of fetch-depth: 0 cloning the
+      # entire history, the filter step fetches just the base commit at depth 1
+      # per event type. Head is already the checked-out commit.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
 
       # Plain git/bash rather than a path-filter action — this repo's Actions
       # permissions only allow a specific set of non-GitHub-owned actions
@@ -32,10 +56,50 @@ jobs:
       - name: Check whether src-tauri/** or its build inputs changed
         id: filter
         run: |
-          pattern='^(src-tauri/|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
+          # Native-build inputs — any of these can change a Rust build/clippy/
+          # nextest result or a platform bundle. `cargo` run from src-tauri
+          # resolves the repo root as its Cargo workspace, so changes anywhere in
+          # the workspace can alter src-tauri's build/resolution: the root
+          # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
+          # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
+          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
+          # The Synapse/Dex/MAS integration jobs additionally mount and execute
+          # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
+          # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
+          # there must run them even with no Rust diff.
+          integration_pattern='^dev/synapse/'
           zero_sha="0000000000000000000000000000000000000000"
+
+          # Fetch just the base commit (depth 1) then two-tree diff it against
+          # the already-checked-out head. A depth-1 fetch carries that commit's
+          # full tree, so the diff is complete without any history. On any
+          # fetch/diff failure, fall back to running the platform jobs (safe
+          # default) rather than silently skipping them — the fallback can only
+          # over-run, never wrongly skip.
+          diff_from() {
+            # --quiet drops fetch's normal progress chatter, but stderr is kept
+            # (not redirected to /dev/null) so a genuine fetch failure is visible
+            # in the job log rather than silently triggering the fallback below.
+            # stdout carries only the changed-file list, for capture.
+            git fetch --no-tags --depth=1 --quiet origin "$1" \
+              && git diff --name-only "$1" "${{ github.sha }}"
+          }
+          # On a fetch/diff failure, run the platform jobs (safe default — this
+          # can only over-run, never wrongly skip) AND log why, so an unexpected
+          # fallback (e.g. an unfetchable base) is diagnosable instead of looking
+          # like a real src-tauri change.
+          fallback() { echo "::notice::changes: could not diff against base $1; running all platform jobs"; changed="src-tauri/"; }
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}")
+            base="${{ github.event.pull_request.base.sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
+          elif [ "${{ github.event_name }}" = "merge_group" ]; then
+            # A merge-queue run validates a synthetic commit combining the PR
+            # with the current tip of main — diff against the queue entry's
+            # own recorded base, not github.event.pull_request (which doesn't
+            # exist for this event type).
+            base="${{ github.event.merge_group.base_sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
             # infra fix) always runs them — there's no "changed files" concept.
@@ -46,16 +110,23 @@ jobs:
             # the platform jobs rather than silently skip them.
             changed="src-tauri/"
           else
-            # push to main: diff against the pre-push tip. Falls back to
-            # running the platform jobs (safe default) on any other
-            # unexpected git failure rather than silently skipping them.
-            changed=$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}") || changed="src-tauri/"
+            # push to main: diff against the pre-push tip.
+            base="${{ github.event.before }}"
+            changed=$(diff_from "$base") || fallback "$base"
           fi
-          if echo "$changed" | grep -qE "$pattern"; then
-            echo "platform=true" >> "$GITHUB_OUTPUT"
+          if echo "$changed" | grep -qE "$platform_pattern"; then
+            platform=true
           else
-            echo "platform=false" >> "$GITHUB_OUTPUT"
+            platform=false
           fi
+          # integration runs whenever platform does, plus on dev/synapse changes.
+          if [ "$platform" = "true" ] || echo "$changed" | grep -qE "$integration_pattern"; then
+            integration=true
+          else
+            integration=false
+          fi
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "integration=$integration" >> "$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
@@ -111,6 +182,19 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Cache the downloaded Playwright browser binaries (~130 MB) across runs.
+      # Keyed on the lockfile so a Playwright version bump invalidates it; the
+      # install step below re-checks the version and only re-downloads on a real
+      # mismatch. Shared key with the e2e job — whichever runs first warms it.
+      # System apt libs (--with-deps) live outside this path and still install
+      # each run, but those are cheap next to the browser download.
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-playwright-
+
       # Browser + its Linux system libs for the Storybook test-runner (Playwright).
       - run: pnpm exec playwright install --with-deps chromium
 
@@ -136,6 +220,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Cache the Playwright browser binaries — see the storybook-a11y job above
+      # for why; same key so the two jobs share one warmed cache.
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: ${{ runner.os }}-playwright-
+
       - run: pnpm exec playwright install --with-deps chromium
 
       # Runs against the plain Vite dev server (`pnpm dev`, started by
@@ -156,6 +249,12 @@ jobs:
 
   rust:
     name: Rust (fmt, clippy, lib test)
+    # Gated on src-tauri/** changes (via the `changes` job) — a frontend/doc-only
+    # PR can't change any Rust result, so skip the expensive (and slow-to-queue)
+    # macOS runner entirely. The `rust-required` aggregator below provides the
+    # stable required status check, so a skip here never blocks a merge.
+    needs: changes
+    if: needs.changes.outputs.platform == 'true'
     # macos-latest so the keychain-backed persistence tests exercise the real
     # OS credential store rather than being skipped/mocked. Synapse-dependent
     # integration tests run separately (see rust-integration below) — macOS
@@ -175,29 +274,88 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      # Prebuilt binary from the official installer, pinned to a version and
+      # verified against a published SHA-256 (rather than piping an unpinned
+      # remote tarball straight into tar). nextest runs the lib tests in parallel
+      # across processes; it still executes the ts-rs `#[test]` export fns, so
+      # binding regeneration + the drift check below behave exactly as under
+      # `cargo test`. Bump NEXTEST_VERSION and NEXTEST_SHA256 together to upgrade.
+      # (cargo audit moved to its own ubuntu `rust-audit` job — it doesn't need
+      # macOS and was compiling cargo-audit from source every run.)
+      - name: Install cargo-nextest
+        env:
+          NEXTEST_VERSION: "0.9.140"
+          NEXTEST_SHA256: "58e0a722f9444078fab447783f322acf15a2a771ba785b3fbbe8bacda31c3df9"
+        run: |
+          curl -LsSf "https://get.nexte.st/${NEXTEST_VERSION}/mac" -o "$RUNNER_TEMP/nextest.tar.gz"
+          echo "${NEXTEST_SHA256}  $RUNNER_TEMP/nextest.tar.gz" | shasum -a 256 -c -
+          tar zxf "$RUNNER_TEMP/nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
-      - run: cargo audit
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
       # Rust IPC type changed without the generated bindings being regenerated and
       # committed, the working tree now differs — fail so bindings never drift.
-      - run: cargo test --lib
+      - run: cargo nextest run --lib
       - name: ts-rs bindings are committed and up to date
         # --porcelain catches both modified tracked bindings and brand-new untracked
         # ones (a `git diff` alone would miss a newly generated, uncommitted file).
         run: |
           if [ -n "$(git status --porcelain -- src/bindings)" ]; then
-            echo "::error::ts-rs bindings are stale or uncommitted — run 'cargo test --lib' and commit src/bindings/"
+            echo "::error::ts-rs bindings are stale or uncommitted — run 'cargo nextest run --lib' and commit src/bindings/"
             git status --porcelain -- src/bindings
             git diff -- src/bindings
             exit 1
           fi
 
+  rust-audit:
+    name: Rust (cargo audit)
+    # Split out of the `rust` job: cargo audit only reads Cargo.lock, so it has no
+    # reason to run on the expensive macOS runner, and `cargo install cargo-audit`
+    # was a multi-minute from-source compile on every run. Here it runs on ubuntu
+    # with the built binary cached.
+    #
+    # Deliberately NOT gated on the changes filter (unlike the other Rust jobs):
+    # `cargo audit` fetches the RustSec advisory DB fresh at runtime, so a newly
+    # published advisory against the already-locked dependency graph changes the
+    # result with no src-tauri/** diff. Gating it would let a frontend/doc-only
+    # PR merge over a freshly-disclosed vulnerability. It's cheap enough (cached
+    # binary, Cargo.lock-only scan) to run unconditionally.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      # Cache the compiled cargo-audit binary so it's built from source at most
+      # once (on cache miss), not on every run. The RustSec advisory DB is fetched
+      # fresh by `cargo audit` at runtime regardless, so a cached binary never
+      # means stale advisories. Bump the key suffix to force a rebuild/upgrade.
+      - name: Cache cargo-audit binary
+        id: cache-cargo-audit
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Install cargo-audit
+        if: steps.cache-cargo-audit.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked
+
+      - run: cargo audit
+
   rust-integration:
     name: Rust (verification, alias-resolution, discovery/registration, SSO, persistence)
+    # Gated on the `integration` filter (src-tauri/** OR dev/synapse/** changes):
+    # a frontend/doc-only PR can't affect these Synapse/Dex integration tests, so
+    # skip the whole Docker stack-up — but a change to the mounted dev/synapse
+    # configs/scripts must still run them. `rust-required` below keeps the
+    # required status check stable.
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -324,6 +482,11 @@ jobs:
     # services, kept apart from the plain `synapse`/`dex` services so a
     # regression here can't take down the password/SSO test job and vice
     # versa. See dev/synapse/mas-config.yaml and configure-mas.sh for why.
+    # Gated on the `integration` filter (src-tauri/** OR dev/synapse/**) for the
+    # same reason as rust-integration above; `rust-required` keeps the required
+    # check stable.
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -399,6 +562,34 @@ jobs:
       - name: Stop synapse-mas, MAS, and mas-db
         if: always()
         run: docker rm -f synapse-mas charm-dev-mas mas-db
+
+  # Stable required status check standing in for the gated Rust jobs above
+  # (rust / rust-integration / rust-integration-qr — plus rust-audit, which
+  # always runs). Branch protection requires THIS context — not the individual
+  # Rust jobs — because a required check that reports "skipped" (which the gated
+  # jobs do on a frontend-only PR) blocks the merge instead of passing. This job
+  # always runs and turns red only if a needed job actually failed or was
+  # cancelled; when they succeed or skip, it passes, so the merge queue stays
+  # unblocked.
+  #
+  # `changes` is in `needs` so that a failure/cancel of the detector itself
+  # fails this check: otherwise the gated jobs would evaluate their `if:` with no
+  # `platform`/`integration` output, report "skipped", and this aggregator would
+  # pass — silently disabling all Rust CI on a broken detector.
+  #
+  # `if: always()` is load-bearing: without it a job with skipped `needs` is
+  # itself skipped (same trap), and it would never report the required status.
+  rust-required:
+    name: Rust CI (required)
+    needs: [changes, rust, rust-audit, rust-integration, rust-integration-qr]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any required Rust job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A required Rust job did not succeed: ${{ join(needs.*.result, ', ') }}"
+          exit 1
 
   # Baseline platform build verification (macOS/iOS/Windows/Linux/Android):
   # compile/bundle the app on every supported platform. Deliberately scoped to

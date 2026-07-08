@@ -13,9 +13,11 @@ describe("badgeAtom", () => {
     const store = createStore();
     const update: BadgeState = { total_unread: 3, total_highlight: 1 };
 
-    store.set(badgeAtom, badgeUpdateValue(update));
+    const next = badgeUpdateValue(update);
+    store.set(badgeAtom, next);
 
     expect(store.get(badgeAtom)).toEqual(update);
+    expect(next).not.toBe(update);
   });
 
   it("replaces the previous value on a subsequent update", () => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { useAtom } from "jotai";
-import { Info, Paperclip, Send, X } from "lucide-react";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { Info, Paperclip, Send, Settings, X } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
@@ -31,10 +31,20 @@ import { type MessageActionsHandle } from "./MessageActions";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
 import { UploadTray, type PendingUpload } from "./UploadTray";
-import { activeReplyTargetAtomFamily, editingEventIdAtomFamily } from "./messageActionAtoms";
+import {
+  activeReplyTargetAtomFamily,
+  editingEventIdAtomFamily,
+  noRoomActiveReplyTargetAtom,
+  noRoomEditingEventIdAtom,
+} from "./messageActionAtoms";
 import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
-import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import {
+  membersDrawerOpenAtomFamily,
+  noRoomMembersDrawerOpenAtom,
+  roomSettingsAtom,
+} from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface ChatShellProps {
   room: RoomSummary | null;
@@ -109,7 +119,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
           if (requestedRoomIdRef.current !== requestedForRoomId) return;
           setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
         })
-        .catch(console.error);
+        .catch(logAndIgnore);
     }
   }, [roomId, currentUserId, uniqueSenderKey]);
 
@@ -140,9 +150,21 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // misattributed to whatever room is showing now.
   const currentRoomIdRef = useRef(roomId);
   currentRoomIdRef.current = roomId;
-  const [replyTarget, setReplyTarget] = useAtom(activeReplyTargetAtomFamily(roomId));
-  const [editingEventId, setEditingEventId] = useAtom(editingEventIdAtomFamily(roomId));
-  const [rightPanelOpen, setRightPanelOpen] = useAtom(rightPanelOpenAtomFamily(roomId));
+  const [replyTarget, setReplyTarget] = useAtom(
+    room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
+  );
+  const [editingEventId, setEditingEventId] = useAtom(
+    room ? editingEventIdAtomFamily(roomId) : noRoomEditingEventIdAtom,
+  );
+  const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
+    room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
+  );
+  const roomSettingsTarget = useAtomValue(roomSettingsAtom);
+  const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
+  // Room settings is a full modal covering the chat — messages arriving (or
+  // already at the bottom) behind it shouldn't be silently marked read, same
+  // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
+  const roomSettingsOpen = roomSettingsTarget !== null;
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
 
@@ -174,7 +196,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // and needed reversing.
     getTimelinePage(timelineRoomId)
       .then((page) => setMessages(page.messages))
-      .catch(console.error)
+      .catch(logAndIgnore)
       .finally(() => setLoading(false));
   }, [room?.room_id]);
 
@@ -194,7 +216,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setMessages(update.messages);
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [room]);
 
@@ -219,7 +241,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       });
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
 
@@ -240,7 +262,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [room?.room_id, currentUserId]);
 
@@ -250,19 +272,28 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // (not event id) so this still fires the first time even before any
   // messages have loaded. Reset the dedup key when navigating away so
   // returning to the same room later (e.g. with newly-arrived unread
-  // messages) fires mark-read again instead of silently no-oping.
+  // messages) fires mark-read again instead of silently no-oping. Skipped
+  // (without consuming the dedup key) while room settings covers the chat —
+  // re-running this effect once the modal closes, with `roomSettingsOpen` in
+  // the deps, fires it then instead.
   useEffect(() => {
     if (!room) {
       lastMarkedReadRoomId.current = null;
       return;
     }
+    if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
-    markRoomRead(room.room_id).catch(console.error);
-  }, [room]);
+    markRoomRead(room.room_id).catch(logAndIgnore);
+  }, [room, roomSettingsOpen]);
 
   useEffect(() => {
     if (!room || !latestEventId) return undefined;
+    // Same reasoning as above: don't mark read while the modal covers the
+    // chat. `roomSettingsOpen` in the deps re-creates the observer on close,
+    // which fires its callback immediately with the sentinel's current
+    // intersection state — no need to wait for it to re-intersect.
+    if (roomSettingsOpen) return undefined;
     const sentinel = bottomSentinelRef.current;
     if (!sentinel) return undefined;
 
@@ -272,13 +303,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         if (!isVisible) return;
         if (lastMarkedReadEventId.current === latestEventId) return;
         lastMarkedReadEventId.current = latestEventId;
-        markRoomRead(room.room_id).catch(console.error);
+        markRoomRead(room.room_id).catch(logAndIgnore);
       },
       { threshold: 1 },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [room, latestEventId]);
+  }, [room, latestEventId, roomSettingsOpen]);
 
   // Keyed to the room id, not the `room` object — RoomsScreen rebuilds
   // `activeRoom` from every `room_list:update`, so a plain `[room]` dep would
@@ -291,7 +322,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // in room B, since the throttle was keyed globally rather than per room.
     lastTypingSentAt.current = 0;
     return () => {
-      if (typingRoomId) sendTyping(typingRoomId, false).catch(console.error);
+      if (typingRoomId) sendTyping(typingRoomId, false).catch(logAndIgnore);
     };
   }, [room?.room_id]);
 
@@ -299,7 +330,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
-    sendTyping(typingRoomId, true).catch(console.error);
+    sendTyping(typingRoomId, true).catch(logAndIgnore);
   }
 
   const typingText = useMemo(() => typingLabel(typingUserIds), [typingUserIds]);
@@ -326,7 +357,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (editingEventId) {
       const eventId = editingEventId;
       setEditingEventId(null);
-      sendTyping(targetRoom.room_id, false).catch(console.error);
+      sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
       try {
         await editMessage(targetRoom.room_id, eventId, content.body);
       } catch (err) {
@@ -337,7 +368,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
     const replyingTo = replyTarget;
     setReplyTarget(null);
-    sendTyping(targetRoom.room_id, false).catch(console.error);
+    sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
 
     // No client-side optimistic echo any more (Spec 14): the room's live
     // `Timeline` creates the local echo itself the moment the send is queued
@@ -369,7 +400,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   async function handleSlashCommand(parsed: ParsedSlashCommand) {
     if (!room) return;
     const targetRoomId = room.room_id;
-    sendTyping(targetRoomId, false).catch(console.error);
+    sendTyping(targetRoomId, false).catch(logAndIgnore);
     try {
       const result = await runCommand(targetRoomId, parsed.command, parsed.args);
       // The user may have switched rooms while this command was in flight —
@@ -464,18 +495,28 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           </Avatar>
           <span>{displayName(room.room_id, room.name)}</span>
         </div>
-        <button
-          type="button"
-          aria-label={rightPanelOpen ? "Hide room info" : "Show room info"}
-          aria-pressed={rightPanelOpen}
-          onClick={() => setRightPanelOpen((open) => !open)}
-          className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-            rightPanelOpen && "bg-accent text-accent-foreground",
-          )}
-        >
-          <Info className="size-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
+            aria-pressed={membersDrawerOpen}
+            onClick={() => setMembersDrawerOpen((open) => !open)}
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              membersDrawerOpen && "bg-accent text-accent-foreground",
+            )}
+          >
+            <Info className="size-4" />
+          </button>
+          <button
+            type="button"
+            aria-label="Room settings"
+            onClick={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
+            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          >
+            <Settings className="size-4" />
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
@@ -614,7 +655,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               else if (replyTarget) setReplyTarget(null);
             }}
             onTypingInput={() => handleTypingInput(room.room_id)}
-            onBlur={() => sendTyping(room.room_id, false).catch(console.error)}
+            onBlur={() => sendTyping(room.room_id, false).catch(logAndIgnore)}
           />
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css. */}

@@ -32,33 +32,126 @@ server.md`.
   homeserver needed) and `tests/http_api.rs` (needs a running dev Synapse,
   same convention as `src-tauri/tests/`).
 
-## Deferred to sub-PR B (WebSocket + storage)
+## Sub-PR B: WebSocket event channel + encrypted-at-rest persistence
 
-- **WebSocket event channel** mirroring `app.emit(...)` (`sync:state`,
-  `room_list:update`, `timeline:update`, `verification:*`, `profile:update`,
-  receipts/typing/presence, `push:status`) — not implemented here. Every
-  route above is request/response only; there is no live push yet, so a
-  connected browser tab would need to poll.
-- **Encrypted-at-rest session persistence.** Sessions in this sub-PR are
-  **in-memory only, per the spec's Design section's option 1** (ephemeral,
-  no persistence) — a process restart drops every session and every
-  logged-in browser needs to log in again. The spec's own recommendation for
-  this project's scope is actually **option 2** (server-side encrypted-at-
-  rest storage, persisted per logged-in user, surviving a restart) — that is
-  explicitly the sub-PR B scope, not skipped by oversight. Option 1 is a
-  reasonable starting point on its own merits too (simplest, matches how
-  PR-preview sessions are inherently throwaway per the spec's scope item 6),
-  but the final state this phase is building toward is option 2.
-- Media resolution/upload, avatar upload (both file-path-based on the
-  desktop side and need a web-appropriate equivalent — an authenticated
-  HTTP endpoint serving resolved media, per the spec's frontend-transport
-  section), multi-device verification, and QR login are all out of scope
-  for this slice — same pattern (`_impl` function exists, route doesn't yet)
-  applies to each when picked up.
+- **WebSocket event channel** (`GET /api/ws`, `routes::ws_handler`) —
+  authenticates via the same session cookie as every HTTP route, then
+  streams `crate::events::ServerEvent` (an adjacently-tagged
+  `{"event": "...", "data": ...}` envelope reusing the exact ts-rs DTOs
+  desktop's `app.emit` payloads already use — see `events.rs`) for
+  `sync:state`, `room_list:update`, `badge:update`, `receipts:update`,
+  `typing:update`, `room_details:update`, `timeline:update`,
+  `presence:update`, `profile:self`, `upload:progress`,
+  `verification:request`, and `verification:sas_update`. Driven by
+  `sync_loop.rs` (a per-session background `/sync` loop plus
+  presence/self-profile/verification event-handler registration, mirroring
+  `src-tauri/src/matrix/sync.rs::spawn_sync_loop` minus its desktop-only
+  native-badge/notification concerns) and, for live timeline updates, a
+  per-room listener spawned in `session.rs`'s `get_or_create_timeline`.
+  `push:status` is **not** emitted — that's Spec 11's separate Web Push
+  mechanism for a *closed* tab, not this open-connection channel.
+- **Encrypted-at-rest session persistence** (`persistence.rs`) — sessions
+  are now the spec's recommended option 2: AES-256-GCM-encrypted, keyed by
+  `CHARM_WEB_SERVER_MASTER_KEY` (a deployer-provided base64 32-byte key; see
+  the module doc comment), persisted to
+  `<CHARM_WEB_SERVER_DATA_DIR>/sessions.enc.json`, and restored at startup
+  under their original session-cookie token so a restart doesn't force a
+  re-login. Opt-in: with no master key set, sessions fall back to sub-PR A's
+  in-memory-only behavior rather than refusing to start.
+- **Media resolution, attachment upload, avatar upload** — bytes-based web
+  equivalents of desktop's file-path-based commands (`resolve_message_media`,
+  `send_attachment`, `set_avatar`/`remove_avatar` in `routes.rs`), reusing
+  `charm_lib::matrix::media::resolve_media_impl` against a per-account
+  `MediaCache` (`media_cache.rs`, keyed by
+  `charm_lib::matrix::persistence::account_key` — never shared across
+  sessions, so one account can't reach media only another account has
+  decrypted). Resolved media is only ever served inline with its real
+  `Content-Type` for `image/`/`audio`/`video/` *excluding* `image/svg+xml`
+  (SVG is active content) — anything else is forced to
+  `application/octet-stream` + `Content-Disposition: attachment`, plus
+  `X-Content-Type-Options: nosniff` and `Cross-Origin-Resource-Policy:
+  same-origin` on every response, since this route serves sender-controlled,
+  privacy-sensitive bytes from the browser's authenticated API origin.
+  `POST .../attachments` is `multipart/form-data` (`file` + optional
+  `caption` fields, `txn_id` as a query param) rather than a raw body with
+  filename/caption in headers or the query string — keeps a long caption
+  out of header-size limits and browser history/access logs, and lets the
+  `file` part's own `Content-Type` (the browser's real `File.type`) drive
+  the sent event's mimetype instead of guessing from the filename alone.
+  `GET /api/media/avatar?mxc=...` resolves a bare room/profile/sender
+  avatar `mxc://` URI (every DTO this crate's routes return still carries
+  those unresolved) to its thumbnail bytes, the avatar counterpart to
+  `resolve_message_media`'s event-attached media. `PUT
+  /api/rooms/{room_id}/avatar` uploads a room avatar (bytes-based, same
+  shape as the account-avatar route) alongside the existing `DELETE` to
+  remove one.
+- **Multi-device verification** — accept/cancel/SAS-start/SAS-confirm,
+  cross-signing bootstrap/status, and outgoing self-verification
+  (`POST /api/verification/devices/{device_id}/request`,
+  `sync_loop::request_device_verification`) routes, reusing the same
+  `_impl` functions/SDK calls as desktop; SAS state changes stream as
+  `verification:sas_update` over the WebSocket channel
+  (`sync_loop::start_sas_verification`).
+
+## Still deferred
+
+- **The Olm/Megolm crypto store isn't persisted, only the `MatrixSession`
+  token.** See `persistence.rs`'s module doc comment ("Known gap") for the
+  full explanation and what fixing it properly requires (a per-account
+  encrypted `matrix-sdk-sqlite` store, same shape as desktop's
+  `matrix_store/`). A restart currently keeps a browser's cookie/login
+  working but loses that session's previously-learned room keys and
+  verification/trust state.
+- **No idle/abandoned-session expiry.** A session's sync loop (and the
+  presence-online it sets) runs indefinitely until an explicit logout — a
+  closed browser tab, or a restored-at-startup session nobody ever
+  reconnects to, keeps long-polling `/sync` and advertising the account
+  online forever. See `sync_loop::spawn`'s doc comment for why this needs
+  its own idle-timeout design rather than a quick fix.
+- **Device management endpoints (list/revoke/reset).** This sub-PR adds the
+  outgoing-verification route (`request_device_verification`) but not the
+  rest of desktop's `devices.rs` command surface a Settings → Devices UI
+  actually needs first — listing this account's devices (to get the device
+  ids `request_device_verification`'s route requires), revoking another
+  session, or resetting cross-signing. A web session can respond to or
+  initiate verification of a device it already knows the id of, but has no
+  way yet to discover that id or manage devices otherwise. Straightforward
+  `_impl`-reusing routes to add, same shape as the verification routes this
+  sub-PR already has — left for a follow-up slice rather than growing this
+  PR's already-large diff further.
+- **Verification event delivery isn't fully acknowledgement-guaranteed.**
+  `sync_loop::buffer_verification_event` buffers an event only when
+  `broadcast::send` finds zero subscribers — but "a subscriber exists"
+  isn't the same as "the frame actually reached the browser"; a connection
+  that's live-but-about-to-die exactly when an event fires can still lose
+  it. See that function's doc comment ("Known gap") for why closing this
+  fully needs real delivery-acknowledgement semantics, not a one-line fix.
+- **QR login.** Desktop's `qr_login::start_qr_login` is built around
+  `MatrixState`'s single-client-per-process model (it drives an in-progress
+  login to completion *before* any session/token exists to key it by) —
+  porting it to a multi-session server needs its own session-lifecycle
+  design, not just a route wrapper around the existing `_impl` functions the
+  rest of this crate reuses. Left out rather than shipped half-adapted;
+  pick up as its own slice.
+- **Deployment to `matrix-vps`** — see the Deployment section below; not
+  attempted as part of either sub-PR.
+- **Media download size isn't capped during download, only after.**
+  `resolve_message_media` checks the resolved file's actual on-disk size
+  against `MAX_ATTACHMENT_UPLOAD_BYTES` only once `resolve_media_impl` has
+  already finished downloading and caching it — a sender who misreports (or
+  omits) `info.size` can still make this route download and cache an
+  arbitrarily large file before the oversized response is rejected and the
+  cached copy removed. Enforcing the cap *during* download requires changing
+  `charm_lib::matrix::media::resolve_media_impl` itself (shared with
+  desktop, where an unbounded download is far less of a concern with one
+  local user) — left as a follow-up rather than done here.
 - A per-room `Timeline` LRU cache (mirroring desktop's `MAX_LIVE_TIMELINES`
-  bound in `MatrixState`) — each `get_timeline_page` request currently opens
-  a fresh `Timeline` handle. Fine for MVP request volume; revisit if this
-  becomes a hot path.
+  bound in `MatrixState`) — each `get_timeline_page` request (and each
+  `timeline:update` push) currently opens/reuses a `Timeline` handle without
+  a true incremental diff-to-DTO path (the WebSocket listener re-fetches a
+  full page per diff rather than patching — see `session.rs`'s
+  `spawn_timeline_listener` doc comment). Fine for MVP traffic; revisit if
+  either becomes a hot path.
 
 ## Running
 
@@ -75,6 +168,38 @@ For local dev or any other non-TLS deployment, set
 `CHARM_WEB_SERVER_INSECURE_COOKIES=1` to drop the `Secure` flag; never set
 this in a production deployment that's actually behind TLS.
 
+### Session persistence env vars
+
+- `CHARM_WEB_SERVER_MASTER_KEY` — base64-encoded 32-byte AES-256 key
+  (`openssl rand -base64 32`), enabling encrypted-at-rest session
+  persistence (see `persistence.rs`'s module doc comment). Unset by default
+  — sessions are in-memory only (sub-PR A behavior) until this is set.
+- `CHARM_WEB_SERVER_DATA_DIR` — where `sessions.enc.json` and the media
+  cache live (default `./data`). Only relevant when `CHARM_WEB_SERVER_MASTER_KEY`
+  is set.
+
+### WebSocket origin allowlist and CORS
+
+- `CHARM_WEB_SERVER_ALLOWED_ORIGIN` — the frontend origin(s) allowed to open
+  `GET /api/ws` (comma-separated for more than one). **Set this before
+  deploying behind a shared registrable domain** — the session cookie's
+  `SameSite=Strict` doesn't defend against a same-*site* subdomain (a
+  different origin, same registrable domain) opening this socket and
+  attaching the cookie automatically; only an explicit `Origin` check does.
+  Unset by default (permissive, with a one-time startup warning) so local
+  dev keeps working with zero configuration.
+- The same allowlist also drives the router's `CorsLayer` (credentialed —
+  `Access-Control-Allow-Credentials: true`, needed for the session cookie),
+  covering the rest of the HTTP API. Unlike the WS check above, this is
+  **not** permissive-by-default when unset: an empty allowlist grants no
+  cross-origin CORS access at all (same-origin requests need no CORS headers
+  to work, so this still requires zero configuration for a same-origin
+  deployment or the common local-dev shape). **Set
+  `CHARM_WEB_SERVER_ALLOWED_ORIGIN` if the frontend is served from a
+  different origin than this API** (e.g. a Vite dev server on a different
+  port, or a separately-hosted production frontend) — otherwise the browser
+  blocks every response for lacking `Access-Control-Allow-Origin`.
+
 ## Deployment (not done as part of this PR — flagged as a manual follow-up)
 
 Per the spec's Deployment topology: this runs as another persistent process
@@ -87,9 +212,15 @@ deliberate change.
 
 ## Testing
 
+- `cargo test -p charm-web-server --lib` — `persistence.rs`'s own unit tests
+  (encryption round-trip, wrong-key rejection, save/remove semantics), no
+  homeserver required.
 - `cargo test -p charm-web-server --test isolation` — session-store
-  isolation, no homeserver required.
-- `cargo test -p charm-web-server --test http_api` — full HTTP surface
-  against a real homeserver at `localhost:8008`
+  isolation (including per-session WebSocket event-channel isolation and
+  restart-reinsertion under a stable token), no homeserver required.
+- `cargo test -p charm-web-server --test http_api` — full HTTP surface plus
+  the WebSocket event channel, against a real homeserver at `localhost:8008`
   (`TEST_MATRIX_USERNAME`/`TEST_MATRIX_PASSWORD` env vars, same convention as
-  `src-tauri/tests/common`).
+  `src-tauri/tests/common`). The WebSocket tests bind a real ephemeral TCP
+  listener (`oneshot` can't drive a protocol upgrade) and use
+  `tokio-tungstenite` as a real client.

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
-import { rightPanelOpenAtomFamily } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
@@ -38,8 +38,20 @@ vi.mock("@/features/settings/SettingsScreen", () => ({
   SettingsScreen: () => null,
 }));
 
-vi.mock("@/features/room-info/RoomInfoPanel", () => ({
-  RoomInfoPanel: () => <div>room-info-panel</div>,
+vi.mock("@/features/room-info/MembersDrawer", () => ({
+  MembersDrawer: () => <div>members-drawer</div>,
+}));
+
+vi.mock("@/features/room-info/RoomSettingsModal", () => ({
+  RoomSettingsModal: () => null,
+}));
+
+// `RoomsScreen` calls `useRoomDetails` directly (to keep its `room_details:update`
+// listener alive regardless of whether the modal/drawer are open) — stub it so
+// these tests, which aren't exercising that data-fetching behavior, don't need a
+// `QueryClientProvider` in the tree.
+vi.mock("@/features/room-info/useRoomDetails", () => ({
+  useRoomDetails: () => ({ data: undefined, isLoading: false }),
 }));
 
 vi.mock("./ChatShell", () => ({
@@ -177,6 +189,30 @@ describe("RoomsScreen", () => {
     expect(setFocusedRoom).toHaveBeenCalledWith(null);
   });
 
+  it("clears focus while the room settings modal is open", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <RoomsScreen
+          currentUserId="@me:example.org"
+          deepLinkRoomId={null}
+          onDeepLinkConsumed={() => {}}
+          onLoggedOut={() => {}}
+        />
+      </Provider>,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith("!a:example.org"));
+    setFocusedRoom.mockClear();
+
+    store.set(roomSettingsAtom, { roomId: "!a:example.org", section: "general" });
+    fireEvent(window, new Event("focus"));
+
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith(null));
+    hasFocus.mockRestore();
+  });
+
   it("selecting a room updates the active room and its chat content", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!a:example.org" }),
@@ -197,10 +233,10 @@ describe("RoomsScreen", () => {
     await screen.findByText("chat-content:!b:example.org");
   });
 
-  it("closes the right panel when the layout narrows to mobile", async () => {
+  it("closes the members drawer when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();
-    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+    store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);
 
     const { rerender } = render(
       <Provider store={store}>
@@ -213,7 +249,7 @@ describe("RoomsScreen", () => {
       </Provider>,
     );
     await screen.findByText("chat-content:!a:example.org");
-    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+    expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
 
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     rerender(
@@ -227,10 +263,12 @@ describe("RoomsScreen", () => {
       </Provider>,
     );
 
-    await waitFor(() => expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(false));
+    await waitFor(() =>
+      expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(false),
+    );
   });
 
-  it("does not force-close a right panel opened while already on mobile", async () => {
+  it("does not force-close a members drawer opened while already on mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const store = createStore();
 
@@ -246,13 +284,13 @@ describe("RoomsScreen", () => {
     );
     await screen.findByText("chat-content:!a:example.org");
 
-    // Opening the panel *while already mobile* (no desktop -> mobile
+    // Opening the drawer *while already mobile* (no desktop -> mobile
     // transition involved) must not be immediately reset — only an actual
     // transition should force it closed.
-    store.set(rightPanelOpenAtomFamily("!a:example.org"), true);
+    store.set(membersDrawerOpenAtomFamily("!a:example.org"), true);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(store.get(rightPanelOpenAtomFamily("!a:example.org"))).toBe(true);
+    expect(store.get(membersDrawerOpenAtomFamily("!a:example.org"))).toBe(true);
   });
 
   it("does not report the active room as focused while a mobile list tab is showing", async () => {

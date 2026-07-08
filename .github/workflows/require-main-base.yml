@@ -6,6 +6,15 @@ name: Require main base
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
+
+permissions: {}
+
+# Cancel a PR's in-flight run when a new push supersedes it — see
+# quality-checks.yml's identical block for the full rationale.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   check-base:
@@ -13,6 +22,14 @@ jobs:
     steps:
       - name: Verify base branch
         run: |
+          # A merge-queue run has no github.event.pull_request (it validates
+          # a synthetic commit combining the PR with main's current tip) —
+          # the base branch was already validated when the PR itself was
+          # opened/synchronized, so there's nothing left to check here.
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            echo "Merge-queue run — base branch was already validated when this PR was opened."
+            exit 0
+          fi
           base="${{ github.event.pull_request.base.ref }}"
           if [[ "$base" == "main" || "$base" == release/* ]]; then
             echo "Base branch '$base' is allowed."

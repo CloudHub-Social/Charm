@@ -1,7 +1,6 @@
 import { MessageSquare, Settings as SettingsIcon, Users } from "lucide-react";
-import { useSetAtom } from "jotai";
 import { useEffect, useState, type ReactNode } from "react";
-import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
 type MobileTab = "chats" | "people";
@@ -14,6 +13,8 @@ interface AppShellProps {
   peopleList: ReactNode;
   /** The active room's chat view (`ChatShell`). */
   content: ReactNode;
+  /** Whether the Settings destination is currently active in mobile navigation. */
+  isSettingsActive?: boolean;
   /** The right-hand room-info panel, or `null` when closed — desktop-only; not shown on mobile (Day-2 per the spec's non-goals). */
   rightPanel: ReactNode | null;
   /** The currently selected room id, or `null` — drives the mobile list-vs-detail view. */
@@ -46,10 +47,11 @@ export function AppShell({
   selectionRequestId,
   mobileView,
   onMobileViewChange,
+  isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
-  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
     if (activeRoomId) onMobileViewChange("detail");
@@ -82,7 +84,9 @@ export function AppShell({
       <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
         <button
           type="button"
-          aria-current={mobileTab === "chats" && mobileView === "list" ? "page" : undefined}
+          aria-current={
+            mobileTab === "chats" && mobileView === "list" && !isSettingsActive ? "page" : undefined
+          }
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("chats");
@@ -94,7 +98,11 @@ export function AppShell({
         </button>
         <button
           type="button"
-          aria-current={mobileTab === "people" && mobileView === "list" ? "page" : undefined}
+          aria-current={
+            mobileTab === "people" && mobileView === "list" && !isSettingsActive
+              ? "page"
+              : undefined
+          }
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => {
             setMobileTab("people");
@@ -106,8 +114,9 @@ export function AppShell({
         </button>
         <button
           type="button"
+          aria-current={isSettingsActive ? "page" : undefined}
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => setSettingsOpen("account")}
+          onClick={() => openSettings("account")}
         >
           <SettingsIcon className="size-5" aria-hidden="true" />
           Settings

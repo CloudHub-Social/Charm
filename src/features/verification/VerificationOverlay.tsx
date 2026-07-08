@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import {
   acceptVerificationRequest,
   cancelVerification,
@@ -12,6 +13,7 @@ import {
   type VerificationRequestSummary,
 } from "@/lib/matrix";
 import { avatarColor, initials } from "@/features/rooms/roomDisplay";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 type Phase =
   | { kind: "incoming" }
@@ -25,16 +27,26 @@ export function VerificationOverlay() {
   const [request, setRequest] = useState<VerificationRequestSummary | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "incoming" });
   const doneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { closeSettings } = useSettingsNavigation();
 
   useEffect(() => {
     const unlisten = onVerificationRequest((incoming) => {
       setRequest(incoming);
       setPhase({ kind: "incoming" });
+      // Radix's Dialog applies `aria-hidden` to everything outside its own
+      // portal while open (and traps focus there) — this overlay renders as
+      // a sibling of the settings dialog, not inside it, so a verification
+      // starting while settings is open would otherwise be invisible to
+      // assistive tech and unreachable by keyboard despite being visually on
+      // top. Closing settings removes that trap instead of trying to work
+      // around it (z-index/pointer-events alone don't fix the aria-hidden
+      // side of it).
+      closeSettings();
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
-  }, []);
+  }, [closeSettings]);
 
   useEffect(() => {
     if (!request) return undefined;
@@ -60,7 +72,7 @@ export function VerificationOverlay() {
       }
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
       // Without this, a "done" auto-dismiss scheduled here can still fire
       // after this effect has torn down — e.g. a new verification request
       // arriving (which changes `request` and reruns this effect) or the

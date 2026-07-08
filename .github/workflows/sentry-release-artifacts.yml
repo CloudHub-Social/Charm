@@ -1,0 +1,328 @@
+name: Sentry release artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Sentry release name. Defaults to the tag name or commit SHA."
+        required: false
+        type: string
+      environment:
+        description: "Sentry environment tag for uploaded release artifacts."
+        required: false
+        default: production
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-sourcemaps:
+    name: Frontend sourcemaps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure Sentry release upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          ENVIRONMENT_INPUT: ${{ github.event.inputs.environment }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          REQUIRE_VITE_SENTRY_DSN: "true"
+          WRITE_FRONTEND_UPLOAD_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # `vite.config.ts` wires @sentry/vite-plugin when SENTRY_UPLOAD=true and
+      # the three Sentry secrets are present. Upload failures fail this build.
+      - name: Build and upload frontend sourcemaps
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: pnpm build
+
+      - name: Verify sourcemaps are not left in dist
+        run: |
+          if find dist -name '*.map' -print -quit | grep -q .; then
+            echo "::error::Sentry sourcemap upload left .map files in dist"
+            find dist -name '*.map' -print
+            exit 1
+          fi
+
+  rust-linux-debug-files:
+    name: Rust Linux debug files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure Sentry debug-file upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      - name: Build Tauri Linux app with release debuginfo
+        run: pnpm tauri build
+
+      - name: Resolve Cargo target directory
+        id: cargo-target
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          echo "dir=$target_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Rust debug information files
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload
+          --org "$SENTRY_ORG"
+          --project "$SENTRY_PROJECT"
+          --include-sources
+          --wait
+          --log-level info
+          "${{ steps.cargo-target.outputs.dir }}/release"
+
+  apple-debug-files:
+    name: Apple debug files
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure Sentry debug-file upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      - name: Build Tauri macOS app with release debuginfo
+        run: pnpm tauri build
+
+      - name: Build Tauri iOS simulator app with debuginfo
+        run: pnpm tauri ios build --target aarch64-sim --debug --ci
+
+      - name: Resolve Apple debug-file directories
+        id: apple-debug-files
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          paths=(
+            "$target_dir/release"
+            "$target_dir/aarch64-apple-ios-sim/debug"
+            "src-tauri/gen/apple/build"
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              existing+=("$path")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "::error::No Apple debug-file directories found"
+            exit 1
+          fi
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${existing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload Apple debug information files
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          DEBUG_FILE_PATHS: ${{ steps.apple-debug-files.outputs.paths }}
+        run: |
+          paths=()
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done <<< "$DEBUG_FILE_PATHS"
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "${paths[@]}"
+
+  windows-debug-files:
+    name: Windows debug files
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure Sentry debug-file upload
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      - name: Build Tauri Windows app with release debuginfo
+        run: pnpm tauri build
+
+      - name: Resolve Windows debug-file directory
+        id: windows-debug-files
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --format-version=1 --no-deps | ConvertFrom-Json
+          $releaseDir = Join-Path $metadata.target_directory "release"
+          if (-not (Test-Path $releaseDir)) {
+            Write-Error "No Windows release debug-file directory found at $releaseDir"
+            exit 1
+          }
+          "path=$releaseDir" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows debug information files
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload `
+            --org "$env:SENTRY_ORG" `
+            --project "$env:SENTRY_PROJECT" `
+            --include-sources `
+            --wait `
+            --log-level info `
+            "${{ steps.windows-debug-files.outputs.path }}"
+
+  android-debug-files:
+    name: Android mapping and native symbols
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi, i686-linux-android, x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure Sentry Android upload
+        env:
+          RELEASE_INPUT: ${{ github.event.inputs.release }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      - name: Build Android app and upload mappings/native symbols
+        env:
+          SENTRY_ANDROID_UPLOAD: "true"
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+          export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          # Build the generated default Android ABI set so uploaded native symbols
+          # match the universal release artifact.
+          pnpm tauri android build --ci

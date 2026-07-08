@@ -656,11 +656,25 @@ fn message_preview(
 /// exists for, where nothing is running yet.
 pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), PushError> {
     let running_client = app.state::<MatrixState>().client.lock().await.clone();
-    let client = match running_client {
-        Some(client) => client,
-        None => restore_any_client(app)
-            .await?
-            .ok_or_else(|| "no restorable session to handle this push against".to_string())?,
+    // Held for the rest of this function whenever `restore_any_client` had
+    // to build a fresh headless client: that client's use below (fetching
+    // and decrypting a room event, both store-backed) is exactly the same
+    // open-handle hazard an interactive login's relocation needs protection
+    // from — see `restore_session_for_push`'s doc comment for why the lock
+    // has to span *use*, not just the build. Not needed for the
+    // `running_client` fast path — that's the already-adopted client, whose
+    // ongoing use by commands generally is a separate, broader concern (see
+    // the PR discussion on quiescing in-flight command clients).
+    let matrix_state = app.state::<MatrixState>();
+    let (client, _completion_guard) = match running_client {
+        Some(client) => (client, None),
+        None => {
+            let guard = matrix_state.login_completion_lock.lock().await;
+            let client = restore_any_client(app)
+                .await?
+                .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
+            (client, Some(guard))
+        }
     };
 
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;

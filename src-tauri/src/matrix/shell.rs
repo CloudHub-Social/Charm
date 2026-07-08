@@ -335,6 +335,17 @@ pub async fn maybe_send_notification<F, Fut>(
         .show();
 }
 
+/// Whether this build targets a desktop OS (macOS/Windows/Linux) as opposed
+/// to mobile (iOS/Android) — Tauri's own `desktop`/`mobile` `cfg` flags,
+/// exposed to the frontend so it can gate desktop-only settings (autostart)
+/// on the actual target rather than viewport width, which a Tauri mobile
+/// build at a tablet/landscape size could satisfy despite having none of
+/// `get_autostart`'s underlying capability.
+#[tauri::command]
+pub fn is_desktop_platform() -> bool {
+    cfg!(desktop)
+}
+
 /// Whether the app is currently registered to launch on login. Desktop-only:
 /// autostart isn't a mobile concept, and `tauri-plugin-autostart`'s
 /// `ManagerExt`/`autolaunch()` aren't available on mobile builds (mirrors the

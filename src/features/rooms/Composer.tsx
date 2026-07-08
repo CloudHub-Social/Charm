@@ -24,6 +24,7 @@ import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
 import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 export type ComposerMode = "send" | "edit" | "reply";
 
@@ -187,7 +188,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // down) covers "every keystroke".
   useEffect(() => {
     draft.getDraft();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `draft` (useRoomDraft(roomId)) is a fresh object every render; including it would re-run this every render instead of only on an actual room switch
   }, [roomId]);
 
   useEffect(() => {
@@ -208,7 +209,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           displayName: m.display_name,
         }));
       })
-      .catch(console.error);
+      .catch(logAndIgnore);
     listRooms()
       .then((rooms) => {
         if (currentRoomIdRef.current !== requestedRoomId) return;
@@ -218,7 +219,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           alias: null,
         }));
       })
-      .catch(console.error);
+      .catch(logAndIgnore);
   }, [roomId]);
 
   const extensions = useMemo(
@@ -294,7 +295,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }),
       Placeholder.configure({ placeholder }),
     ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally created once: tiptap extensions need a stable identity (recreating resets editor state); live data is read via membersRef/roomsRef/the menu bridge inside each suggestion's items/render, not captured in this closure
     [],
   );
 
