@@ -8,6 +8,8 @@ on:
     types: [opened, edited, reopened, synchronize]
   merge_group:
 
+permissions: {}
+
 # Cancel a PR's in-flight run when a new push supersedes it — see
 # quality-checks.yml's identical block for the full rationale.
 concurrency:
