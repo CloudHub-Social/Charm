@@ -100,6 +100,24 @@ describe("Sentry instrumentation", () => {
     expect(feedbackDialog.open).toHaveBeenCalledTimes(2);
   });
 
+  it("shares one in-flight feedback dialog creation across concurrent opens", async () => {
+    let resolveForm!: (dialog: typeof feedbackDialog) => void;
+    feedbackIntegration.createForm.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveForm = resolve;
+      }),
+    );
+
+    const first = openSentryFeedbackDialog();
+    const second = openSentryFeedbackDialog();
+    resolveForm(feedbackDialog);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.open).toHaveBeenCalledTimes(2);
+  });
+
   it("removes the feedback dialog when Sentry is closed", async () => {
     initializeSentry({
       ...DEFAULT_OBSERVABILITY_SETTINGS,
