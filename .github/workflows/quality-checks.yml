@@ -7,6 +7,9 @@ on:
   merge_group:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 # Cancel a PR's in-flight run when a new push supersedes it — without this, a
 # PR that gets pushed to several times in quick succession piles up redundant
 # queued runs (each ~12 jobs, several of them expensive macOS/Windows/iOS/
