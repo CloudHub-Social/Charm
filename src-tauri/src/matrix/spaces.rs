@@ -166,11 +166,9 @@ fn build_hierarchy_from_chunks(
 ) -> Vec<SpaceHierarchyNode> {
     let mut rooms = HashMap::new();
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
-    let mut response_order = HashMap::new();
-
-    for (index, chunk) in chunks.into_iter().enumerate() {
+    for chunk in chunks {
         let parent_id = chunk.summary.room_id.to_string();
-        response_order.insert(parent_id.clone(), index);
+        let mut seen_children = HashSet::new();
         let children = chunk
             .children_state
             .iter()
@@ -179,7 +177,12 @@ fn build_hierarchy_from_chunks(
                 if event_type != "m.space.child" {
                     return None;
                 }
-                raw.get_field::<String>("state_key").ok().flatten()
+                let child_id = raw.get_field::<String>("state_key").ok().flatten()?;
+                if seen_children.insert(child_id.clone()) {
+                    Some(child_id)
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>();
         if !children.is_empty() {
@@ -188,19 +191,7 @@ fn build_hierarchy_from_chunks(
         rooms.insert(parent_id, chunk_to_child(chunk));
     }
 
-    sort_edges_by_response_order(&mut edges, &response_order);
-
     build_hierarchy_from_edges(root_id, &rooms, &edges)
-}
-
-fn sort_edges_by_response_order(
-    edges: &mut HashMap<String, Vec<String>>,
-    response_order: &HashMap<String, usize>,
-) {
-    for children in edges.values_mut() {
-        children.sort_by_key(|id| response_order.get(id).copied().unwrap_or(usize::MAX));
-        children.dedup();
-    }
 }
 
 fn build_hierarchy_from_edges(
@@ -364,32 +355,6 @@ mod tests {
     }
 
     #[test]
-    fn sorts_children_by_hierarchy_response_order() {
-        let mut edges = HashMap::from([(
-            "!space:example.org".to_owned(),
-            vec![
-                "!second:example.org".to_owned(),
-                "!first:example.org".to_owned(),
-            ],
-        )]);
-        let response_order = HashMap::from([
-            ("!space:example.org".to_owned(), 0),
-            ("!first:example.org".to_owned(), 1),
-            ("!second:example.org".to_owned(), 2),
-        ]);
-
-        sort_edges_by_response_order(&mut edges, &response_order);
-
-        assert_eq!(
-            edges["!space:example.org"],
-            vec![
-                "!first:example.org".to_owned(),
-                "!second:example.org".to_owned(),
-            ]
-        );
-    }
-
-    #[test]
     fn cycle_guard_skips_back_edges() {
         let rooms = HashMap::from([
             (
@@ -464,38 +429,6 @@ mod tests {
         assert_eq!(tree[0].children[0].child.room_id, "!room:example.org");
         assert_eq!(tree[1].children.len(), 1);
         assert_eq!(tree[1].children[0].child.room_id, "!room:example.org");
-    }
-
-    #[test]
-    fn duplicate_sibling_edges_are_emitted_once() {
-        let rooms = HashMap::from([
-            (
-                "!space:example.org".to_owned(),
-                child("!space:example.org", true),
-            ),
-            (
-                "!room:example.org".to_owned(),
-                child("!room:example.org", false),
-            ),
-        ]);
-        let mut edges = HashMap::from([(
-            "!space:example.org".to_owned(),
-            vec![
-                "!room:example.org".to_owned(),
-                "!room:example.org".to_owned(),
-            ],
-        )]);
-        let response_order = HashMap::from([
-            ("!space:example.org".to_owned(), 0),
-            ("!room:example.org".to_owned(), 1),
-        ]);
-
-        sort_edges_by_response_order(&mut edges, &response_order);
-
-        let tree = build_hierarchy_from_edges("!space:example.org", &rooms, &edges);
-
-        assert_eq!(tree.len(), 1);
-        assert_eq!(tree[0].child.room_id, "!room:example.org");
     }
 
     #[test]
