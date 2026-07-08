@@ -9,10 +9,8 @@ pub mod matrix;
 pub mod push;
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 use tauri::Manager;
 use tracing_subscriber::prelude::*;
 
@@ -58,16 +56,6 @@ static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
-static LOG_CONSENT_CACHE: std::sync::LazyLock<Mutex<LogConsentCache>> =
-    std::sync::LazyLock::new(|| Mutex::new(LogConsentCache::default()));
-const LOG_CONSENT_CACHE_TTL: Duration = Duration::from_secs(1);
-
-#[derive(Default)]
-struct LogConsentCache {
-    app_data_dir: Option<PathBuf>,
-    logs_enabled: bool,
-    refreshed_at: Option<Instant>,
-}
 
 fn scrub_secrets(text: &str) -> String {
     SECRET_FIELD_PATTERN
@@ -177,7 +165,6 @@ fn sentry_event_filter_for_level_target(
 
 fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
-    app_data_dir: &Path,
 ) -> sentry::integrations::tracing::EventFilter {
     use sentry::integrations::tracing::EventFilter;
 
@@ -187,7 +174,7 @@ fn sentry_event_filter(
 
     match *metadata.level() {
         tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO => {
-            let logs_enabled = cached_observability_logs_enabled(app_data_dir);
+            let logs_enabled = runtime_observability_logs_enabled();
             sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
         }
         tracing::Level::DEBUG | tracing::Level::TRACE => EventFilter::Ignore,
@@ -206,17 +193,15 @@ fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> 
         )
 }
 
-fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
+fn install_sentry_tracing() -> bool {
     if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
         return true;
     }
 
-    let event_app_data_dir = app_data_dir.clone();
-    let span_app_data_dir = app_data_dir;
     let sentry_layer = sentry::integrations::tracing::layer()
-        .event_filter(move |metadata| sentry_event_filter(metadata, &event_app_data_dir))
-        .span_filter(move |metadata| {
-            sentry_span_filter(metadata) && cached_observability_logs_enabled(&span_app_data_dir)
+        .event_filter(sentry_event_filter)
+        .span_filter(|metadata| {
+            sentry_span_filter(metadata) && runtime_observability_logs_enabled()
         });
     let subscriber = tracing_subscriber::registry().with(sentry_layer);
 
@@ -230,24 +215,16 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
     }
 }
 
-fn update_cached_observability_logs_enabled(app_data_dir: PathBuf, logs_enabled: bool) {
+fn update_runtime_observability_logs_enabled(logs_enabled: bool) {
     RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
-    if let Ok(mut cache) = LOG_CONSENT_CACHE.lock() {
-        cache.logs_enabled = logs_enabled;
-        cache.app_data_dir = Some(app_data_dir);
-        cache.refreshed_at = Some(Instant::now());
-    }
 }
 
 #[tauri::command]
 fn update_observability_log_consent<R: tauri::Runtime>(
-    app: tauri::AppHandle<R>,
+    _app: tauri::AppHandle<R>,
     logs_enabled: bool,
 ) {
-    RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
-        update_cached_observability_logs_enabled(app_data_dir, logs_enabled);
-    }
+    update_runtime_observability_logs_enabled(logs_enabled);
 }
 
 fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
@@ -291,28 +268,8 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
-    let now = Instant::now();
-    {
-        let Ok(cache) = LOG_CONSENT_CACHE.lock() else {
-            return observability_logs_enabled_from_store(app_data_dir);
-        };
-        let same_dir = cache
-            .app_data_dir
-            .as_deref()
-            .is_some_and(|cached_dir| cached_dir == app_data_dir);
-        let fresh = cache
-            .refreshed_at
-            .and_then(|refreshed_at| now.checked_duration_since(refreshed_at))
-            .is_some_and(|age| age < LOG_CONSENT_CACHE_TTL);
-        if same_dir && fresh {
-            return cache.logs_enabled;
-        }
-    }
-
-    let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
-    update_cached_observability_logs_enabled(app_data_dir.to_owned(), logs_enabled);
-    logs_enabled
+fn runtime_observability_logs_enabled() -> bool {
+    RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
 }
 
 fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
@@ -325,7 +282,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     }
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
-    update_cached_observability_logs_enabled(app_data_dir.clone(), logs_enabled);
+    update_runtime_observability_logs_enabled(logs_enabled);
     let environment = std::env::var("SENTRY_ENVIRONMENT")
         .ok()
         .filter(|value| !value.is_empty())
@@ -345,13 +302,15 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.5 },
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
+            // Keep Sentry Logs initialized for same-session opt-in; scrub_log
+            // drops every native log unless runtime log consent is enabled.
             enable_logs: true,
             before_send: Some(std::sync::Arc::new(scrub_event)),
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
     ));
-    let tracing_installed = install_sentry_tracing(app_data_dir);
+    let tracing_installed = install_sentry_tracing();
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
@@ -627,8 +586,8 @@ pub fn run() {
 mod observability_tests {
     use super::*;
 
-    static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
-        std::sync::LazyLock::new(|| Mutex::new(()));
+    static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
     #[test]
     fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
@@ -773,10 +732,10 @@ mod observability_tests {
     }
 
     #[test]
-    fn log_consent_cache_updates_after_opt_out_notification() {
+    fn runtime_log_consent_updates_after_opt_out_notification() {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
         let dir = std::env::temp_dir().join(format!(
-            "charm-observability-test-cache-{}-{}",
+            "charm-observability-test-runtime-consent-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -790,16 +749,17 @@ mod observability_tests {
         )
         .expect("observability fixture write");
 
-        assert!(cached_observability_logs_enabled(&dir));
+        update_runtime_observability_logs_enabled(true);
+        assert!(runtime_observability_logs_enabled());
 
         std::fs::write(
             dir.join("observability.json"),
             r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":false},"updatedAt":2}}"#,
         )
         .expect("observability opt-out fixture write");
-        update_cached_observability_logs_enabled(dir.clone(), false);
+        update_runtime_observability_logs_enabled(false);
 
-        assert!(!cached_observability_logs_enabled(&dir));
+        assert!(!runtime_observability_logs_enabled());
 
         std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
     }
