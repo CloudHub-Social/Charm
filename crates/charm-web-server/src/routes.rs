@@ -1277,6 +1277,7 @@ struct ResolveAvatarQuery {
 async fn resolve_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Query(query): Query<ResolveAvatarQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
@@ -1329,7 +1330,7 @@ async fn resolve_avatar(
     // `resolve_message_media` needs for arbitrary sender-controlled
     // attachments; sniffing is still worth it over guessing from
     // `MediaCache`'s extensionless filename.
-    let content_type = sniff_content_type(&path)
+    let content_type = sniff_content_type(&path, false)
         .await
         .unwrap_or_else(|| mime::IMAGE_PNG.to_string());
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
@@ -1339,7 +1340,7 @@ async fn resolve_avatar(
             ("x-content-type-options", "nosniff".to_string()),
             (
                 "cross-origin-resource-policy",
-                media_corp_header().to_string(),
+                media_corp_header(&headers).to_string(),
             ),
         ],
         body,
@@ -1377,7 +1378,7 @@ async fn resolve_message_media(
     let cache = crate::media_cache::for_session(&session.user_id, &device_id)
         .await
         .map_err(ApiError::bad_request)?;
-    let declared_mimetype = declared_media_mimetype(&session.client, &room_id, &event_id).await;
+    let declared = declared_media_info(&session.client, &room_id, &event_id).await;
     let path = charm_lib::matrix::media::resolve_media_impl(
         &session.client,
         cache,
@@ -1431,16 +1432,34 @@ async fn resolve_message_media(
     // came back, rather than assuming based on the `thumbnail` query flag,
     // handles both cases without needing to know which one
     // `resolve_media_impl` chose.
-    let guessed_content_type =
-        if let Some(sniffed) = sniff_content_type(std::path::Path::new(&path)).await {
-            sniffed
-        } else if let Some(declared) = declared_mimetype {
-            declared
-        } else {
-            mime_guess::from_path(&path)
-                .first_or_octet_stream()
-                .to_string()
-        };
+    let guessed_content_type = if let Some(sniffed) =
+        sniff_content_type(std::path::Path::new(&path), declared.is_audio).await
+    {
+        sniffed
+    } else if let Some(declared_mimetype) = declared.mimetype {
+        declared_mimetype
+    } else {
+        mime_guess::from_path(&path)
+            .first_or_octet_stream()
+            .to_string()
+    };
+    // A `?thumbnail=true` request is only ever supposed to hand back a
+    // small preview image — `resolve_media_impl` normally does exactly
+    // that, but for *encrypted* media with no dedicated thumbnail source it
+    // silently falls back to the original file instead (see the doc
+    // comment above). Serving that fallback here — the full original
+    // audio/video/file body, just mislabeled as a "thumbnail" response —
+    // would hand a UI that treats every thumbnail URL as an `<img>` source
+    // (video tiles in a room's media grid, say) something that can't
+    // render as an image at all. Reject instead, the same "not found"
+    // shape `resolve_avatar` already uses for an unresolvable avatar, so
+    // the frontend's existing broken-image handling applies rather than a
+    // multi-megabyte video download silently failing to paint.
+    if query.thumbnail && !guessed_content_type.starts_with("image/") {
+        return Err(ApiError::not_found(
+            "no thumbnail available for this attachment",
+        ));
+    }
     // This route serves sender-controlled bytes under the browser's
     // authenticated API origin — reflecting an arbitrary declared mimetype
     // verbatim (e.g. `text/html`, or `image/svg+xml` — SVG is itself active
@@ -1517,7 +1536,7 @@ async fn resolve_message_media(
         // but this one — relaxed to `cross-origin` only when
         // `CHARM_WEB_SERVER_ALLOWED_ORIGIN` is configured, see
         // `media_corp_header`'s doc comment.
-        .header("cross-origin-resource-policy", media_corp_header());
+        .header("cross-origin-resource-policy", media_corp_header(&headers));
     if let Some(content_range) = content_range {
         response = response.header("content-range", content_range);
     }
@@ -1567,11 +1586,33 @@ fn parse_byte_range(header: &str, file_len: u64) -> Option<(u64, u64)> {
 /// `mimetype`, `None` on any failure (unparsed ids, non-message event,
 /// missing `info`) — callers fall back to a filename-based guess rather than
 /// failing the whole media request over a missing/malformed content-type.
-async fn declared_media_mimetype(
+/// The declared `info.mimetype` (optional, per the Matrix spec — a sender
+/// can omit it) plus whether the event's `msgtype` is `m.audio`. The latter
+/// is a hard signal straight from the event itself, not a heuristic, and
+/// covers ambiguous containers (WebM/Matroska's magic bytes alone can't
+/// distinguish audio-only from video — see `sniffed_av_mime`) even when
+/// `mimetype` itself is missing.
+#[derive(Default)]
+struct DeclaredMediaInfo {
+    mimetype: Option<String>,
+    is_audio: bool,
+}
+
+async fn declared_media_info(
     client: &matrix_sdk::Client,
     room_id: &str,
     event_id: &str,
-) -> Option<String> {
+) -> DeclaredMediaInfo {
+    try_declared_media_info(client, room_id, event_id)
+        .await
+        .unwrap_or_default()
+}
+
+async fn try_declared_media_info(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    event_id: &str,
+) -> Option<DeclaredMediaInfo> {
     use matrix_sdk::ruma::events::room::message::MessageType;
     use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
 
@@ -1585,13 +1626,15 @@ async fn declared_media_mimetype(
         return None;
     };
     let original = msg.as_original()?;
-    match &original.content.msgtype {
-        MessageType::Image(c) => c.info.as_ref()?.mimetype.clone(),
-        MessageType::Video(c) => c.info.as_ref()?.mimetype.clone(),
-        MessageType::Audio(c) => c.info.as_ref()?.mimetype.clone(),
-        MessageType::File(c) => c.info.as_ref()?.mimetype.clone(),
+    let is_audio = matches!(original.content.msgtype, MessageType::Audio(_));
+    let mimetype = match &original.content.msgtype {
+        MessageType::Image(c) => c.info.as_ref().and_then(|i| i.mimetype.clone()),
+        MessageType::Video(c) => c.info.as_ref().and_then(|i| i.mimetype.clone()),
+        MessageType::Audio(c) => c.info.as_ref().and_then(|i| i.mimetype.clone()),
+        MessageType::File(c) => c.info.as_ref().and_then(|i| i.mimetype.clone()),
         _ => None,
-    }
+    };
+    Some(DeclaredMediaInfo { mimetype, is_audio })
 }
 
 /// Uploads a room attachment as `multipart/form-data` (a browser has no
@@ -1836,8 +1879,12 @@ fn sniffed_image_mime(bytes: &[u8]) -> Option<mime::Mime> {
 /// `None` if the bytes aren't a recognized image format (audio/video/other
 /// binary formats have no cheap universal magic-byte sniff this crate
 /// already depends on, so those fall through to the caller's next source of
-/// truth rather than being guessed at here).
-async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
+/// truth rather than being guessed at here). `is_audio_hint` is a hard
+/// signal from the message's own `msgtype` (see `DeclaredMediaInfo`), used
+/// only to disambiguate a container format (WebM) whose magic bytes alone
+/// can't tell audio-only from video-carrying — callers resolving an
+/// avatar/thumbnail (always a plain image, no such ambiguity) pass `false`.
+async fn sniff_content_type(path: &std::path::Path, is_audio_hint: bool) -> Option<String> {
     use tokio::io::AsyncReadExt;
     let mut prefix = [0u8; 64];
     let mut file = tokio::fs::File::open(path).await.ok()?;
@@ -1845,7 +1892,7 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
     let prefix = &prefix[..read];
     sniffed_image_mime(prefix)
         .map(|mime| mime.to_string())
-        .or_else(|| sniffed_av_mime(prefix))
+        .or_else(|| sniffed_av_mime(prefix, is_audio_hint))
 }
 
 /// A small, hand-rolled magic-byte sniff for the common audio/video
@@ -1854,7 +1901,7 @@ async fn sniff_content_type(path: &std::path::Path) -> Option<String> {
 /// actually likely to show up as Matrix attachments rather than being
 /// exhaustive. `None` (not a guess) for anything unrecognized; callers fall
 /// through to a filename-based guess from there.
-fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
+fn sniffed_av_mime(bytes: &[u8], is_audio_hint: bool) -> Option<String> {
     // MP4-family containers (mp4/mov/m4a/3gp/heic, ...): a 4-byte size
     // field, then the literal ASCII `ftyp` box type at offset 4, then a
     // 4-byte "major brand" at offset 8 — the size varies per file, so this
@@ -1885,11 +1932,16 @@ fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
         // also carries video — that requires parsing into the EBML tree
         // itself, well beyond a magic-byte sniff. Unlike the MP4 case
         // above (where the `ftyp` major brand *does* cheaply disambiguate
-        // audio-only), guessing `video/webm` here would mislabel a
-        // legitimate audio-only attachment the same way HEIC did — so this
-        // returns `None`/unrecognized instead, letting the message's
-        // declared mimetype win.
-        [0x1A, 0x45, 0xDF, 0xA3, ..] => None,
+        // audio-only), guessing wrong here would mislabel a legitimate
+        // attachment (audio rendered as an unplayable video, or vice
+        // versa) — so this defers to `is_audio_hint`, the message's own
+        // `msgtype` (a hard signal, not a guess; see `DeclaredMediaInfo`),
+        // rather than assuming either way from the magic bytes alone.
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => Some(if is_audio_hint {
+            "audio/webm".to_string()
+        } else {
+            "video/webm".to_string()
+        }),
         [b'O', b'g', b'g', b'S', ..] => Some("audio/ogg".to_string()),
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => {
             Some("audio/wav".to_string())
@@ -2130,29 +2182,74 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
 /// `cross-origin` policy — silently loosening protection for the common
 /// same-origin/local-dev case that never needed it relaxed in the first
 /// place.
-fn media_corp_header() -> &'static str {
-    // Deliberately not conditioned on the *request's* `Origin` header — the
-    // documented cross-origin-frontend deployment loads these URLs as plain
-    // `<img>`/`<video>`/`<audio src>` subresource fetches, which are
-    // "no-cors" loads: browsers do not attach `Origin` to those the way
-    // they do to `fetch`/XHR, so gating on it (an earlier version of this
-    // function did exactly that) left every such subresource load still
-    // falling through to `same-origin` and blocked — the configured
-    // frontend could call the JSON API but never render any media/avatar.
-    // `CHARM_WEB_SERVER_ALLOWED_ORIGIN` being set at all is itself the
-    // deployer's explicit signal that a cross-origin frontend is part of
-    // this deployment, and CORP isn't this route's actual access control
-    // anyway — `require_session`'s cookie check already gates who can
-    // successfully call it at all; CORP only decides whether a
-    // *successful* response can be embedded as a subresource by another
-    // origin's page. Relaxing it deployment-wide once cross-origin is
-    // opted into is consistent with that: same-origin/local-dev (the
-    // unset-env-var case) keeps the strict default.
-    if std::env::var(ALLOWED_ORIGIN_ENV).is_ok() {
-        "cross-origin"
-    } else {
-        "same-origin"
+/// Extracts just the `scheme://host[:port]` portion of a `Referer` header
+/// value — enough to compare against an `Origin`-shaped allowlist entry,
+/// without pulling in a full URL-parsing crate for one field.
+fn origin_from_referer(referer: &str) -> Option<String> {
+    let scheme_end = referer.find("://")?;
+    let after_scheme = &referer[scheme_end + 3..];
+    let path_start = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    Some(format!(
+        "{}://{}",
+        &referer[..scheme_end],
+        &after_scheme[..path_start]
+    ))
+}
+
+/// `same-origin` unconditionally relaxing to `cross-origin` deployment-wide
+/// whenever `CHARM_WEB_SERVER_ALLOWED_ORIGIN` is merely *configured* (an
+/// earlier version of this function did exactly that) is a real hole, not
+/// just an over-broad default: CORP is **not** redundant with
+/// `require_session`'s cookie check the way that earlier version assumed —
+/// `SameSite=Strict` still attaches this session's cookie to a request from
+/// an untrusted *same-site* subdomain (see `ALLOWED_ORIGIN_ENV`'s own doc
+/// comment on the WS handshake for the identical concern), so relaxing CORP
+/// for literally every requester once the env var is set would let any such
+/// subdomain embed/probe private media, not just the deployer's actual
+/// trusted frontend.
+///
+/// So this has to identify the *specific* requesting page, not just "is
+/// cross-origin support turned on". `Origin` is authoritative when present
+/// (real CORS-mode `fetch`/XHR calls always send it) but a plain
+/// `<img>`/`<video>`/`<audio src>` subresource load is a "no-cors" fetch
+/// and omits `Origin` entirely — for those this falls back to `Referer`
+/// (still sent by default under the common `strict-origin-when-cross-origin`
+/// referrer policy, at least enough to recover the origin) and checks that
+/// against the same allowlist. If neither header identifies an allowed
+/// origin — including the "header simply wasn't sent" case, e.g. a stricter
+/// referrer-policy or a privacy-focused browser — this fails closed to
+/// `same-origin`, consistent with every other allowlist check in this
+/// crate.
+fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
+    let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
+        return "same-origin";
+    };
+    let allowed_origins: Vec<&str> = allowed.split(',').map(str::trim).collect();
+
+    if let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    {
+        return if allowed_origins.contains(&origin) {
+            "cross-origin"
+        } else {
+            "same-origin"
+        };
     }
+
+    if let Some(referer_origin) = headers
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(origin_from_referer)
+    {
+        if allowed_origins.contains(&referer_origin.as_str()) {
+            return "cross-origin";
+        }
+    }
+
+    "same-origin"
 }
 
 async fn ws_handler(
@@ -2526,5 +2623,39 @@ mod range_tests {
     fn a_malformed_header_is_rejected() {
         assert_eq!(parse_byte_range("not a range", 1000), None);
         assert_eq!(parse_byte_range("bytes=abc-def", 1000), None);
+    }
+}
+
+#[cfg(test)]
+mod referer_origin_tests {
+    use super::origin_from_referer;
+
+    #[test]
+    fn strips_the_path_query_and_fragment() {
+        assert_eq!(
+            origin_from_referer("https://app.example.com/rooms/!abc:example.com?x=1#y"),
+            Some("https://app.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn preserves_a_non_default_port() {
+        assert_eq!(
+            origin_from_referer("http://localhost:5173/"),
+            Some("http://localhost:5173".to_string())
+        );
+    }
+
+    #[test]
+    fn a_bare_origin_with_no_trailing_path_round_trips() {
+        assert_eq!(
+            origin_from_referer("https://app.example.com"),
+            Some("https://app.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn a_malformed_value_is_rejected() {
+        assert_eq!(origin_from_referer("not a url"), None);
     }
 }

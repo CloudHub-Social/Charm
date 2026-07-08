@@ -67,10 +67,27 @@ pub async fn login(
     // room route 404s/empties out for a freshly logged-in session even
     // though the account genuinely has rooms. This also doubles as
     // `sync_loop::spawn`'s initial sync — see this function's doc comment.
+    //
+    // A failure here is *not* propagated as this whole function's error:
+    // the login itself already succeeded above, so failing this call would
+    // throw away valid, already-authenticated credentials over what's very
+    // often a transient network/homeserver hiccup, forcing the user to
+    // resubmit their password for no reason the login itself caused. An
+    // empty/default `SyncResponse` lets the caller still issue a session
+    // cookie; `sync_loop::spawn`'s own loop (using this same empty response
+    // as its "initial state") will attempt its first real sync immediately
+    // after and surface a `sync:state` error there if the homeserver is
+    // genuinely still unreachable — this route just stops being the one
+    // thing standing between "logged in" and "usable".
     let initial_response = client
         .sync_once(SyncSettings::default())
         .await
-        .map_err(|e| e.to_string())?;
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                "login's initial sync failed, deferring to the background sync loop's own retry: {e}"
+            );
+            matrix_sdk::sync::SyncResponse::default()
+        });
 
     let response = LoginResponse {
         user_id,
@@ -114,10 +131,22 @@ pub async fn register(
         session.profile_and_presence_snapshots(),
     );
 
+    // Not propagated as an error — see `login`'s matching doc comment, and
+    // more so here: the account was *just created* by
+    // `register_with_dummy_auth` above, so failing this call would strand
+    // the user with an account that already exists but no way back in —
+    // retrying "registration" fails outright (username taken), and this
+    // route never told the caller the account/device id it needs to fall
+    // back to a plain login instead.
     let initial_response = client
         .sync_once(SyncSettings::default())
         .await
-        .map_err(|e| e.to_string())?;
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                "registration's initial sync failed, deferring to the background sync loop's own retry: {e}"
+            );
+            matrix_sdk::sync::SyncResponse::default()
+        });
 
     let response = LoginResponse {
         user_id,
