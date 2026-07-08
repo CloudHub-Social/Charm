@@ -89,5 +89,5 @@ scrubbing, docs, and the opt-in frontend configuration for replay, canvas
 replay, profiling, and warning/error console logs.
 
 User feedback, screenshots, IPC breadcrumb wrapping, Rust tracing/log bridges,
-native SDKs, dSYMs, Android mapping files, Rust debug-info upload, and size
+native Android SDK runtime coverage, signed iOS device-release dSYMs, and size
 analysis remain separate follow-up phases from Spec 21.
