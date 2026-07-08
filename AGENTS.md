@@ -84,3 +84,7 @@ Rules:
   output, or the user says not to use it.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only,
   no API cost).
+
+## Imported Claude Cowork project instructions
+
+This is Charm (2.0) a ground up remaking of a Matrix client. It is unrelated to Charm 1.0 in every way except name.
