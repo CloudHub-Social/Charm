@@ -37,6 +37,8 @@ class CharmApplication : Application() {
 
     @Synchronized
     private fun sentryEnabledFromStore(): Boolean {
+        // Re-read on every Sentry callback until Android has a native consent bridge;
+        // mtime-only caching can leak events after same-session opt-out.
         val appDataFile = File(applicationInfo.dataDir, "observability.json")
         val file = if (appDataFile.isFile) {
             appDataFile
