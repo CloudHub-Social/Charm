@@ -133,6 +133,9 @@ async fn fetch_hierarchy_chunks(
         });
         let response = client.send(request).await.map_err(|e| e.to_string())?;
         chunks.extend(response.rooms);
+        if direct_children_only {
+            return Ok(chunks);
+        }
         from = response.next_batch;
         if from.is_none() {
             return Ok(chunks);

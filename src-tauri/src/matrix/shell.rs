@@ -92,7 +92,6 @@ fn compute_space_badge_states(
 
     for room in rooms {
         if room.is_space {
-            badges.entry(room.room_id.clone()).or_default();
             continue;
         }
 
@@ -103,6 +102,9 @@ fn compute_space_badge_states(
             room.unread_count,
         );
         let highlight = u32::try_from(room.unread_count).unwrap_or(u32::MAX);
+        if !has_unread && highlight == 0 {
+            continue;
+        }
         for space_id in ancestor_space_ids(&room.room_id, &parents_by_room) {
             let badge: &mut SpaceBadgeState = badges.entry(space_id.clone()).or_default();
             if has_unread {
@@ -592,6 +594,21 @@ mod tests {
                 total_highlight: 1
             })
         );
+    }
+
+    #[test]
+    fn space_badges_omit_zero_value_spaces() {
+        let mut quiet_room = room(0, 0, false, false);
+        quiet_room.room_id = "!quiet-room:example.org".to_string();
+        quiet_room.parent_space_ids = vec!["!space:example.org".to_string()];
+
+        let mut space = room(0, 0, false, false);
+        space.room_id = "!space:example.org".to_string();
+        space.is_space = true;
+
+        let badge = compute_badge_state(&[space, quiet_room]);
+
+        assert!(badge.spaces.is_empty());
     }
 
     #[test]
