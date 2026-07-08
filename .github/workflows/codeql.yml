@@ -100,13 +100,42 @@ jobs:
     needs: [analyze, analyze-rust]
     if: always()
     runs-on: ubuntu-latest
-    # This job only reads needs.*.result — it touches nothing in the repo, so it
-    # needs no token scopes (also satisfies CodeQL's "workflow must set
-    # permissions" rule for this job).
-    permissions: {}
+    # security-events: read so the alert-gate step below can query code scanning.
+    permissions:
+      security-events: read
     steps:
       - name: Fail if any CodeQL analysis failed or was cancelled
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: |
           echo "::error::A CodeQL analysis job did not succeed: ${{ join(needs.*.result, ', ') }}"
           exit 1
+
+      # Because code-scanning's own merge-protection doesn't apply to merge queue
+      # groups, the aggregator itself enforces "no open alerts" so an alert-bearing
+      # PR can't pass the queue. The ?ref= query is diff-based: code scanning
+      # attributes only alerts NEW to this PR/merge_group ref — pre-existing
+      # baseline alerts stay on main — so this flags PR-introduced alerts without
+      # needing a clean baseline (verified: main reports the require-main-base.yml
+      # alert, but refs/pull/N/merge for a PR that doesn't touch it reports none).
+      # An accepted finding (e.g. a test-only hard-coded secret) must still be
+      # *dismissed* in Security > Code scanning to clear it. The analyze jobs wait
+      # for SARIF processing (codeql-action default), so alerts are queryable now.
+      # Scoped to pull_request/merge_group (the only events that gate a merge);
+      # push/schedule just refresh the baseline. To gate only on serious findings,
+      # filter the jq on `.rule.security_severity_level`.
+      - name: Fail if CodeQL reported open alerts on this ref
+        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          alerts=$(gh api --paginate \
+            "repos/${{ github.repository }}/code-scanning/alerts?ref=$REF&state=open&per_page=100" \
+            --jq '.[] | "  - #\(.number) [\(.rule.security_severity_level // .rule.severity)] \(.rule.id): \(.most_recent_instance.message.text)"')
+          if [ -n "$alerts" ]; then
+            echo "::error::CodeQL reported open alert(s) on $REF — fix or dismiss them (Security > Code scanning) before merging:"
+            printf '%s\n' "$alerts"
+            exit 1
+          fi
+          echo "No open CodeQL alerts on $REF."
