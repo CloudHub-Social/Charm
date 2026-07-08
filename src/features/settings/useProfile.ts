@@ -1,5 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toLoadableMediaUrl } from "@/lib/mediaUrl";
 import {
   getAccountDeactivateUrl,
   getProfile,
@@ -37,7 +37,7 @@ export function useResolvedAvatarSrc(mxcUrl: string | null | undefined) {
     queryFn: async () => {
       if (!mxcUrl) return null;
       const path = await resolveAvatar(mxcUrl);
-      return path ? convertFileSrc(path) : null;
+      return path ? toLoadableMediaUrl(path) : null;
     },
     enabled: Boolean(mxcUrl),
     staleTime: 5 * 60 * 1000,
@@ -55,7 +55,7 @@ export function useUpdateProfile() {
     onSuccess: invalidate,
   });
   const updateAvatar = useMutation({
-    mutationFn: (filePath: string) => setAvatar(filePath),
+    mutationFn: (filePath: string | File) => setAvatar(filePath),
     onSuccess: invalidate,
   });
   const clearAvatar = useMutation({

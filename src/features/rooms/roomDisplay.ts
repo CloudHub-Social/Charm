@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { toLoadableMediaUrl } from "@/lib/mediaUrl";
 
 // Solid-fill variants (not --color-accent/-warning/-success/-danger/
 // -text-muted directly): every avatar fallback pairs one of these
@@ -47,5 +47,5 @@ export function avatarColor(roomId: string): string {
  * rendering a broken image.
  */
 export function resolveAvatar(path: string | null): string | undefined {
-  return path ? convertFileSrc(path) : undefined;
+  return path ? toLoadableMediaUrl(path) : undefined;
 }

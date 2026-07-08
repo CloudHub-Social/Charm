@@ -1,4 +1,3 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { BadgeState } from "@bindings/BadgeState";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
@@ -47,7 +46,7 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
-import { invoke } from "@/observability/ipc";
+import { invoke, listen, type UnlistenFn } from "./matrixTransport";
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see
@@ -316,7 +315,7 @@ export function onSasUpdate(
  */
 export function sendAttachment(
   roomId: string,
-  filePath: string,
+  filePath: string | File,
   txnId: string,
   caption?: string,
 ): Promise<void> {
@@ -467,7 +466,7 @@ export function setDisplayName(displayName: string | null): Promise<void> {
 }
 
 /** `filePath` is read on the Rust side — same convention as {@link sendAttachment}. */
-export function setAvatar(filePath: string): Promise<void> {
+export function setAvatar(filePath: string | File): Promise<void> {
   return invoke("set_avatar", { filePath });
 }
 
@@ -591,7 +590,7 @@ export function setRoomTopic(roomId: string, topic: string): Promise<void> {
 }
 
 /** `filePath` comes from the avatar file picker — Rust reads and MIME-sniffs it, same convention as `sendAttachment`. */
-export function setRoomAvatar(roomId: string, filePath: string): Promise<void> {
+export function setRoomAvatar(roomId: string, filePath: string | File): Promise<void> {
   return invoke("set_room_avatar", { roomId, filePath });
 }
 

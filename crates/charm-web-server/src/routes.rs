@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 
+use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
     can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
@@ -476,12 +477,19 @@ async fn logout(
 #[derive(Serialize)]
 struct MeResponse {
     user_id: String,
+    device_id: String,
 }
 
 async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    let device_id = session
+        .client
+        .device_id()
+        .ok_or_else(|| ApiError::bad_request("session has no device id"))?
+        .to_string();
     Ok(Json(MeResponse {
         user_id: session.user_id.clone(),
+        device_id,
     }))
 }
 
@@ -2004,7 +2012,10 @@ async fn bootstrap_cross_signing(
     let request: BootstrapCrossSigningRequest = parse_optional_json(&body)?;
     bootstrap_cross_signing_impl(&session.client, request.password)
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|error| match error {
+            UiaCommandError::UiaChallenge => ApiError::bad_request("UIA challenge required"),
+            UiaCommandError::Other { message } => ApiError::bad_request(message),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 

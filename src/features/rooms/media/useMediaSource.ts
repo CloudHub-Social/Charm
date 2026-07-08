@@ -1,5 +1,5 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
+import { toLoadableMediaUrl } from "@/lib/mediaUrl";
 import { resolveMedia } from "@/lib/matrix";
 
 /**
@@ -26,7 +26,7 @@ export function useMediaSource(
     queryFn: async () => {
       if (!roomId || !eventId) throw new Error("no room/event id for media");
       const path = await resolveMedia(roomId, eventId, thumbnail);
-      return convertFileSrc(path);
+      return toLoadableMediaUrl(path);
     },
     enabled: Boolean(roomId) && Boolean(eventId),
     // Not Infinity: the Rust-side filesystem cache this resolves to enforces
