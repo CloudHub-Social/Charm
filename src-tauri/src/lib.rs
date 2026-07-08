@@ -11,6 +11,8 @@ pub mod push;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::Manager;
 use tracing_subscriber::prelude::*;
 
@@ -55,6 +57,16 @@ static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 });
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
+static LOG_CONSENT_CACHE: std::sync::LazyLock<Mutex<LogConsentCache>> =
+    std::sync::LazyLock::new(|| Mutex::new(LogConsentCache::default()));
+const LOG_CONSENT_CACHE_TTL: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct LogConsentCache {
+    app_data_dir: Option<PathBuf>,
+    logs_enabled: bool,
+    refreshed_at: Option<Instant>,
+}
 
 fn scrub_secrets(text: &str) -> String {
     SECRET_FIELD_PATTERN
@@ -185,7 +197,7 @@ fn sentry_event_filter(
 
     match *metadata.level() {
         tracing::Level::ERROR | tracing::Level::WARN => {
-            let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
+            let logs_enabled = cached_observability_logs_enabled(app_data_dir);
             sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
         }
         tracing::Level::INFO => EventFilter::Breadcrumb,
@@ -263,6 +275,28 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
         .and_then(|s| s.get("logsEnabled"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
+    let Ok(mut cache) = LOG_CONSENT_CACHE.lock() else {
+        return observability_logs_enabled_from_store(app_data_dir);
+    };
+    let now = Instant::now();
+    let same_dir = cache
+        .app_data_dir
+        .as_deref()
+        .is_some_and(|cached_dir| cached_dir == app_data_dir);
+    let fresh = cache
+        .refreshed_at
+        .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
+    if same_dir && fresh {
+        return cache.logs_enabled;
+    }
+
+    cache.logs_enabled = observability_logs_enabled_from_store(app_data_dir);
+    cache.app_data_dir = Some(app_data_dir.to_owned());
+    cache.refreshed_at = Some(now);
+    cache.logs_enabled
 }
 
 fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
