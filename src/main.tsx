@@ -16,8 +16,14 @@ import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
 // eslint-disable-next-line @typescript-eslint/unbound-method -- Sentry's own FallbackRender type shapes resetError as a method signature, but the actual value it passes is already an arrow function (`() => this.resetErrorBoundary()`) with no `this` dependency
-function ErrorBoundaryFallback({ resetError }: { resetError: () => void }) {
-  return <ErrorFallback resetError={resetError} />;
+function ErrorBoundaryFallback({
+  eventId,
+  resetError,
+}: {
+  eventId?: string;
+  resetError: () => void;
+}) {
+  return <ErrorFallback resetError={resetError} sentryEventId={eventId} />;
 }
 
 /**

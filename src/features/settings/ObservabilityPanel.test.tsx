@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { initializeSentry } from "@/observability/instrument";
+import { initializeSentry, openSentryFeedbackDialog } from "@/observability/instrument";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 
 vi.mock("@/observability/instrument", () => ({
   initializeSentry: vi.fn(),
   closeSentry: vi.fn().mockResolvedValue(undefined),
+  openSentryFeedbackDialog: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@tauri-apps/plugin-store", () => ({
@@ -25,6 +26,7 @@ function renderPanel() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(initializeSentry).mockReturnValue(true);
+  vi.mocked(openSentryFeedbackDialog).mockResolvedValue(true);
   localStorage.clear();
 });
 
@@ -49,5 +51,35 @@ describe("ObservabilityPanel", () => {
     expect(
       await screen.findByRole("switch", { name: "Enable Sentry session replay" }),
     ).toBeEnabled();
+  });
+
+  it("gates the feedback form behind Sentry opt-in", async () => {
+    renderPanel();
+
+    const feedbackButton = await screen.findByRole("button", { name: "Send feedback" });
+    expect(feedbackButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("switch", { name: "Enable Sentry observability" }));
+
+    expect(feedbackButton).toBeEnabled();
+    fireEvent.click(feedbackButton);
+
+    expect(openSentryFeedbackDialog).toHaveBeenCalledTimes(1);
+    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({ surface: "settings" });
+  });
+
+  it("announces feedback availability failures", async () => {
+    vi.mocked(openSentryFeedbackDialog).mockResolvedValue(false);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+
+    expect(await screen.findByRole("status")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      ),
+    ).toBeVisible();
   });
 });
