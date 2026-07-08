@@ -32,11 +32,8 @@ Use these variables for local or release builds:
 - `SENTRY_DSN`: Rust/native DSN.
 - `VITE_SENTRY_ENVIRONMENT` / `SENTRY_ENVIRONMENT`: Sentry environment.
 - `VITE_SENTRY_RELEASE` / `SENTRY_RELEASE`: release override.
-- `VITE_SENTRY_DSN`: required by the release artifact workflow so uploaded
-  sourcemaps are generated from the same Sentry-enabled frontend build shape as
-  shipped releases.
-- `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: sourcemap upload through
-  `@sentry/vite-plugin`.
+- `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: artifact upload through
+  `@sentry/vite-plugin` and `sentry-cli`.
 - `SENTRY_UPLOAD=true`: release-build guard that requires the three upload
   variables above and fails the build if any are missing.
 
@@ -53,19 +50,22 @@ dispatch. It currently uploads:
 
 - Frontend sourcemaps through `@sentry/vite-plugin`, with emitted `.map` files
   deleted from `dist` after upload.
-- Linux Rust debug information from the Tauri release build compiled with
-  `CARGO_PROFILE_RELEASE_DEBUG=1`, using
+- Linux, macOS, and Windows debug information from Tauri release builds
+  compiled with `CARGO_PROFILE_RELEASE_DEBUG=1`, using
   `sentry-cli debug-files upload --include-sources --wait`.
+- iOS simulator debug information from the current unsigned CI build path.
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
-`SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. Manual runs can override
-the Sentry release name and environment; tag runs default the release name to
-the tag, and manual runs without a release input default to the commit SHA.
+`SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. The DSN is used only for
+the frontend sourcemap build so uploaded maps match the same Sentry-enabled
+bundle shape as shipped releases. Manual runs can override the Sentry release
+name and environment; tag runs default the release name to the tag, and manual
+runs without a release input default to the commit SHA.
 
-macOS/iOS dSYMs, Windows PDBs, Android mapping files/native symbols, and Sentry
-size-analysis uploads are still Phase 3 follow-ups. Add them to the release
-artifact workflow once the corresponding signed/release platform build pipeline
-exists.
+Android mapping files/native symbols, signed iOS device-release dSYMs, and
+Sentry size-analysis uploads are still Phase 3 follow-ups. Add them to the
+release artifact workflow once the corresponding signed/release platform build
+pipeline exists.
 
 ## Scrubbing Rules
 
