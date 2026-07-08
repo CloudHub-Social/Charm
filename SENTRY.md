@@ -77,6 +77,11 @@ dispatch. It currently uploads:
 - Android ProGuard/R8 mapping files and native symbols through the Sentry
   Android Gradle plugin, enabled only in the release artifact workflow via
   `SENTRY_ANDROID_UPLOAD=true`.
+- Size-analysis reports for frontend, desktop release, Apple debug/simulator,
+  and Android release outputs as GitHub step summaries and downloadable workflow
+  artifacts.
+- Android APK/AAB output to Sentry Size Analysis with
+  `sentry-cli build upload` after the Android release-artifact build succeeds.
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
 `SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. The DSN is used only for
@@ -85,10 +90,15 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
-Signed iOS device-release dSYMs, Android Mobile Vitals, and Sentry size-analysis
-uploads are still Phase 3 follow-ups. Add them to the release artifact workflow
-once the corresponding signed/release, native consent bridge, or size-analysis
-pipeline exists.
+Sentry Size Analysis currently receives Android builds only. The current iOS CI
+path builds an unsigned simulator debug app, while Sentry accepts XCArchive or
+IPA inputs for iOS size analysis; wire that upload once a signed device-release
+archive or IPA exists. Frontend and desktop bundle sizes are reported in GitHub
+because Sentry Size Analysis is a mobile build-size product, not a generic web
+or desktop bundle analyzer.
+
+Signed iOS device-release dSYMs, NDK/native Android crash capture, Android
+Mobile Vitals, and performance transactions are still Phase 3 follow-ups.
 
 ## Scrubbing Rules
 
@@ -131,6 +141,6 @@ and Rust attachment-upload IPC breadcrumbs correlated by the frontend operation
 ID header. It also covers opt-in user feedback from settings and the crash
 fallback, with optional SDK-provided screenshot capture when supported.
 
-Broader Rust tracing/log bridges, Android Mobile Vitals, signed iOS
-device-release dSYMs, and size analysis remain separate follow-up phases from
-Spec 21.
+Broader Rust tracing/log bridges, NDK/native Android crash capture, Android
+Mobile Vitals, and signed iOS device-release dSYMs remain separate follow-up
+phases from Spec 21.
