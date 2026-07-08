@@ -37,10 +37,11 @@ Use these variables for local or release builds:
 - `SENTRY_UPLOAD=true`: release-build guard that requires the three upload
   variables above and fails the build if any are missing.
 
-The Vite plugin is gated on all three upload variables so dev and normal PR
-builds do not create releases or emit sourcemaps. Release upload workflows set
-`SENTRY_UPLOAD=true` so a missing token/org/project is a hard failure instead
-of silently producing an unsymbolicated build.
+The Vite plugin is gated on `SENTRY_UPLOAD=true` plus all three upload
+variables, so dev and normal PR builds do not create releases or emit
+sourcemaps even if repository secrets are available. Release upload workflows
+set `SENTRY_UPLOAD=true` so a missing token/org/project is a hard failure
+instead of silently producing an unsymbolicated build.
 
 ## Release Artifacts
 
@@ -55,7 +56,8 @@ dispatch. It currently uploads:
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
 `SENTRY_ORG`, and `SENTRY_PROJECT`. Manual runs can override the Sentry release
-name and environment; tag runs default the release name to the tag.
+name and environment; tag runs default the release name to the tag, and manual
+runs without a release input default to the commit SHA.
 
 macOS/iOS dSYMs, Windows PDBs, Android mapping files/native symbols, and Sentry
 size-analysis uploads are still Phase 3 follow-ups. Add them to the release

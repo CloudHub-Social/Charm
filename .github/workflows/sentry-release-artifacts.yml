@@ -57,7 +57,11 @@ jobs:
 
           release="${{ github.event.inputs.release }}"
           if [ -z "$release" ]; then
-            release="${GITHUB_REF_NAME:-${GITHUB_SHA}}"
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+              release="${GITHUB_REF_NAME}"
+            else
+              release="${GITHUB_SHA}"
+            fi
           fi
           environment="${{ github.event.inputs.environment }}"
           if [ -z "$environment" ]; then
@@ -101,8 +105,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -126,7 +128,11 @@ jobs:
 
           release="${{ github.event.inputs.release }}"
           if [ -z "$release" ]; then
-            release="${GITHUB_REF_NAME:-${GITHUB_SHA}}"
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+              release="${GITHUB_REF_NAME}"
+            else
+              release="${GITHUB_SHA}"
+            fi
           fi
 
           {
