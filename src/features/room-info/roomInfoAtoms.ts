@@ -1,5 +1,8 @@
 import { atom } from "jotai";
-import { atomFamily } from "jotai/utils";
+import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
+
+/** Distinct rooms tracked at once — see `boundedAtomFamily`'s doc comment. */
+const MAX_TRACKED_ROOMS = 100;
 
 export type RoomSettingsSection = "general" | "members" | "permissions";
 
@@ -23,7 +26,7 @@ export const roomSettingsAtom = atom<RoomSettingsTarget | null>(null);
  * `atomFamily` so switching rooms doesn't leak the drawer's open/closed state
  * between them — same convention as `messageActionAtoms.ts`'s per-room atoms.
  */
-export const membersDrawerOpenAtomFamily = atomFamily((_roomId: string) => {
+export const membersDrawerOpenAtomFamily = boundedAtomFamily((_roomId: string) => {
   void _roomId;
   return atom(false);
-});
+}, MAX_TRACKED_ROOMS);
