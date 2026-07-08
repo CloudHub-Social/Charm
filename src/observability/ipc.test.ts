@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import { invoke, ipcObservabilityTestHooks } from "./ipc";
+import { IPC_OPERATION_ID_HEADER, invoke, ipcObservabilityTestHooks } from "./ipc";
 
 vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
@@ -38,14 +38,22 @@ describe("IPC observability", () => {
       }),
     ).resolves.toBe(rawResult);
 
-    expect(tauriInvoke).toHaveBeenCalledWith("send_message", {
-      roomId: "!secret-room:example.org",
-      body: "ordinary message text that must not be copied into a breadcrumb",
-      password: "secret",
-      nested: {
-        eventId: "$secret-event:example.org",
+    expect(tauriInvoke).toHaveBeenCalledWith(
+      "send_message",
+      {
+        roomId: "!secret-room:example.org",
+        body: "ordinary message text that must not be copied into a breadcrumb",
+        password: "secret",
+        nested: {
+          eventId: "$secret-event:example.org",
+        },
       },
-    });
+      {
+        headers: {
+          [IPC_OPERATION_ID_HEADER]: expect.stringMatching(/^ipc-/),
+        },
+      },
+    );
 
     expect(Sentry.addBreadcrumb).toHaveBeenCalledTimes(2);
     expect(Sentry.addBreadcrumb).toHaveBeenNthCalledWith(
