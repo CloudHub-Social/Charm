@@ -62,12 +62,7 @@ pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
     let mut total_unread: u32 = 0;
     let mut total_highlight: u32 = 0;
     for room in rooms {
-        if super::rooms::has_unread(
-            room.is_marked_unread,
-            room.is_muted,
-            room.unread_messages,
-            room.unread_count,
-        ) {
+        if room.has_unread {
             total_unread += 1;
         }
         total_highlight =
@@ -95,12 +90,7 @@ fn compute_space_badge_states(
             continue;
         }
 
-        let has_unread = super::rooms::has_unread(
-            room.is_marked_unread,
-            room.is_muted,
-            room.unread_messages,
-            room.unread_count,
-        );
+        let has_unread = room.has_unread;
         let highlight = u32::try_from(room.unread_count).unwrap_or(u32::MAX);
         if !has_unread && highlight == 0 {
             continue;
