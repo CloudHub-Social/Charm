@@ -19,8 +19,10 @@ Rust setup lives in `src-tauri/src/lib.rs`. It initializes Sentry from Tauri
   `observability.state.sentryEnabled: true`.
 
 Rust startup cannot read browser `localStorage`, so the Tauri store file is the
-cross-process source of truth. Settings changes that disable Sentry apply to the
-already-running frontend immediately and to Rust crash monitoring on restart.
+cross-process source of truth. Settings changes that disable Sentry close the
+already-running frontend SDK for the current window and apply to Rust crash
+monitoring on restart. Re-enabling after a same-window opt-out is persisted but
+does not call `Sentry.init()` a second time; it takes effect after reload/startup.
 
 ## Environment
 

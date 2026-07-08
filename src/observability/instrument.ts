@@ -7,6 +7,7 @@ import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./se
 const MAX_ERRORS_PER_SESSION = 50;
 
 let initialized = false;
+let closedForSession = false;
 let sentErrorCount = 0;
 
 type SentryIntegration =
@@ -52,7 +53,12 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
 }
 
 export function initializeSentry(settings: ObservabilitySettings): boolean {
-  if (initialized || !settings.sentryEnabled || !import.meta.env.VITE_SENTRY_DSN) {
+  if (
+    initialized ||
+    closedForSession ||
+    !settings.sentryEnabled ||
+    !import.meta.env.VITE_SENTRY_DSN
+  ) {
     return false;
   }
 
@@ -107,8 +113,8 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
 }
 
 export async function closeSentry(): Promise<void> {
-  if (!initialized) return;
-  initialized = false;
+  if (!initialized || closedForSession) return;
+  closedForSession = true;
   sentErrorCount = 0;
   await Sentry.close(2_000);
 }
@@ -116,6 +122,7 @@ export async function closeSentry(): Promise<void> {
 export const observabilityTestHooks = {
   reset() {
     initialized = false;
+    closedForSession = false;
     sentErrorCount = 0;
   },
   scrubSensitiveText,
