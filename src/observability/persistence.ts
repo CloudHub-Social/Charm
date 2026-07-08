@@ -14,6 +14,8 @@ interface PersistedEnvelope {
   updatedAt: number;
 }
 
+let persistMutationId = 0;
+
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
     typeof value === "object" &&
@@ -92,16 +94,22 @@ export async function persistObservabilitySettings(
   settings: ObservabilitySettings,
   updatedAt: number = Date.now(),
 ): Promise<void> {
+  const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = {
     state: normalizeObservabilitySettings(settings),
     updatedAt,
   };
   writeLocalEnvelope(envelope);
+  if (!envelope.state.logsEnabled) {
+    await syncRustLogConsent(false);
+  }
   try {
     const store = await getStore();
     await store.set(OBSERVABILITY_STORE_KEY, envelope);
   } catch {
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }
-  await syncRustLogConsent(envelope.state.logsEnabled);
+  if (mutationId === persistMutationId && envelope.state.logsEnabled) {
+    await syncRustLogConsent(true);
+  }
 }
