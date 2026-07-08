@@ -27,7 +27,6 @@ class CharmApplication : Application() {
             BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() }?.let { options.setRelease(it) }
             options.setSendDefaultPii(false)
             options.setSendClientReports(false)
-            options.setTracesSampleRate(0.0)
             options.setEnableAutoSessionTracking(false)
             options.setBeforeBreadcrumb(BeforeBreadcrumbCallback { breadcrumb, _ ->
                 if (sentryEnabledFromStore()) breadcrumb else null
