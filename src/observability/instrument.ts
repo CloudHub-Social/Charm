@@ -187,46 +187,63 @@ export async function openSentryFeedbackDialog(
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
   const generation = feedbackDialogGeneration;
+  if (feedbackDialog && !feedbackDialogPromise) {
+    const dialog = feedbackDialog;
+    feedbackDialog = null;
+    removeFeedbackDialog(dialog);
+  }
   if (!feedbackDialog && !feedbackDialogPromise) {
-    feedbackDialogPromise = feedback
-      .createForm({
-        tags: {
-          "charm.feedback.surface": options.surface ?? "manual",
-          "charm.feedback.screenshot": "optional",
-        },
-      })
-      .then((dialog) => {
-        if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
-          removeFeedbackDialog(dialog);
-          return null;
-        }
-        if (
-          !dialog ||
-          typeof dialog.appendToDom !== "function" ||
-          typeof dialog.open !== "function" ||
-          typeof dialog.removeFromDom !== "function"
-        ) {
-          removeFeedbackDialog(dialog);
-          return null;
-        }
-        if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
-          removeFeedbackDialog(dialog);
-          return null;
-        }
-        try {
-          dialog.appendToDom();
-        } catch {
-          removeFeedbackDialog(dialog);
-          return null;
-        }
-        return dialog;
-      })
-      .catch(() => null)
-      .finally(() => {
-        if (generation === feedbackDialogGeneration) {
-          feedbackDialogPromise = null;
-        }
-      });
+    try {
+      feedbackDialogPromise = Promise.resolve(
+        feedback.createForm({
+          tags: {
+            "charm.feedback.surface": options.surface ?? "manual",
+            "charm.feedback.screenshot": "optional",
+          },
+        }),
+      )
+        .then((dialog) => {
+          if (
+            generation !== feedbackDialogGeneration ||
+            !Sentry.getClient()?.getOptions().enabled
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          if (
+            !dialog ||
+            typeof dialog.appendToDom !== "function" ||
+            typeof dialog.open !== "function" ||
+            typeof dialog.removeFromDom !== "function"
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          if (
+            generation !== feedbackDialogGeneration ||
+            !Sentry.getClient()?.getOptions().enabled
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          try {
+            dialog.appendToDom();
+          } catch {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          return dialog;
+        })
+        .catch(() => null)
+        .finally(() => {
+          if (generation === feedbackDialogGeneration) {
+            feedbackDialogPromise = null;
+          }
+        });
+    } catch {
+      feedbackDialogPromise = null;
+      return false;
+    }
   }
 
   const dialog = feedbackDialog ?? (await feedbackDialogPromise);

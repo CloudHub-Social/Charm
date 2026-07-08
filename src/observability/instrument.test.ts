@@ -148,12 +148,13 @@ describe("Sentry instrumentation", () => {
     expect(() => beforeSendFeedback?.({})).not.toThrow();
   });
 
-  it("reuses an existing feedback dialog instead of appending duplicates", async () => {
+  it("replaces an existing feedback dialog before creating the next one", async () => {
     await expect(openSentryFeedbackDialog()).resolves.toBe(true);
     await expect(openSentryFeedbackDialog()).resolves.toBe(true);
 
-    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(1);
-    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
+    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(2);
+    expect(feedbackDialog.removeFromDom).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(2);
     expect(feedbackDialog.open).toHaveBeenCalledTimes(2);
   });
 
@@ -246,6 +247,17 @@ describe("Sentry instrumentation", () => {
 
   it("returns false when the Feedback SDK cannot create the form", async () => {
     feedbackIntegration.createForm.mockRejectedValueOnce(new Error("unsupported"));
+
+    await expect(openSentryFeedbackDialog()).resolves.toBe(false);
+
+    expect(feedbackDialog.appendToDom).not.toHaveBeenCalled();
+    expect(feedbackDialog.open).not.toHaveBeenCalled();
+  });
+
+  it("returns false when the Feedback SDK throws while creating the form", async () => {
+    feedbackIntegration.createForm.mockImplementationOnce(() => {
+      throw new Error("unsupported");
+    });
 
     await expect(openSentryFeedbackDialog()).resolves.toBe(false);
 
