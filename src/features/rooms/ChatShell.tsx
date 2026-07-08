@@ -307,11 +307,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
     let observer: IntersectionObserver;
     try {
-      observer = new IntersectionObserver(onIntersect, { threshold: 1 });
+      observer = new IntersectionObserver();
     } catch {
       observer = new IntersectionObserver();
     }
     observer.observe(sentinel);
+    if (lastMarkedReadEventId.current !== latestEventId) {
+      lastMarkedReadEventId.current = latestEventId;
+      markRoomRead(room.room_id).catch(logAndIgnore);
+    }
     return () => observer.disconnect();
   }, [room, latestEventId, roomSettingsOpen]);
 
