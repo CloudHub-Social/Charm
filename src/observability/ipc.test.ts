@@ -5,6 +5,7 @@ import { invoke, ipcObservabilityTestHooks } from "./ipc";
 
 vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
+  getClient: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -13,6 +14,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(Sentry.getClient).mockReturnValue({
+    getOptions: () => ({ enabled: true }),
+  } as ReturnType<typeof Sentry.getClient>);
 });
 
 describe("IPC observability", () => {
@@ -60,7 +64,7 @@ describe("IPC observability", () => {
               type: "object",
             },
             password: "[redacted]",
-            roomId: "![redacted]:[redacted]",
+            roomId: "[redacted-string:24]",
           },
         }),
       }),
@@ -77,7 +81,7 @@ describe("IPC observability", () => {
           operationId: expect.stringMatching(/^ipc-/),
           result: {
             body: "[string:63]",
-            roomId: "![redacted]:[redacted]",
+            roomId: "[redacted-string:24]",
           },
         }),
       }),
@@ -99,7 +103,7 @@ describe("IPC observability", () => {
         data: expect.objectContaining({
           command: "change_password",
           error: {
-            message: "failed for @[redacted]:[redacted] with password=[redacted]",
+            message: "[redacted-string:50]",
             name: "Error",
           },
           operationId: expect.stringMatching(/^ipc-/),
@@ -143,7 +147,18 @@ describe("IPC observability", () => {
       }),
     ).toEqual({
       body: "[string:33]",
-      roomId: "![redacted]:[redacted]",
+      roomId: "[redacted-string:17]",
     });
+  });
+
+  it("does not record breadcrumbs while the current Sentry client is disabled", async () => {
+    vi.mocked(Sentry.getClient).mockReturnValue({
+      getOptions: () => ({ enabled: false }),
+    } as ReturnType<typeof Sentry.getClient>);
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
+
+    await invoke("logout");
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
   });
 });

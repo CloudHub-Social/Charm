@@ -4,7 +4,6 @@ import { scrubSensitiveText } from "./scrubbers";
 
 type InvokeArgs = Record<string, unknown>;
 
-const MAX_BREADCRUMB_STRING_LENGTH = 120;
 let fallbackOperationCounter = 0;
 
 function operationId(): string {
@@ -15,14 +14,9 @@ function operationId(): string {
   return `ipc-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;
 }
 
-function truncate(value: string): string {
-  if (value.length <= MAX_BREADCRUMB_STRING_LENGTH) return value;
-  return `${value.slice(0, MAX_BREADCRUMB_STRING_LENGTH)}...`;
-}
-
 function summarizeString(value: string): string {
   const scrubbed = scrubSensitiveText(value);
-  if (scrubbed !== value) return truncate(scrubbed);
+  if (scrubbed !== value) return `[redacted-string:${value.length}]`;
   return `[string:${value.length}]`;
 }
 
@@ -40,7 +34,8 @@ function summarizeValue(value: unknown, key?: string, depth = 0): unknown {
   if (typeof value === "undefined") return "[undefined]";
   if (Array.isArray(value)) return { type: "array", length: value.length };
   if (typeof value !== "object") return `[${typeof value}]`;
-  if (depth >= 1) return { type: "object", keys: Object.keys(value).toSorted() };
+  // eslint-disable-next-line unicorn/no-array-sort -- `toSorted()` is not available in supported older WebViews.
+  if (depth >= 1) return { type: "object", keys: Object.keys(value).sort() };
 
   const output: Record<string, unknown> = {};
   for (const [fieldKey, fieldValue] of Object.entries(value as Record<string, unknown>)) {
@@ -69,6 +64,9 @@ function addIpcBreadcrumb(
   message: string,
   data: Record<string, unknown>,
 ): void {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return;
+
   Sentry.addBreadcrumb({
     category: "tauri.ipc",
     level,
