@@ -1,6 +1,6 @@
 import { listen as tauriListen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { invoke as tauriInvoke } from "@/observability/ipc";
+import { IPC_OPERATION_ID_HEADER, invoke as tauriInvoke } from "@/observability/ipc";
 import { isWebBuild } from "./platform";
 
 type InvokeArgs = Record<string, unknown>;
@@ -102,7 +102,7 @@ function operationId(): string {
 function jsonHeaders(): HeadersInit {
   return {
     "content-type": "application/json",
-    "x-charm-operation-id": operationId(),
+    [IPC_OPERATION_ID_HEADER]: operationId(),
   };
 }
 
@@ -181,7 +181,7 @@ async function requestJson<T>(
   const options: RequestInit = {
     method,
     credentials: "include",
-    headers: body === undefined ? { "x-charm-operation-id": operationId() } : jsonHeaders(),
+    headers: body === undefined ? { [IPC_OPERATION_ID_HEADER]: operationId() } : jsonHeaders(),
   };
   if (body !== undefined) {
     options.body = JSON.stringify(body);
@@ -200,7 +200,7 @@ async function requestBytes<T>(
   body?: BodyInit,
   contentType?: string,
 ): Promise<T> {
-  const headers: Record<string, string> = { "x-charm-operation-id": operationId() };
+  const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: operationId() };
   if (contentType) headers["content-type"] = contentType;
   const response = await fetch(`${apiBase()}${path}`, {
     method,

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { IPC_OPERATION_ID_HEADER } from "@/observability/ipc";
 import { invoke, listen } from "./matrixTransport";
 
 type FetchCall = [string, RequestInit];
@@ -361,7 +362,7 @@ describe("matrix web transport", () => {
     expect(url).toBe(`https://api.example${path}`);
     expect(init.method).toBe(method);
     expect(init.credentials).toBe("include");
-    expect(new Headers(init.headers).get("x-charm-operation-id")).toMatch(/^ipc-/);
+    expect(new Headers(init.headers).get(IPC_OPERATION_ID_HEADER)).toMatch(/^ipc-/);
     if (body === undefined) {
       expect(init.body).toBeUndefined();
     } else {
