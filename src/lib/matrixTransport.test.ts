@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC_OPERATION_ID_HEADER } from "@/observability/ipc";
 import { invoke, listen } from "./matrixTransport";
 
@@ -51,6 +51,11 @@ function okJson(value: unknown = null): Response {
 }
 
 describe("matrix web transport", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
   beforeEach(() => {
     vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://api.example");

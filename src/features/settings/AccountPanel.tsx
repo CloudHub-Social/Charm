@@ -30,6 +30,14 @@ interface AccountPanelProps {
   onLoggedOut: () => void;
 }
 
+function openExternalUrl(url: string) {
+  if (isWebBuild()) {
+    window.open(url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  openUrl(url);
+}
+
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
@@ -201,7 +209,11 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
           control={
             profile?.uses_oauth ? (
               deactivateUrl ? (
-                <Button variant="destructive" size="sm" onClick={() => openUrl(deactivateUrl)}>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => openExternalUrl(deactivateUrl)}
+                >
                   Deactivate account
                 </Button>
               ) : undefined
