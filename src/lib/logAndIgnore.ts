@@ -11,7 +11,13 @@
  * doesn't independently re-decide "log and swallow" is the right behavior —
  * see https://github.com/CloudHub-Social/Charm/issues/68.
  */
-// Bound directly to console.error (not wrapped in a function) so devtools
-// attributes the log to the original `.catch(...)` call site instead of to
-// this file — keeps fire-and-forget failures traceable back to their source.
-export const logAndIgnore: (error: unknown) => void = console.error.bind(console);
+// A thin wrapper, not a cached `console.error.bind(console)` reference:
+// `main.tsx` statically imports `App` (and everything it pulls in, including
+// this module) before calling `Sentry.init`, which patches `console.error`
+// in place for breadcrumb capture. Binding at module-eval time would freeze
+// in the pre-Sentry `console.error` and silently skip that instrumentation
+// for every call site using this helper. Looking it up at call time instead
+// picks up whatever `console.error` currently is.
+export function logAndIgnore(error: unknown): void {
+  console.error(error);
+}
