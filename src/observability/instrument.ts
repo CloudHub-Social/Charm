@@ -8,6 +8,9 @@ const MAX_ERRORS_PER_SESSION = 50;
 
 let initialized = false;
 let sentErrorCount = 0;
+let feedbackDialog: Awaited<
+  ReturnType<NonNullable<ReturnType<typeof Sentry.getFeedback>>["createForm"]>
+> | null = null;
 
 type SentryIntegration =
   | ReturnType<typeof Sentry.browserTracingIntegration>
@@ -137,6 +140,8 @@ export async function closeSentry(): Promise<void> {
   if (!initialized) return;
   sentErrorCount = 0;
   setSentryClientEnabled(false);
+  feedbackDialog?.removeFromDom();
+  feedbackDialog = null;
 }
 
 export async function openSentryFeedbackDialog(): Promise<boolean> {
@@ -146,14 +151,16 @@ export async function openSentryFeedbackDialog(): Promise<boolean> {
   const feedback = Sentry.getFeedback();
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
-  const dialog = await feedback.createForm({
-    tags: {
-      "charm.feedback.surface": "manual",
-      "charm.feedback.screenshot": "optional",
-    },
-  });
-  dialog.appendToDom();
-  dialog.open();
+  if (!feedbackDialog) {
+    feedbackDialog = await feedback.createForm({
+      tags: {
+        "charm.feedback.surface": "manual",
+        "charm.feedback.screenshot": "optional",
+      },
+    });
+    feedbackDialog.appendToDom();
+  }
+  feedbackDialog.open();
   return true;
 }
 
@@ -161,6 +168,7 @@ export const observabilityTestHooks = {
   reset() {
     initialized = false;
     sentErrorCount = 0;
+    feedbackDialog = null;
   },
   scrubSensitiveText,
   defaultSettings: DEFAULT_OBSERVABILITY_SETTINGS,

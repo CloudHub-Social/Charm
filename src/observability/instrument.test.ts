@@ -12,6 +12,7 @@ const clientOptions = { enabled: true };
 const feedbackDialog = {
   appendToDom: vi.fn(),
   open: vi.fn(),
+  removeFromDom: vi.fn(),
 };
 const feedbackIntegration = {
   name: "Feedback",
@@ -88,6 +89,26 @@ describe("Sentry instrumentation", () => {
     );
     expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
     expect(feedbackDialog.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses an existing feedback dialog instead of appending duplicates", async () => {
+    await expect(openSentryFeedbackDialog()).resolves.toBe(true);
+    await expect(openSentryFeedbackDialog()).resolves.toBe(true);
+
+    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.open).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes the feedback dialog when Sentry is closed", async () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+    await openSentryFeedbackDialog();
+    await closeSentry();
+
+    expect(feedbackDialog.removeFromDom).toHaveBeenCalledTimes(1);
   });
 
   it("does not open feedback when the Sentry client is disabled", async () => {
