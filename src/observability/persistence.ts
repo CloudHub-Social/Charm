@@ -55,6 +55,15 @@ async function getStore() {
   return load(OBSERVABILITY_STORE_FILENAME, { autoSave: true, defaults: {} });
 }
 
+async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("update_observability_log_consent", { logsEnabled });
+  } catch {
+    // Plain-browser runs and tests do not have Tauri IPC; Rust rereads the store as a fallback.
+  }
+}
+
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
   try {
     const store = await getStore();
@@ -86,6 +95,7 @@ export async function persistObservabilitySettings(
   try {
     const store = await getStore();
     await store.set(OBSERVABILITY_STORE_KEY, envelope);
+    await syncRustLogConsent(envelope.state.logsEnabled);
   } catch {
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }

@@ -229,6 +229,24 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
     }
 }
 
+fn update_cached_observability_logs_enabled(app_data_dir: PathBuf, logs_enabled: bool) {
+    if let Ok(mut cache) = LOG_CONSENT_CACHE.lock() {
+        cache.logs_enabled = logs_enabled;
+        cache.app_data_dir = Some(app_data_dir);
+        cache.refreshed_at = Some(Instant::now());
+    }
+}
+
+#[tauri::command]
+fn update_observability_log_consent<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    logs_enabled: bool,
+) {
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        update_cached_observability_logs_enabled(app_data_dir, logs_enabled);
+    }
+}
+
 fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
         return false;
@@ -283,17 +301,13 @@ fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
         let fresh = cache
             .refreshed_at
             .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
-        if same_dir && fresh && !cache.logs_enabled {
+        if same_dir && fresh {
             return cache.logs_enabled;
         }
     }
 
     let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
-    if let Ok(mut cache) = LOG_CONSENT_CACHE.lock() {
-        cache.logs_enabled = logs_enabled;
-        cache.app_data_dir = Some(app_data_dir.to_owned());
-        cache.refreshed_at = Some(Instant::now());
-    }
+    update_cached_observability_logs_enabled(app_data_dir.to_owned(), logs_enabled);
     logs_enabled
 }
 
@@ -503,6 +517,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            update_observability_log_consent,
             matrix::auth::login,
             matrix::auth::register,
             matrix::auth::discover_homeserver,
@@ -740,7 +755,7 @@ mod observability_tests {
     }
 
     #[test]
-    fn cached_log_consent_does_not_reuse_enabled_value_after_opt_out() {
+    fn log_consent_cache_updates_after_opt_out_notification() {
         let dir = std::env::temp_dir().join(format!(
             "charm-observability-test-cache-{}-{}",
             std::process::id(),
@@ -763,6 +778,7 @@ mod observability_tests {
             r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":false},"updatedAt":2}}"#,
         )
         .expect("observability opt-out fixture write");
+        update_cached_observability_logs_enabled(dir.clone(), false);
 
         assert!(!cached_observability_logs_enabled(&dir));
 
