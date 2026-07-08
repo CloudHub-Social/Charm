@@ -426,7 +426,8 @@ jobs:
 
           selected=""
           for build in "${builds[@]}"; do
-            if [[ "$build" == *"/bundle/"* && "$build" == *"Release"* ]]; then
+            lower_build="${build,,}"
+            if [[ "$lower_build" == *"/bundle/"* && "$lower_build" == *"release"* ]]; then
               selected="$build"
               break
             fi

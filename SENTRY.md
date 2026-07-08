@@ -57,8 +57,9 @@ dispatch. It currently uploads:
 - Android ProGuard/R8 mapping files and native symbols through the Sentry
   Android Gradle plugin, enabled only in the release artifact workflow via
   `SENTRY_ANDROID_UPLOAD=true`.
-- Size-analysis reports for frontend, desktop, Apple, and Android release
-  outputs as GitHub step summaries and downloadable workflow artifacts.
+- Size-analysis reports for frontend, desktop release, Apple debug/simulator,
+  and Android release outputs as GitHub step summaries and downloadable workflow
+  artifacts.
 - Android APK/AAB output to Sentry Size Analysis with
   `sentry-cli build upload` after the Android release-artifact build succeeds.
 

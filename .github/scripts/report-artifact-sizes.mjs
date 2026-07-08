@@ -5,7 +5,8 @@ import { mkdirSync } from "node:fs";
 
 const title = process.env.SIZE_REPORT_TITLE ?? "Artifact sizes";
 const output = process.env.SIZE_REPORT_OUTPUT ?? ".artifacts/artifact-sizes.md";
-const maxFiles = Number.parseInt(process.env.SIZE_REPORT_MAX_FILES ?? "100", 10);
+const maxFilesRaw = process.env.SIZE_REPORT_MAX_FILES ?? "100";
+const maxFiles = Number.parseInt(maxFilesRaw, 10);
 const roots = (process.env.SIZE_REPORT_PATHS ?? "")
   .split(/\r?\n/)
   .map((value) => value.trim())
@@ -13,6 +14,9 @@ const roots = (process.env.SIZE_REPORT_PATHS ?? "")
 
 if (roots.length === 0) {
   throw new Error("SIZE_REPORT_PATHS must contain at least one path");
+}
+if (!Number.isSafeInteger(maxFiles) || String(maxFiles) !== maxFilesRaw || maxFiles <= 0) {
+  throw new Error("SIZE_REPORT_MAX_FILES must be a positive integer");
 }
 
 const byteFormatter = new Intl.NumberFormat("en-US");
