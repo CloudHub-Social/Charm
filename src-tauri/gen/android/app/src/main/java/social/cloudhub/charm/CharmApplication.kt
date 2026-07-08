@@ -7,6 +7,10 @@ import org.json.JSONObject
 import java.io.File
 
 class CharmApplication : Application() {
+    private var cachedSentryConsentFile: File? = null
+    private var cachedSentryConsentLastModified: Long = Long.MIN_VALUE
+    private var cachedSentryConsentEnabled: Boolean = false
+
     override fun onCreate() {
         super.onCreate()
         initializeSentryIfConsented()
@@ -30,19 +34,34 @@ class CharmApplication : Application() {
         }
     }
 
+    @Synchronized
     private fun sentryEnabledFromStore(): Boolean {
         val file = listOf(
             File(applicationInfo.dataDir, "observability.json"),
             File(filesDir, "observability.json"),
-        ).firstOrNull { it.isFile } ?: return false
+        ).firstOrNull { it.isFile }
+        if (file == null) {
+            cachedSentryConsentFile = null
+            cachedSentryConsentLastModified = Long.MIN_VALUE
+            cachedSentryConsentEnabled = false
+            return false
+        }
+        val lastModified = file.lastModified()
+        if (file == cachedSentryConsentFile && lastModified == cachedSentryConsentLastModified) {
+            return cachedSentryConsentEnabled
+        }
 
-        return runCatching {
-            val root = JSONObject(file.readText())
+        val enabled = runCatching {
+            val root = JSONObject(file.readText(Charsets.UTF_8))
             val state = root.optJSONObject("observability")?.optJSONObject("state")
                 ?: root.optJSONObject("state")
                 ?: root.optJSONObject("observability")
 
             state?.optBoolean("sentryEnabled", false) == true
         }.getOrDefault(false)
+        cachedSentryConsentFile = file
+        cachedSentryConsentLastModified = lastModified
+        cachedSentryConsentEnabled = enabled
+        return enabled
     }
 }
