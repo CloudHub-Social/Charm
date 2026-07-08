@@ -40,10 +40,12 @@ class CharmApplication : Application() {
 
     @Synchronized
     private fun sentryEnabledFromStore(): Boolean {
-        val file = listOf(
-            File(applicationInfo.dataDir, "observability.json"),
-            File(filesDir, "observability.json"),
-        ).firstOrNull { it.isFile }
+        val appDataFile = File(applicationInfo.dataDir, "observability.json")
+        val file = if (appDataFile.isFile) {
+            appDataFile
+        } else {
+            File(filesDir, "observability.json").takeIf { it.isFile }
+        }
         if (file == null) {
             cachedSentryConsentFile = null
             cachedSentryConsentLastModified = Long.MIN_VALUE
