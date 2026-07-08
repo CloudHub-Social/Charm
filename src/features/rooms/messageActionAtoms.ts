@@ -23,3 +23,15 @@ export const editingEventIdAtomFamily = boundedAtomFamily((_roomId: string) => {
   void _roomId;
   return atom<string | null>(null);
 }, MAX_TRACKED_ROOMS);
+
+/**
+ * Fallbacks for `ChatShell`'s `activeReplyTargetAtomFamily`/
+ * `editingEventIdAtomFamily` lookups when it renders with no room (`room`
+ * prop `null`, before its own early return) — plain atoms outside the
+ * bounded families so that transient no-room render never occupies (and
+ * potentially evicts) one of `MAX_TRACKED_ROOMS` real rooms' tracked state.
+ * See `noRoomMembersDrawerOpenAtom` in `roomInfoAtoms.ts` for the same
+ * pattern applied to the members drawer.
+ */
+export const noRoomActiveReplyTargetAtom = atom<ReplyRef | null>(null);
+export const noRoomEditingEventIdAtom = atom<string | null>(null);
