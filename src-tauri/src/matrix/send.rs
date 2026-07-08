@@ -50,20 +50,24 @@ fn add_attachment_ipc_breadcrumb(
     level: sentry::Level,
     status: &str,
     operation_id: Option<&str>,
-    total_bytes: u64,
-    mime: &mime::Mime,
+    total_bytes: Option<u64>,
+    mime: Option<&mime::Mime>,
     duration_ms: Option<u128>,
 ) {
     let mut data = sentry::protocol::Map::new();
     data.insert("command".into(), serde_json::json!("send_attachment"));
     data.insert("status".into(), serde_json::json!(status));
-    data.insert("total_bytes".into(), serde_json::json!(total_bytes));
-    data.insert("mime_type".into(), serde_json::json!(mime.type_().as_str()));
+    if let Some(total_bytes) = total_bytes {
+        data.insert("totalBytes".into(), serde_json::json!(total_bytes));
+    }
+    if let Some(mime) = mime {
+        data.insert("mimeType".into(), serde_json::json!(mime.type_().as_str()));
+    }
     if let Some(operation_id) = operation_id {
-        data.insert("operation_id".into(), serde_json::json!(operation_id));
+        data.insert("operationId".into(), serde_json::json!(operation_id));
     }
     if let Some(duration_ms) = duration_ms {
-        data.insert("duration_ms".into(), serde_json::json!(duration_ms));
+        data.insert("durationMs".into(), serde_json::json!(duration_ms));
     }
 
     sentry::add_breadcrumb(sentry::Breadcrumb {
@@ -270,103 +274,113 @@ pub async fn send_attachment(
 ) -> Result<(), String> {
     let operation_id = ipc_operation_id(&request);
     let started_at = Instant::now();
-    let client = state.require_client().await?;
-
-    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
-    let room = client
-        .get_room(&parsed_room_id)
-        .ok_or_else(|| format!("room {room_id} not found"))?;
-
-    let path = Path::new(&file_path);
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "file_path has no filename component".to_string())?
-        .to_string();
-
-    let metadata = tokio::fs::metadata(&path)
-        .await
-        .map_err(|e| e.to_string())?;
-    // `is_file()` follows symlinks and reflects the *target's* file type, so
-    // this also rejects a symlink pointed at a device/pipe/proc special file
-    // masquerading as an attachment, not just directories.
-    if !metadata.is_file() {
-        return Err("file_path does not refer to a regular file".to_string());
-    }
-    if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
-        return Err(format!(
-            "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
-            metadata.len()
-        ));
-    }
-
-    let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-    let total_bytes = data.len() as u64;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
-
+    let mut breadcrumb_total_bytes = None;
+    let mut breadcrumb_mime = None;
     add_attachment_ipc_breadcrumb(
         sentry::Level::Info,
         "started",
         operation_id.as_deref(),
-        total_bytes,
-        &mime,
+        None,
+        None,
         None,
     );
 
-    // Caller-supplied, not server-generated: the frontend creates its
-    // optimistic upload row (keyed on a locally generated ID) before
-    // invoking this command, so this command must reuse that same ID for
-    // its `upload:progress` events rather than minting its own — otherwise
-    // the two sides can never correlate and the progress bar never updates.
-    let txn_id_string = txn_id.clone();
-    let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = txn_id.into();
+    let result = async {
+        let client = state.require_client().await?;
 
-    let info = attachment_info_for(&mime, &data, total_bytes);
+        let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+        let room = client
+            .get_room(&parsed_room_id)
+            .ok_or_else(|| format!("room {room_id} not found"))?;
 
-    let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
-    if let Some(caption) = caption {
-        config = config.caption(Some(
-            matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain(caption),
-        ));
-    }
+        let path = Path::new(&file_path);
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| "file_path has no filename component".to_string())?
+            .to_string();
 
-    let progress = SharedObservable::<TransmissionProgress>::new(TransmissionProgress::default());
-    let forwarder = spawn_progress_forwarder(
-        app.clone(),
-        progress.clone(),
-        txn_id_string.clone(),
-        room_id.clone(),
-        total_bytes,
-    );
+        let metadata = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| e.to_string())?;
+        // `is_file()` follows symlinks and reflects the *target's* file type, so
+        // this also rejects a symlink pointed at a device/pipe/proc special file
+        // masquerading as an attachment, not just directories.
+        if !metadata.is_file() {
+            return Err("file_path does not refer to a regular file".to_string());
+        }
+        if metadata.len() > MAX_ATTACHMENT_UPLOAD_BYTES {
+            return Err(format!(
+                "attachment is {} bytes, over the {MAX_ATTACHMENT_UPLOAD_BYTES}-byte limit",
+                metadata.len()
+            ));
+        }
 
-    let send = room
-        .send_attachment(filename, &mime, data, config)
-        .with_send_progress_observable(progress.clone());
+        let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+        let total_bytes = data.len() as u64;
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        breadcrumb_total_bytes = Some(total_bytes);
+        breadcrumb_mime = Some(mime.clone());
 
-    let result = send.await;
-    // The forwarder task holds its own clone of `progress`'s subscriber, so
-    // dropping the local `progress` binding here doesn't close its stream —
-    // abort it explicitly (same pattern as `qr_login.rs`) rather than
-    // leaking a task per upload.
-    forwarder.abort();
+        // Caller-supplied, not server-generated: the frontend creates its
+        // optimistic upload row (keyed on a locally generated ID) before
+        // invoking this command, so this command must reuse that same ID for
+        // its `upload:progress` events rather than minting its own — otherwise
+        // the two sides can never correlate and the progress bar never updates.
+        let txn_id_string = txn_id.clone();
+        let ruma_txn_id: matrix_sdk::ruma::OwnedTransactionId = txn_id.into();
 
-    if result.is_ok() {
-        // Emit a terminal progress event so the frontend's progress bar can
-        // clear deterministically, whether or not the observable delivered a
-        // final tick before completion (its update cadence isn't guaranteed
-        // to land exactly on 100%). Only emitted on success — emitting this
-        // on failure would read as 100%-complete to the frontend and mask
-        // the error.
-        let _ = app.emit(
-            "upload:progress",
-            UploadProgress {
-                txn_id: txn_id_string,
-                room_id: room_id.clone(),
-                sent: total_bytes,
-                total: total_bytes,
-            },
+        let info = attachment_info_for(&mime, &data, total_bytes);
+
+        let mut config = AttachmentConfig::new().txn_id(ruma_txn_id).info(info);
+        if let Some(caption) = caption {
+            config = config.caption(Some(
+                matrix_sdk::ruma::events::room::message::TextMessageEventContent::plain(caption),
+            ));
+        }
+
+        let progress =
+            SharedObservable::<TransmissionProgress>::new(TransmissionProgress::default());
+        let forwarder = spawn_progress_forwarder(
+            app.clone(),
+            progress.clone(),
+            txn_id_string.clone(),
+            room_id.clone(),
+            total_bytes,
         );
+
+        let send = room
+            .send_attachment(filename, &mime, data, config)
+            .with_send_progress_observable(progress.clone());
+
+        let result = send.await;
+        // The forwarder task holds its own clone of `progress`'s subscriber, so
+        // dropping the local `progress` binding here doesn't close its stream —
+        // abort it explicitly (same pattern as `qr_login.rs`) rather than
+        // leaking a task per upload.
+        forwarder.abort();
+
+        if result.is_ok() {
+            // Emit a terminal progress event so the frontend's progress bar can
+            // clear deterministically, whether or not the observable delivered a
+            // final tick before completion (its update cadence isn't guaranteed
+            // to land exactly on 100%). Only emitted on success — emitting this
+            // on failure would read as 100%-complete to the frontend and mask
+            // the error.
+            let _ = app.emit(
+                "upload:progress",
+                UploadProgress {
+                    txn_id: txn_id_string,
+                    room_id: room_id.clone(),
+                    sent: total_bytes,
+                    total: total_bytes,
+                },
+            );
+        }
+
+        result.map(|_| ()).map_err(|error| error.to_string())
     }
+    .await;
 
     let duration_ms = started_at.elapsed().as_millis();
     match result {
@@ -375,8 +389,8 @@ pub async fn send_attachment(
                 sentry::Level::Info,
                 "succeeded",
                 operation_id.as_deref(),
-                total_bytes,
-                &mime,
+                breadcrumb_total_bytes,
+                breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
             Ok(())
@@ -386,8 +400,8 @@ pub async fn send_attachment(
                 sentry::Level::Error,
                 "failed",
                 operation_id.as_deref(),
-                total_bytes,
-                &mime,
+                breadcrumb_total_bytes,
+                breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
             Err(error.to_string())
