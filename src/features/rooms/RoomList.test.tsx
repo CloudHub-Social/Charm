@@ -134,14 +134,14 @@ describe("RoomList", () => {
 
   it("shows the total_unread count in the header badge", () => {
     const store = createStore();
-    store.set(badgeAtom, { total_unread: 3, total_highlight: 0 });
+    store.set(badgeAtom, { total_unread: 3, total_highlight: 0, spaces: {} });
     renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
     expect(screen.getByLabelText("3 unread rooms")).toHaveTextContent("3");
   });
 
   it("prefers the mention count when total_highlight is nonzero", () => {
     const store = createStore();
-    store.set(badgeAtom, { total_unread: 5, total_highlight: 2 });
+    store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
     renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
     expect(screen.getByLabelText("5 unread rooms, 2 mentions")).toHaveTextContent("2");
   });

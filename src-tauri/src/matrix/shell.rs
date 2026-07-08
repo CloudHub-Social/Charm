@@ -22,9 +22,7 @@ use super::MatrixState;
 /// room with only ambient unread never inflates the badge, while an explicit
 /// mark-unread or a real mention (which still carries a nonzero
 /// `unread_count` even in a muted room) always does.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS,
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct BadgeState {
     /// Number of rooms with `has_unread() == true`.
@@ -33,6 +31,25 @@ pub struct BadgeState {
     /// Sum of `unread_count` (mention/highlight notifications) across every
     /// room — a finer-grained signal than `total_unread` for surfacing "you
     /// were mentioned N times" distinctly from ambient unread rooms.
+    #[ts(type = "number")]
+    pub total_highlight: u32,
+    /// Rollups keyed by space room id. Each value sums descendant rooms via
+    /// `RoomSummary.parent_space_ids`, so rooms nested under a sub-space
+    /// also count for every ancestor space currently present in the room
+    /// snapshot.
+    pub spaces: std::collections::HashMap<String, SpaceBadgeState>,
+}
+
+/// Unread/highlight rollup for a single space.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS,
+)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct SpaceBadgeState {
+    /// Number of child rooms with `has_unread() == true`.
+    #[ts(type = "number")]
+    pub total_unread: u32,
+    /// Sum of child-room `unread_count`.
     #[ts(type = "number")]
     pub total_highlight: u32,
 }
@@ -56,10 +73,72 @@ pub fn compute_badge_state(rooms: &[RoomSummary]) -> BadgeState {
         total_highlight =
             total_highlight.saturating_add(u32::try_from(room.unread_count).unwrap_or(u32::MAX));
     }
+    let spaces = compute_space_badge_states(rooms);
     BadgeState {
         total_unread,
         total_highlight,
+        spaces,
     }
+}
+
+fn compute_space_badge_states(
+    rooms: &[RoomSummary],
+) -> std::collections::HashMap<String, SpaceBadgeState> {
+    let mut badges = std::collections::HashMap::new();
+    let parents_by_room = rooms
+        .iter()
+        .map(|room| (room.room_id.as_str(), room.parent_space_ids.as_slice()))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    for room in rooms {
+        if room.is_space {
+            badges.entry(room.room_id.clone()).or_default();
+            continue;
+        }
+
+        let has_unread = super::rooms::has_unread(
+            room.is_marked_unread,
+            room.is_muted,
+            room.unread_messages,
+            room.unread_count,
+        );
+        let highlight = u32::try_from(room.unread_count).unwrap_or(u32::MAX);
+        for space_id in ancestor_space_ids(&room.room_id, &parents_by_room) {
+            let badge: &mut SpaceBadgeState = badges.entry(space_id.clone()).or_default();
+            if has_unread {
+                badge.total_unread = badge.total_unread.saturating_add(1);
+            }
+            badge.total_highlight = badge.total_highlight.saturating_add(highlight);
+        }
+    }
+    badges
+}
+
+fn ancestor_space_ids(
+    room_id: &str,
+    parents_by_room: &std::collections::HashMap<&str, &[String]>,
+) -> Vec<String> {
+    fn visit(
+        room_id: &str,
+        parents_by_room: &std::collections::HashMap<&str, &[String]>,
+        seen: &mut std::collections::HashSet<String>,
+        ancestors: &mut Vec<String>,
+    ) {
+        let Some(parents) = parents_by_room.get(room_id) else {
+            return;
+        };
+        for parent in *parents {
+            if seen.insert(parent.clone()) {
+                ancestors.push(parent.clone());
+                visit(parent, parents_by_room, seen, ancestors);
+            }
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut ancestors = Vec::new();
+    visit(room_id, parents_by_room, &mut seen, &mut ancestors);
+    ancestors
 }
 
 /// Whether a new message in `event_room_id` should produce a local
@@ -426,6 +505,7 @@ mod tests {
         let badge = compute_badge_state(&rooms);
         assert_eq!(badge.total_unread, 0);
         assert_eq!(badge.total_highlight, 0);
+        assert!(badge.spaces.is_empty());
     }
 
     #[test]
@@ -454,6 +534,64 @@ mod tests {
         let badge = compute_badge_state(&rooms);
         assert_eq!(badge.total_unread, 2);
         assert_eq!(badge.total_highlight, 2);
+    }
+
+    #[test]
+    fn space_badges_roll_up_direct_child_rooms() {
+        let mut unread = room(4, 2, false, false);
+        unread.room_id = "!child-a:example.org".to_string();
+        unread.parent_space_ids = vec!["!space:example.org".to_string()];
+
+        let mut muted_ambient = room(5, 0, true, false);
+        muted_ambient.room_id = "!child-b:example.org".to_string();
+        muted_ambient.parent_space_ids = vec!["!space:example.org".to_string()];
+
+        let mut space = room(0, 0, false, false);
+        space.room_id = "!space:example.org".to_string();
+        space.is_space = true;
+
+        let badge = compute_badge_state(&[space, unread, muted_ambient]);
+
+        assert_eq!(
+            badge.spaces.get("!space:example.org"),
+            Some(&SpaceBadgeState {
+                total_unread: 1,
+                total_highlight: 2
+            })
+        );
+    }
+
+    #[test]
+    fn space_badges_roll_up_nested_descendants_to_ancestors() {
+        let mut nested_room = room(1, 1, false, false);
+        nested_room.room_id = "!nested-room:example.org".to_string();
+        nested_room.parent_space_ids = vec!["!subspace:example.org".to_string()];
+
+        let mut subspace = room(0, 0, false, false);
+        subspace.room_id = "!subspace:example.org".to_string();
+        subspace.is_space = true;
+        subspace.parent_space_ids = vec!["!root-space:example.org".to_string()];
+
+        let mut root = room(0, 0, false, false);
+        root.room_id = "!root-space:example.org".to_string();
+        root.is_space = true;
+
+        let badge = compute_badge_state(&[root, subspace, nested_room]);
+
+        assert_eq!(
+            badge.spaces.get("!subspace:example.org"),
+            Some(&SpaceBadgeState {
+                total_unread: 1,
+                total_highlight: 1
+            })
+        );
+        assert_eq!(
+            badge.spaces.get("!root-space:example.org"),
+            Some(&SpaceBadgeState {
+                total_unread: 1,
+                total_highlight: 1
+            })
+        );
     }
 
     #[test]
