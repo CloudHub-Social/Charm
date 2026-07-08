@@ -236,8 +236,8 @@ jobs:
     # reason to run on the expensive macOS runner, and `cargo install cargo-audit`
     # was a multi-minute from-source compile on every run. Here it runs on ubuntu
     # with the built binary cached, and (like `rust`) only when src-tauri/**
-    # changed — Cargo.lock lives under src-tauri, so the changes filter covers it.
-    needs: changes
+    # changed — the Cargo.lock audited by this job lives under src-tauri/, so the
+    # changes filter covers it.
     if: needs.changes.outputs.platform == 'true'
     runs-on: ubuntu-latest
     defaults:
