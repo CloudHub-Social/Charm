@@ -34,9 +34,11 @@ interface DeviceRowProps {
   onRevoke: (password?: string) => Promise<void>;
   /** Whether the current session is OAuth/OIDC-managed — see the Rust command's doc comment on `get_device_delete_url`. */
   usesOAuth: boolean;
+  /** Bulk-select checkbox — omitted (no checkbox rendered) for the current device, which can't be bulk-revoked. */
+  selection?: { selected: boolean; onToggle: () => void };
 }
 
-export function DeviceRow({ device, onVerify, onRevoke, usesOAuth }: DeviceRowProps) {
+export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: DeviceRowProps) {
   const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, usesOAuth);
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [verifying, setVerifying] = useState(false);
@@ -64,30 +66,40 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth }: DeviceRowPr
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{label}</span>
-          {device.is_current && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              This device
+    <div className="flex items-center justify-between gap-4 px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        {selection && (
+          <input
+            type="checkbox"
+            aria-label={`Select ${label}`}
+            checked={selection.selected}
+            onChange={selection.onToggle}
+          />
+        )}
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-foreground">{label}</span>
+            {device.is_current && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                This device
+              </span>
+            )}
+            <span
+              className={
+                device.is_verified
+                  ? "rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success"
+                  : "rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive"
+              }
+            >
+              {device.is_verified ? "Verified" : "Unverified"}
             </span>
-          )}
-          <span
-            className={
-              device.is_verified
-                ? "rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success"
-                : "rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] text-destructive"
-            }
-          >
-            {device.is_verified ? "Verified" : "Unverified"}
-          </span>
+          </div>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {device.device_id}
+            {device.last_seen_ip && ` · ${device.last_seen_ip}`}
+            {lastSeen && ` · Last seen ${lastSeen}`}
+          </p>
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {device.device_id}
-          {device.last_seen_ip && ` · ${device.last_seen_ip}`}
-          {lastSeen && ` · Last seen ${lastSeen}`}
-        </p>
       </div>
 
       <DropdownMenu>

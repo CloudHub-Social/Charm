@@ -3,9 +3,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
-import { settingsOpenAtom } from "./settingsAtoms";
+import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
+
+const getAutostart = vi.fn().mockResolvedValue(false);
 
 vi.mock("@/lib/matrix", () => ({
+  isDesktopPlatform: vi.fn().mockResolvedValue(false),
   getProfile: vi.fn().mockResolvedValue({
     user_id: "@me:localhost",
     display_name: null,
@@ -42,13 +45,18 @@ vi.mock("@/lib/matrix", () => ({
     endpoint_present: false,
   }),
   unregisterPush: vi.fn().mockResolvedValue(undefined),
+  get3pids: vi.fn().mockResolvedValue([]),
+  getIgnoredUsers: vi.fn().mockResolvedValue([]),
+  unignoreUser: vi.fn(),
+  getAutostart: (...args: unknown[]) => getAutostart(...args),
+  setAutostart: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
 
-function renderScreen(section: "account" | "notifications" | "devices" | "appearance" | null) {
+function renderScreen(section: SettingsSection | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const store = createStore();
   store.set(settingsOpenAtom, section);
@@ -83,9 +91,7 @@ describe("SettingsScreen", () => {
     notificationsTab.focus();
     fireEvent.click(notificationsTab);
 
-    expect(
-      await screen.findByRole("heading", { name: "Default notification mode" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Default notification mode")).toBeInTheDocument();
   });
 
   it("closes via the close button", async () => {
@@ -95,5 +101,24 @@ describe("SettingsScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
     expect(store.get(settingsOpenAtom)).toBeNull();
+  });
+
+  it("never mounts DesktopPanel outside Tauri, even deep-linked straight to that section", async () => {
+    renderScreen("desktop");
+    await screen.findByRole("tablist");
+
+    expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Launch Charm when I log in")).not.toBeInTheDocument();
+    expect(getAutostart).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the first available section instead of a blank panel when deep-linked to an unsupported one", async () => {
+    renderScreen("desktop");
+
+    // Falls back to Account (the first entry in SECTIONS), rather than
+    // leaving the Tabs `value` pointed at "desktop" with no matching
+    // trigger or content, which would otherwise render nothing at all.
+    expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Account" })).toHaveAttribute("aria-selected", "true");
   });
 });

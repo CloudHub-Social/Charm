@@ -1,4 +1,4 @@
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
-import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   markRoomRead,
@@ -45,7 +45,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [browsingSpace, setBrowsingSpace] = useState<RoomSummary | null>(null);
   const { data: ownProfile } = useOwnProfile();
-  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
@@ -116,7 +116,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
             variant="ghost"
             size="icon-sm"
             aria-label="Open settings"
-            onClick={() => setSettingsOpen("account")}
+            onClick={() => openSettings("account")}
           >
             <SettingsIcon />
           </Button>
