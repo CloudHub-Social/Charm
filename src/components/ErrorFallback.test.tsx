@@ -27,8 +27,11 @@ describe("ErrorFallback", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
 
+    expect(await screen.findByRole("status")).toBeVisible();
     expect(
-      await screen.findByText("Feedback is only available when Sentry observability is enabled."),
+      screen.getByText(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      ),
     ).toBeVisible();
   });
 });

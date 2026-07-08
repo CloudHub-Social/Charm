@@ -151,16 +151,30 @@ export async function openSentryFeedbackDialog(): Promise<boolean> {
   const feedback = Sentry.getFeedback();
   if (!feedback || typeof feedback.createForm !== "function") return false;
 
-  if (!feedbackDialog) {
-    feedbackDialog = await feedback.createForm({
-      tags: {
-        "charm.feedback.surface": "manual",
-        "charm.feedback.screenshot": "optional",
-      },
-    });
-    feedbackDialog.appendToDom();
+  try {
+    if (!feedbackDialog) {
+      const dialog = await feedback.createForm({
+        tags: {
+          "charm.feedback.surface": "manual",
+          "charm.feedback.screenshot": "optional",
+        },
+      });
+      if (
+        !dialog ||
+        typeof dialog.appendToDom !== "function" ||
+        typeof dialog.open !== "function"
+      ) {
+        return false;
+      }
+      feedbackDialog = dialog;
+      feedbackDialog.appendToDom();
+    }
+    feedbackDialog.open();
+  } catch {
+    feedbackDialog?.removeFromDom();
+    feedbackDialog = null;
+    return false;
   }
-  feedbackDialog.open();
   return true;
 }
 

@@ -18,7 +18,9 @@ export function ErrorFallback({ resetError }: { resetError: () => void }) {
     setFeedbackStatus(null);
     const opened = await openSentryFeedbackDialog();
     if (!opened) {
-      setFeedbackStatus("Feedback is only available when Sentry observability is enabled.");
+      setFeedbackStatus(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      );
     }
   };
 
@@ -43,7 +45,9 @@ export function ErrorFallback({ resetError }: { resetError: () => void }) {
         </Button>
       </div>
       {feedbackStatus ? (
-        <output className="max-w-sm text-sm text-muted-foreground">{feedbackStatus}</output>
+        <output role="status" aria-live="polite" className="max-w-sm text-sm text-muted-foreground">
+          {feedbackStatus}
+        </output>
       ) : null}
     </div>
   );

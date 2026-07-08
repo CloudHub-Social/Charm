@@ -170,7 +170,7 @@ export function ObservabilityPanel() {
       <SettingsCard heading="Feedback">
         <SettingTile
           title="Report a problem"
-          description="Open Sentry's feedback form. You can add an optional screenshot when the SDK supports it; text is still sent through Charm's Sentry scrubbers."
+          description="Open Sentry's feedback form. Optional screenshots may include visible room names, Matrix IDs, or message text and are not scrubbed like text fields."
           control={
             <Button
               type="button"
@@ -186,7 +186,9 @@ export function ObservabilityPanel() {
         />
         {feedbackStatus ? (
           <SettingTile>
-            <output className="text-sm text-muted-foreground">{feedbackStatus}</output>
+            <output role="status" aria-live="polite" className="text-sm text-muted-foreground">
+              {feedbackStatus}
+            </output>
           </SettingTile>
         ) : null}
       </SettingsCard>

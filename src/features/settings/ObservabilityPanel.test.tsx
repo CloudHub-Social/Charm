@@ -66,4 +66,19 @@ describe("ObservabilityPanel", () => {
 
     expect(openSentryFeedbackDialog).toHaveBeenCalledTimes(1);
   });
+
+  it("announces feedback availability failures", async () => {
+    vi.mocked(openSentryFeedbackDialog).mockResolvedValue(false);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+
+    expect(await screen.findByRole("status")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      ),
+    ).toBeVisible();
+  });
 });

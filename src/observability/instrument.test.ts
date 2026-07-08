@@ -118,4 +118,13 @@ describe("Sentry instrumentation", () => {
 
     expect(feedbackIntegration.createForm).not.toHaveBeenCalled();
   });
+
+  it("returns false when the Feedback SDK cannot create the form", async () => {
+    feedbackIntegration.createForm.mockRejectedValueOnce(new Error("unsupported"));
+
+    await expect(openSentryFeedbackDialog()).resolves.toBe(false);
+
+    expect(feedbackDialog.appendToDom).not.toHaveBeenCalled();
+    expect(feedbackDialog.open).not.toHaveBeenCalled();
+  });
 });
