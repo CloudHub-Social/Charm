@@ -92,7 +92,9 @@ The feedback form hides name and email fields by default. Users can describe
 what happened, and the form includes Sentry's optional screenshot capture UI
 when the current SDK/browser path supports it. Feedback events and screenshot
 metadata still travel through the normal Sentry client pipeline, including
-Charm's before-send scrubbers.
+Charm's before-send scrubbers. Screenshot pixels are not text/JSON payloads,
+so they are not scrubbed by Charm; the settings UI warns that optional
+screenshots may include visible room names, Matrix IDs, or message text.
 
 Screenshot capture is best-effort: the current implementation relies on
 Sentry's browser feedback form support rather than a custom screenshot
