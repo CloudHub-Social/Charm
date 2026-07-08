@@ -58,11 +58,15 @@ jobs:
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
 
           # Seer is the head-anchored signal: it re-reviews every push and emits a
-          # per-commit check-run, so requiring it "completed" on HEAD_SHA proves
-          # the *current* code was reviewed.
+          # per-commit check-run, so a completed run on HEAD_SHA proves the current
+          # code was reviewed. Gate on `.conclusion`, not `.status`: a cancelled /
+          # skipped / timed_out run is still status=="completed" but did NOT
+          # actually review — only success/failure/neutral mean a real review ran.
+          # --paginate in case the head has >30 check-runs.
           seer_done() {
-            [ "$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-                  --jq '[.check_runs[] | select(.name == "Seer Code Review") | .status] | first // ""')" = "completed" ]
+            gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+              --jq '.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion' \
+              | grep -qxE 'success|failure|neutral'
           }
           # Codex and Copilot do NOT reliably re-review every push (their review's
           # commit_id often lags the head), so pinning to HEAD_SHA would false-block.
