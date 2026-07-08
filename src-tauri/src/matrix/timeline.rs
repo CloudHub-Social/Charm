@@ -446,40 +446,42 @@ async fn timeline_item_to_summary(
         None => None,
     };
 
+    // Common to every branch below — assembled once via struct-update (`..base`)
+    // so a future field addition only has to be threaded through here instead
+    // of at each match arm (see the `timeline_item_to_summary` doc comment).
+    // The per-branch-varying fields are given neutral default placeholders
+    // here and overridden only where a given arm actually needs to.
+    let base = RoomMessageSummary {
+        event_id,
+        sender,
+        sender_display_name,
+        sender_avatar_url,
+        sender_avatar_path,
+        transaction_id,
+        send_state,
+        timestamp_ms,
+        body: String::new(),
+        formatted_body: None,
+        edited: false,
+        redacted: false,
+        reactions: Vec::new(),
+        in_reply_to: None,
+        media: None,
+    };
+
     match &msglike.kind {
         MsgLikeKind::Message(message) => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
             body: message.body().to_string(),
             formatted_body: formatted_html_body(message.msgtype()),
-            timestamp_ms,
             edited: message.is_edited(),
-            redacted: false,
             reactions,
             in_reply_to,
-            transaction_id,
-            send_state,
             media: message_type_to_media(message.msgtype()),
+            ..base
         }),
         MsgLikeKind::Redacted => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
-            body: String::new(),
-            formatted_body: None,
-            timestamp_ms,
-            edited: false,
             redacted: true,
-            reactions: Vec::new(),
-            in_reply_to: None,
-            transaction_id,
-            send_state,
-            media: None,
+            ..base
         }),
         // Decryption retries land as a fresh diff once the key arrives — see
         // `Timeline::retry_decryption`, invoked by matrix-sdk-ui's own crypto
@@ -487,21 +489,10 @@ async fn timeline_item_to_summary(
         // real `MsgLikeKind::Message` content, replacing this placeholder in
         // place via the normal diff -> re-snapshot -> `timeline:update` path.
         MsgLikeKind::UnableToDecrypt(_) => Some(RoomMessageSummary {
-            event_id,
-            sender,
-            sender_display_name,
-            sender_avatar_url,
-            sender_avatar_path,
             body: UNABLE_TO_DECRYPT_BODY.to_string(),
-            formatted_body: None,
-            timestamp_ms,
-            edited: false,
-            redacted: false,
             reactions,
             in_reply_to,
-            transaction_id,
-            send_state,
-            media: None,
+            ..base
         }),
         // Stickers/polls/live-locations/custom message-likes aren't part of
         // this DTO shape yet — out of scope for a like-for-like engine swap
