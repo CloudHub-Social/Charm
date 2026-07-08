@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use eyeball::SharedObservable;
 use matrix_sdk::attachment::{AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo};
@@ -16,11 +17,64 @@ use ts_rs::TS;
 
 use super::MatrixState;
 
+const IPC_OPERATION_ID_HEADER: &str = "x-charm-operation-id";
+
 /// Client-side sanity cap on outbound attachments. Not a substitute for
 /// homeserver upload-size policy (which still applies independently and can
 /// reject a smaller file too) — just a bound so an unexpectedly huge
 /// `file_path` isn't read fully into memory before any upload even starts.
 pub const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+
+fn ipc_operation_id(request: &tauri::ipc::Request<'_>) -> Option<String> {
+    request
+        .headers()
+        .get(IPC_OPERATION_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| is_valid_ipc_operation_id(value))
+        .map(ToOwned::to_owned)
+}
+
+fn is_valid_ipc_operation_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("ipc-") else {
+        return false;
+    };
+
+    !suffix.is_empty()
+        && suffix.len() <= 96
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
+fn add_attachment_ipc_breadcrumb(
+    level: sentry::Level,
+    status: &str,
+    operation_id: Option<&str>,
+    total_bytes: u64,
+    mime: &mime::Mime,
+    duration_ms: Option<u128>,
+) {
+    let mut data = sentry::protocol::Map::new();
+    data.insert("command".into(), serde_json::json!("send_attachment"));
+    data.insert("status".into(), serde_json::json!(status));
+    data.insert("total_bytes".into(), serde_json::json!(total_bytes));
+    data.insert("mime_type".into(), serde_json::json!(mime.type_().as_str()));
+    if let Some(operation_id) = operation_id {
+        data.insert("operation_id".into(), serde_json::json!(operation_id));
+    }
+    if let Some(duration_ms) = duration_ms {
+        data.insert("duration_ms".into(), serde_json::json!(duration_ms));
+    }
+
+    sentry::add_breadcrumb(sentry::Breadcrumb {
+        ty: "default".into(),
+        category: Some("tauri.ipc.attachment".into()),
+        level,
+        message: Some(format!("Attachment IPC {status}")),
+        data,
+        ..Default::default()
+    });
+}
 
 /// Pushed to the frontend as an attachment upload progresses. `sent`/`total`
 /// are in bytes. The vendored matrix-rust-sdk (0.18.0) exposes real
@@ -208,11 +262,14 @@ pub fn build_message_content(
 pub async fn send_attachment(
     app: AppHandle,
     state: State<'_, MatrixState>,
+    request: tauri::ipc::Request<'_>,
     room_id: String,
     file_path: String,
     caption: Option<String>,
     txn_id: String,
 ) -> Result<(), String> {
+    let operation_id = ipc_operation_id(&request);
+    let started_at = Instant::now();
     let client = state.require_client().await?;
 
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
@@ -246,6 +303,15 @@ pub async fn send_attachment(
     let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
     let total_bytes = data.len() as u64;
     let mime = mime_guess::from_path(path).first_or_octet_stream();
+
+    add_attachment_ipc_breadcrumb(
+        sentry::Level::Info,
+        "started",
+        operation_id.as_deref(),
+        total_bytes,
+        &mime,
+        None,
+    );
 
     // Caller-supplied, not server-generated: the frontend creates its
     // optimistic upload row (keyed on a locally generated ID) before
@@ -302,7 +368,31 @@ pub async fn send_attachment(
         );
     }
 
-    result.map(|_| ()).map_err(|e| e.to_string())
+    let duration_ms = started_at.elapsed().as_millis();
+    match result {
+        Ok(_) => {
+            add_attachment_ipc_breadcrumb(
+                sentry::Level::Info,
+                "succeeded",
+                operation_id.as_deref(),
+                total_bytes,
+                &mime,
+                Some(duration_ms),
+            );
+            Ok(())
+        }
+        Err(error) => {
+            add_attachment_ipc_breadcrumb(
+                sentry::Level::Error,
+                "failed",
+                operation_id.as_deref(),
+                total_bytes,
+                &mime,
+                Some(duration_ms),
+            );
+            Err(error.to_string())
+        }
+    }
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`
@@ -408,6 +498,26 @@ mod tests {
         let mime: mime::Mime = "audio/ogg".parse().unwrap();
         let info = attachment_info_for(&mime, &[], 42);
         assert!(matches!(info, AttachmentInfo::Audio(_)));
+    }
+
+    #[test]
+    fn accepts_synthetic_ipc_operation_ids() {
+        assert!(is_valid_ipc_operation_id(
+            "ipc-550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(is_valid_ipc_operation_id("ipc-mkw4k1w-1"));
+    }
+
+    #[test]
+    fn rejects_non_synthetic_ipc_operation_ids() {
+        assert!(!is_valid_ipc_operation_id("@alice:example.org"));
+        assert!(!is_valid_ipc_operation_id("!room:example.org"));
+        assert!(!is_valid_ipc_operation_id("ipc-"));
+        assert!(!is_valid_ipc_operation_id("ipc-with/slash"));
+        assert!(!is_valid_ipc_operation_id(&format!(
+            "ipc-{}",
+            "a".repeat(97)
+        )));
     }
 
     #[test]

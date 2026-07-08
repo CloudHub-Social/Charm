@@ -4,6 +4,8 @@ import { scrubSensitiveText } from "./scrubbers";
 
 type InvokeArgs = Record<string, unknown>;
 
+export const IPC_OPERATION_ID_HEADER = "x-charm-operation-id";
+
 let fallbackOperationCounter = 0;
 
 function operationId(): string {
@@ -87,7 +89,11 @@ export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> 
   });
 
   try {
-    const result = await tauriInvoke<T>(command, args);
+    const result = await tauriInvoke<T>(command, args, {
+      headers: {
+        [IPC_OPERATION_ID_HEADER]: id,
+      },
+    });
     addIpcBreadcrumb("info", `IPC ${command} succeeded`, {
       command,
       operationId: id,
