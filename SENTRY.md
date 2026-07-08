@@ -57,6 +57,10 @@ dispatch. It currently uploads:
 - Android ProGuard/R8 mapping files and native symbols through the Sentry
   Android Gradle plugin, enabled only in the release artifact workflow via
   `SENTRY_ANDROID_UPLOAD=true`.
+- Size-analysis reports for frontend, desktop, Apple, and Android release
+  outputs as GitHub step summaries and downloadable workflow artifacts.
+- Android APK/AAB output to Sentry Size Analysis with
+  `sentry-cli build upload` after the Android release-artifact build succeeds.
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
 `SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. The DSN is used only for
@@ -65,10 +69,15 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
-Signed iOS device-release dSYMs, native Android SDK runtime crash coverage, and
-Sentry size-analysis uploads are still Phase 3 follow-ups. Add them to the
-release artifact workflow once the corresponding signed/release or native SDK
-pipeline exists.
+Sentry Size Analysis currently receives Android builds only. The current iOS CI
+path builds an unsigned simulator debug app, while Sentry accepts XCArchive or
+IPA inputs for iOS size analysis; wire that upload once a signed device-release
+archive or IPA exists. Frontend and desktop bundle sizes are reported in GitHub
+because Sentry Size Analysis is a mobile build-size product, not a generic web
+or desktop bundle analyzer.
+
+Signed iOS device-release dSYMs and native Android SDK runtime crash coverage
+are still Phase 3 follow-ups.
 
 ## Scrubbing Rules
 
@@ -90,6 +99,5 @@ replay, profiling, warning/error console logs, frontend Tauri IPC breadcrumbs,
 and Rust attachment-upload IPC breadcrumbs correlated by the frontend operation
 ID header.
 
-User feedback, screenshots, broader Rust tracing/log bridges, native Android
-SDK runtime coverage, signed iOS device-release dSYMs, and size analysis remain
-separate follow-up phases from Spec 21.
+Screenshots, native Android SDK runtime coverage, and signed iOS device-release
+dSYMs remain separate follow-up phases from Spec 21.

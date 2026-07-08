@@ -67,6 +67,19 @@ jobs:
             exit 1
           fi
 
+      - name: Report frontend bundle sizes
+        env:
+          SIZE_REPORT_TITLE: Frontend bundle sizes
+          SIZE_REPORT_PATHS: dist
+          SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/frontend-bundle-sizes.md
+        run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Upload frontend size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-size-analysis-frontend
+          path: .artifacts/sentry-size-analysis/frontend-bundle-sizes.md
+
   rust-linux-debug-files:
     name: Rust Linux debug files
     runs-on: ubuntu-latest
@@ -124,6 +137,21 @@ jobs:
           --wait
           --log-level info
           "${{ steps.cargo-target.outputs.dir }}/release"
+
+      - name: Report Linux release artifact sizes
+        env:
+          SIZE_REPORT_TITLE: Linux release artifact sizes
+          SIZE_REPORT_PATHS: |
+            ${{ steps.cargo-target.outputs.dir }}/release
+            src-tauri/target/release/bundle
+          SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/linux-release-sizes.md
+        run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Upload Linux size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-size-analysis-linux
+          path: .artifacts/sentry-size-analysis/linux-release-sizes.md
 
   apple-debug-files:
     name: Apple debug files
@@ -209,6 +237,21 @@ jobs:
             --log-level info \
             "${paths[@]}"
 
+      - name: Report Apple build artifact sizes
+        env:
+          SIZE_REPORT_TITLE: Apple build artifact sizes
+          SIZE_REPORT_PATHS: |
+            ${{ steps.apple-debug-files.outputs.paths }}
+            src-tauri/gen/apple/build
+          SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/apple-build-sizes.md
+        run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Upload Apple size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-size-analysis-apple
+          path: .artifacts/sentry-size-analysis/apple-build-sizes.md
+
   windows-debug-files:
     name: Windows debug files
     runs-on: windows-latest
@@ -270,6 +313,22 @@ jobs:
             --log-level info `
             "${{ steps.windows-debug-files.outputs.path }}"
 
+      - name: Report Windows release artifact sizes
+        shell: pwsh
+        env:
+          SIZE_REPORT_TITLE: Windows release artifact sizes
+          SIZE_REPORT_PATHS: |
+            ${{ steps.windows-debug-files.outputs.path }}
+            src-tauri/target/release/bundle
+          SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/windows-release-sizes.md
+        run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Upload Windows size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-size-analysis-windows
+          path: .artifacts/sentry-size-analysis/windows-release-sizes.md
+
   android-debug-files:
     name: Android mapping and native symbols
     runs-on: ubuntu-latest
@@ -326,3 +385,79 @@ jobs:
           # Build the generated default Android ABI set so uploaded native symbols
           # match the universal release artifact.
           pnpm tauri android build --ci
+
+      - name: Report Android release artifact sizes
+        env:
+          SIZE_REPORT_TITLE: Android release artifact sizes
+          SIZE_REPORT_PATHS: |
+            src-tauri/gen/android/app/build/outputs/apk
+            src-tauri/gen/android/app/build/outputs/bundle
+          SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/android-release-sizes.md
+        run: node .github/scripts/report-artifact-sizes.mjs
+
+      - name: Upload Android size report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sentry-size-analysis-android
+          path: .artifacts/sentry-size-analysis/android-release-sizes.md
+
+      - name: Resolve Android build for Sentry size analysis
+        id: android-size-build
+        run: |
+          outputs_dir=src-tauri/gen/android/app/build/outputs
+          mapfile -t builds < <(
+            find "$outputs_dir" -type f \
+              \( -name '*.aab' -o -name '*.apk' \) | sort
+          )
+          if [ "${#builds[@]}" -eq 0 ]; then
+            echo "::error::No Android APK or AAB found for Sentry size analysis"
+            exit 1
+          fi
+
+          selected=""
+          for build in "${builds[@]}"; do
+            if [[ "$build" == *"/bundle/"* && "$build" == *"Release"* ]]; then
+              selected="$build"
+              break
+            fi
+          done
+          if [ -z "$selected" ]; then
+            for build in "${builds[@]}"; do
+              if [[ "$build" == *"/apk/"* &&
+                "$build" == *"universal"* &&
+                "$build" == *"release"* ]]; then
+                selected="$build"
+                break
+              fi
+            done
+          fi
+          if [ -z "$selected" ]; then
+            for build in "${builds[@]}"; do
+              if [[ "$build" == *"release"* ]]; then
+                selected="$build"
+                break
+              fi
+            done
+          fi
+          if [ -z "$selected" ]; then
+            selected="${builds[0]}"
+          fi
+
+          echo "path=$selected" >> "$GITHUB_OUTPUT"
+          {
+            echo "Selected Android size-analysis build:"
+            echo "\`$selected\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Android build to Sentry size analysis
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 build upload
+          "${{ steps.android-size-build.outputs.path }}"
+          --org "$SENTRY_ORG"
+          --project "$SENTRY_PROJECT"
+          --build-configuration Release
+          --log-level info
