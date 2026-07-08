@@ -54,6 +54,9 @@ dispatch. It currently uploads:
   compiled with `CARGO_PROFILE_RELEASE_DEBUG=1`, using
   `sentry-cli debug-files upload --include-sources --wait`.
 - iOS simulator debug information from the current unsigned CI build path.
+- Android ProGuard/R8 mapping files and native symbols through the Sentry
+  Android Gradle plugin, enabled only in the release artifact workflow via
+  `SENTRY_ANDROID_UPLOAD=true`.
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
 `SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. The DSN is used only for
@@ -62,9 +65,9 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
-Android mapping files/native symbols, signed iOS device-release dSYMs, and
+Signed iOS device-release dSYMs, native Android SDK runtime crash coverage, and
 Sentry size-analysis uploads are still Phase 3 follow-ups. Add them to the
-release artifact workflow once the corresponding signed/release platform build
+release artifact workflow once the corresponding signed/release or native SDK
 pipeline exists.
 
 ## Scrubbing Rules

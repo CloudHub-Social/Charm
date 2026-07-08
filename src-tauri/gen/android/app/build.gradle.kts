@@ -1,3 +1,4 @@
+import io.sentry.android.gradle.extensions.SentryPluginExtension
 import java.util.Properties
 
 plugins {
@@ -24,6 +25,33 @@ val tauriProperties = Properties().apply {
 val hasGoogleServicesConfig = file("google-services.json").exists()
 if (hasGoogleServicesConfig) {
     apply(plugin = "com.google.gms.google-services")
+}
+
+fun requiredSentryEnv(name: String): String =
+    System.getenv(name) ?: error("$name is required when SENTRY_ANDROID_UPLOAD=true")
+
+val sentryAndroidUpload = System.getenv("SENTRY_ANDROID_UPLOAD") == "true"
+if (sentryAndroidUpload) {
+    apply(plugin = "io.sentry.android.gradle")
+    configure<SentryPluginExtension> {
+        org.set(requiredSentryEnv("SENTRY_ORG"))
+        projectName.set(requiredSentryEnv("SENTRY_PROJECT"))
+        authToken.set(requiredSentryEnv("SENTRY_AUTH_TOKEN"))
+        includeProguardMapping.set(true)
+        autoUploadProguardMapping.set(true)
+        uploadNativeSymbols.set(true)
+        autoUploadNativeSymbols.set(true)
+        includeNativeSources.set(true)
+        includeSourceContext.set(false)
+        includeDependenciesReport.set(false)
+        telemetry.set(false)
+        tracingInstrumentation {
+            enabled.set(false)
+        }
+        autoInstallation {
+            enabled.set(false)
+        }
+    }
 }
 
 android {
