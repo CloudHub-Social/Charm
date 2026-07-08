@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useHydrateAtoms } from "jotai/utils";
 import type { ReactNode } from "react";
 import type { CrossSigningStatusSummary, DeviceSummary, ProfileSummary } from "@/lib/matrix";
+import { DEFAULT_OBSERVABILITY_SETTINGS } from "@/observability/settings";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
 import { SettingsScreen } from "./SettingsScreen";
 
@@ -47,7 +48,11 @@ function HydrateSettingsOpen({
 }
 
 /** Same seeded-`QueryClient` approach as `MediaMessage.stories.tsx` — every panel's data pre-populated so switching tabs never shows a loading state. */
-function withSeededData() {
+function withSeededData({
+  observability = DEFAULT_OBSERVABILITY_SETTINGS,
+}: {
+  observability?: typeof DEFAULT_OBSERVABILITY_SETTINGS;
+} = {}) {
   const client = new QueryClient();
   client.setQueryData(["profile"], PROFILE);
   client.setQueryData(["devices"], DEVICES);
@@ -64,6 +69,7 @@ function withSeededData() {
   client.setQueryData(["settings", "ignored-users"], []);
   client.setQueryData(["settings", "autostart"], false);
   client.setQueryData(["settings", "notification-permission"], true);
+  client.setQueryData(["settings", "observability"], observability);
   return client;
 }
 
@@ -125,6 +131,41 @@ export const KeyboardShortcutsSection: Story = {
     return (
       <QueryClientProvider client={client}>
         <HydrateSettingsOpen section="keyboard-shortcuts">
+          <SettingsScreen {...args} />
+        </HydrateSettingsOpen>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const ObservabilitySectionDefaultOff: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData();
+    return (
+      <QueryClientProvider client={client}>
+        <HydrateSettingsOpen section="observability">
+          <SettingsScreen {...args} />
+        </HydrateSettingsOpen>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const ObservabilitySectionOptedIn: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData({
+      observability: {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        replayEnabled: true,
+        anonymousUserId: "story-observability-user",
+      },
+    });
+    return (
+      <QueryClientProvider client={client}>
+        <HydrateSettingsOpen section="observability">
           <SettingsScreen {...args} />
         </HydrateSettingsOpen>
       </QueryClientProvider>

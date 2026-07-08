@@ -94,15 +94,23 @@ test("settings: observability panel is default-off and snapshot-covered", async 
   await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeDisabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeDisabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Send feedback" })).toBeDisabled();
   await captureSnapshot(page, "settings-observability-default-off");
 
   await page.getByRole("switch", { name: "Enable Sentry observability" }).click();
   await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeEnabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeEnabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
 
   await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
   await expect(page.getByRole("switch", { name: "Enable Sentry canvas replay" })).toBeEnabled();
+  await page.getByRole("button", { name: "Send feedback" }).click();
+  await expect(
+    page.getByText(
+      "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+    ),
+  ).toBeVisible();
   await captureSnapshot(page, "settings-observability-opted-in");
 });
 

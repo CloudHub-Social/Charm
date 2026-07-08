@@ -97,7 +97,9 @@ export function ObservabilityPanel() {
     setFeedbackStatus(null);
     const opened = await openSentryFeedbackDialog();
     if (!opened) {
-      setFeedbackStatus("Feedback is available after Sentry error monitoring is enabled.");
+      setFeedbackStatus(
+        "Feedback is available when Sentry observability is enabled and this build has a Sentry DSN.",
+      );
     }
   };
 
