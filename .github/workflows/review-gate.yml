@@ -51,7 +51,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TIMEOUT_MINUTES: "25"
+          TIMEOUT_MINUTES: "10"
           POLL_SECONDS: "20"
         run: |
           set -euo pipefail
