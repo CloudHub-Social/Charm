@@ -57,14 +57,15 @@ async function getStore() {
 }
 
 async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("update_observability_log_consent", { logsEnabled });
   } catch (error) {
-    if (isTauri()) {
-      console.warn("Failed to sync Rust observability log consent", error);
-    }
-    // Plain-browser runs and tests do not have Tauri IPC; Rust rereads the store as a fallback.
+    console.warn("Failed to sync Rust observability log consent", error);
+    // Rust reads the persisted store on the next app start if same-session IPC is unavailable.
   }
 }
 

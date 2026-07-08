@@ -589,6 +589,18 @@ mod observability_tests {
     static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
+    struct RuntimeLogConsentReset(bool);
+
+    impl Drop for RuntimeLogConsentReset {
+        fn drop(&mut self) {
+            RUNTIME_LOG_CONSENT.store(self.0, Ordering::SeqCst);
+        }
+    }
+
+    fn set_runtime_log_consent_for_test(logs_enabled: bool) -> RuntimeLogConsentReset {
+        RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
+    }
+
     #[test]
     fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
         let input = r#"room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media password="secret""#;
@@ -628,7 +640,7 @@ mod observability_tests {
     #[test]
     fn scrub_log_redacts_body_and_attributes() {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
-        RUNTIME_LOG_CONSENT.store(true, Ordering::SeqCst);
+        let _reset = set_runtime_log_consent_for_test(true);
         let log = sentry::protocol::Log {
             level: sentry::protocol::LogLevel::Info,
             body: "failed for @alice:example.org access_token=secret".to_owned(),
@@ -732,35 +744,15 @@ mod observability_tests {
     }
 
     #[test]
-    fn runtime_log_consent_updates_after_opt_out_notification() {
+    fn runtime_log_consent_updates_after_notification() {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
-        let dir = std::env::temp_dir().join(format!(
-            "charm-observability-test-runtime-consent-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock after unix epoch")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("temp observability dir");
-        std::fs::write(
-            dir.join("observability.json"),
-            r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":true},"updatedAt":1}}"#,
-        )
-        .expect("observability fixture write");
+        let _reset = set_runtime_log_consent_for_test(false);
 
         update_runtime_observability_logs_enabled(true);
         assert!(runtime_observability_logs_enabled());
 
-        std::fs::write(
-            dir.join("observability.json"),
-            r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":false},"updatedAt":2}}"#,
-        )
-        .expect("observability opt-out fixture write");
         update_runtime_observability_logs_enabled(false);
 
         assert!(!runtime_observability_logs_enabled());
-
-        std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
     }
 }
