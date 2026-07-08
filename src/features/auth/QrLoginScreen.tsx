@@ -13,6 +13,7 @@ import {
   type QrLoginProgressEvent,
 } from "@/lib/matrix";
 import { parseCheckCode, sanitizeCheckCodeInput } from "./qrCheckCode";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface QrLoginScreenProps {
   homeserverUrl: string;
@@ -105,7 +106,7 @@ export function QrLoginScreen({ homeserverUrl, onSignedIn, onCancel }: QrLoginSc
       // Releases the Rust-side background task if the user navigates away
       // without pressing Cancel — otherwise it keeps running (and could
       // still adopt a session) after this screen is gone.
-      cancelQrLogin().catch(console.error);
+      cancelQrLogin().catch(logAndIgnore);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per mount, homeserverUrl is fixed for the life of this screen
   }, []);
@@ -126,7 +127,7 @@ export function QrLoginScreen({ homeserverUrl, onSignedIn, onCancel }: QrLoginSc
   }, [stage]);
 
   function handleCancel() {
-    cancelQrLogin().catch(console.error);
+    cancelQrLogin().catch(logAndIgnore);
     onCancel();
   }
 

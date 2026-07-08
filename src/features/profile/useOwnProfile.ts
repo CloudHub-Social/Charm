@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { queryClient } from "@/providers";
 import { getOwnProfile, onSelfProfileUpdate } from "@/lib/matrix";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 const OWN_PROFILE_QUERY_KEY = ["own-profile"];
 
@@ -19,7 +20,7 @@ export function useOwnProfile() {
       queryClient.invalidateQueries({ queryKey: OWN_PROFILE_QUERY_KEY });
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
 
