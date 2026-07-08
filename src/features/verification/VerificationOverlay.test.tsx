@@ -1,5 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
+import { createStore, Provider as JotaiProvider } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import { VerificationOverlay } from "./VerificationOverlay";
 import type { SasUpdateEvent, VerificationRequestSummary } from "@/lib/matrix";
 
@@ -117,5 +119,28 @@ describe("VerificationOverlay", () => {
       vi.advanceTimersByTime(1500);
     });
     expect(screen.getByText("Verify new sign-in")).toBeInTheDocument();
+  });
+
+  it("closes settings when a verification request arrives", () => {
+    // Radix's Dialog (the desktop settings shell) applies aria-hidden to
+    // everything outside its own portal while open and traps focus there —
+    // this overlay renders as a sibling of it, not inside it, so leaving
+    // settings open would make the overlay invisible to assistive tech and
+    // unreachable by keyboard despite being visually on top. Closing
+    // settings is the fix, not z-index/pointer-events.
+    const store = createStore();
+    store.set(settingsOpenAtom, "devices");
+
+    render(
+      <JotaiProvider store={store}>
+        <VerificationOverlay />
+      </JotaiProvider>,
+    );
+
+    act(() => {
+      verificationRequestCallback?.(incomingRequest());
+    });
+
+    expect(store.get(settingsOpenAtom)).toBeNull();
   });
 });

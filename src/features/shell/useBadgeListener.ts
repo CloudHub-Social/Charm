@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useSetAtom } from "jotai";
 import { onBadgeUpdate } from "@/lib/matrix";
 import { badgeAtom, badgeUpdateValue } from "./badgeAtom";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 /**
  * Subscribes to `badge:update` once per app (mount alongside the other
@@ -15,7 +16,7 @@ export function useBadgeListener() {
       setBadge(badgeUpdateValue(update));
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [setBadge]);
 }

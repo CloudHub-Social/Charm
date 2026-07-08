@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useAtomValue, useSetAtom, useStore } from "jotai";
 import { getPresence, onPresenceUpdate, type PresenceUpdate } from "@/lib/matrix";
 import { presenceAtomFamily } from "./presenceAtoms";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 /**
  * Subscribes to `presence:update` once per app (mount this near the root —
@@ -18,7 +19,7 @@ export function usePresenceListener() {
       store.set(presenceAtomFamily(update.user_id), update);
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [store]);
 }
@@ -60,7 +61,7 @@ export function usePresence(userId: string | null): PresenceUpdate | null {
       cancelled = true;
       unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `store`/`setPresenceAtom` are stable refs from jotai's useStore/useSetAtom; `presence` is deliberately excluded so this one-shot fetch only re-runs on `userId` change, not on every atom update
   }, [userId]);
 
   return userId ? presence : null;

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::account::{account_management_url, retry_uia_with_session};
+use super::account::{account_management_url, retry_uia_with_session, UiaCommandError};
 use super::verification::VerificationRequestSummary;
 use super::MatrixState;
 
@@ -85,7 +85,7 @@ pub async fn delete_device(
     state: State<'_, MatrixState>,
     device_id: String,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     let user_id = client
         .user_id()
@@ -94,7 +94,9 @@ pub async fn delete_device(
     let device_id: OwnedDeviceId = device_id.into();
 
     if is_current_device(&device_id, client.device_id()) {
-        return Err("cannot revoke the current device this way — use logout instead".to_string());
+        return Err(UiaCommandError::from(
+            "cannot revoke the current device this way — use logout instead".to_string(),
+        ));
     }
 
     retry_uia_with_session(&user_id, password, |auth| async {
@@ -265,6 +267,18 @@ mod tests {
             "expected a recognizable UIA challenge on the password-less attempt"
         );
 
+        let first_attempt_via_helper = retry_uia_with_session(&user_id, None, |auth| async {
+            client
+                .delete_devices(std::slice::from_ref(&target), auth)
+                .await
+                .map_err(matrix_sdk::Error::from)
+        })
+        .await;
+        assert!(
+            matches!(first_attempt_via_helper, Err(UiaCommandError::UiaChallenge)),
+            "expected the password-less attempt to surface as UiaCommandError::UiaChallenge, got {first_attempt_via_helper:?}"
+        );
+
         let retry = retry_uia_with_session(
             &user_id,
             Some("current-password".to_string()),
@@ -279,6 +293,37 @@ mod tests {
         assert!(
             retry.is_ok(),
             "expected the retry with a password to succeed"
+        );
+    }
+
+    /// A non-UIA failure (network error, 500, etc.) on the first attempt
+    /// must surface as `UiaCommandError::Other`, not a password challenge.
+    #[tokio::test]
+    async fn delete_device_non_uia_error_on_first_attempt_is_not_a_challenge() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let endpoint_path = "/_matrix/client/v3/delete_devices";
+
+        Mock::given(method("POST"))
+            .and(path(endpoint_path))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(server.server())
+            .await;
+
+        let user_id = client.user_id().unwrap().to_owned();
+        let target = owned_device_id!("OTHERDEVICE");
+
+        let result = retry_uia_with_session(&user_id, None, |auth| async {
+            client
+                .delete_devices(std::slice::from_ref(&target), auth)
+                .await
+                .map_err(matrix_sdk::Error::from)
+        })
+        .await;
+
+        assert!(
+            matches!(result, Err(UiaCommandError::Other { .. })),
+            "expected a non-UIA server error to surface as UiaCommandError::Other, got {result:?}"
         );
     }
 

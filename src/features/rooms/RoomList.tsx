@@ -1,4 +1,4 @@
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { SettingsIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
-import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
+import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import {
   markRoomRead,
@@ -23,6 +23,7 @@ import { RoomListSection } from "./SpaceSection";
 import { SpaceBrowser } from "./SpaceBrowser";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface RoomListProps {
   rooms: RoomSummary[];
@@ -37,7 +38,7 @@ const ROW_HEIGHT_PX = 46;
 function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex: number) {
   const updates = planManualReorder(sectionRooms, roomId, targetIndex);
   for (const { room_id, order } of updates) {
-    setRoomManualOrder(room_id, order).catch(console.error);
+    setRoomManualOrder(room_id, order).catch(logAndIgnore);
   }
 }
 
@@ -45,7 +46,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [browsingSpace, setBrowsingSpace] = useState<RoomSummary | null>(null);
   const { data: ownProfile } = useOwnProfile();
-  const setSettingsOpen = useSetAtom(settingsOpenAtom);
+  const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
@@ -116,7 +117,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
             variant="ghost"
             size="icon-sm"
             aria-label="Open settings"
-            onClick={() => setSettingsOpen("account")}
+            onClick={() => openSettings("account")}
           >
             <SettingsIcon />
           </Button>
@@ -227,14 +228,14 @@ function DraggableRoomRow({
       active={active}
       onSelect={onSelect}
       onToggleFavourite={() =>
-        setRoomFavourite(room.room_id, !room.is_favourite).catch(console.error)
+        setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
       }
       onToggleLowPriority={() =>
-        setRoomLowPriority(room.room_id, !room.is_low_priority).catch(console.error)
+        setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
       }
-      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(console.error)}
-      onMarkRead={() => markRoomRead(room.room_id).catch(console.error)}
-      onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(console.error)}
+      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)}
+      onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+      onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       dragHandleProps={bind()}
       style={{
         transform: dragging ? `translateY(${dragOffset}px)` : undefined,

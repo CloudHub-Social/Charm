@@ -1,5 +1,8 @@
 import { atom } from "jotai";
-import { atomFamily } from "jotai/utils";
+import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
+
+/** Distinct rooms tracked at once — see `boundedAtomFamily`'s doc comment. */
+const MAX_TRACKED_ROOMS = 100;
 
 export type RoomSettingsSection = "general" | "members" | "permissions";
 
@@ -23,7 +26,18 @@ export const roomSettingsAtom = atom<RoomSettingsTarget | null>(null);
  * `atomFamily` so switching rooms doesn't leak the drawer's open/closed state
  * between them — same convention as `messageActionAtoms.ts`'s per-room atoms.
  */
-export const membersDrawerOpenAtomFamily = atomFamily((_roomId: string) => {
+export const membersDrawerOpenAtomFamily = boundedAtomFamily((_roomId: string) => {
   void _roomId;
   return atom(false);
-});
+}, MAX_TRACKED_ROOMS);
+
+/**
+ * Fallback for `useAtom(membersDrawerOpenAtomFamily(...))` call sites that
+ * can render with no active room (e.g. `RoomsScreen` before any room is
+ * selected). Deliberately a plain atom outside the family rather than
+ * calling the family with a placeholder key like `""` — doing that would
+ * still occupy one of `MAX_TRACKED_ROOMS` slots, and once created it could
+ * eventually get evicted-into (or itself cause the eviction of) a real
+ * room's tracked entry.
+ */
+export const noRoomMembersDrawerOpenAtom = atom(false);

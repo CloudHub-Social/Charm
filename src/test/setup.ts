@@ -5,9 +5,16 @@ import "@testing-library/jest-dom/vitest";
 // that mount it need at least a no-op stub to avoid a ReferenceError.
 if (typeof globalThis.IntersectionObserver === "undefined") {
   class MockIntersectionObserver implements IntersectionObserver {
-    readonly root: Element | Document | null = null;
-    readonly rootMargin: string = "";
-    readonly thresholds: ReadonlyArray<number> = [];
+    readonly root: Element | Document | null;
+    readonly rootMargin: string;
+    readonly thresholds: ReadonlyArray<number>;
+    constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit = {}) {
+      void callback;
+      this.root = options.root ?? null;
+      this.rootMargin = options.rootMargin ?? "";
+      const threshold = options.threshold ?? 0;
+      this.thresholds = Array.isArray(threshold) ? threshold : [threshold];
+    }
     observe(): void {}
     unobserve(): void {}
     disconnect(): void {}

@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { DeviceSummary } from "@/lib/matrix";
 import { useDeviceDeleteUrl } from "./useDevices";
+import { useUiaRetry } from "./useUiaRetry";
 
 function formatLastSeen(ts: number | null): string | null {
   if (ts === null) return null;
@@ -33,24 +34,22 @@ interface DeviceRowProps {
   onRevoke: (password?: string) => Promise<void>;
   /** Whether the current session is OAuth/OIDC-managed — see the Rust command's doc comment on `get_device_delete_url`. */
   usesOAuth: boolean;
+  /** Bulk-select checkbox — omitted (no checkbox rendered) for the current device, which can't be bulk-revoked. */
+  selection?: { selected: boolean; onToggle: () => void };
 }
 
-export function DeviceRow({ device, onVerify, onRevoke, usesOAuth }: DeviceRowProps) {
+export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: DeviceRowProps) {
   const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, usesOAuth);
   const [revokeOpen, setRevokeOpen] = useState(false);
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const uia = useUiaRetry((password) => onRevoke(password));
+  const { needsPassword, password, setPassword, error, submitting } = uia;
 
   const label = device.display_name ?? device.device_id;
   const lastSeen = formatLastSeen(device.last_seen_ts);
 
   function reset() {
-    setNeedsPassword(false);
-    setPassword("");
-    setError(null);
+    uia.reset();
   }
 
   async function handleVerify() {
@@ -63,50 +62,44 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth }: DeviceRowPr
   }
 
   async function handleRevoke() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onRevoke(needsPassword ? password : undefined);
-      setRevokeOpen(false);
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // Same rationale as `ChangePasswordDialog`: surface the backend's
-        // actual error instead of assuming every retry failure means the
-        // current password was wrong.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) setRevokeOpen(false);
   }
 
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{label}</span>
-          {device.is_current && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-              This device
+    <div className="flex items-center justify-between gap-4 px-4 py-3">
+      <div className="flex min-w-0 items-center gap-3">
+        {selection && (
+          <input
+            type="checkbox"
+            aria-label={`Select ${label}`}
+            checked={selection.selected}
+            onChange={selection.onToggle}
+          />
+        )}
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-foreground">{label}</span>
+            {device.is_current && (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                This device
+              </span>
+            )}
+            <span
+              className={
+                device.is_verified
+                  ? "rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success"
+                  : "rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] text-destructive"
+              }
+            >
+              {device.is_verified ? "Verified" : "Unverified"}
             </span>
-          )}
-          <span
-            className={
-              device.is_verified
-                ? "rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success"
-                : "rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] text-destructive"
-            }
-          >
-            {device.is_verified ? "Verified" : "Unverified"}
-          </span>
+          </div>
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">
+            {device.device_id}
+            {device.last_seen_ip && ` · ${device.last_seen_ip}`}
+            {lastSeen && ` · Last seen ${lastSeen}`}
+          </p>
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {device.device_id}
-          {device.last_seen_ip && ` · ${device.last_seen_ip}`}
-          {lastSeen && ` · Last seen ${lastSeen}`}
-        </p>
       </div>
 
       <DropdownMenu>

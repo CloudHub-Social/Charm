@@ -14,12 +14,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
+import { SettingsCard, SettingTile } from "./components/SettingsCard";
+import { BlockedUsersCard } from "./BlockedUsersCard";
+import { ContactInformationCard } from "./ContactInformationCard";
 import {
   useAccountDeactivateUrl,
   useProfile,
   useResolvedAvatarSrc,
   useUpdateProfile,
 } from "./useProfile";
+import { useUiaRetry } from "./useUiaRetry";
 
 interface AccountPanelProps {
   onLoggedOut: () => void;
@@ -79,89 +83,112 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   }
 
   return (
-    <div className="max-w-md space-y-8">
-      <section>
-        <h2 className="mb-4 text-lg font-bold text-foreground">Profile</h2>
-        <div className="mb-4 flex items-center gap-4">
-          <Avatar size="lg">
-            {avatarSrc && <AvatarImage src={avatarSrc} alt="" />}
-            <AvatarFallback>
-              {(profile?.display_name ?? profile?.user_id ?? "?").slice(0, 1).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handlePickAvatar}
-            disabled={updateAvatar.isPending}
-          >
-            Change avatar
-          </Button>
-        </div>
-        {updateAvatar.isError && (
-          <p className="mb-2 text-sm text-destructive">{String(updateAvatar.error)}</p>
-        )}
-        <Label htmlFor="display-name">Display name</Label>
-        <div className="mt-1 flex gap-2">
-          <Input
-            id="display-name"
-            value={displayName}
-            onChange={(e) => setDisplayNameDraft(e.target.value)}
-          />
-          <Button
-            onClick={handleSaveDisplayName}
-            disabled={updateDisplayName.isPending || displayNameDraft === null}
-          >
-            Save
-          </Button>
-        </div>
-        {updateDisplayName.isError && (
-          <p className="mt-2 text-sm text-destructive">{String(updateDisplayName.error)}</p>
-        )}
-        {profile?.user_id && (
-          <p className="mt-2 text-xs text-muted-foreground">{profile.user_id}</p>
-        )}
-      </section>
+    <div className="max-w-md space-y-6">
+      <h1 className="text-lg font-bold text-foreground">Account</h1>
 
-      <section className="space-y-2">
-        <h2 className="text-lg font-bold text-foreground">Password</h2>
-        {profile?.uses_oauth ? (
-          <p className="text-sm text-muted-foreground">
-            This account signs in through your identity provider, so its password is managed there
-            rather than in Charm.
-          </p>
-        ) : (
-          <Button variant="outline" onClick={() => setPasswordDialogOpen(true)}>
-            Change password
-          </Button>
-        )}
-      </section>
-
-      <section className="space-y-2">
-        <h2 className="text-lg font-bold text-foreground">Sign out</h2>
-        <Button variant="outline" onClick={() => setLogoutOpen(true)}>
-          Log out
-        </Button>
-      </section>
-
-      <section className="space-y-2 border-t border-border pt-6">
-        <h2 className="text-lg font-bold text-destructive">Danger zone</h2>
-        {profile?.uses_oauth ? (
-          deactivateUrl ? (
-            <Button variant="destructive" onClick={() => openUrl(deactivateUrl)}>
-              Deactivate account
+      <SettingsCard heading="Profile">
+        <SettingTile>
+          <div className="flex items-center gap-4">
+            <Avatar size="lg">
+              {avatarSrc && <AvatarImage src={avatarSrc} alt="" />}
+              <AvatarFallback>
+                {(profile?.display_name ?? profile?.user_id ?? "?").slice(0, 1).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handlePickAvatar}
+              disabled={updateAvatar.isPending}
+            >
+              Change avatar
             </Button>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              This account signs in through your identity provider — deactivate it there instead.
-            </p>
-          )
-        ) : (
-          <Button variant="destructive" onClick={() => setDeactivateOpen(true)}>
-            Deactivate account
-          </Button>
-        )}
-      </section>
+          </div>
+          {updateAvatar.isError && (
+            <p className="mt-2 text-sm text-destructive">{String(updateAvatar.error)}</p>
+          )}
+        </SettingTile>
+        <SettingTile>
+          <Label htmlFor="display-name">Display name</Label>
+          <div className="mt-1 flex gap-2">
+            <Input
+              id="display-name"
+              value={displayName}
+              onChange={(e) => setDisplayNameDraft(e.target.value)}
+            />
+            <Button
+              onClick={handleSaveDisplayName}
+              disabled={updateDisplayName.isPending || displayNameDraft === null}
+            >
+              Save
+            </Button>
+          </div>
+          {updateDisplayName.isError && (
+            <p className="mt-2 text-sm text-destructive">{String(updateDisplayName.error)}</p>
+          )}
+        </SettingTile>
+        <SettingTile
+          title="Matrix ID"
+          control={
+            <span className="font-mono text-sm text-muted-foreground">
+              {profile?.user_id ?? "—"}
+            </span>
+          }
+        />
+      </SettingsCard>
+
+      <ContactInformationCard />
+      <BlockedUsersCard />
+
+      <SettingsCard heading="Security">
+        <SettingTile
+          title="Password"
+          description={
+            profile?.uses_oauth
+              ? "This account signs in through your identity provider, so its password is managed there rather than in Charm."
+              : undefined
+          }
+          control={
+            profile?.uses_oauth ? undefined : (
+              <Button variant="outline" size="sm" onClick={() => setPasswordDialogOpen(true)}>
+                Change password
+              </Button>
+            )
+          }
+        />
+        <SettingTile
+          title="Sign out"
+          control={
+            <Button variant="outline" size="sm" onClick={() => setLogoutOpen(true)}>
+              Log out
+            </Button>
+          }
+        />
+      </SettingsCard>
+
+      <SettingsCard heading="Danger zone">
+        <SettingTile
+          title="Deactivate account"
+          description={
+            profile?.uses_oauth && !deactivateUrl
+              ? "This account signs in through your identity provider — deactivate it there instead."
+              : "Permanently deactivates your account. This cannot be undone."
+          }
+          control={
+            profile?.uses_oauth ? (
+              deactivateUrl ? (
+                <Button variant="destructive" size="sm" onClick={() => openUrl(deactivateUrl)}>
+                  Deactivate account
+                </Button>
+              ) : undefined
+            ) : (
+              <Button variant="destructive" size="sm" onClick={() => setDeactivateOpen(true)}>
+                Deactivate account
+              </Button>
+            )
+          }
+        />
+      </SettingsCard>
 
       <ChangePasswordDialog open={passwordDialogOpen} onOpenChange={setPasswordDialogOpen} />
       <DeactivateAccountDialog
@@ -202,39 +229,24 @@ interface ChangePasswordDialogProps {
 /** UIA prompt-and-retry: mirrors `bootstrap_cross_signing`'s established convention. */
 function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps) {
   const [newPassword, setNewPassword] = useState("");
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const uia = useUiaRetry((password) => changePassword(newPassword, password));
+  const {
+    needsPassword,
+    password: currentPassword,
+    setPassword: setCurrentPassword,
+    error,
+    submitting,
+  } = uia;
 
   function reset() {
     setNewPassword("");
-    setCurrentPassword("");
-    setNeedsPassword(false);
-    setError(null);
     setDone(false);
+    uia.reset();
   }
 
   async function handleSubmit() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await changePassword(newPassword, needsPassword ? currentPassword : undefined);
-      setDone(true);
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // The backend's error already distinguishes a rejected password from
-        // an unrelated failure (network error, password-policy rejection,
-        // etc.) — surfacing it directly avoids misattributing those to "the
-        // current password is wrong" the way a hardcoded message would.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) setDone(true);
   }
 
   return (
@@ -266,8 +278,8 @@ function ChangePasswordDialog({ open, onOpenChange }: ChangePasswordDialogProps)
                     type="button"
                     className="text-xs text-muted-foreground underline hover:text-foreground"
                     onClick={() => {
-                      setNeedsPassword(false);
-                      setError(null);
+                      uia.setNeedsPassword(false);
+                      uia.setError(null);
                     }}
                   >
                     Edit
@@ -328,38 +340,18 @@ function DeactivateAccountDialog({
   onDeactivated,
 }: DeactivateAccountDialogProps) {
   const [step, setStep] = useState<"warn" | "confirm">("warn");
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
   const [confirmText, setConfirmText] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const uia = useUiaRetry((password) => deactivateAccount(password));
+  const { needsPassword, password, setPassword, error, submitting } = uia;
 
   function reset() {
     setStep("warn");
-    setNeedsPassword(false);
-    setPassword("");
     setConfirmText("");
-    setError(null);
+    uia.reset();
   }
 
   async function handleDeactivate() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await deactivateAccount(needsPassword ? password : undefined);
-      onDeactivated();
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // Same rationale as `ChangePasswordDialog`: the backend already
-        // distinguishes a rejected password from an unrelated failure, so
-        // surface it directly instead of assuming it's always the password.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) onDeactivated();
   }
 
   return (

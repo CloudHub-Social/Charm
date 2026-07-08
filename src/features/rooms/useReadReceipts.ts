@@ -4,6 +4,7 @@ import { useAtomValue, useStore } from "jotai";
 import { boundedAtomFamily } from "@/lib/boundedAtomFamily";
 import type { EventReceipt } from "@/lib/matrix";
 import { onReceiptsUpdate } from "@/lib/matrix";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 /** Distinct rooms tracked at once — see `boundedAtomFamily`'s doc comment. */
 const MAX_TRACKED_ROOMS = 100;
@@ -68,7 +69,7 @@ export function useReadReceipts(roomId: string | null, ownUserId: string) {
       store.set(receiptsAtomFamily(update.room_id), (prev) => applyReceipts(prev, filtered));
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [store, ownUserId]);
 
