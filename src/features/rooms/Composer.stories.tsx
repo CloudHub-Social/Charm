@@ -14,7 +14,7 @@ type Story = StoryObj<typeof meta>;
 /**
  * Storybook has no Tauri host, so `getRoomMembers`/`listRooms` (called on
  * mount to seed the `@`/`#` providers) reject — the Composer already
- * `.catch(console.error)`s both, so this renders fine with empty provider
+ * `.catch(logAndIgnore)`s both, so this renders fine with empty provider
  * data; only live `@`/`#` autocomplete needs a real backend.
  */
 export const Send: Story = {

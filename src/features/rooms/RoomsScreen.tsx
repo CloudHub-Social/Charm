@@ -25,6 +25,7 @@ import {
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface RoomsScreenProps {
   currentUserId: string;
@@ -63,10 +64,10 @@ export function RoomsScreen({
   useSettingsHashSync();
 
   useEffect(() => {
-    listRooms().then(setRooms).catch(console.error);
+    listRooms().then(setRooms).catch(logAndIgnore);
     const unlisten = onRoomListUpdate(setRooms);
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
 
@@ -96,7 +97,7 @@ export function RoomsScreen({
         !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
-      setFocusedRoom(isShowingChat ? activeRoomId : null).catch(console.error);
+      setFocusedRoom(isShowingChat ? activeRoomId : null).catch(logAndIgnore);
     }
     syncFocusedRoom();
     window.addEventListener("focus", syncFocusedRoom);
@@ -112,7 +113,7 @@ export function RoomsScreen({
   // this doesn't fire on every `activeRoomId`/`settingsSection` change.
   useEffect(() => {
     return () => {
-      setFocusedRoom(null).catch(console.error);
+      setFocusedRoom(null).catch(logAndIgnore);
     };
   }, []);
 

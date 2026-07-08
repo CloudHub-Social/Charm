@@ -16,6 +16,7 @@ import {
 } from "@/lib/matrix";
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
@@ -82,6 +83,10 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
       .then((callbackUrl) => {
         if (callbackUrl) tryCompleteSsoCallback(callbackUrl);
       })
+      // Deliberately silent (not logAndIgnore): failing here just means "no
+      // cold-launch deep link was pending" (e.g. plain cold start with no
+      // SSO in flight), which is the overwhelmingly common case — logging it
+      // would be console noise on every normal app launch, not a real error.
       .catch(() => {});
 
     const unlisten = onOpenUrl((urls) => {
@@ -91,7 +96,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     });
 
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [onSignedIn]);
 
@@ -136,7 +141,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     // Releases the client start_sso_login left pending on the Rust side
     // (its SQLite connection and HTTP pool) — best-effort, since the UI has
     // already moved on regardless of whether this succeeds.
-    cancelSsoLogin().catch(console.error);
+    cancelSsoLogin().catch(logAndIgnore);
   }
 
   return (
