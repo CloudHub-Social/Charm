@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { DeviceSummary } from "@/lib/matrix";
 import { useDeviceDeleteUrl } from "./useDevices";
+import { useUiaRetry } from "./useUiaRetry";
 
 function formatLastSeen(ts: number | null): string | null {
   if (ts === null) return null;
@@ -40,19 +41,15 @@ interface DeviceRowProps {
 export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: DeviceRowProps) {
   const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, usesOAuth);
   const [revokeOpen, setRevokeOpen] = useState(false);
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [verifying, setVerifying] = useState(false);
+  const uia = useUiaRetry((password) => onRevoke(password));
+  const { needsPassword, password, setPassword, error, submitting } = uia;
 
   const label = device.display_name ?? device.device_id;
   const lastSeen = formatLastSeen(device.last_seen_ts);
 
   function reset() {
-    setNeedsPassword(false);
-    setPassword("");
-    setError(null);
+    uia.reset();
   }
 
   async function handleVerify() {
@@ -65,23 +62,7 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: 
   }
 
   async function handleRevoke() {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await onRevoke(needsPassword ? password : undefined);
-      setRevokeOpen(false);
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        // Same rationale as `ChangePasswordDialog`: surface the backend's
-        // actual error instead of assuming every retry failure means the
-        // current password was wrong.
-        setError(String(err));
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    if (await uia.submit()) setRevokeOpen(false);
   }
 
   return (

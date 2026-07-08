@@ -21,6 +21,7 @@ import {
   useDevices,
 } from "./useDevices";
 import { useProfile } from "./useProfile";
+import { isUiaCommandError, uiaErrorMessage, useUiaRetry } from "./useUiaRetry";
 
 function groupDevices(devices: DeviceSummary[]) {
   return {
@@ -44,10 +45,14 @@ export function DevicesPanel() {
   // in-app), with selections surviving the moment `usesOAuth` flips to true.
   // Treating "still loading" as non-selectable closes that window entirely.
   const canBulkSelect = profile !== undefined && !usesOAuth;
-  const [bootstrapping, setBootstrapping] = useState(false);
-  const [needsPassword, setNeedsPassword] = useState(false);
-  const [password, setPassword] = useState("");
-  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
+  const {
+    needsPassword,
+    password,
+    setPassword,
+    error: bootstrapError,
+    submitting: bootstrapping,
+  } = uia;
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
@@ -109,7 +114,7 @@ export function DevicesPanel() {
         await revoke.mutateAsync({ deviceId, password: revokePassword });
         succeeded.add(deviceId);
       } catch (err) {
-        if (!bulkNeedsPassword) {
+        if (!bulkNeedsPassword && isUiaCommandError(err) && err.kind === "UiaChallenge") {
           sawUiaChallenge = true;
           remaining.push(deviceId);
         } else {
@@ -122,7 +127,7 @@ export function DevicesPanel() {
             for (const id of succeeded) next.delete(id);
             return next;
           });
-          setBulkError(String(err));
+          setBulkError(uiaErrorMessage(err));
           setBulkSubmitting(false);
           return;
         }
@@ -145,21 +150,9 @@ export function DevicesPanel() {
   }
 
   async function handleBootstrap() {
-    setBootstrapping(true);
-    setBootstrapError(null);
-    try {
-      await bootstrapCrossSigning(needsPassword ? password : undefined);
-      setNeedsPassword(false);
-      setPassword("");
+    if (await uia.submit()) {
+      uia.reset();
       invalidateCrossSigning();
-    } catch (err) {
-      if (!needsPassword) {
-        setNeedsPassword(true);
-      } else {
-        setBootstrapError(String(err));
-      }
-    } finally {
-      setBootstrapping(false);
     }
   }
 

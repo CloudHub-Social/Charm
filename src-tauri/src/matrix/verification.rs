@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
-use super::account::retry_uia_with_session;
+use super::account::{retry_uia_with_session, UiaCommandError};
 use super::MatrixState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -80,9 +80,11 @@ pub fn register_verification_handler(app: AppHandle, client: &Client) {
 
 /// Bootstraps cross-signing for the current account if it isn't already set
 /// up. Most homeservers require a fresh UIA session for this — pass the
-/// account password if a first attempt without it fails; the frontend should
-/// treat any error here as "prompt for password and retry". Goes through
-/// `retry_uia_with_session` (same as `account::change_password`/
+/// account password if a first attempt without it fails. The error is a
+/// structured `UiaCommandError`: `UiaChallenge` means the frontend should
+/// prompt for a password and retry; `Other` is a real, unrelated failure
+/// that should be surfaced as-is (see `account::UiaCommandError`). Goes
+/// through `retry_uia_with_session` (same as `account::change_password`/
 /// `deactivate_account`) rather than building `AuthData::Password` directly:
 /// a `session: None` retry is treated as a brand-new UIA attempt on
 /// homeservers that enforce session continuity across stages, so without
@@ -92,7 +94,7 @@ pub fn register_verification_handler(app: AppHandle, client: &Client) {
 pub async fn bootstrap_cross_signing(
     state: State<'_, MatrixState>,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
     bootstrap_cross_signing_impl(&client, password).await
 }
@@ -101,7 +103,7 @@ pub async fn bootstrap_cross_signing(
 pub async fn bootstrap_cross_signing_impl(
     client: &Client,
     password: Option<String>,
-) -> Result<(), String> {
+) -> Result<(), UiaCommandError> {
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?

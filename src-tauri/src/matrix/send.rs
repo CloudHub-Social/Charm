@@ -20,7 +20,7 @@ use super::MatrixState;
 /// homeserver upload-size policy (which still applies independently and can
 /// reject a smaller file too) — just a bound so an unexpectedly huge
 /// `file_path` isn't read fully into memory before any upload even starts.
-const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Pushed to the frontend as an attachment upload progresses. `sent`/`total`
 /// are in bytes. The vendored matrix-rust-sdk (0.18.0) exposes real
@@ -345,7 +345,7 @@ fn spawn_progress_forwarder(
 /// cheaply derivable client-side without a full media-probing dependency,
 /// which is out of scope here — the homeserver-side thumbnail endpoint
 /// covers the video-thumbnail non-goal called out in the spec).
-fn attachment_info_for(mime: &mime::Mime, data: &[u8], size_bytes: u64) -> AttachmentInfo {
+pub fn attachment_info_for(mime: &mime::Mime, data: &[u8], size_bytes: u64) -> AttachmentInfo {
     let size = matrix_sdk::ruma::UInt::new(size_bytes);
 
     match mime.type_() {

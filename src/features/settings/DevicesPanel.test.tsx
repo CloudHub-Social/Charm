@@ -127,7 +127,9 @@ describe("DevicesPanel", () => {
       has_self_signing_key: false,
       has_user_signing_key: false,
     });
-    bootstrapCrossSigning.mockRejectedValueOnce(new Error("uia")).mockResolvedValueOnce(undefined);
+    bootstrapCrossSigning
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockResolvedValueOnce(undefined);
     renderWithProviders(<DevicesPanel />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
@@ -140,6 +142,21 @@ describe("DevicesPanel", () => {
     // Cross-signing status must be refetched so `isBootstrapped` picks up
     // the change instead of continuing to show "Set up".
     await waitFor(() => expect(crossSigningStatus).toHaveBeenCalledTimes(2));
+  });
+
+  it("surfaces a non-UIA bootstrap error on the first attempt instead of prompting for a password", async () => {
+    crossSigningStatus.mockResolvedValueOnce({
+      has_master_key: false,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    });
+    bootstrapCrossSigning.mockRejectedValueOnce({ kind: "Other", message: "network error" });
+    renderWithProviders(<DevicesPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Set up" }));
+
+    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Account password")).not.toBeInTheDocument();
   });
 
   it("shows a Reset link when the homeserver offers an account-management URL", async () => {
@@ -340,7 +357,9 @@ describe("DevicesPanel", () => {
       },
     ];
     listDevices.mockResolvedValue(devices);
-    deleteDevice.mockRejectedValueOnce(new Error("uia")).mockResolvedValue(undefined);
+    deleteDevice
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockResolvedValue(undefined);
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("Tablet");
 
@@ -371,9 +390,9 @@ describe("DevicesPanel", () => {
     // First pass (no password): both hit the UIA challenge.
     // Second pass (with password): OTHER succeeds, TABLET hits a real error.
     deleteDevice.mockImplementation((deviceId: string, password?: string) => {
-      if (!password) return Promise.reject(new Error("uia"));
+      if (!password) return Promise.reject({ kind: "UiaChallenge" });
       if (deviceId === "OTHER") return Promise.resolve(undefined);
-      return Promise.reject(new Error("server is temporarily unavailable"));
+      return Promise.reject({ kind: "Other", message: "server is temporarily unavailable" });
     });
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("Tablet");
@@ -388,7 +407,7 @@ describe("DevicesPanel", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
-    await screen.findByText("Error: server is temporarily unavailable");
+    await screen.findByText("server is temporarily unavailable");
     // Close the dialog to inspect the panel underneath — Radix's Dialog
     // aria-hides everything outside its own portal while open, so the
     // panel's checkboxes aren't queryable by role until it's closed.
@@ -415,7 +434,9 @@ describe("DevicesPanel", () => {
       },
     ];
     listDevices.mockResolvedValue(devices);
-    deleteDevice.mockRejectedValueOnce(new Error("uia")).mockResolvedValue(undefined);
+    deleteDevice
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockResolvedValue(undefined);
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("Tablet");
 

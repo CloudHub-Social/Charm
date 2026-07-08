@@ -151,7 +151,7 @@ describe("DeviceRow", () => {
   it("prompts for a password when onRevoke rejects the first attempt", async () => {
     const onRevoke = vi
       .fn()
-      .mockRejectedValueOnce(new Error("uia"))
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
       .mockResolvedValueOnce(undefined);
     renderWithProviders(
       <DeviceRow
@@ -172,8 +172,8 @@ describe("DeviceRow", () => {
   it("surfaces the actual revoke retry error instead of assuming it's always a wrong password", async () => {
     const onRevoke = vi
       .fn()
-      .mockRejectedValueOnce(new Error("uia"))
-      .mockRejectedValueOnce(new Error("device already removed"));
+      .mockRejectedValueOnce({ kind: "UiaChallenge" })
+      .mockRejectedValueOnce({ kind: "Other", message: "device already removed" });
     renderWithProviders(
       <DeviceRow
         device={makeDevice({ is_current: false })}
@@ -191,11 +191,30 @@ describe("DeviceRow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
-    expect(await screen.findByText("Error: device already removed")).toBeInTheDocument();
+    expect(await screen.findByText("device already removed")).toBeInTheDocument();
+  });
+
+  it("surfaces a non-UIA revoke error on the first attempt instead of prompting for a password", async () => {
+    const onRevoke = vi.fn().mockRejectedValueOnce({ kind: "Other", message: "network error" });
+    renderWithProviders(
+      <DeviceRow
+        device={makeDevice({ is_current: false })}
+        onVerify={vi.fn()}
+        onRevoke={onRevoke}
+        usesOAuth={false}
+      />,
+    );
+
+    openActionsMenu();
+    fireEvent.click(await screen.findByText("Sign out"));
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+
+    expect(await screen.findByText("network error")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
   });
 
   it("resets the dialog's state when Cancel is clicked after a failed attempt", async () => {
-    const onRevoke = vi.fn().mockRejectedValue(new Error("uia"));
+    const onRevoke = vi.fn().mockRejectedValue({ kind: "UiaChallenge" });
     renderWithProviders(
       <DeviceRow
         device={makeDevice({ is_current: false })}
