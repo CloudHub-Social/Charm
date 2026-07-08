@@ -57,6 +57,7 @@ static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 });
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
+static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 static LOG_CONSENT_CACHE: std::sync::LazyLock<Mutex<LogConsentCache>> =
     std::sync::LazyLock::new(|| Mutex::new(LogConsentCache::default()));
 const LOG_CONSENT_CACHE_TTL: Duration = Duration::from_secs(1);
@@ -124,6 +125,9 @@ fn scrub_event(
 }
 
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
+    if !RUNTIME_LOG_CONSENT.load(Ordering::SeqCst) {
+        return None;
+    }
     if matches!(log.level, sentry::protocol::LogLevel::Debug) && !cfg!(debug_assertions) {
         return None;
     }
@@ -158,21 +162,13 @@ fn sentry_event_filter_for_level_target(
         return EventFilter::Ignore;
     }
 
+    if !logs_enabled {
+        return EventFilter::Ignore;
+    }
+
     match *level {
-        tracing::Level::ERROR => {
-            if logs_enabled {
-                EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log
-            } else {
-                EventFilter::Event | EventFilter::Breadcrumb
-            }
-        }
-        tracing::Level::WARN => {
-            if logs_enabled {
-                EventFilter::Breadcrumb | EventFilter::Log
-            } else {
-                EventFilter::Breadcrumb
-            }
-        }
+        tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
+        tracing::Level::WARN => EventFilter::Breadcrumb | EventFilter::Log,
         tracing::Level::INFO => EventFilter::Breadcrumb,
         tracing::Level::DEBUG => EventFilter::Ignore,
         tracing::Level::TRACE => EventFilter::Ignore,
@@ -215,9 +211,13 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
         return false;
     }
 
+    let event_app_data_dir = app_data_dir.clone();
+    let span_app_data_dir = app_data_dir;
     let sentry_layer = sentry::integrations::tracing::layer()
-        .event_filter(move |metadata| sentry_event_filter(metadata, &app_data_dir))
-        .span_filter(sentry_span_filter);
+        .event_filter(move |metadata| sentry_event_filter(metadata, &event_app_data_dir))
+        .span_filter(move |metadata| {
+            cached_observability_logs_enabled(&span_app_data_dir) && sentry_span_filter(metadata)
+        });
     let subscriber = tracing_subscriber::registry().with(sentry_layer);
 
     match tracing::subscriber::set_global_default(subscriber) {
@@ -230,6 +230,7 @@ fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
 }
 
 fn update_cached_observability_logs_enabled(app_data_dir: PathBuf, logs_enabled: bool) {
+    RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
     if let Ok(mut cache) = LOG_CONSENT_CACHE.lock() {
         cache.logs_enabled = logs_enabled;
         cache.app_data_dir = Some(app_data_dir);
@@ -321,6 +322,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     }
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
+    update_cached_observability_logs_enabled(app_data_dir.clone(), logs_enabled);
     let environment = std::env::var("SENTRY_ENVIRONMENT")
         .ok()
         .filter(|value| !value.is_empty())
@@ -340,13 +342,13 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             traces_sample_rate: if cfg!(debug_assertions) { 1.0 } else { 0.5 },
             auto_session_tracking: true,
             session_mode: sentry::SessionMode::Application,
-            enable_logs: logs_enabled,
+            enable_logs: true,
             before_send: Some(std::sync::Arc::new(scrub_event)),
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
     ));
-    let tracing_installed = logs_enabled && install_sentry_tracing(app_data_dir);
+    let tracing_installed = install_sentry_tracing(app_data_dir);
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
@@ -622,6 +624,9 @@ pub fn run() {
 mod observability_tests {
     use super::*;
 
+    static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<Mutex<()>> =
+        std::sync::LazyLock::new(|| Mutex::new(()));
+
     #[test]
     fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
         let input = r#"room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media password="secret""#;
@@ -660,6 +665,8 @@ mod observability_tests {
 
     #[test]
     fn scrub_log_redacts_body_and_attributes() {
+        let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
+        RUNTIME_LOG_CONSENT.store(true, Ordering::SeqCst);
         let log = sentry::protocol::Log {
             level: sentry::protocol::LogLevel::Info,
             body: "failed for @alice:example.org access_token=secret".to_owned(),
@@ -712,7 +719,15 @@ mod observability_tests {
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", false),
-            EventFilter::Breadcrumb,
+            EventFilter::Ignore,
+        );
+        assert_event_filter(
+            sentry_event_filter_for_level_target(
+                &tracing::Level::ERROR,
+                "charm_lib::matrix",
+                false,
+            ),
+            EventFilter::Ignore,
         );
         assert!(!sentry_span_filter_for_level_target(
             &tracing::Level::INFO,
@@ -756,6 +771,7 @@ mod observability_tests {
 
     #[test]
     fn log_consent_cache_updates_after_opt_out_notification() {
+        let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
         let dir = std::env::temp_dir().join(format!(
             "charm-observability-test-cache-{}-{}",
             std::process::id(),

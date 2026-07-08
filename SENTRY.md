@@ -24,13 +24,15 @@ already-running frontend client for the current window and apply to Rust crash
 monitoring on restart. Re-enabling after a same-window opt-out flips the
 frontend client back on without calling `Sentry.init()` a second time.
 
-When Sentry consent and `logsEnabled` are both enabled at startup, Rust installs
-a Sentry `tracing` layer after Sentry initialization. The layer is
-target-filtered to Charm-owned Rust modules, uses a short-lived cache of
-`logsEnabled` from the same store file that settings writes refresh immediately,
-captures warn/error events as Sentry logs while log consent remains enabled,
-keeps info/warn/error events as breadcrumbs, captures error events as Sentry
-issues, and ignores debug logs.
+When Sentry consent is enabled, Rust installs a Sentry `tracing` layer after
+Sentry initialization. The layer is target-filtered to Charm-owned Rust modules,
+uses a short-lived cache of `logsEnabled` from the same store file that settings
+writes refresh immediately, emits tracing events only while log consent is
+enabled, captures warn/error events as Sentry logs, keeps info/warn/error events
+as breadcrumbs, captures error events as Sentry issues, and ignores debug logs.
+The native Sentry Logs client support is initialized so same-session log opt-in
+can work, but its `before_send_log` hook drops logs whenever runtime log consent
+is disabled.
 
 ## Environment
 
