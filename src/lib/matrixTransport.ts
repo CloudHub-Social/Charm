@@ -118,14 +118,16 @@ function ensureWebSocket(): void {
   ) {
     return;
   }
-  webSocket = new WebSocket(websocketUrl());
-  webSocket.addEventListener("message", handleWebSocketMessage);
-  webSocket.addEventListener("close", () => {
+  const socket = new WebSocket(websocketUrl());
+  webSocket = socket;
+  socket.addEventListener("message", handleWebSocketMessage);
+  socket.addEventListener("close", () => {
+    if (webSocket !== socket) return;
     webSocket = null;
     scheduleWebSocketReconnect();
   });
-  webSocket.addEventListener("error", () => {
-    webSocket?.close();
+  socket.addEventListener("error", () => {
+    if (webSocket === socket) socket.close();
   });
 }
 

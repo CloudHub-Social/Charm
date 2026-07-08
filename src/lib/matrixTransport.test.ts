@@ -513,6 +513,23 @@ describe("matrix web transport", () => {
     unlistenSas();
   });
 
+  it("ignores stale WebSocket close and error events after reconnecting", async () => {
+    const roomList = vi.fn();
+
+    await listen("room_list:update", roomList);
+    const staleSocket = MockWebSocket.instances[0] as MockWebSocket;
+    staleSocket.readyState = MockWebSocket.CLOSED;
+    await listen("timeline:update", vi.fn());
+    const currentSocket = MockWebSocket.instances[1] as MockWebSocket;
+
+    staleSocket.dispatchEvent(new Event("error"));
+    staleSocket.dispatchEvent(new Event("close"));
+    currentSocket.emit({ event: "room_list:update", data: [{ room_id: "!r" }] });
+
+    expect(currentSocket.readyState).toBe(MockWebSocket.OPEN);
+    expect(roomList).toHaveBeenCalledWith({ payload: [{ room_id: "!r" }] });
+  });
+
   it("ignores malformed WebSocket frames", async () => {
     const roomList = vi.fn();
 
