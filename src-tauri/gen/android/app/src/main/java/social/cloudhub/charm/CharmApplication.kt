@@ -19,7 +19,7 @@ class CharmApplication : Application() {
         SentryAndroid.init(this) { options ->
             options.setDsn(dsn)
             options.setEnvironment(BuildConfig.SENTRY_ENVIRONMENT.takeIf { it.isNotBlank() })
-            options.setRelease(BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() })
+            BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() }?.let { options.setRelease(it) }
             options.setSendDefaultPii(false)
             options.setTracesSampleRate(0.0)
             options.setEnableAutoSessionTracking(false)
@@ -30,7 +30,7 @@ class CharmApplication : Application() {
     }
 
     private fun sentryEnabledFromStore(): Boolean {
-        val file = File(filesDir, "observability.json")
+        val file = File(applicationInfo.dataDir, "observability.json")
         if (!file.isFile) return false
 
         return runCatching {

@@ -31,7 +31,14 @@ fun requiredSentryEnv(name: String): String =
     System.getenv(name) ?: error("$name is required when SENTRY_ANDROID_UPLOAD=true")
 
 fun buildConfigString(value: String): String =
-    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    "\"${
+        value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }\""
 
 val sentryAndroidUpload = System.getenv("SENTRY_ANDROID_UPLOAD") == "true"
 if (sentryAndroidUpload) {
