@@ -44,7 +44,7 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           REQUIRE_VITE_SENTRY_DSN: "true"
           WRITE_FRONTEND_UPLOAD_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh

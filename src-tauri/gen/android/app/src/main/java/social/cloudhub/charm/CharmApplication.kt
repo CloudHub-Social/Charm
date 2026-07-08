@@ -21,6 +21,7 @@ class CharmApplication : Application() {
             options.setEnvironment(BuildConfig.SENTRY_ENVIRONMENT.takeIf { it.isNotBlank() })
             BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() }?.let { options.setRelease(it) }
             options.setSendDefaultPii(false)
+            options.setSendClientReports(false)
             options.setTracesSampleRate(0.0)
             options.setEnableAutoSessionTracking(false)
             options.setBeforeSend(BeforeSendCallback { event, _ ->
