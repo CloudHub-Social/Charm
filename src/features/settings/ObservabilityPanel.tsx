@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MessageSquareWarning } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { closeSentry, initializeSentry } from "@/observability/instrument";
+import {
+  closeSentry,
+  initializeSentry,
+  openSentryFeedbackDialog,
+} from "@/observability/instrument";
 import {
   persistObservabilitySettings,
   readObservabilitySettings,
@@ -85,6 +91,15 @@ export function ObservabilityPanel() {
   };
   const subDisabled = !settings.sentryEnabled;
   const canvasDisabled = subDisabled || !settings.replayEnabled;
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+
+  const openFeedback = async () => {
+    setFeedbackStatus(null);
+    const opened = await openSentryFeedbackDialog();
+    if (!opened) {
+      setFeedbackStatus("Feedback is available after Sentry error monitoring is enabled.");
+    }
+  };
 
   return (
     <div className="max-w-lg space-y-6">
@@ -149,6 +164,29 @@ export function ObservabilityPanel() {
             />
           }
         />
+      </SettingsCard>
+      <SettingsCard heading="Feedback">
+        <SettingTile
+          title="Report a problem"
+          description="Open Sentry's feedback form. You can add an optional screenshot when the SDK supports it; text is still sent through Charm's Sentry scrubbers."
+          control={
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={subDisabled}
+              onClick={() => void openFeedback()}
+            >
+              <MessageSquareWarning aria-hidden="true" />
+              Send feedback
+            </Button>
+          }
+        />
+        {feedbackStatus ? (
+          <SettingTile>
+            <output className="text-sm text-muted-foreground">{feedbackStatus}</output>
+          </SettingTile>
+        ) : null}
       </SettingsCard>
       <SettingsCard heading="Privacy">
         <SettingTile

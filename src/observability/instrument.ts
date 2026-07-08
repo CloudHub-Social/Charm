@@ -14,7 +14,8 @@ type SentryIntegration =
   | ReturnType<typeof Sentry.replayIntegration>
   | ReturnType<typeof Sentry.replayCanvasIntegration>
   | ReturnType<typeof Sentry.browserProfilingIntegration>
-  | ReturnType<typeof Sentry.consoleLoggingIntegration>;
+  | ReturnType<typeof Sentry.consoleLoggingIntegration>
+  | ReturnType<typeof Sentry.feedbackIntegration>;
 
 function environment(): string {
   return import.meta.env.VITE_SENTRY_ENVIRONMENT || import.meta.env.MODE || "production";
@@ -48,6 +49,21 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
   if (settings.logsEnabled) {
     enabledIntegrations.push(Sentry.consoleLoggingIntegration({ levels: ["error", "warn"] }));
   }
+  enabledIntegrations.push(
+    Sentry.feedbackIntegration({
+      autoInject: false,
+      enableScreenshot: true,
+      showEmail: false,
+      showName: false,
+      showBranding: false,
+      triggerLabel: "Send feedback",
+      triggerAriaLabel: "Send feedback to Charm",
+      formTitle: "Send feedback",
+      messagePlaceholder:
+        "What happened? Avoid Matrix IDs, room names, recovery keys, or other private details.",
+      submitButtonLabel: "Send",
+    }),
+  );
   return enabledIntegrations;
 }
 
@@ -121,6 +137,24 @@ export async function closeSentry(): Promise<void> {
   if (!initialized) return;
   sentErrorCount = 0;
   setSentryClientEnabled(false);
+}
+
+export async function openSentryFeedbackDialog(): Promise<boolean> {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return false;
+
+  const feedback = Sentry.getFeedback();
+  if (!feedback || typeof feedback.createForm !== "function") return false;
+
+  const dialog = await feedback.createForm({
+    tags: {
+      "charm.feedback.surface": "manual",
+      "charm.feedback.screenshot": "optional",
+    },
+  });
+  dialog.appendToDom();
+  dialog.open();
+  return true;
 }
 
 export const observabilityTestHooks = {

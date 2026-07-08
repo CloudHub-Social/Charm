@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { openSentryFeedbackDialog } from "@/observability/instrument";
 
 /**
  * Rendered by the top-level `Sentry.ErrorBoundary` (see `main.tsx`) in place
@@ -10,6 +12,16 @@ import { Button } from "@/components/ui/button";
  * before this renders.
  */
 export function ErrorFallback({ resetError }: { resetError: () => void }) {
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+
+  const sendFeedback = async () => {
+    setFeedbackStatus(null);
+    const opened = await openSentryFeedbackDialog();
+    if (!opened) {
+      setFeedbackStatus("Feedback is only available when Sentry observability is enabled.");
+    }
+  };
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-center">
       <h1 className="text-lg font-semibold text-foreground">Something went wrong</h1>
@@ -17,14 +29,22 @@ export function ErrorFallback({ resetError }: { resetError: () => void }) {
         Charm hit an unexpected error and couldn&apos;t continue. Your conversations are safe on the
         server — reloading usually fixes this.
       </p>
-      <Button
-        onClick={() => {
-          resetError();
-          window.location.reload();
-        }}
-      >
-        Reload
-      </Button>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Button type="button" variant="outline" onClick={() => void sendFeedback()}>
+          Send feedback
+        </Button>
+        <Button
+          onClick={() => {
+            resetError();
+            window.location.reload();
+          }}
+        >
+          Reload
+        </Button>
+      </div>
+      {feedbackStatus ? (
+        <output className="max-w-sm text-sm text-muted-foreground">{feedbackStatus}</output>
+      ) : null}
     </div>
   );
 }
