@@ -7,6 +7,7 @@ import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
 import { queryClient } from "@/providers";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
@@ -31,7 +32,7 @@ function App({ onLoggedOut }: AppProps) {
   useEffect(() => {
     tryRestoreSession()
       .then(setSession)
-      .catch(console.error)
+      .catch(logAndIgnore)
       .finally(() => setRestoring(false));
   }, []);
 
@@ -40,7 +41,7 @@ function App({ onLoggedOut }: AppProps) {
     // completes is applied once RoomsScreen mounts, not dropped.
     const unlisten = watchDeepLinks(setDeepLinkRoomId);
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
 

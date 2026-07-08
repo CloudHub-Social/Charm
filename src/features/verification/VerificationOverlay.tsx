@@ -13,6 +13,7 @@ import {
   type VerificationRequestSummary,
 } from "@/lib/matrix";
 import { avatarColor, initials } from "@/features/rooms/roomDisplay";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 type Phase =
   | { kind: "incoming" }
@@ -43,7 +44,7 @@ export function VerificationOverlay() {
       closeSettings();
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [closeSettings]);
 
@@ -71,7 +72,7 @@ export function VerificationOverlay() {
       }
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
       // Without this, a "done" auto-dismiss scheduled here can still fire
       // after this effect has torn down — e.g. a new verification request
       // arriving (which changes `request` and reruns this effect) or the

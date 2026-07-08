@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRoomDetails, onRoomDetailsUpdate } from "@/lib/matrix";
 import { roomMembersQueryKey } from "./useRoomMembers";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 export function roomDetailsQueryKey(roomId: string) {
   return ["room-details", roomId] as const;
@@ -34,7 +35,7 @@ export function useRoomDetails(roomId: string | null) {
       queryClient.invalidateQueries({ queryKey: roomMembersQueryKey(roomId) });
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [roomId, queryClient]);
 
