@@ -126,9 +126,6 @@ fn for_each_ancestor_space_id(
 
     while let Some(current_room_id) = stack.pop() {
         let Some(parents) = parents_by_room.get(current_room_id) else {
-            eprintln!(
-                "warning: space badge ancestor traversal stopped at missing parent room {current_room_id}"
-            );
             continue;
         };
         for parent in parents.iter().rev() {
