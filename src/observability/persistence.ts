@@ -86,6 +86,7 @@ export async function persistObservabilitySettings(
   try {
     const store = await getStore();
     await store.set(OBSERVABILITY_STORE_KEY, envelope);
+    await store.save();
   } catch {
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }
