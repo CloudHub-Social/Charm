@@ -24,12 +24,32 @@ already-running frontend client for the current window and apply to Rust crash
 monitoring on restart. Re-enabling after a same-window opt-out flips the
 frontend client back on without calling `Sentry.init()` a second time.
 
+Android JVM setup lives in
+`src-tauri/gen/android/app/src/main/java/social/cloudhub/charm/CharmApplication.kt`.
+The app manifest removes Sentry's Android `ContentProvider` auto-init path, so
+adding the runtime SDK does not start Sentry before application code runs.
+`CharmApplication` initializes `SentryAndroid` only when all conditions are true:
+
+- `SENTRY_DSN` or `VITE_SENTRY_DSN` was present at Android build time.
+- `observability.json` in Android app storage has
+  `observability.state.sentryEnabled: true`.
+
+The Android runtime initializer re-checks the same store in `beforeSend`, keeps
+`sendDefaultPii` off, disables Android auto-session tracking, and sets
+`tracesSampleRate` to `0.0`. This initial Android coverage is therefore scoped
+to Sentry Android's native/JVM crash and ANR capture after opt-in. Android
+Mobile Vitals/performance transactions remain disabled until Charm has a
+same-session native consent bridge that can shut down or reconfigure the SDK
+immediately when a user opts out.
+
 ## Environment
 
 Use these variables for local or release builds:
 
 - `VITE_SENTRY_DSN`: public frontend DSN.
-- `SENTRY_DSN`: Rust/native DSN.
+- `SENTRY_DSN`: Rust/native DSN. Android also embeds this at build time for
+  native runtime crash coverage, falling back to `VITE_SENTRY_DSN` when
+  `SENTRY_DSN` is absent.
 - `VITE_SENTRY_ENVIRONMENT` / `SENTRY_ENVIRONMENT`: Sentry environment.
 - `VITE_SENTRY_RELEASE` / `SENTRY_RELEASE`: release override.
 - `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: artifact upload through
@@ -65,9 +85,9 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
-Signed iOS device-release dSYMs, native Android SDK runtime crash coverage, and
-Sentry size-analysis uploads are still Phase 3 follow-ups. Add them to the
-release artifact workflow once the corresponding signed/release or native SDK
+Signed iOS device-release dSYMs, Android Mobile Vitals, and Sentry size-analysis
+uploads are still Phase 3 follow-ups. Add them to the release artifact workflow
+once the corresponding signed/release, native consent bridge, or size-analysis
 pipeline exists.
 
 ## Scrubbing Rules
@@ -91,5 +111,5 @@ and Rust attachment-upload IPC breadcrumbs correlated by the frontend operation
 ID header.
 
 User feedback, screenshots, broader Rust tracing/log bridges, native Android
-SDK runtime coverage, signed iOS device-release dSYMs, and size analysis remain
+Mobile Vitals, signed iOS device-release dSYMs, and size analysis remain
 separate follow-up phases from Spec 21.
