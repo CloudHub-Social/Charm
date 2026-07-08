@@ -174,8 +174,13 @@ fn build_hierarchy_from_chunks(
         let children = chunk
             .children_state
             .iter()
-            .filter_map(|raw| raw.deserialize().ok())
-            .map(|event| event.state_key.to_string())
+            .filter_map(|raw| {
+                let event_type = raw.get_field::<String>("type").ok().flatten()?;
+                if event_type != "m.space.child" {
+                    return None;
+                }
+                raw.get_field::<String>("state_key").ok().flatten()
+            })
             .collect::<Vec<_>>();
         if !children.is_empty() {
             edges.insert(parent_id.clone(), children);
