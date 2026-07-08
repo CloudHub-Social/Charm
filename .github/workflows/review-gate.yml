@@ -1,0 +1,100 @@
+name: Review gate
+
+# Closes the timing race where a PR goes green and merges (or enters the merge
+# queue) *before* the async review bots — Seer, Codex, Copilot — have finished
+# reviewing the current head. Their *findings* are already blocked by "require
+# conversation resolution"; the problem is that resolution is a point-in-time
+# check, so a PR that becomes mergeable while a bot is still reviewing has no
+# threads yet to block on. This gate makes queue-entry wait until every bot has
+# signalled "done" on the head commit.
+#
+# Each bot exposes a different reliable done-signal (verified empirically):
+#   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
+#   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
+#              (for the current head) when it has findings.
+#   - Copilot→ a submitted review (for the current head); it leaves no reaction.
+# Reactions require Copilot to be auto-requested on every PR ("automatically
+# request Copilot code review"); without that, its review may never come and this
+# gate will (intentionally, fail-closed) block until the timeout.
+#
+# It runs on pull_request (where it actually waits) and merge_group (where it is a
+# trivial pass — the bots review the PR head, never the synthetic merge commit, so
+# there is nothing to wait for and blocking would only stall the queue). Branch
+# protection should require this context so a PR cannot enter the queue until it
+# passes.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  checks: read
+
+jobs:
+  reviewers-done:
+    name: Review bots done
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for review bots to finish on the current head
+        # No-op pass on merge_group (see header) and on draft PRs (which can't
+        # merge and which the bots skip anyway). Marking a PR ready re-triggers.
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TIMEOUT_MINUTES: "25"
+          POLL_SECONDS: "20"
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+
+          # Seer is the head-anchored signal: it re-reviews every push and emits a
+          # per-commit check-run, so requiring it "completed" on HEAD_SHA proves
+          # the *current* code was reviewed.
+          seer_done() {
+            [ "$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+                  --jq '[.check_runs[] | select(.name == "Seer Code Review") | .status] | first // ""')" = "completed" ]
+          }
+          # Codex and Copilot do NOT reliably re-review every push (their review's
+          # commit_id often lags the head), so pinning to HEAD_SHA would false-block.
+          # Treat them as "has engaged with this PR": Codex via a +1 reaction (clean)
+          # or any submitted review (findings); Copilot via any submitted review
+          # (it leaves no reaction). Seer above still anchors the latest commit.
+          codex_done() {
+            local react rev
+            react=$(gh api "repos/$REPO/issues/$PR/reactions" \
+                     --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")] | length')
+            rev=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+                   --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")] | length')
+            [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
+          }
+          copilot_done() {
+            [ "$(gh api "repos/$REPO/pulls/$PR/reviews" \
+                  --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')" -gt 0 ]
+          }
+
+          while :; do
+            s=false; c=false; p=false
+            seer_done && s=true || true
+            codex_done && c=true || true
+            copilot_done && p=true || true
+            echo "head=$HEAD_SHA  seer=$s  codex=$c  copilot=$p"
+            if $s && $c && $p; then
+              echo "All review bots have finished on $HEAD_SHA."
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c copilot=$p). Re-run this check once they finish, or push a new commit."
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+          done
