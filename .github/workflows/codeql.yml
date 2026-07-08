@@ -4,12 +4,13 @@ name: CodeQL
 # merge_group and can therefore gate the merge queue — default setup does not
 # emit on merge_group, so it could never be a working required check there.
 #
-# The no-build languages (actions / javascript-typescript / python) run on every
-# event including merge_group and are cheap. Rust is split into its own job that
-# runs only on pull_request + the weekly schedule: CodeQL's Rust analysis needs a
-# full `cargo build` (+ the Tauri Linux system deps), which is far too slow to add
-# to every queued merge. Rust is still scanned and its alerts surface on PRs; it
-# just doesn't hard-gate the queue (clippy + cargo-audit already gate Rust there).
+# All languages use CodeQL's buildless extractor (build-mode: none), so none of
+# these jobs need a compile step. The no-build languages (actions /
+# javascript-typescript / python) run on every event including merge_group.
+# Rust is split into its own job that runs only on pull_request + the weekly
+# schedule — kept out of the merge queue by choice (its extractor is newer, and
+# clippy + cargo-audit already gate Rust there), not for cost reasons. Rust is
+# still scanned and its alerts surface on PRs.
 on:
   push:
     branches: [main]
@@ -54,9 +55,10 @@ jobs:
 
   analyze-rust:
     name: Analyze (rust)
-    # pull_request + schedule only — NOT merge_group (keeps the queue fast) or
-    # push. `github.event_name` is available in a job-level `if:` (matrix is not,
-    # which is why Rust is a separate job rather than a matrix entry).
+    # pull_request + schedule only — NOT merge_group or push. Kept a separate job
+    # (not a matrix entry) because a job-level `if:` can read github.event_name
+    # but not matrix. Rust uses the same buildless extractor as the others
+    # (build-mode: none), so no toolchain/system-deps/build step is needed.
     if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -67,25 +69,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Install Tauri Linux system dependencies
-        # CodeQL's Rust autobuilder runs a real `cargo build`, which for this
-        # Tauri app pulls in the gtk/webkit2gtk Linux backend — same package list
-        # the rust-integration jobs in quality-checks.yml install.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
       - name: Initialize CodeQL
         uses: github/codeql-action/init@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
         with:
           languages: rust
-          build-mode: autobuild
+          build-mode: none
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
