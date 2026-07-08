@@ -54,11 +54,12 @@ jobs:
         id: filter
         run: |
           # Native-build inputs — any of these can change a Rust build/clippy/
-          # nextest result or a platform bundle. Cargo.toml/Cargo.lock here are
-          # the workspace-ROOT manifests: `cargo` run from src-tauri resolves the
-          # repo root as its workspace, so a root manifest/lock change alters
-          # src-tauri's dependency graph (see the root Cargo.toml [workspace]).
-          platform_pattern='^(src-tauri/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
+          # nextest result or a platform bundle. `cargo` run from src-tauri
+          # resolves the repo root as its Cargo workspace, so changes anywhere in
+          # the workspace can alter src-tauri's build/resolution: the root
+          # Cargo.toml/Cargo.lock manifests, AND the other workspace member under
+          # crates/ (a broken crates/*/Cargo.toml fails resolution workspace-wide).
+          platform_pattern='^(src-tauri/|crates/|Cargo\.(toml|lock)$|package\.json$|pnpm-lock\.yaml$|\.github/workflows/quality-checks\.yml$)'
           # The Synapse/Dex/MAS integration jobs additionally mount and execute
           # dev/synapse/** (dex-config.yaml, configure-homeserver.sh,
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
