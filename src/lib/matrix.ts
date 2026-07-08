@@ -39,7 +39,9 @@ import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SelfProfileUpdate } from "@bindings/SelfProfileUpdate";
 import type { SendState } from "@bindings/SendState";
 import type { SlashCommand } from "@bindings/SlashCommand";
+import type { SpaceBadgeState } from "@bindings/SpaceBadgeState";
 import type { SpaceChild } from "@bindings/SpaceChild";
+import type { SpaceHierarchyNode } from "@bindings/SpaceHierarchyNode";
 import type { SpaceJoinRule } from "@bindings/SpaceJoinRule";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
@@ -96,7 +98,9 @@ export type {
   SelfProfileUpdate,
   SendState,
   SlashCommand,
+  SpaceBadgeState,
   SpaceChild,
+  SpaceHierarchyNode,
   SpaceJoinRule,
   SyncStateEvent,
   TimelinePage,
@@ -433,6 +437,10 @@ export function setRoomManualOrder(roomId: string, order: number): Promise<void>
 
 export function listSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
   return invoke("list_space_children", { spaceId });
+}
+
+export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[]> {
+  return invoke("list_space_hierarchy", { spaceId });
 }
 
 export function joinRoom(roomIdOrAlias: string): Promise<void> {
