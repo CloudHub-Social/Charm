@@ -34,14 +34,17 @@ adding the runtime SDK does not start Sentry before application code runs.
 - `observability.json` in Android app storage has
   `observability.state.sentryEnabled: true`.
 
-The Android runtime initializer re-checks the same store in `beforeSend`, keeps
-`sendDefaultPii` off, disables Android auto-session tracking, and leaves
-performance tracing unconfigured. This initial Android coverage is therefore
-scoped to Sentry Android's JVM crash and ANR capture after opt-in. NDK/native
-crash capture, Android Mobile Vitals, and performance transactions remain
-disabled until Charm has the corresponding SDK integration and a same-session
-native consent bridge that can shut down or reconfigure the SDK immediately
-when a user opts out.
+The Android runtime initializer watches the same store and gates `beforeSend`
+and `beforeBreadcrumb` from an in-memory consent flag, keeps `sendDefaultPii`
+off, disables Android auto-session tracking, and leaves performance tracing
+unconfigured. This initial Android coverage is therefore scoped to Sentry
+Android's JVM crash and ANR capture after opt-in. Same-session opt-out is
+enforced by the callback gates, while same-session opt-in still requires an app
+restart because `SentryAndroid.init` only runs from `Application.onCreate`.
+NDK/native crash capture, Android Mobile Vitals, and performance transactions
+remain disabled until Charm has the corresponding SDK integration and a native
+consent bridge that can shut down or reconfigure the SDK immediately when a user
+opts out.
 
 ## Environment
 

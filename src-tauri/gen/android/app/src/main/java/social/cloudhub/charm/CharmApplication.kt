@@ -1,6 +1,7 @@
 package social.cloudhub.charm
 
 import android.app.Application
+import android.os.FileObserver
 import io.sentry.SentryOptions.BeforeBreadcrumbCallback
 import io.sentry.SentryOptions.BeforeSendCallback
 import io.sentry.android.core.SentryAndroid
@@ -8,6 +9,10 @@ import org.json.JSONObject
 import java.io.File
 
 class CharmApplication : Application() {
+    @Volatile
+    private var sentryConsentEnabled: Boolean = false
+    private val sentryConsentObservers = mutableListOf<FileObserver>()
+
     override fun onCreate() {
         super.onCreate()
         initializeSentryIfConsented()
@@ -15,7 +20,9 @@ class CharmApplication : Application() {
 
     private fun initializeSentryIfConsented() {
         val dsn = BuildConfig.SENTRY_DSN.takeIf { it.isNotBlank() } ?: return
-        if (!sentryEnabledFromStore()) return
+        sentryConsentEnabled = readSentryEnabledFromStore()
+        startSentryConsentObservers()
+        if (!sentryConsentEnabled) return
 
         SentryAndroid.init(this) { options ->
             options.setDsn(dsn)
@@ -27,18 +34,38 @@ class CharmApplication : Application() {
             // Leave tracesSampleRate unset; 0.0 still enables tracing instrumentation overhead.
             options.setEnableAutoSessionTracking(false)
             options.setBeforeBreadcrumb(BeforeBreadcrumbCallback { breadcrumb, _ ->
-                if (sentryEnabledFromStore()) breadcrumb else null
+                if (sentryConsentEnabled) breadcrumb else null
             })
             options.setBeforeSend(BeforeSendCallback { event, _ ->
-                if (sentryEnabledFromStore()) event else null
+                if (sentryConsentEnabled) event else null
             })
         }
     }
 
-    @Synchronized
-    private fun sentryEnabledFromStore(): Boolean {
-        // Re-read on every Sentry callback until Android has a native consent bridge;
-        // mtime-only caching can leak events after same-session opt-out.
+    private fun startSentryConsentObservers() {
+        val mask = FileObserver.CLOSE_WRITE or
+            FileObserver.CREATE or
+            FileObserver.DELETE or
+            FileObserver.MODIFY or
+            FileObserver.MOVED_FROM or
+            FileObserver.MOVED_TO
+        listOf(File(applicationInfo.dataDir), filesDir)
+            .distinctBy { it.absolutePath }
+            .forEach { directory ->
+                @Suppress("DEPRECATION")
+                val observer = object : FileObserver(directory.absolutePath, mask) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null || path == "observability.json") {
+                            sentryConsentEnabled = readSentryEnabledFromStore()
+                        }
+                    }
+                }
+                observer.startWatching()
+                sentryConsentObservers.add(observer)
+            }
+    }
+
+    private fun readSentryEnabledFromStore(): Boolean {
         val appDataFile = File(applicationInfo.dataDir, "observability.json")
         val file = if (appDataFile.isFile) {
             appDataFile
