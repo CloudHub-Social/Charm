@@ -86,8 +86,9 @@ custom transport or external logging path.
 This implementation covers the foundation: consent, settings UI, Sentry init,
 release/environment/platform tags, release-health sessions, basic tracing,
 scrubbing, docs, and the opt-in frontend configuration for replay, canvas
-replay, profiling, and warning/error console logs.
+replay, profiling, warning/error console logs, and frontend Tauri IPC
+breadcrumbs.
 
-User feedback, screenshots, IPC breadcrumb wrapping, Rust tracing/log bridges,
-native Android SDK runtime coverage, signed iOS device-release dSYMs, and size
-analysis remain separate follow-up phases from Spec 21.
+User feedback, screenshots, Rust tracing/log bridges, native Android SDK
+runtime coverage, signed iOS device-release dSYMs, and size analysis remain
+separate follow-up phases from Spec 21.
