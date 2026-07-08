@@ -338,10 +338,21 @@ describe("DevicesPanel", () => {
 
     expect(screen.getByText("2 devices selected")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+    expect(screen.getByRole("dialog", { name: "Sign out 2 devices?" })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
 
     await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("OTHER", undefined));
     await waitFor(() => expect(deleteDevice).toHaveBeenCalledWith("TABLET", undefined));
+  });
+
+  it("uses singular device wording in the bulk sign-out dialog for one selection", async () => {
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("Phone");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select Phone" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out selected" }));
+
+    expect(screen.getByRole("dialog", { name: "Sign out 1 device?" })).toBeInTheDocument();
   });
 
   it("prompts once for a password if bulk sign-out hits a UIA challenge, then retries the remaining devices", async () => {

@@ -195,6 +195,7 @@ export function RoomsScreen({
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
+        isSettingsActive={settingsSection !== null}
         roomList={<RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={selectRoom} />}
         peopleList={
           <RoomList

@@ -15,5 +15,5 @@ export const badgeAtom = atom<BadgeState | null>(null);
  * (see `useBadgeListener`) so this stays testable without a real Tauri event.
  */
 export function badgeUpdateValue(update: BadgeState): BadgeState {
-  return update;
+  return { ...update };
 }

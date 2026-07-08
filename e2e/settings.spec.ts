@@ -116,7 +116,7 @@ test("settings: bulk-signs-out multiple selected devices", async ({ page }) => {
 
   await page.getByRole("button", { name: "Sign out selected" }).click();
   await page
-    .getByRole("dialog", { name: "Sign out 1 devices?" })
+    .getByRole("dialog", { name: "Sign out 1 device?" })
     .getByRole("button", { name: "Sign out" })
     .click();
 
