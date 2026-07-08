@@ -535,7 +535,7 @@ pub(crate) fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     client: Client,
     own_user_id: Option<matrix_sdk::ruma::OwnedUserId>,
-) {
+) -> tokio::task::JoinHandle<()> {
     use futures_util::StreamExt;
     use tauri::Manager;
 
@@ -644,7 +644,7 @@ pub(crate) fn spawn_timeline_listener(
                 },
             );
         }
-    });
+    })
 }
 
 /// Fires a local OS notification for `message` if it warrants one: not our

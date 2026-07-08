@@ -39,6 +39,14 @@ const MAX_LIVE_TIMELINES: usize = 20;
 /// opened-room/unopened-room notification race window at once.
 const MAX_NOTIFIED_EVENT_IDS: usize = 200;
 
+/// A live per-room `Timeline` paired with its listener task's `JoinHandle` —
+/// see `MatrixState::timelines`'s doc comment for why the handle is kept
+/// alongside the `Arc`.
+type TimelineEntry = (
+    std::sync::Arc<matrix_sdk_ui::Timeline>,
+    tokio::task::JoinHandle<()>,
+);
+
 /// Holds the active matrix-rust-sdk client for the running session.
 /// One `MatrixState` per app instance; per-account multiplexing (multiple
 /// *concurrently active* clients) is a Day-2 concern. Storage itself,
@@ -46,6 +54,24 @@ const MAX_NOTIFIED_EVENT_IDS: usize = 200;
 /// `persistence::account_key`.
 pub struct MatrixState {
     pub(crate) client: Mutex<Option<Client>>,
+    /// Serializes an interactive login's *entire* completion sequence —
+    /// stopping the previous sync loop/client, relocating the account's
+    /// store, saving the session, and adopting the new client — across
+    /// `login`/`register`/`complete_sso_login`/QR login's completion. Without
+    /// this, two overlapping completions for the same account (e.g. a
+    /// double-submitted login racing an in-flight QR login) could interleave
+    /// arbitrarily: one could finish adopting its client while the other was
+    /// mid-abort of the *first* one's now-stale sync loop, and that first
+    /// completion's abort step would then unconditionally clear
+    /// `MatrixState::client` — wiping out the second completion's
+    /// just-installed winning client. Holding this for the whole sequence
+    /// (not just the store-swap `persistence::RELOCATE_LOCK` already
+    /// guards) makes the sequence atomic instead: a second completion simply
+    /// waits for the first to fully finish before starting its own abort
+    /// step, so there's no window where "which client is currently active"
+    /// is ambiguous. A `tokio::sync::Mutex`, not `std::sync::Mutex`, because
+    /// this needs to be held across `.await` points.
+    pub(crate) login_completion_lock: Mutex<()>,
     /// Set by `auth::start_sso_login`, consumed by `auth::complete_sso_login`.
     /// Built once and carried across the two calls (rather than rebuilt in
     /// `complete_sso_login`) so it keeps whatever `.well-known` discovery
@@ -86,10 +112,15 @@ pub struct MatrixState {
     pub(crate) sync_presence: std::sync::Mutex<presence::PresenceStateDto>,
     /// Live per-room `matrix-sdk-ui` `Timeline`s, built lazily the first time
     /// a room is opened (`get_timeline_page`) and bounded to
-    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`.
-    timelines: Mutex<
-        lru::LruCache<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<matrix_sdk_ui::Timeline>>,
-    >,
+    /// [`MAX_LIVE_TIMELINES`] — see `get_or_create_timeline`. Each entry also
+    /// carries its listener task's `JoinHandle` (see
+    /// `timeline::spawn_timeline_listener`) so [`clear_timelines`] can abort
+    /// and *await* every listener — not just drop the cache's own `Arc`
+    /// references — genuinely guaranteeing no listener is still holding its
+    /// own `Client` clone (and the store's open file handles under it) by
+    /// the time it returns, the same rigor `sync::abort_current_sync_loop`
+    /// applies to the main sync loop.
+    timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, TimelineEntry>>,
     /// The task driving the current background sync loop (see
     /// `sync::spawn_sync_loop`). Login/session-restore has several independent
     /// success paths (password, SSO, QR, restored-session) and none of them
@@ -100,6 +131,15 @@ pub struct MatrixState {
     /// aborts it and it polls `/sync` indefinitely. `spawn_sync_loop` aborts
     /// whatever's here before storing its own new handle.
     pub(crate) sync_loop_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The detached one-shot task `spawn_sync_loop` fires to report presence
+    /// as online (see its own doc comment for why that's separate from
+    /// `sync_loop_handle`'s long-running loop). Tracked for the same reason
+    /// as `sync_loop_handle`: it holds its own `Client` clone, so
+    /// `sync::abort_current_sync_loop` needs to abort and await this too —
+    /// otherwise a slow presence request could still be holding the old
+    /// store's SQLite files open when a login supersedes it, same hazard,
+    /// different task.
+    pub(crate) presence_task_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// The room currently open/focused in the frontend, set by
     /// `shell::set_focused_room` — read by each room's timeline listener to
     /// suppress local notifications for whatever room the user is already
@@ -133,6 +173,7 @@ impl Default for MatrixState {
     fn default() -> Self {
         Self {
             client: Mutex::default(),
+            login_completion_lock: Mutex::default(),
             pending_sso: Mutex::default(),
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
@@ -144,6 +185,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             sync_loop_handle: std::sync::Mutex::default(),
+            presence_task_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
             notified_event_ids: std::sync::Mutex::new(lru::LruCache::new(
                 std::num::NonZeroUsize::new(MAX_NOTIFIED_EVENT_IDS)
@@ -177,7 +219,7 @@ impl MatrixState {
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if let Some(existing) = self.timelines.lock().await.get(room_id) {
+        if let Some((existing, _)) = self.timelines.lock().await.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
@@ -191,18 +233,41 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        if let Some(existing) = timelines.get(room_id) {
+        if let Some((existing, _)) = timelines.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
-        timeline::spawn_timeline_listener(
+        let handle = timeline::spawn_timeline_listener(
             app.clone(),
             room_id.to_owned(),
             std::sync::Arc::downgrade(&timeline),
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
-        timelines.push(room_id.to_owned(), std::sync::Arc::clone(&timeline));
+        // `push` returns the LRU-evicted entry (if any capacity eviction
+        // happened) rather than just dropping it — a dropped `JoinHandle`
+        // detaches its task instead of stopping it, which would leave that
+        // room's listener (and its own `Client` clone) running for up to
+        // `LIVENESS_CHECK_INTERVAL` after eviction, the same open-handle
+        // hazard `clear_timelines` exists to avoid on logout/relocation.
+        let evicted = timelines.push(
+            room_id.to_owned(),
+            (std::sync::Arc::clone(&timeline), handle),
+        );
+        // Dropped before awaiting the evicted handle below: holding the
+        // cache's own lock while awaiting an unrelated task's abort would
+        // block every other `get_or_create_timeline`/`is_timeline_open`
+        // caller for however long that task takes to unwind, for no reason.
+        drop(timelines);
+        if let Some((_, (_, evicted_handle))) = evicted {
+            evicted_handle.abort();
+            // Genuinely wait for it to stop (see `abort_current_sync_loop`'s
+            // identical rationale) — otherwise a caller relying on eviction
+            // meaning "quiesced" (e.g. a login about to relocate the store)
+            // gets a false guarantee: the task can still be mid-unwind,
+            // holding its own `Client` clone, when this returns.
+            let _ = evicted_handle.await;
+        }
 
         Ok(timeline)
     }
@@ -244,8 +309,28 @@ impl MatrixState {
         true
     }
 
+    /// Aborts and *awaits* every live timeline listener before dropping the
+    /// cache's own `Arc<Timeline>` references — not just `clear()`, which
+    /// would drop this method's own references but leave each listener task
+    /// running (and holding its own `Client` clone, hence the store's open
+    /// file handles under it) until it next happens to notice its
+    /// `Timeline` was evicted, up to `TIMELINE_LIVENESS_CHECK_INTERVAL`
+    /// (30s) later. Callers relying on "nothing is touching the old
+    /// client/store anymore" once this returns — e.g.
+    /// `sync::abort_current_sync_loop`, immediately before a login
+    /// supersedes the account's store — need that guarantee now, not up to
+    /// 30 seconds from now.
     pub(crate) async fn clear_timelines(&self) {
-        self.timelines.lock().await.clear();
+        let mut timelines = self.timelines.lock().await;
+        let mut handles = Vec::new();
+        while let Some((_, (_, handle))) = timelines.pop_lru() {
+            handle.abort();
+            handles.push(handle);
+        }
+        drop(timelines);
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
