@@ -88,6 +88,26 @@ breadcrumb, log, or manual context call must go through the SDK's normal
 pipeline so these hooks run. Do not send raw Matrix IDs or tokens through a
 custom transport or external logging path.
 
+## User Feedback
+
+Charm registers Sentry's Feedback integration only after the existing Sentry
+opt-in gate passes. The integration is configured with `autoInject: false`, so
+Sentry does not add its own always-visible launcher; Charm opens the form from
+the Observability settings panel and the top-level error fallback instead.
+
+The feedback form hides name and email fields by default. Users can describe
+what happened, and the form includes Sentry's optional screenshot capture UI
+when the current SDK/browser path supports it. Feedback events and screenshot
+metadata still travel through the normal Sentry client pipeline, including
+Charm's before-send scrubbers. Screenshot pixels are not text/JSON payloads,
+so they are not scrubbed by Charm; the settings UI warns that optional
+screenshots may include visible room names, Matrix IDs, or message text.
+
+Screenshot capture is best-effort: the current implementation relies on
+Sentry's browser feedback form support rather than a custom screenshot
+attachment pipeline. If the SDK cannot create the feedback form, Charm leaves
+the button unavailable or reports that feedback requires Sentry observability.
+
 ## Phasing
 
 This implementation covers the foundation: consent, settings UI, Sentry init,
@@ -96,10 +116,12 @@ scrubbing, docs, and the opt-in frontend configuration for replay, canvas
 replay, profiling, warning/error console logs, frontend Tauri IPC breadcrumbs,
 Rust attachment-upload IPC breadcrumbs correlated by the frontend operation ID
 header, and a consent-gated Rust `tracing`/Sentry Logs bridge for startup,
-attachment IPC, and push decrypt fallback events.
+attachment IPC, and push decrypt fallback events. It also covers opt-in user
+feedback from settings and the crash fallback, with optional SDK-provided
+screenshot capture when supported.
 
-User feedback, screenshots, native Android SDK runtime coverage, signed iOS
-device-release dSYMs, and size analysis remain separate follow-up phases from
-Spec 21. Broader per-command Rust instrumentation is still intentionally
+Broader Rust tracing/log bridges, native Android SDK runtime coverage, signed
+iOS device-release dSYMs, and size analysis remain separate follow-up phases
+from Spec 21. Broader per-command Rust instrumentation is still intentionally
 incremental; new producers should stay Charm-targeted and avoid raw Matrix
 identifiers, file paths, and secrets.
