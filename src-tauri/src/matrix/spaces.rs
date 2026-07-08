@@ -146,18 +146,23 @@ async fn fetch_hierarchy_chunks(
 fn chunk_to_child(
     chunk: matrix_sdk::ruma::api::client::space::SpaceHierarchyRoomsChunk,
 ) -> SpaceChild {
+    let is_space = chunk_is_space(&chunk);
     SpaceChild {
         room_id: chunk.summary.room_id.to_string(),
         name: chunk.summary.name,
         topic: chunk.summary.topic,
         num_joined_members: chunk.summary.num_joined_members.into(),
         join_rule: SpaceJoinRule::from(&chunk.summary.join_rule),
-        is_space: chunk
-            .summary
-            .room_type
-            .as_ref()
-            .is_some_and(|t| *t == matrix_sdk::ruma::room::RoomType::Space),
+        is_space,
     }
+}
+
+fn chunk_is_space(chunk: &matrix_sdk::ruma::api::client::space::SpaceHierarchyRoomsChunk) -> bool {
+    chunk
+        .summary
+        .room_type
+        .as_ref()
+        .is_some_and(|t| *t == matrix_sdk::ruma::room::RoomType::Space)
 }
 
 fn build_hierarchy_from_chunks(
@@ -168,6 +173,7 @@ fn build_hierarchy_from_chunks(
     let mut edges: HashMap<String, Vec<String>> = HashMap::new();
     for chunk in chunks {
         let parent_id = chunk.summary.room_id.to_string();
+        let parent_is_space = chunk_is_space(&chunk);
         let mut seen_children = HashSet::new();
         let children = chunk
             .children_state
@@ -185,7 +191,7 @@ fn build_hierarchy_from_chunks(
                 }
             })
             .collect::<Vec<_>>();
-        if !children.is_empty() {
+        if parent_is_space && !children.is_empty() {
             edges.insert(parent_id.clone(), children);
         }
         rooms.insert(parent_id, chunk_to_child(chunk));
@@ -296,6 +302,7 @@ pub async fn knock_room_impl(
 mod tests {
     use super::*;
     use matrix_sdk::ruma::room::JoinRuleSummary;
+    use serde_json::{from_value as from_json_value, json};
 
     fn child(room_id: &str, is_space: bool) -> SpaceChild {
         SpaceChild {
@@ -466,6 +473,63 @@ mod tests {
 
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].child.room_id, "!room:example.org");
+        assert!(tree[0].children.is_empty());
+    }
+
+    #[test]
+    fn non_space_chunks_do_not_record_child_edges() {
+        let chunks = vec![
+            from_json_value(json!({
+                "room_id": "!space:example.org",
+                "room_type": "m.space",
+                "num_joined_members": 1,
+                "world_readable": false,
+                "guest_can_join": false,
+                "join_rule": "public",
+                "children_state": [
+                    {
+                        "content": { "via": ["example.org"] },
+                        "origin_server_ts": 1,
+                        "sender": "@alice:example.org",
+                        "state_key": "!room:example.org",
+                        "type": "m.space.child"
+                    }
+                ]
+            }))
+            .expect("valid root space hierarchy chunk"),
+            from_json_value(json!({
+                "room_id": "!room:example.org",
+                "num_joined_members": 1,
+                "world_readable": false,
+                "guest_can_join": false,
+                "join_rule": "public",
+                "children_state": [
+                    {
+                        "content": { "via": ["example.org"] },
+                        "origin_server_ts": 1,
+                        "sender": "@alice:example.org",
+                        "state_key": "!nested:example.org",
+                        "type": "m.space.child"
+                    }
+                ]
+            }))
+            .expect("valid malformed room hierarchy chunk"),
+            from_json_value(json!({
+                "room_id": "!nested:example.org",
+                "num_joined_members": 1,
+                "world_readable": false,
+                "guest_can_join": false,
+                "join_rule": "public",
+                "children_state": []
+            }))
+            .expect("valid nested room hierarchy chunk"),
+        ];
+
+        let tree = build_hierarchy_from_chunks("!space:example.org", chunks);
+
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].child.room_id, "!room:example.org");
+        assert!(!tree[0].child.is_space);
         assert!(tree[0].children.is_empty());
     }
 
