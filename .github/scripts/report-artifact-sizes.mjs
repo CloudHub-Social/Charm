@@ -28,7 +28,7 @@ function humanBytes(bytes) {
   return `${value.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
 }
 
-async function collectFiles(path) {
+async function collectFiles(path, seenFiles) {
   let details;
   try {
     details = await stat(path);
@@ -40,6 +40,10 @@ async function collectFiles(path) {
   }
 
   if (details.isFile()) {
+    if (seenFiles.has(path)) {
+      return [];
+    }
+    seenFiles.add(path);
     return [{ path, bytes: details.size }];
   }
 
@@ -48,14 +52,20 @@ async function collectFiles(path) {
   }
 
   const children = await readdir(path);
-  const nested = await Promise.all(children.map((child) => collectFiles(resolve(path, child))));
-  return nested.flat();
+  const nested = [];
+  for (const child of children) {
+    nested.push(...(await collectFiles(resolve(path, child), seenFiles)));
+  }
+  return nested;
 }
 
 const cwd = process.cwd();
-const files = (await Promise.all(roots.map((root) => collectFiles(resolve(root)))))
-  .flat()
-  .toSorted((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
+const seenFiles = new Set();
+const files = [];
+for (const root of roots) {
+  files.push(...(await collectFiles(resolve(root), seenFiles)));
+}
+files.sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
 
 const total = files.reduce((sum, file) => sum + file.bytes, 0);
 const lines = [

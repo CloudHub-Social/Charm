@@ -79,6 +79,7 @@ jobs:
         with:
           name: sentry-size-analysis-frontend
           path: .artifacts/sentry-size-analysis/frontend-bundle-sizes.md
+          include-hidden-files: true
 
   rust-linux-debug-files:
     name: Rust Linux debug files
@@ -152,6 +153,7 @@ jobs:
         with:
           name: sentry-size-analysis-linux
           path: .artifacts/sentry-size-analysis/linux-release-sizes.md
+          include-hidden-files: true
 
   apple-debug-files:
     name: Apple debug files
@@ -242,7 +244,6 @@ jobs:
           SIZE_REPORT_TITLE: Apple build artifact sizes
           SIZE_REPORT_PATHS: |
             ${{ steps.apple-debug-files.outputs.paths }}
-            src-tauri/gen/apple/build
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/apple-build-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
@@ -251,6 +252,7 @@ jobs:
         with:
           name: sentry-size-analysis-apple
           path: .artifacts/sentry-size-analysis/apple-build-sizes.md
+          include-hidden-files: true
 
   windows-debug-files:
     name: Windows debug files
@@ -328,6 +330,7 @@ jobs:
         with:
           name: sentry-size-analysis-windows
           path: .artifacts/sentry-size-analysis/windows-release-sizes.md
+          include-hidden-files: true
 
   android-debug-files:
     name: Android mapping and native symbols
@@ -336,6 +339,12 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+
+      - name: Resolve Sentry size-analysis base
+        id: sentry-size-base
+        run: |
+          git remote set-head origin --auto
+          echo "sha=$(git merge-base HEAD origin/HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -400,6 +409,7 @@ jobs:
         with:
           name: sentry-size-analysis-android
           path: .artifacts/sentry-size-analysis/android-release-sizes.md
+          include-hidden-files: true
 
       - name: Resolve Android build for Sentry size analysis
         id: android-size-build
@@ -460,4 +470,5 @@ jobs:
           --org "$SENTRY_ORG"
           --project "$SENTRY_PROJECT"
           --build-configuration Release
+          --base-sha "${{ steps.sentry-size-base.outputs.sha }}"
           --log-level info
