@@ -9,7 +9,7 @@ pub mod matrix;
 pub mod push;
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
 use tracing_subscriber::prelude::*;
@@ -154,28 +154,24 @@ fn sentry_event_filter_for_level_target(
                 EventFilter::Event
             }
         }
-        tracing::Level::WARN | tracing::Level::INFO => {
+        tracing::Level::WARN => {
             if logs_enabled {
                 EventFilter::Breadcrumb | EventFilter::Log
             } else {
                 EventFilter::Breadcrumb
             }
         }
-        tracing::Level::DEBUG => {
-            if logs_enabled && cfg!(debug_assertions) {
-                EventFilter::Log
-            } else {
-                EventFilter::Ignore
-            }
-        }
+        tracing::Level::INFO => EventFilter::Breadcrumb,
+        tracing::Level::DEBUG => EventFilter::Ignore,
         tracing::Level::TRACE => EventFilter::Ignore,
     }
 }
 
 fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
-    logs_enabled: bool,
+    app_data_dir: &Path,
 ) -> sentry::integrations::tracing::EventFilter {
+    let logs_enabled = observability_logs_enabled_from_store(app_data_dir);
     sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
 }
 
@@ -191,13 +187,13 @@ fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> 
         )
 }
 
-fn install_sentry_tracing(logs_enabled: bool) -> bool {
+fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
     if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
         return false;
     }
 
     let sentry_layer = sentry::integrations::tracing::layer()
-        .event_filter(move |metadata| sentry_event_filter(metadata, logs_enabled))
+        .event_filter(move |metadata| sentry_event_filter(metadata, &app_data_dir))
         .span_filter(sentry_span_filter);
     let subscriber = tracing_subscriber::registry().with(sentry_layer);
 
@@ -286,7 +282,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             ..Default::default()
         },
     ));
-    let tracing_installed = logs_enabled && install_sentry_tracing(logs_enabled);
+    let tracing_installed = logs_enabled && install_sentry_tracing(app_data_dir);
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
@@ -639,6 +635,10 @@ mod observability_tests {
         );
         assert_event_filter(
             sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", true),
+            EventFilter::Breadcrumb,
+        );
+        assert_event_filter(
+            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", true),
             EventFilter::Breadcrumb | EventFilter::Log,
         );
         assert_event_filter(
@@ -646,7 +646,7 @@ mod observability_tests {
             EventFilter::Event | EventFilter::Log,
         );
         assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", false),
+            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", false),
             EventFilter::Breadcrumb,
         );
         assert!(!sentry_span_filter_for_level_target(

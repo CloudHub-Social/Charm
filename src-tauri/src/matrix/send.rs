@@ -425,7 +425,7 @@ pub async fn send_attachment(
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
-            tracing::error!(
+            tracing::warn!(
                 command = "send_attachment",
                 status = "failed",
                 total_bytes = breadcrumb_total_bytes,
