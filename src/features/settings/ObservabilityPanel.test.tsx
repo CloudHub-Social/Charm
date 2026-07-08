@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { initializeSentry } from "@/observability/instrument";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 
 vi.mock("@/observability/instrument", () => ({
@@ -23,6 +24,7 @@ function renderPanel() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(initializeSentry).mockReturnValue(true);
   localStorage.clear();
 });
 

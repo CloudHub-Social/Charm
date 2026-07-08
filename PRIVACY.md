@@ -40,9 +40,10 @@ Turn off Error monitoring in Settings -> Observability. Sub-options are disabled
 and turned off when the primary toggle is off.
 
 Frontend monitoring stops for the current window after opt-out. If you turn it
-back on in the same window, frontend monitoring resumes after reloading Charm.
-Rust-side crash monitoring is initialized during app startup, so turning the
-toggle off fully applies to native crash monitoring after restarting Charm.
+back on in the same window, frontend monitoring resumes without initializing the
+Sentry SDK a second time. Rust-side crash monitoring is initialized during app
+startup, so turning the toggle off fully applies to native crash monitoring
+after restarting Charm.
 
 ## Deletion
 

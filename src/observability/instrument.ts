@@ -7,7 +7,6 @@ import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./se
 const MAX_ERRORS_PER_SESSION = 50;
 
 let initialized = false;
-let closedForSession = false;
 let sentErrorCount = 0;
 
 type SentryIntegration =
@@ -53,14 +52,14 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
 }
 
 export function initializeSentry(settings: ObservabilitySettings): boolean {
-  if (
-    initialized ||
-    closedForSession ||
-    !settings.sentryEnabled ||
-    !import.meta.env.VITE_SENTRY_DSN
-  ) {
+  if (!import.meta.env.VITE_SENTRY_DSN) {
     return false;
   }
+  if (initialized) {
+    setSentryClientEnabled(settings.sentryEnabled);
+    return settings.sentryEnabled;
+  }
+  if (!settings.sentryEnabled) return false;
 
   const rate = sampleRate();
   Sentry.init({
@@ -106,6 +105,12 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
   return true;
 }
 
+function setSentryClientEnabled(enabled: boolean): void {
+  const client = Sentry.getClient();
+  if (!client) return;
+  client.getOptions().enabled = enabled;
+}
+
 export async function bootstrapSentry(): Promise<ObservabilitySettings> {
   const settings = await readObservabilitySettings();
   initializeSentry(settings);
@@ -113,16 +118,14 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
 }
 
 export async function closeSentry(): Promise<void> {
-  if (!initialized || closedForSession) return;
-  closedForSession = true;
+  if (!initialized) return;
   sentErrorCount = 0;
-  await Sentry.close(2_000);
+  setSentryClientEnabled(false);
 }
 
 export const observabilityTestHooks = {
   reset() {
     initialized = false;
-    closedForSession = false;
     sentErrorCount = 0;
   },
   scrubSensitiveText,
