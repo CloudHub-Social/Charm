@@ -543,7 +543,7 @@ async fn timeline_item_to_summary(
 /// safe — this was a real, previously-fixed bug (a `>` here dropped a
 /// same-millisecond second message's notification).
 ///
-/// `seen_event_ids` only ever grows (`record` extends it, `seed`/`record`
+/// `seen_event_ids` only ever grows (`record` extends it, `seeded_from`/`record`
 /// never clear or replace it) — same rationale as `max_seen_timestamp_ms`
 /// only ever moving forward via `.max(..)`.
 #[derive(Debug, Default)]
