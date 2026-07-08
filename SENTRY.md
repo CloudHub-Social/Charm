@@ -34,9 +34,33 @@ Use these variables for local or release builds:
 - `VITE_SENTRY_RELEASE` / `SENTRY_RELEASE`: release override.
 - `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: sourcemap upload through
   `@sentry/vite-plugin`.
+- `SENTRY_UPLOAD=true`: release-build guard that requires the three upload
+  variables above and fails the build if any are missing.
 
 The Vite plugin is gated on all three upload variables so dev and normal PR
-builds do not create releases or emit sourcemaps.
+builds do not create releases or emit sourcemaps. Release upload workflows set
+`SENTRY_UPLOAD=true` so a missing token/org/project is a hard failure instead
+of silently producing an unsymbolicated build.
+
+## Release Artifacts
+
+`.github/workflows/sentry-release-artifacts.yml` runs on `v*` tags and manual
+dispatch. It currently uploads:
+
+- Frontend sourcemaps through `@sentry/vite-plugin`, with emitted `.map` files
+  deleted from `dist` after upload.
+- Linux Rust debug information from a release build compiled with
+  `CARGO_PROFILE_RELEASE_DEBUG=1`, using
+  `sentry-cli debug-files upload --include-sources --wait`.
+
+The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
+`SENTRY_ORG`, and `SENTRY_PROJECT`. Manual runs can override the Sentry release
+name and environment; tag runs default the release name to the tag.
+
+macOS/iOS dSYMs, Windows PDBs, Android mapping files/native symbols, and Sentry
+size-analysis uploads are still Phase 3 follow-ups. Add them to the release
+artifact workflow once the corresponding signed/release platform build pipeline
+exists.
 
 ## Scrubbing Rules
 
