@@ -104,7 +104,7 @@ fn scrub_event(
         return Some(event);
     };
     scrub_json_value(&mut value);
-    Some(serde_json::from_value(value).unwrap_or(event))
+    serde_json::from_value(value).ok()
 }
 
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
