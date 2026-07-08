@@ -2274,6 +2274,37 @@ async fn ws_handler(
 /// receiving live updates until it next tries to send something.
 const WS_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Re-buffers `failed_event` plus the rest of `remaining` (the events
+/// `handle_socket` hadn't yet attempted to send when its `socket.send`
+/// call failed/errored) back onto `session.pending_verification_events`,
+/// preserving FIFO order against anything that arrived concurrently.
+///
+/// Not a plain `buffer.push(failed_event); buffer.extend(remaining)` — the
+/// original drain (`std::mem::take` in `handle_socket`) releases the lock
+/// immediately, and this function's own re-buffering only reacquires it
+/// after the `.await` on `socket.send` that determined `failed_event`. In
+/// that gap, `sync_loop::buffer_verification_event` can push a genuinely
+/// newer event onto the (now-empty) buffer from a concurrent task; a plain
+/// push+extend would then append these older, not-yet-delivered events
+/// *after* that newer one, reversing the order a reconnecting client
+/// replays them in. Reading the buffer's current contents fresh under this
+/// same lock and prepending the older events ahead of them keeps delivery
+/// order correct regardless of what raced in during the gap.
+fn requeue_pending_verification_events(
+    session: &Session,
+    failed_event: crate::events::ServerEvent,
+    remaining: impl Iterator<Item = crate::events::ServerEvent>,
+) {
+    let mut buffer = session
+        .pending_verification_events
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut requeued: Vec<crate::events::ServerEvent> =
+        std::iter::once(failed_event).chain(remaining).collect();
+    requeued.extend(std::mem::take(&mut *buffer));
+    *buffer = requeued;
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
     let mut receiver = session.events.subscribe();
     // Drain (not just peek) any verification requests that arrived before a
@@ -2300,12 +2331,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
             // only two outcomes for a pending event "delivered" or
             // "still buffered", never "silently lost".
             Err(_) => {
-                let mut buffer = session
-                    .pending_verification_events
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                buffer.push(event);
-                buffer.extend(pending);
+                requeue_pending_verification_events(&session, event, pending);
                 return;
             }
         };
@@ -2315,12 +2341,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
             // being dropped, so the *next* connection attempt (this
             // browser's automatic reconnect, or another tab) still finds
             // them instead of the flow being lost for good.
-            let mut buffer = session
-                .pending_verification_events
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            buffer.push(event);
-            buffer.extend(pending);
+            requeue_pending_verification_events(&session, event, pending);
             return;
         }
     }
