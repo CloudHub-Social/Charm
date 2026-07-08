@@ -184,6 +184,30 @@ describe("Sentry instrumentation", () => {
     expect(feedbackDialog.removeFromDom).toHaveBeenCalledTimes(1);
   });
 
+  it("ignores feedback dialog cleanup failures when Sentry is closed", async () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+    await openSentryFeedbackDialog();
+    feedbackDialog.removeFromDom.mockImplementationOnce(() => {
+      throw new Error("cleanup failed");
+    });
+
+    await expect(closeSentry()).resolves.toBeUndefined();
+  });
+
+  it("returns false when the Feedback SDK returns an incomplete dialog", async () => {
+    feedbackIntegration.createForm.mockResolvedValueOnce({
+      appendToDom: vi.fn(),
+      open: vi.fn(),
+    } as unknown as typeof feedbackDialog);
+
+    await expect(openSentryFeedbackDialog()).resolves.toBe(false);
+
+    expect(feedbackDialog.open).not.toHaveBeenCalled();
+  });
+
   it("does not show an in-flight feedback dialog after Sentry is closed", async () => {
     initializeSentry({
       ...DEFAULT_OBSERVABILITY_SETTINGS,

@@ -21,6 +21,15 @@ export interface SentryFeedbackDialogOptions {
   surface?: "crash-fallback" | "manual" | "settings";
 }
 
+function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undefined): void {
+  if (!dialog || typeof dialog.removeFromDom !== "function") return;
+  try {
+    dialog.removeFromDom();
+  } catch {
+    // Closing observability should not fail the settings flow.
+  }
+}
+
 type SentryIntegration =
   | ReturnType<typeof Sentry.browserTracingIntegration>
   | ReturnType<typeof Sentry.replayIntegration>
@@ -163,8 +172,9 @@ export async function closeSentry(): Promise<void> {
   feedbackDialogGeneration += 1;
   setSentryClientEnabled(false);
   feedbackDialogPromise = null;
-  feedbackDialog?.removeFromDom();
+  const dialog = feedbackDialog;
   feedbackDialog = null;
+  removeFeedbackDialog(dialog);
 }
 
 export async function openSentryFeedbackDialog(
@@ -194,11 +204,21 @@ export async function openSentryFeedbackDialog(
         if (
           !dialog ||
           typeof dialog.appendToDom !== "function" ||
-          typeof dialog.open !== "function"
+          typeof dialog.open !== "function" ||
+          typeof dialog.removeFromDom !== "function"
         ) {
           return null;
         }
-        dialog.appendToDom();
+        if (generation !== feedbackDialogGeneration || !Sentry.getClient()?.getOptions().enabled) {
+          removeFeedbackDialog(dialog);
+          return null;
+        }
+        try {
+          dialog.appendToDom();
+        } catch {
+          removeFeedbackDialog(dialog);
+          return null;
+        }
         return dialog;
       })
       .catch(() => null)
@@ -211,7 +231,7 @@ export async function openSentryFeedbackDialog(
 
   const dialog = feedbackDialog ?? (await feedbackDialogPromise);
   if (generation !== feedbackDialogGeneration || !client.getOptions().enabled) {
-    dialog?.removeFromDom();
+    removeFeedbackDialog(dialog);
     return false;
   }
   feedbackDialog = dialog;
@@ -220,7 +240,7 @@ export async function openSentryFeedbackDialog(
   try {
     feedbackDialog.open();
   } catch {
-    feedbackDialog?.removeFromDom();
+    removeFeedbackDialog(feedbackDialog);
     feedbackDialog = null;
     return false;
   }
