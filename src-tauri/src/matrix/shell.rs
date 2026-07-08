@@ -33,10 +33,10 @@ pub struct BadgeState {
     /// were mentioned N times" distinctly from ambient unread rooms.
     #[ts(type = "number")]
     pub total_highlight: u32,
-    /// Rollups keyed by space room id. Each value sums descendant rooms via
-    /// `RoomSummary.parent_space_ids`, so rooms nested under a sub-space
-    /// also count for every ancestor space currently present in the room
-    /// snapshot.
+    /// Rollups keyed by parent space room id. Parent ids can be emitted even
+    /// when the parent space itself is missing from the current room snapshot;
+    /// traversal stops at that missing parent because higher ancestors are
+    /// unknown.
     pub spaces: std::collections::HashMap<String, SpaceBadgeState>,
 }
 
@@ -46,10 +46,10 @@ pub struct BadgeState {
 )]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct SpaceBadgeState {
-    /// Number of child rooms with `has_unread() == true`.
+    /// Number of descendant rooms with `has_unread() == true`.
     #[ts(type = "number")]
     pub total_unread: u32,
-    /// Sum of child-room `unread_count`.
+    /// Sum of descendant-room `unread_count`.
     #[ts(type = "number")]
     pub total_highlight: u32,
 }
@@ -122,6 +122,7 @@ fn for_each_ancestor_space_id(
     mut visit_ancestor: impl FnMut(&str),
 ) {
     let mut seen = std::collections::HashSet::new();
+    seen.insert(room_id);
     let mut stack = vec![room_id];
 
     while let Some(current_room_id) = stack.pop() {
@@ -611,6 +612,29 @@ mod tests {
             })
         );
         assert!(!badge.spaces.contains_key("!root-space:example.org"));
+    }
+
+    #[test]
+    fn space_badges_do_not_count_room_as_own_ancestor() {
+        let mut cyclic_room = room(1, 1, false, false);
+        cyclic_room.room_id = "!cyclic-room:example.org".to_string();
+        cyclic_room.parent_space_ids = vec!["!space:example.org".to_string()];
+
+        let mut space = room(0, 0, false, false);
+        space.room_id = "!space:example.org".to_string();
+        space.is_space = true;
+        space.parent_space_ids = vec!["!cyclic-room:example.org".to_string()];
+
+        let badge = compute_badge_state(&[space, cyclic_room]);
+
+        assert_eq!(
+            badge.spaces.get("!space:example.org"),
+            Some(&SpaceBadgeState {
+                total_unread: 1,
+                total_highlight: 1
+            })
+        );
+        assert!(!badge.spaces.contains_key("!cyclic-room:example.org"));
     }
 
     #[test]
