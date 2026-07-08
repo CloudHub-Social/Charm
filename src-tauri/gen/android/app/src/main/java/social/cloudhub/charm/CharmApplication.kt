@@ -31,8 +31,10 @@ class CharmApplication : Application() {
     }
 
     private fun sentryEnabledFromStore(): Boolean {
-        val file = File(applicationInfo.dataDir, "observability.json")
-        if (!file.isFile) return false
+        val file = listOf(
+            File(applicationInfo.dataDir, "observability.json"),
+            File(filesDir, "observability.json"),
+        ).firstOrNull { it.isFile } ?: return false
 
         return runCatching {
             val root = JSONObject(file.readText())
