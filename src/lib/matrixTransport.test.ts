@@ -386,9 +386,14 @@ describe("matrix web transport", () => {
 
   it("uses same-origin HTTP and WebSocket routes when no API base URL is configured", async () => {
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
+    const originalLocation = window.location;
     Object.defineProperty(window, "location", {
       configurable: true,
-      value: { protocol: "https:", host: "preview.example" },
+      value: {
+        href: "https://preview.example/",
+        protocol: "https:",
+        host: "preview.example",
+      },
     });
 
     await invoke("list_rooms");
@@ -398,6 +403,10 @@ describe("matrix web transport", () => {
     expect(MockWebSocket.instances[0]?.url).toBe("wss://preview.example/api/ws");
 
     unlisten();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
   });
 
   it("preserves path prefixes in configured WebSocket API base URLs", async () => {
