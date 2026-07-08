@@ -29,6 +29,7 @@ class CharmApplication : Application() {
             BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() }?.let { options.setRelease(it) }
             options.setSendDefaultPii(false)
             options.setSendClientReports(false)
+            options.setEnableNdk(false)
             // Leave tracesSampleRate unset; 0.0 still enables tracing instrumentation overhead.
             options.setEnableAutoSessionTracking(false)
             options.setBeforeBreadcrumb(BeforeBreadcrumbCallback { breadcrumb, _ ->
