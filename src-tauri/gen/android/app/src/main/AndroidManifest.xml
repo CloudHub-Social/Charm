@@ -35,6 +35,7 @@
         android:fullBackupContent="@xml/secure_store_backup_rules_legacy">
         <meta-data android:name="io.sentry.auto-init" android:value="false" />
         <meta-data android:name="io.sentry.sdk.auto-init" android:value="false" />
+        <!-- sentry-android-core 8.48.0 declares these class-suffix authorities. -->
         <provider
             android:name="io.sentry.android.core.SentryInitProvider"
             android:authorities="${applicationId}.SentryInitProvider"
