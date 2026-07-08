@@ -23,6 +23,7 @@ import { RoomListSection } from "./SpaceSection";
 import { SpaceBrowser } from "./SpaceBrowser";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface RoomListProps {
   rooms: RoomSummary[];
@@ -37,7 +38,7 @@ const ROW_HEIGHT_PX = 46;
 function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex: number) {
   const updates = planManualReorder(sectionRooms, roomId, targetIndex);
   for (const { room_id, order } of updates) {
-    setRoomManualOrder(room_id, order).catch(console.error);
+    setRoomManualOrder(room_id, order).catch(logAndIgnore);
   }
 }
 
@@ -227,14 +228,14 @@ function DraggableRoomRow({
       active={active}
       onSelect={onSelect}
       onToggleFavourite={() =>
-        setRoomFavourite(room.room_id, !room.is_favourite).catch(console.error)
+        setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
       }
       onToggleLowPriority={() =>
-        setRoomLowPriority(room.room_id, !room.is_low_priority).catch(console.error)
+        setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
       }
-      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(console.error)}
-      onMarkRead={() => markRoomRead(room.room_id).catch(console.error)}
-      onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(console.error)}
+      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)}
+      onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+      onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       dragHandleProps={bind()}
       style={{
         transform: dragging ? `translateY(${dragOffset}px)` : undefined,
