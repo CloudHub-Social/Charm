@@ -282,7 +282,7 @@ fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
     let fresh = cache
         .refreshed_at
         .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
-    if same_dir && fresh {
+    if same_dir && fresh && !cache.logs_enabled {
         return cache.logs_enabled;
     }
 
@@ -730,6 +730,36 @@ mod observability_tests {
 
         assert!(observability_enabled_from_store(&dir));
         assert!(observability_logs_enabled_from_store(&dir));
+
+        std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
+    }
+
+    #[test]
+    fn cached_log_consent_does_not_reuse_enabled_value_after_opt_out() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-observability-test-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp observability dir");
+        std::fs::write(
+            dir.join("observability.json"),
+            r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":true},"updatedAt":1}}"#,
+        )
+        .expect("observability fixture write");
+
+        assert!(cached_observability_logs_enabled(&dir));
+
+        std::fs::write(
+            dir.join("observability.json"),
+            r#"{"observability":{"state":{"sentryEnabled":true,"logsEnabled":false},"updatedAt":2}}"#,
+        )
+        .expect("observability opt-out fixture write");
+
+        assert!(!cached_observability_logs_enabled(&dir));
 
         std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
     }
