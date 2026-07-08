@@ -24,6 +24,7 @@ import { FormattingToolbar } from "./FormattingToolbar";
 import { RoomMention, UserMention } from "./mentionExtensions";
 import { parseSlashCommand, unescapeLiteralSlash, type ParsedSlashCommand } from "./slashCommands";
 import { useRoomDraft } from "./useRoomDraft";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 export type ComposerMode = "send" | "edit" | "reply";
 
@@ -208,7 +209,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           displayName: m.display_name,
         }));
       })
-      .catch(console.error);
+      .catch(logAndIgnore);
     listRooms()
       .then((rooms) => {
         if (currentRoomIdRef.current !== requestedRoomId) return;
@@ -218,7 +219,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           alias: null,
         }));
       })
-      .catch(console.error);
+      .catch(logAndIgnore);
   }, [roomId]);
 
   const extensions = useMemo(

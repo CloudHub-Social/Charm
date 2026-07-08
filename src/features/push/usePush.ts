@@ -7,6 +7,7 @@ import {
   unregisterPush,
   type PushStatus,
 } from "@/lib/matrix";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 const PUSH_STATUS_QUERY_KEY = ["pushStatus"] as const;
 
@@ -37,7 +38,7 @@ export function usePush() {
       queryClient.setQueryData(PUSH_STATUS_QUERY_KEY, status);
     });
     return () => {
-      unlisten.then((fn) => fn()).catch(console.error);
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [queryClient]);
 
