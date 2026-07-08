@@ -50,22 +50,22 @@ async function collectFiles(path, seenFiles, topFiles) {
     details = await stat(path);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      return { bytes: 0, count: 0 };
+      return { bytes: 0, count: 0, exists: false };
     }
     throw error;
   }
 
   if (details.isFile()) {
     if (seenFiles.has(path)) {
-      return { bytes: 0, count: 0 };
+      return { bytes: 0, count: 0, exists: true };
     }
     seenFiles.add(path);
     recordFile(topFiles, { path, bytes: details.size });
-    return { bytes: details.size, count: 1 };
+    return { bytes: details.size, count: 1, exists: true };
   }
 
   if (!details.isDirectory()) {
-    return { bytes: 0, count: 0 };
+    return { bytes: 0, count: 0, exists: true };
   }
 
   const children = await readdir(path);
@@ -76,7 +76,7 @@ async function collectFiles(path, seenFiles, topFiles) {
     bytes += nested.bytes;
     count += nested.count;
   }
-  return { bytes, count };
+  return { bytes, count, exists: true };
 }
 
 const cwd = process.cwd();
@@ -84,10 +84,18 @@ const seenFiles = new Set();
 const topFiles = [];
 let total = 0;
 let fileCount = 0;
+let existingRootCount = 0;
 for (const root of roots) {
   const nested = await collectFiles(resolve(root), seenFiles, topFiles);
+  if (nested.exists) {
+    existingRootCount += 1;
+  }
   total += nested.bytes;
   fileCount += nested.count;
+}
+
+if (existingRootCount === 0) {
+  throw new Error("SIZE_REPORT_PATHS did not match any existing files or directories");
 }
 
 const lines = [

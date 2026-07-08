@@ -143,7 +143,7 @@ jobs:
         env:
           SIZE_REPORT_TITLE: Linux release artifact sizes
           SIZE_REPORT_PATHS: |
-            ${{ steps.cargo-target.outputs.dir }}/release
+            ${{ steps.cargo-target.outputs.dir }}/release/charm
             ${{ steps.cargo-target.outputs.dir }}/release/bundle
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/linux-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
