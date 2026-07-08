@@ -1210,6 +1210,8 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "url",
  "wiremock",
@@ -6686,6 +6688,7 @@ dependencies = [
  "sentry-contexts",
  "sentry-core",
  "sentry-debug-images",
+ "sentry-log",
  "sentry-panic",
  "sentry-tracing",
  "tokio",
@@ -6750,6 +6753,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f96d38ec7e843f909e59acb0cc77452157755ad582be0386df800b6ce71350ba"
 dependencies = [
  "findshlibs",
+ "sentry-core",
+]
+
+[[package]]
+name = "sentry-log"
+version = "0.48.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "227bac907069e40179ccb4de250c9de1162d3d484d36fce099c15351c81c03de"
+dependencies = [
+ "bitflags 2.13.0",
+ "log",
  "sentry-core",
 ]
 
