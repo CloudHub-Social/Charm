@@ -61,7 +61,7 @@ fn add_attachment_ipc_breadcrumb(
         data.insert("totalBytes".into(), serde_json::json!(total_bytes));
     }
     if let Some(mime) = mime {
-        data.insert("mimeType".into(), serde_json::json!(mime.type_().as_str()));
+        data.insert("mimeClass".into(), serde_json::json!(mime.type_().as_str()));
     }
     if let Some(operation_id) = operation_id {
         data.insert("operationId".into(), serde_json::json!(operation_id));
@@ -404,8 +404,8 @@ pub async fn send_attachment(
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
-            Err(error.to_string())
             Err(error)
+        }
     }
 }
 
