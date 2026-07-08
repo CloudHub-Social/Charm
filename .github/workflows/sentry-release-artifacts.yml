@@ -344,7 +344,12 @@ jobs:
         id: sentry-size-base
         run: |
           git remote set-head origin --auto
-          echo "sha=$(git merge-base HEAD origin/HEAD)" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor HEAD origin/HEAD && git rev-parse --verify HEAD^ >/dev/null; then
+            base_sha=$(git rev-parse HEAD^)
+          else
+            base_sha=$(git merge-base HEAD origin/HEAD)
+          fi
+          echo "sha=$base_sha" >> "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
