@@ -54,10 +54,10 @@ function encodeSegment(value: string): string {
 
 function operationId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `web-${globalThis.crypto.randomUUID()}`;
+    return `ipc-${globalThis.crypto.randomUUID()}`;
   }
   fallbackOperationCounter += 1;
-  return `web-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;
+  return `ipc-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;
 }
 
 function jsonHeaders(): HeadersInit {
@@ -75,8 +75,23 @@ function dispatchWebEvent(event: string, payload: unknown): void {
   webEventListeners.get(event)?.forEach((callback) => callback({ payload }));
 }
 
-function handleWebSocketMessage(raw: MessageEvent<string>): void {
-  const parsed = JSON.parse(raw.data) as ServerEvent;
+function handleWebSocketMessage(raw: MessageEvent<unknown>): void {
+  if (typeof raw.data !== "string") return;
+  let parsed: ServerEvent;
+  try {
+    const candidate = JSON.parse(raw.data) as Partial<ServerEvent>;
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      typeof candidate.event !== "string" ||
+      !("data" in candidate)
+    ) {
+      return;
+    }
+    parsed = { event: candidate.event, data: candidate.data };
+  } catch {
+    return;
+  }
   dispatchWebEvent(parsed.event, parsed.data);
   if (
     parsed.event === "verification:sas_update" &&
@@ -239,9 +254,9 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "can_redact":
       return requestJson<T>(
         "GET",
-        `/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
-          String(args.targetSender),
-        )}/can-redact${query({ target_sender: args.targetSender as string })}`,
+        `/api/rooms/${encodeSegment(String(args.roomId))}/can-redact${query({
+          target_sender: args.targetSender as string,
+        })}`,
       );
     case "toggle_reaction":
       return requestJson<T>(

@@ -99,10 +99,7 @@ pub fn router(state: AppState) -> Router {
             "/api/rooms/{room_id}/events/{event_id}/redact",
             post(redact_event),
         )
-        .route(
-            "/api/rooms/{room_id}/events/{event_id}/can-redact",
-            get(can_redact),
-        )
+        .route("/api/rooms/{room_id}/can-redact", get(can_redact))
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
@@ -756,7 +753,7 @@ struct CanRedactQuery {
 async fn can_redact(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path((room_id, _event_id)): Path<(String, String)>,
+    Path(room_id): Path<String>,
     Query(query): Query<CanRedactQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;

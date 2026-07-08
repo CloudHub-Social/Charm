@@ -27,6 +27,10 @@ class MockWebSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(data) }));
   }
 
+  emitRaw(data: unknown) {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
   static instances: MockWebSocket[] = [];
 }
 
@@ -121,6 +125,13 @@ describe("matrix web transport", () => {
       "POST",
       "/api/rooms/!r%3Aexample.org/events/%24e/edit",
       { new_body: "edited" },
+    ],
+    [
+      "can_redact",
+      { roomId: "!r:example.org", targetSender: "@alice:example.org" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/can-redact?target_sender=%40alice%3Aexample.org",
+      undefined,
     ],
     [
       "toggle_reaction",
@@ -349,6 +360,7 @@ describe("matrix web transport", () => {
     expect(url).toBe(`https://api.example${path}`);
     expect(init.method).toBe(method);
     expect(init.credentials).toBe("include");
+    expect(new Headers(init.headers).get("x-charm-operation-id")).toMatch(/^ipc-/);
     if (body === undefined) {
       expect(init.body).toBeUndefined();
     } else {
@@ -370,6 +382,22 @@ describe("matrix web transport", () => {
     );
     expect(avatar).toBe("https://api.example/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fa");
     expect(fetchMock()).not.toHaveBeenCalled();
+  });
+
+  it("uses same-origin HTTP and WebSocket routes when no API base URL is configured", async () => {
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { protocol: "https:", host: "preview.example" },
+    });
+
+    await invoke("list_rooms");
+    const unlisten = await listen("room_list:update", vi.fn());
+
+    expect(lastFetch()[0]).toBe("/api/rooms");
+    expect(MockWebSocket.instances[0]?.url).toBe("wss://preview.example/api/ws");
+
+    unlisten();
   });
 
   it("uses browser File bodies for web uploads", async () => {
@@ -446,5 +474,19 @@ describe("matrix web transport", () => {
 
     unlistenRoomList();
     unlistenSas();
+  });
+
+  it("ignores malformed WebSocket frames", async () => {
+    const roomList = vi.fn();
+
+    await listen("room_list:update", roomList);
+    const socket = MockWebSocket.instances[0];
+
+    expect(() => socket?.emitRaw("not json")).not.toThrow();
+    expect(() => socket?.emitRaw(new Blob(["{}"]))).not.toThrow();
+    socket?.emit({ event: 123, data: [] });
+    socket?.emit({ event: "room_list:update" });
+
+    expect(roomList).not.toHaveBeenCalled();
   });
 });

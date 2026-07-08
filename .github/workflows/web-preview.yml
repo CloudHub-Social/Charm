@@ -22,7 +22,6 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
-      VITE_CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -37,7 +36,7 @@ jobs:
         id: config
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT VITE_CHARM_WEB_API_BASE_URL; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -91,7 +90,7 @@ jobs:
           body="${marker}
           Web preview: ${PREVIEW_URL}
 
-          Built with \`VITE_CHARM_BUILD_TARGET=web\` against the configured companion server."
+          Built with \`VITE_CHARM_BUILD_TARGET=web\` and same-origin companion-server API routes so Strict session cookies work in authenticated preview flows."
           existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\"))) | .id" \
             | tail -n 1)
