@@ -55,6 +55,13 @@ interface ChatShellProps {
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
 
+function attachmentUploadPayload(file: File & { path?: string }): string | File | null {
+  if (isWebBuild()) {
+    return file;
+  }
+  return file.path ?? null;
+}
+
 function typingLabel(userIds: string[]): string {
   if (userIds.length === 0) return "";
   if (userIds.length === 1) return `${userIds[0]} is typing…`;
@@ -471,17 +478,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     event.preventDefault();
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
-    if (file) {
-      handleAttachFile(file.path ?? file);
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
+      handleAttachFile(upload);
     }
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
     const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
     const file = files.find((f) => f.type.startsWith("image/"));
-    if (file) {
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
       event.preventDefault();
-      handleAttachFile(file.path ?? file);
+      handleAttachFile(upload);
     }
   }
 

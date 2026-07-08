@@ -323,13 +323,13 @@ export function sendAttachment(
 }
 
 /**
- * Resolves the media attached to `eventId` in `roomId` to a local filesystem
- * path — fetching, decrypting, and caching on a miss. No handle crosses IPC:
- * the frontend just passes back the plain `(roomId, eventId)` pair it
- * already has from `RoomMessageSummary`'s `media` field ({@link MediaContent}
- * carries display metadata only). Load the returned path in an
- * `<img>`/`<video>`/`<audio>` tag via `convertFileSrc` from
- * `@tauri-apps/api/core`; never expected to be a remote URL.
+ * Resolves the media attached to `eventId` in `roomId`, fetching,
+ * decrypting, and caching on a miss. No handle crosses IPC: the frontend just
+ * passes back the plain `(roomId, eventId)` pair it already has from
+ * `RoomMessageSummary`'s `media` field ({@link MediaContent} carries display
+ * metadata only). Desktop builds return a local path or asset URL; web builds
+ * can return a companion `/api/...` or absolute URL. Pass the result through
+ * `toLoadableMediaUrl` before assigning it to media elements.
  */
 export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean): Promise<string> {
   return invoke("resolve_media", { roomId, eventId, thumbnail });
@@ -453,9 +453,10 @@ export function getProfile(): Promise<ProfileSummary> {
 
 /**
  * Resolves `ProfileSummary.avatar_url` (a bare `mxc://` URI, not
- * webview-loadable directly) to a local filesystem path — `null` on any
- * resolution failure. Load the returned path via `convertFileSrc` from
- * `@tauri-apps/api/core`, same convention as {@link resolveMedia}.
+ * webview-loadable directly) to a loadable source candidate, or `null` on any
+ * resolution failure. Desktop builds return a local path or asset URL; web
+ * builds can return a companion `/api/...` or absolute URL. Pass the result
+ * through `toLoadableMediaUrl`, same convention as {@link resolveMedia}.
  */
 export function resolveAvatar(mxcUrl: string): Promise<string | null> {
   return invoke("resolve_avatar", { mxcUrl });
