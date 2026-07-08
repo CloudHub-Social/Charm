@@ -37,10 +37,11 @@ adding the runtime SDK does not start Sentry before application code runs.
 The Android runtime initializer re-checks the same store in `beforeSend`, keeps
 `sendDefaultPii` off, disables Android auto-session tracking, and sets
 `tracesSampleRate` to `0.0`. This initial Android coverage is therefore scoped
-to Sentry Android's native/JVM crash and ANR capture after opt-in. Android
-Mobile Vitals/performance transactions remain disabled until Charm has a
-same-session native consent bridge that can shut down or reconfigure the SDK
-immediately when a user opts out.
+to Sentry Android's JVM crash and ANR capture after opt-in. NDK/native crash
+capture, Android Mobile Vitals, and performance transactions remain disabled
+until Charm has the corresponding SDK integration and a same-session native
+consent bridge that can shut down or reconfigure the SDK immediately when a
+user opts out.
 
 ## Environment
 
@@ -48,8 +49,7 @@ Use these variables for local or release builds:
 
 - `VITE_SENTRY_DSN`: public frontend DSN.
 - `SENTRY_DSN`: Rust/native DSN. Android also embeds this at build time for
-  native runtime crash coverage, falling back to `VITE_SENTRY_DSN` when
-  `SENTRY_DSN` is absent.
+  JVM crash and ANR coverage.
 - `VITE_SENTRY_ENVIRONMENT` / `SENTRY_ENVIRONMENT`: Sentry environment.
 - `VITE_SENTRY_RELEASE` / `SENTRY_RELEASE`: release override.
 - `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: artifact upload through
