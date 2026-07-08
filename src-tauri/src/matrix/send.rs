@@ -284,6 +284,12 @@ pub async fn send_attachment(
         None,
         None,
     );
+    tracing::info!(
+        command = "send_attachment",
+        status = "started",
+        has_operation_id = operation_id.is_some(),
+        "Attachment IPC started"
+    );
 
     let result = async {
         let client = state.require_client().await?;
@@ -321,6 +327,13 @@ pub async fn send_attachment(
         let mime = mime_guess::from_path(path).first_or_octet_stream();
         breadcrumb_total_bytes = Some(total_bytes);
         breadcrumb_mime = Some(mime.clone());
+        tracing::info!(
+            command = "send_attachment",
+            status = "metadata_loaded",
+            total_bytes,
+            mime_class = mime.type_().as_str(),
+            "Attachment IPC metadata loaded"
+        );
 
         // Caller-supplied, not server-generated: the frontend creates its
         // optimistic upload row (keyed on a locally generated ID) before
@@ -393,6 +406,14 @@ pub async fn send_attachment(
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
             );
+            tracing::info!(
+                command = "send_attachment",
+                status = "succeeded",
+                total_bytes = breadcrumb_total_bytes,
+                mime_class = breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                duration_ms,
+                "Attachment IPC succeeded"
+            );
             Ok(())
         }
         Err(error) => {
@@ -403,6 +424,14 @@ pub async fn send_attachment(
                 breadcrumb_total_bytes,
                 breadcrumb_mime.as_ref(),
                 Some(duration_ms),
+            );
+            tracing::error!(
+                command = "send_attachment",
+                status = "failed",
+                total_bytes = breadcrumb_total_bytes,
+                mime_class = breadcrumb_mime.as_ref().map(|mime| mime.type_().as_str()),
+                duration_ms,
+                "Attachment IPC failed"
             );
             Err(error)
         }

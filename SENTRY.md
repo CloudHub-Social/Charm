@@ -24,6 +24,13 @@ already-running frontend client for the current window and apply to Rust crash
 monitoring on restart. Re-enabling after a same-window opt-out flips the
 frontend client back on without calling `Sentry.init()` a second time.
 
+When `logsEnabled` is also true in the same store file, Rust installs a
+Sentry `tracing` layer after Sentry initialization. The layer is target-filtered
+to Charm-owned Rust modules, captures info/warn/error events as Sentry logs and
+breadcrumbs, captures error events as Sentry issues, and keeps debug logs
+debug-build-only. The bridge is not installed when either Sentry consent or log
+consent is disabled.
+
 ## Environment
 
 Use these variables for local or release builds:
@@ -87,9 +94,12 @@ This implementation covers the foundation: consent, settings UI, Sentry init,
 release/environment/platform tags, release-health sessions, basic tracing,
 scrubbing, docs, and the opt-in frontend configuration for replay, canvas
 replay, profiling, warning/error console logs, frontend Tauri IPC breadcrumbs,
-and Rust attachment-upload IPC breadcrumbs correlated by the frontend operation
-ID header.
+Rust attachment-upload IPC breadcrumbs correlated by the frontend operation ID
+header, and a consent-gated Rust `tracing`/Sentry Logs bridge for startup,
+attachment IPC, and push decrypt fallback events.
 
-User feedback, screenshots, broader Rust tracing/log bridges, native Android
-SDK runtime coverage, signed iOS device-release dSYMs, and size analysis remain
-separate follow-up phases from Spec 21.
+User feedback, screenshots, native Android SDK runtime coverage, signed iOS
+device-release dSYMs, and size analysis remain separate follow-up phases from
+Spec 21. Broader per-command Rust instrumentation is still intentionally
+incremental; new producers should stay Charm-targeted and avoid raw Matrix
+identifiers, file paths, and secrets.

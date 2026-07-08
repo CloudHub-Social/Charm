@@ -10,7 +10,9 @@ pub mod push;
 
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::Manager;
+use tracing_subscriber::prelude::*;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -51,6 +53,8 @@ static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     regex::Regex::new(r#"mxc://[A-Za-z0-9.-]+/[A-Za-z0-9._~-]+"#)
         .expect("MXC_URI_PATTERN is a valid static regex")
 });
+
+static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn scrub_secrets(text: &str) -> String {
     SECRET_FIELD_PATTERN
@@ -119,7 +123,92 @@ fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
 }
 
 #[allow(dead_code)]
-struct SentryGuard(sentry::ClientInitGuard);
+struct SentryGuard {
+    _client: sentry::ClientInitGuard,
+    tracing_installed: bool,
+    logs_enabled: bool,
+}
+
+fn is_charm_tracing_target(target: &str) -> bool {
+    matches!(target, "charm" | "charm_lib")
+        || target.starts_with("charm::")
+        || target.starts_with("charm_lib::")
+}
+
+fn sentry_event_filter_for_level_target(
+    level: &tracing::Level,
+    target: &str,
+    logs_enabled: bool,
+) -> sentry::integrations::tracing::EventFilter {
+    use sentry::integrations::tracing::EventFilter;
+
+    if !is_charm_tracing_target(target) {
+        return EventFilter::Ignore;
+    }
+
+    match *level {
+        tracing::Level::ERROR => {
+            if logs_enabled {
+                EventFilter::Event | EventFilter::Log
+            } else {
+                EventFilter::Event
+            }
+        }
+        tracing::Level::WARN | tracing::Level::INFO => {
+            if logs_enabled {
+                EventFilter::Breadcrumb | EventFilter::Log
+            } else {
+                EventFilter::Breadcrumb
+            }
+        }
+        tracing::Level::DEBUG => {
+            if logs_enabled && cfg!(debug_assertions) {
+                EventFilter::Log
+            } else {
+                EventFilter::Ignore
+            }
+        }
+        tracing::Level::TRACE => EventFilter::Ignore,
+    }
+}
+
+fn sentry_event_filter(
+    metadata: &tracing::Metadata<'_>,
+    logs_enabled: bool,
+) -> sentry::integrations::tracing::EventFilter {
+    sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
+}
+
+fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
+    sentry_span_filter_for_level_target(metadata.level(), metadata.target())
+}
+
+fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> bool {
+    is_charm_tracing_target(target)
+        && matches!(
+            *level,
+            tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
+        )
+}
+
+fn install_sentry_tracing(logs_enabled: bool) -> bool {
+    if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+
+    let sentry_layer = sentry::integrations::tracing::layer()
+        .event_filter(move |metadata| sentry_event_filter(metadata, logs_enabled))
+        .span_filter(sentry_span_filter);
+    let subscriber = tracing_subscriber::registry().with(sentry_layer);
+
+    match tracing::subscriber::set_global_default(subscriber) {
+        Ok(()) => true,
+        Err(_) => {
+            SENTRY_TRACING_INSTALLED.store(false, Ordering::SeqCst);
+            false
+        }
+    }
+}
 
 fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
@@ -182,7 +271,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
         .map(Cow::Owned)
         .or_else(|| sentry::release_name!());
 
-    Some(SentryGuard(sentry::init((
+    let client = sentry::init((
         dsn,
         sentry::ClientOptions {
             release,
@@ -196,7 +285,17 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
-    ))))
+    ));
+    let tracing_installed = logs_enabled && install_sentry_tracing(logs_enabled);
+    if tracing_installed {
+        tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
+    }
+
+    Some(SentryGuard {
+        _client: client,
+        tracing_installed,
+        logs_enabled,
+    })
 }
 
 /// Builds the tray icon (with a Show/Quit menu) and, on macOS, the native app
@@ -496,6 +595,68 @@ mod observability_tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn scrub_log_redacts_body_and_attributes() {
+        let log = sentry::protocol::Log {
+            level: sentry::protocol::LogLevel::Info,
+            body: "failed for @alice:example.org access_token=secret".to_owned(),
+            trace_id: None,
+            timestamp: std::time::SystemTime::UNIX_EPOCH,
+            severity_number: None,
+            attributes: sentry::protocol::Map::from_iter([(
+                "room".to_owned(),
+                sentry::protocol::LogAttribute::from("!room:example.org"),
+            )]),
+        };
+
+        let scrubbed = scrub_log(log).expect("non-debug log is retained");
+
+        assert_eq!(
+            scrubbed.body,
+            "failed for @[redacted]:[redacted] access_token=[redacted]"
+        );
+        assert_eq!(
+            scrubbed.attributes.get("room").map(|value| &value.0),
+            Some(&sentry::protocol::Value::String(
+                "![redacted]:[redacted]".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn sentry_tracing_filter_keeps_bridge_charm_scoped() {
+        use sentry::integrations::tracing::EventFilter;
+
+        fn assert_event_filter(actual: EventFilter, expected: EventFilter) {
+            assert_eq!(actual.bits(), expected.bits());
+        }
+
+        assert_event_filter(
+            sentry_event_filter_for_level_target(&tracing::Level::INFO, "matrix_sdk::sync", true),
+            EventFilter::Ignore,
+        );
+        assert_event_filter(
+            sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", true),
+            EventFilter::Breadcrumb | EventFilter::Log,
+        );
+        assert_event_filter(
+            sentry_event_filter_for_level_target(&tracing::Level::ERROR, "charm_lib::matrix", true),
+            EventFilter::Event | EventFilter::Log,
+        );
+        assert_event_filter(
+            sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", false),
+            EventFilter::Breadcrumb,
+        );
+        assert!(!sentry_span_filter_for_level_target(
+            &tracing::Level::INFO,
+            "matrix_sdk::sync"
+        ));
+        assert!(sentry_span_filter_for_level_target(
+            &tracing::Level::INFO,
+            "charm_lib::matrix"
+        ));
     }
 
     #[test]
