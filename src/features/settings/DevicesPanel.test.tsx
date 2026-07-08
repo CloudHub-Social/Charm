@@ -357,9 +357,7 @@ describe("DevicesPanel", () => {
       },
     ];
     listDevices.mockResolvedValue(devices);
-    deleteDevice
-      .mockRejectedValueOnce({ kind: "UiaChallenge" })
-      .mockResolvedValue(undefined);
+    deleteDevice.mockRejectedValueOnce({ kind: "UiaChallenge" }).mockResolvedValue(undefined);
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("Tablet");
 
@@ -434,9 +432,7 @@ describe("DevicesPanel", () => {
       },
     ];
     listDevices.mockResolvedValue(devices);
-    deleteDevice
-      .mockRejectedValueOnce({ kind: "UiaChallenge" })
-      .mockResolvedValue(undefined);
+    deleteDevice.mockRejectedValueOnce({ kind: "UiaChallenge" }).mockResolvedValue(undefined);
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("Tablet");
 
