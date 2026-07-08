@@ -6,12 +6,15 @@ import {
 } from "./persistence";
 import { DEFAULT_OBSERVABILITY_SETTINGS } from "./settings";
 
+const load = vi.hoisted(() => vi.fn());
+
 vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn().mockRejectedValue(new Error("store unavailable")),
+  load: (...args: unknown[]) => load(...args),
 }));
 
 beforeEach(() => {
   localStorage.clear();
+  load.mockReset().mockRejectedValue(new Error("store unavailable"));
 });
 
 describe("observability persistence", () => {
@@ -51,5 +54,24 @@ describe("observability persistence", () => {
       sentryEnabled: true,
       anonymousUserId: "anon-1",
     });
+  });
+
+  it("flushes successful store writes", async () => {
+    const storeSet = vi.fn().mockResolvedValue(undefined);
+    const storeSave = vi.fn().mockResolvedValue(undefined);
+    load.mockResolvedValue({ get: vi.fn(), set: storeSet, save: storeSave });
+
+    const settings = {
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+      anonymousUserId: "anon-1",
+    };
+    await persistObservabilitySettings(settings, 42);
+
+    expect(storeSet).toHaveBeenCalledWith("observability", { state: settings, updatedAt: 42 });
+    expect(storeSave).toHaveBeenCalledOnce();
+    expect(storeSet.mock.invocationCallOrder[0]).toBeLessThan(
+      storeSave.mock.invocationCallOrder[0],
+    );
   });
 });

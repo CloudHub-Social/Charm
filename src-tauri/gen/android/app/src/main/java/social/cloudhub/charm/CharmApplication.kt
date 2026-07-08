@@ -21,8 +21,8 @@ class CharmApplication : Application() {
     private fun initializeSentryIfConsented() {
         val dsn = BuildConfig.SENTRY_DSN.takeIf { it.isNotBlank() } ?: return
         sentryConsentEnabled = readSentryEnabledFromStore()
-        startSentryConsentObservers()
         if (!sentryConsentEnabled) return
+        startSentryConsentObservers()
 
         SentryAndroid.init(this) { options ->
             options.setDsn(dsn)
