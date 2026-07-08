@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { closeSentry, initializeSentry } from "@/observability/instrument";
 import {
@@ -54,10 +55,11 @@ function constrain(settings: ObservabilitySettings): ObservabilitySettings {
 
 export function ObservabilityPanel() {
   const queryClient = useQueryClient();
-  const { data = DEFAULT_OBSERVABILITY_SETTINGS } = useQuery({
+  const { data } = useQuery({
     queryKey: OBSERVABILITY_QUERY_KEY,
     queryFn: readObservabilitySettings,
   });
+  const [settings, setSettings] = useState(DEFAULT_OBSERVABILITY_SETTINGS);
 
   const updateSettings = useMutation({
     mutationFn: async (next: ObservabilitySettings) => {
@@ -70,17 +72,40 @@ export function ObservabilityPanel() {
       }
       return constrained;
     },
+    onMutate: async (next) => {
+      await queryClient.cancelQueries({ queryKey: OBSERVABILITY_QUERY_KEY });
+      const previous =
+        queryClient.getQueryData<ObservabilitySettings>(OBSERVABILITY_QUERY_KEY) ?? settings;
+      const constrained = withAnonymousUserId(constrain(next));
+      setSettings(constrained);
+      queryClient.setQueryData(OBSERVABILITY_QUERY_KEY, constrained);
+      return { previous };
+    },
+    onError: (_error, _next, context) => {
+      if (context?.previous) {
+        setSettings(context.previous);
+        queryClient.setQueryData(OBSERVABILITY_QUERY_KEY, context.previous);
+      }
+    },
     onSuccess: (next) => {
+      setSettings(next);
       queryClient.setQueryData(OBSERVABILITY_QUERY_KEY, next);
     },
   });
 
+  useEffect(() => {
+    if (data && !updateSettings.isPending) {
+      setSettings(data);
+    }
+  }, [data, updateSettings.isPending]);
+
   const setSetting = (patch: Partial<ObservabilitySettings>) => {
-    updateSettings.mutate({ ...data, ...patch });
+    const next = withAnonymousUserId(constrain({ ...settings, ...patch }));
+    setSettings(next);
+    updateSettings.mutate(next);
   };
-  const disabled = updateSettings.isPending;
-  const subDisabled = disabled || !data.sentryEnabled;
-  const canvasDisabled = subDisabled || !data.replayEnabled;
+  const subDisabled = !settings.sentryEnabled;
+  const canvasDisabled = subDisabled || !settings.replayEnabled;
 
   return (
     <div className="max-w-lg space-y-6">
@@ -92,8 +117,7 @@ export function ObservabilityPanel() {
           control={
             <Checkbox
               label="Enable Sentry observability"
-              checked={data.sentryEnabled}
-              disabled={disabled}
+              checked={settings.sentryEnabled}
               onChange={(checked) => setSetting({ sentryEnabled: checked })}
             />
           }
@@ -104,7 +128,7 @@ export function ObservabilityPanel() {
           control={
             <Checkbox
               label="Enable Sentry session replay"
-              checked={data.replayEnabled}
+              checked={settings.replayEnabled}
               disabled={subDisabled}
               onChange={(checked) => setSetting({ replayEnabled: checked })}
             />
@@ -116,7 +140,7 @@ export function ObservabilityPanel() {
           control={
             <Checkbox
               label="Enable Sentry canvas replay"
-              checked={data.canvasReplayEnabled}
+              checked={settings.canvasReplayEnabled}
               disabled={canvasDisabled}
               onChange={(checked) => setSetting({ canvasReplayEnabled: checked })}
             />
@@ -128,7 +152,7 @@ export function ObservabilityPanel() {
           control={
             <Checkbox
               label="Enable Sentry profiling"
-              checked={data.profilingEnabled}
+              checked={settings.profilingEnabled}
               disabled={subDisabled}
               onChange={(checked) => setSetting({ profilingEnabled: checked })}
             />
@@ -140,7 +164,7 @@ export function ObservabilityPanel() {
           control={
             <Checkbox
               label="Enable Sentry structured logs"
-              checked={data.logsEnabled}
+              checked={settings.logsEnabled}
               disabled={subDisabled}
               onChange={(checked) => setSetting({ logsEnabled: checked })}
             />
