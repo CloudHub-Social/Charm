@@ -636,6 +636,16 @@ mod notification_dedup_tests {
     }
 
     #[test]
+    fn message_at_exact_high_water_mark_is_still_new() {
+        // The actual `>` vs `>=` boundary: unlike the test above (150 > 100
+        // passes under either operator), this checks a message whose
+        // timestamp exactly equals `max_seen_timestamp_ms` already recorded
+        // from a prior message — the case `>` would wrongly reject.
+        let dedup = NotificationDedup::seeded_from(&[summary("$a", 150)]);
+        assert!(dedup.is_new(&summary("$b", 150)));
+    }
+
+    #[test]
     fn backward_pagination_of_older_history_is_not_new() {
         // Simulates scrolling up: older messages inserted at the front of
         // `items`, never previously in `seen_event_ids`, with a timestamp
