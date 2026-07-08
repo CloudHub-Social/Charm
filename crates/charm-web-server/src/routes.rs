@@ -2024,8 +2024,8 @@ async fn bootstrap_cross_signing(
     bootstrap_cross_signing_impl(&session.client, request.password)
         .await
         .map_err(|error| match error {
-            UiaCommandError::UiaChallenge => ApiError::bad_request("UIA challenge required"),
-            UiaCommandError::Other { message } => ApiError::bad_request(message),
+            UiaCommandError::UiaChallenge => ApiError::uia_challenge(),
+            UiaCommandError::Other { message } => ApiError::uia_other(message),
         })?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2180,6 +2180,7 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
         Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: "origin not allowed".to_string(),
+            kind: None,
         })
     }
 }
@@ -2594,6 +2595,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    kind: Option<&'static str>,
 }
 
 impl ApiError {
@@ -2601,29 +2603,47 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            kind: None,
         }
     }
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            kind: None,
         }
     }
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            kind: None,
+        }
+    }
+    fn uia_challenge() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "UIA challenge required".to_owned(),
+            kind: Some("UiaChallenge"),
+        }
+    }
+    fn uia_other(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: Some("Other"),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let body = match self.kind {
+            Some("Other") => serde_json::json!({ "kind": "Other", "message": self.message }),
+            Some(kind) => serde_json::json!({ "kind": kind, "error": self.message }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 

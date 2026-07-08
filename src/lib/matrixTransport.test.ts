@@ -485,6 +485,30 @@ describe("matrix web transport", () => {
     await expect(invoke("login", { request: {} })).rejects.toThrow("bad login");
   });
 
+  it("surfaces JSON error response messages", async () => {
+    fetchMock().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "bad login" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(invoke("login", { request: {} })).rejects.toThrow("bad login");
+  });
+
+  it("preserves structured UIA errors from the web companion", async () => {
+    fetchMock().mockResolvedValueOnce(
+      new Response(JSON.stringify({ kind: "UiaChallenge", error: "UIA challenge required" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(invoke("bootstrap_cross_signing")).rejects.toMatchObject({
+      kind: "UiaChallenge",
+    });
+  });
+
   it("treats a 401 restore response as no browser session", async () => {
     fetchMock().mockResolvedValueOnce(new Response("no session", { status: 401 }));
 
@@ -516,10 +540,10 @@ describe("matrix web transport", () => {
   it("ignores stale WebSocket close and error events after reconnecting", async () => {
     const roomList = vi.fn();
 
-    await listen("room_list:update", roomList);
+    const unlistenRoomList = await listen("room_list:update", roomList);
     const staleSocket = MockWebSocket.instances[0] as MockWebSocket;
     staleSocket.readyState = MockWebSocket.CLOSED;
-    await listen("timeline:update", vi.fn());
+    const unlistenTimeline = await listen("timeline:update", vi.fn());
     const currentSocket = MockWebSocket.instances[1] as MockWebSocket;
 
     staleSocket.dispatchEvent(new Event("error"));
@@ -528,19 +552,24 @@ describe("matrix web transport", () => {
 
     expect(currentSocket.readyState).toBe(MockWebSocket.OPEN);
     expect(roomList).toHaveBeenCalledWith({ payload: [{ room_id: "!r" }] });
+
+    unlistenRoomList();
+    unlistenTimeline();
   });
 
   it("ignores malformed WebSocket frames", async () => {
     const roomList = vi.fn();
 
-    await listen("room_list:update", roomList);
-    const socket = MockWebSocket.instances[0];
+    const unlisten = await listen("room_list:update", roomList);
+    const socket = MockWebSocket.instances[0] as MockWebSocket;
 
-    expect(() => socket?.emitRaw("not json")).not.toThrow();
-    expect(() => socket?.emitRaw(new Blob(["{}"]))).not.toThrow();
-    socket?.emit({ event: 123, data: [] });
-    socket?.emit({ event: "room_list:update" });
+    expect(() => socket.emitRaw("not json")).not.toThrow();
+    expect(() => socket.emitRaw(new Blob(["{}"]))).not.toThrow();
+    socket.emit({ event: 123, data: [] });
+    socket.emit({ event: "room_list:update" });
 
     expect(roomList).not.toHaveBeenCalled();
+
+    unlisten();
   });
 });

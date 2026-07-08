@@ -27,6 +27,31 @@ class HttpError extends Error {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+async function readErrorResponse(
+  response: Response,
+  fallback: string,
+): Promise<Error | Record<string, unknown>> {
+  const text = await response.text();
+  if (text) {
+    try {
+      const body = JSON.parse(text) as unknown;
+      if (isRecord(body)) {
+        if (typeof body.kind === "string") return body;
+        if (typeof body.error === "string") return new HttpError(body.error, response.status);
+        if (typeof body.message === "string") return new HttpError(body.message, response.status);
+      }
+    } catch {
+      return new HttpError(text, response.status);
+    }
+    return new HttpError(text, response.status);
+  }
+  return new HttpError(fallback, response.status);
+}
+
 function shouldUseWebTransport(): boolean {
   return isWebBuild();
 }
@@ -146,11 +171,7 @@ async function requestJson<T>(
   }
   const response = await fetch(`${apiBase()}${path}`, options);
   if (!response.ok) {
-    const message = await response.text();
-    throw new HttpError(
-      message || `${method} ${path} failed with ${response.status}`,
-      response.status,
-    );
+    throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -171,11 +192,7 @@ async function requestBytes<T>(
     body,
   });
   if (!response.ok) {
-    const message = await response.text();
-    throw new HttpError(
-      message || `${method} ${path} failed with ${response.status}`,
-      response.status,
-    );
+    throw await readErrorResponse(response, `${method} ${path} failed with ${response.status}`);
   }
   return undefined as T;
 }
