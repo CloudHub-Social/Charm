@@ -8,8 +8,8 @@ const MAX_BREADCRUMB_STRING_LENGTH = 120;
 let fallbackOperationCounter = 0;
 
 function operationId(): string {
-  if (typeof crypto.randomUUID === "function") {
-    return `ipc-${crypto.randomUUID()}`;
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `ipc-${globalThis.crypto.randomUUID()}`;
   }
   fallbackOperationCounter += 1;
   return `ipc-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;

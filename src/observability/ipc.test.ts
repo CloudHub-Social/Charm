@@ -108,6 +108,33 @@ describe("IPC observability", () => {
     );
   });
 
+  it("falls back to a local operation id when crypto randomUUID is unavailable", async () => {
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, "crypto", {
+      configurable: true,
+      value: undefined,
+    });
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
+
+    try {
+      await invoke("logout");
+    } finally {
+      Object.defineProperty(globalThis, "crypto", {
+        configurable: true,
+        value: originalCrypto,
+      });
+    }
+
+    expect(Sentry.addBreadcrumb).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          operationId: expect.stringMatching(/^ipc-[a-z0-9]+-[a-z0-9]+$/),
+        }),
+      }),
+    );
+  });
+
   it("summarizes unsensitive strings instead of copying them into breadcrumb data", () => {
     expect(
       ipcObservabilityTestHooks.summarizeArgs({
