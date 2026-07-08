@@ -62,18 +62,29 @@ jobs:
           # default) rather than silently skipping them — the fallback can only
           # over-run, never wrongly skip.
           diff_from() {
-            git fetch --no-tags --depth=1 origin "$1" >/dev/null 2>&1 \
+            # --quiet drops fetch's normal progress chatter, but stderr is kept
+            # (not redirected to /dev/null) so a genuine fetch failure is visible
+            # in the job log rather than silently triggering the fallback below.
+            # stdout carries only the changed-file list, for capture.
+            git fetch --no-tags --depth=1 --quiet origin "$1" \
               && git diff --name-only "$1" "${{ github.sha }}"
           }
+          # On a fetch/diff failure, run the platform jobs (safe default — this
+          # can only over-run, never wrongly skip) AND log why, so an unexpected
+          # fallback (e.g. an unfetchable base) is diagnosable instead of looking
+          # like a real src-tauri change.
+          fallback() { echo "::notice::changes: could not diff against base $1; running all platform jobs"; changed="src-tauri/"; }
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            changed=$(diff_from "${{ github.event.pull_request.base.sha }}") || changed="src-tauri/"
+            base="${{ github.event.pull_request.base.sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
           elif [ "${{ github.event_name }}" = "merge_group" ]; then
             # A merge-queue run validates a synthetic commit combining the PR
             # with the current tip of main — diff against the queue entry's
             # own recorded base, not github.event.pull_request (which doesn't
             # exist for this event type).
-            changed=$(diff_from "${{ github.event.merge_group.base_sha }}") || changed="src-tauri/"
+            base="${{ github.event.merge_group.base_sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
             # infra fix) always runs them — there's no "changed files" concept.
@@ -85,7 +96,8 @@ jobs:
             changed="src-tauri/"
           else
             # push to main: diff against the pre-push tip.
-            changed=$(diff_from "${{ github.event.before }}") || changed="src-tauri/"
+            base="${{ github.event.before }}"
+            changed=$(diff_from "$base") || fallback "$base"
           fi
           if echo "$changed" | grep -qE "$pattern"; then
             echo "platform=true" >> "$GITHUB_OUTPUT"
