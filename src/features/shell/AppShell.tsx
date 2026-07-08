@@ -13,6 +13,8 @@ interface AppShellProps {
   peopleList: ReactNode;
   /** The active room's chat view (`ChatShell`). */
   content: ReactNode;
+  /** Whether the Settings destination is currently active in mobile navigation. */
+  isSettingsActive?: boolean;
   /** The right-hand room-info panel, or `null` when closed — desktop-only; not shown on mobile (Day-2 per the spec's non-goals). */
   rightPanel: ReactNode | null;
   /** The currently selected room id, or `null` — drives the mobile list-vs-detail view. */
@@ -45,6 +47,7 @@ export function AppShell({
   selectionRequestId,
   mobileView,
   onMobileViewChange,
+  isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
   const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
@@ -105,6 +108,7 @@ export function AppShell({
         </button>
         <button
           type="button"
+          aria-current={isSettingsActive ? "page" : undefined}
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
           onClick={() => openSettings("account")}
         >

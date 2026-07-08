@@ -71,8 +71,8 @@ git worktree remove ~/git/Charm-<short-suffix>
 ```
 
 `git worktree remove --force` deletes the directory outright, including any
-uncommitted changes inside it (confirmed empirically: nothing is trashed or
-recoverable) — exactly the loss this section exists to prevent. If the plain form
+uncommitted changes inside it (confirmed empirically: all such changes are lost and
+unrecoverable) — exactly the loss this section exists to prevent. If the plain form
 refuses ("contains modified or untracked files"), that's git telling you something
 in there isn't committed or pushed yet — go commit/push it, don't force past the
 warning.
