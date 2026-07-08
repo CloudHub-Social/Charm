@@ -372,6 +372,7 @@ async fn emit_room_updates(
 ) {
     let room_details_snapshots = &snapshots.room_details_snapshots;
     let receipt_snapshots = &snapshots.receipt_snapshots;
+    let typing_snapshots = &snapshots.typing_snapshots;
     let own_user_id = client.user_id();
     for (room_id, update) in &response.rooms.joined {
         let mut receipts = Vec::new();
@@ -388,10 +389,15 @@ async fn emit_room_updates(
                 matrix_sdk::ruma::events::AnySyncEphemeralRoomEvent::Typing(typing_event) => {
                     let user_ids =
                         ephemeral::typing_content_to_user_ids(&typing_event.content, own_user_id);
-                    let _ = events.send(ServerEvent::Typing(TypingUpdate {
+                    let event = ServerEvent::Typing(TypingUpdate {
                         room_id: room_id.to_string(),
                         user_ids,
-                    }));
+                    });
+                    typing_snapshots
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(room_id.clone(), event.clone());
+                    let _ = events.send(event);
                 }
                 _ => {}
             }

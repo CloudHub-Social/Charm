@@ -404,7 +404,18 @@ async fn register(
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
 
-async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
+async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    // Bodyless `POST` — the same CORS "simple request" gap as
+    // `mark_room_read`/etc, but here it's not just a nuisance mutation: an
+    // untrusted same-site subdomain (still sends `SameSite=Strict`'s
+    // cookie, per `require_allowed_origin`'s own doc comment) could log a
+    // victim out and rip out their persisted session with a bodyless form
+    // POST, with no need to ever read the response.
+    require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
         // Stop the live sync loop *before* removing the persisted entry
@@ -459,7 +470,7 @@ async fn logout(State(state): State<AppState>, jar: CookieJar) -> impl IntoRespo
     // which doesn't match `session_cookie`'s explicit `path("/")` and would
     // leave some clients holding onto the (now server-side-invalid) cookie.
     let jar = jar.remove(Cookie::build(SESSION_COOKIE).path("/"));
-    (jar, StatusCode::NO_CONTENT)
+    Ok((jar, StatusCode::NO_CONTENT))
 }
 
 #[derive(Serialize)]
@@ -1266,6 +1277,7 @@ struct ResolveAvatarQuery {
 async fn resolve_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Query(query): Query<ResolveAvatarQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
@@ -1326,7 +1338,10 @@ async fn resolve_avatar(
         [
             ("content-type", content_type),
             ("x-content-type-options", "nosniff".to_string()),
-            ("cross-origin-resource-policy", "same-origin".to_string()),
+            (
+                "cross-origin-resource-policy",
+                media_corp_header(&headers).to_string(),
+            ),
         ],
         body,
     ))
@@ -1350,6 +1365,7 @@ struct ResolveMediaQuery {
 async fn resolve_message_media(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, event_id)): Path<(String, String)>,
     Query(query): Query<ResolveMediaQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1466,8 +1482,14 @@ async fn resolve_message_media(
             // attachment at all (load succeeds vs. errors) purely from
             // `onload`/`onerror`/media-metadata timing, and render it
             // inside the attacker's own page. `same-origin` refuses to load
-            // this response as a subresource from any origin but this one.
-            ("cross-origin-resource-policy", "same-origin".to_string()),
+            // this response as a subresource from any origin but this one —
+            // relaxed to `cross-origin` only for a request whose `Origin` is
+            // actually on `CHARM_WEB_SERVER_ALLOWED_ORIGIN`, see
+            // `media_corp_header`'s doc comment.
+            (
+                "cross-origin-resource-policy",
+                media_corp_header(&headers).to_string(),
+            ),
         ],
         body,
     ))
@@ -2011,6 +2033,39 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
     }
 }
 
+/// `Cross-Origin-Resource-Policy` value for the media/avatar routes below.
+/// A blanket `same-origin` (what both routes originally sent unconditionally)
+/// is what protects sender-controlled media from being embedded by an
+/// arbitrary third-party page — but it also blocks the browser from loading
+/// it as a subresource (`<img>`/`<video>`/`<audio src>`) from a *legitimate*
+/// cross-origin frontend deployment, exactly the deployment shape
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` exists to support: that frontend can
+/// call the JSON API (CORS now allows it) but couldn't render any resolved
+/// attachment or avatar. Relaxing to `cross-origin` only when the request's
+/// own `Origin` header is actually on that same allowlist keeps every
+/// still-untrusted origin blocked (including same-site subdomains
+/// `SameSite=Strict` doesn't stop) while unblocking the one frontend this
+/// deployment is actually configured to trust. Deliberately does **not**
+/// reuse `origin_is_allowed`'s "env var unset → permissive" fallback: that
+/// fallback exists for the narrower WS-origin check (where `SameSite=Strict`
+/// is still a backstop), but here it would mean *every* deployment without
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set defaults to the more permissive
+/// `cross-origin` policy — silently loosening protection for the common
+/// same-origin/local-dev case that never needed it relaxed in the first
+/// place.
+fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
+    let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
+        return "same-origin";
+    };
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    match origin {
+        Some(origin) if allowed.split(',').map(str::trim).any(|o| o == origin) => "cross-origin",
+        _ => "same-origin",
+    }
+}
+
 async fn ws_handler(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2115,7 +2170,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .values()
-        .cloned()
+        .map(|(_, event)| event.clone())
         .collect();
     for event in room_snapshots {
         let Ok(json) = serde_json::to_string(&event) else {
@@ -2168,6 +2223,26 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         })
         .collect();
     for event in receipt_snapshots {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
+    // Replay each room's latest `typing:update` too — see
+    // `Session::typing_snapshots`'s doc comment. Unlike receipts, `m.typing`
+    // is always a full replace, so (like room details) this is a plain
+    // overwrite-in-place replay, not an accumulation.
+    let typing_snapshots: Vec<_> = session
+        .typing_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    for event in typing_snapshots {
         let Ok(json) = serde_json::to_string(&event) else {
             continue;
         };

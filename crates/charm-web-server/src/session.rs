@@ -124,8 +124,18 @@ pub struct Session {
     /// not happen again for a long time, or ever, if the missed message was
     /// the last one sent. Keyed per room (not a single overwrite-in-place
     /// slot like `last_snapshot`) since more than one room can be open at
-    /// once and each has its own independent history.
-    pub room_snapshots: Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    /// once and each has its own independent history. Value is
+    /// `(generation, event)`: `generation` is `spawn_timeline_listener`'s own
+    /// per-listener-instance counter, so its cleanup on exit only removes
+    /// the entry if it still owns it (see that function's doc comment) — a
+    /// room can be LRU-evicted and reopened (a fresh listener spawned) while
+    /// the *old* listener's 30s liveness check hasn't yet noticed its
+    /// `Timeline` is gone; without the generation check, that old listener's
+    /// eventual cleanup would delete the *new* listener's already-inserted
+    /// snapshot for the same room, silently losing reconnect-replay for a
+    /// room that's actually still open.
+    pub room_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>>,
     /// The latest `room_details:update` per room, the `room_details:update`
     /// counterpart to `room_snapshots` above — `sync_loop::emit_room_updates`
     /// updates this whenever a synced state event changes a room's details,
@@ -155,16 +165,26 @@ pub struct Session {
             HashMap<matrix_sdk::ruma::OwnedRoomId, Vec<charm_lib::matrix::ephemeral::EventReceipt>>,
         >,
     >,
+    /// The latest `typing:update` per room — an overwrite-in-place "latest
+    /// full state" cache like `room_snapshots`/`room_details_snapshots`
+    /// (`m.typing` is always a full replace of the currently-typing set,
+    /// never a delta, so unlike `receipt_snapshots` there's nothing to
+    /// accumulate). Without this, a WebSocket reconnect gap that spans both
+    /// "user starts typing" and "user stops typing" would leave the
+    /// frontend's typing indicator (`ChatShell`'s `onTypingUpdate`, which
+    /// only clears on another typing event or a room change) stuck showing
+    /// a user as typing indefinitely.
+    pub typing_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
 }
 
-/// Bundles `Session`'s three "current state, replayed to every new
-/// connection" caches (everything except `room_snapshots`, which
+/// Bundles `Session`'s "current state, replayed to every new connection"
+/// caches (everything except `room_snapshots`, which
 /// `get_or_create_timeline`'s per-room listener manages independently of
 /// `sync_loop`) into one `Clone`-able value — `sync_loop::spawn` and
-/// `emit_room_updates` take this as a single parameter rather than three
-/// separate `Arc<Mutex<...>>` arguments, keeping their signatures under
-/// clippy's `too_many_arguments` threshold now that there are three of these
-/// instead of one.
+/// `emit_room_updates` take this as a single parameter rather than one
+/// separate `Arc<Mutex<...>>` argument per cache, keeping their signatures
+/// under clippy's `too_many_arguments` threshold.
 #[derive(Clone)]
 pub struct SyncSnapshots {
     pub last_snapshot: Arc<std::sync::Mutex<Vec<ServerEvent>>>,
@@ -175,6 +195,8 @@ pub struct SyncSnapshots {
             HashMap<matrix_sdk::ruma::OwnedRoomId, Vec<charm_lib::matrix::ephemeral::EventReceipt>>,
         >,
     >,
+    pub typing_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
 }
 
 impl Session {
@@ -183,6 +205,7 @@ impl Session {
             last_snapshot: self.last_snapshot.clone(),
             room_details_snapshots: self.room_details_snapshots.clone(),
             receipt_snapshots: self.receipt_snapshots.clone(),
+            typing_snapshots: self.typing_snapshots.clone(),
         }
     }
 }
@@ -209,6 +232,7 @@ impl Session {
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             room_details_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             receipt_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            typing_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             events,
         }
     }
@@ -279,9 +303,17 @@ fn spawn_timeline_listener(
     timeline: std::sync::Weak<Timeline>,
     room_id: matrix_sdk::ruma::OwnedRoomId,
     events: broadcast::Sender<ServerEvent>,
-    room_snapshots: Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    room_snapshots: Arc<
+        std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>,
+    >,
 ) {
     use futures_util::StreamExt;
+
+    // Uniquely identifies *this* listener instance among any other listener
+    // (past or future) for the same room — see `Session::room_snapshots`'s
+    // doc comment for why the cleanup at the end of this function needs it.
+    static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let generation = NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     const LIVENESS_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -318,7 +350,7 @@ fn spawn_timeline_listener(
         room_snapshots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(room_id.clone(), initial_event.clone());
+            .insert(room_id.clone(), (generation, initial_event.clone()));
         let _ = events.send(initial_event);
 
         let mut liveness_check = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
@@ -363,7 +395,7 @@ fn spawn_timeline_listener(
             room_snapshots
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(room_id.clone(), event.clone());
+                .insert(room_id.clone(), (generation, event.clone()));
             let _ = events.send(event);
         }
         // The `Timeline` is gone (evicted, or the session itself is gone) —
@@ -372,10 +404,23 @@ fn spawn_timeline_listener(
         // connection for a room this session no longer has open. If the
         // room is reopened later, `get_or_create_timeline` spawns a fresh
         // listener that repopulates this from a fresh subscribe.
-        room_snapshots
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&room_id);
+        //
+        // Only remove if the entry still belongs to *this* listener
+        // (matching generation) — a room can be LRU-evicted and reopened
+        // (spawning a fresh listener with a fresh snapshot already inserted)
+        // before this old listener's own liveness check notices its
+        // `Timeline` is gone and reaches this cleanup. Removing
+        // unconditionally would delete the new listener's live entry out
+        // from under it.
+        {
+            let mut snapshots = room_snapshots.lock().unwrap_or_else(|e| e.into_inner());
+            if snapshots
+                .get(&room_id)
+                .is_some_and(|(g, _)| *g == generation)
+            {
+                snapshots.remove(&room_id);
+            }
+        }
     });
 }
 
