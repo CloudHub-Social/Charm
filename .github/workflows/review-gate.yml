@@ -69,17 +69,22 @@ jobs:
           # Treat them as "has engaged with this PR": Codex via a +1 reaction (clean)
           # or any submitted review (findings); Copilot via any submitted review
           # (it leaves no reaction). Seer above still anchors the latest commit.
+          # --paginate walks every page; the --jq emits one line per matching item
+          # (across all pages), and grep -c counts them. Do NOT use `… | length`
+          # with --paginate: that emits a length PER page, yielding a multi-line
+          # value that breaks the integer test on any PR with >1 page.
+          count_matches() { grep -c . || true; }
           codex_done() {
             local react rev
             react=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-                     --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")] | length')
+                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' | count_matches)
             rev=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                   --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")] | length')
+                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' | count_matches)
             [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
           }
           copilot_done() {
             [ "$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                  --jq '[.[] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')" -gt 0 ]
+                  --jq '.[] | select(.user.login == "copilot-pull-request-reviewer[bot]") | .id' | count_matches)" -gt 0 ]
           }
 
           while :; do
