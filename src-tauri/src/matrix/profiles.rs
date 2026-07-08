@@ -138,7 +138,7 @@ pub async fn get_own_profile_impl(
 /// event's state key + content, returns the profile update to push if (and
 /// only if) this event is about the signed-in user themself. Unit-tested
 /// directly below, same rationale as `mod.rs::sso_state_tests`.
-pub(crate) fn self_profile_update(
+pub fn self_profile_update(
     own_user_id: &UserId,
     state_key: &UserId,
     content: &RoomMemberEventContent,
