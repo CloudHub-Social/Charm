@@ -271,7 +271,9 @@ export function DevicesPanel() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Sign out {selectedCount} devices?</DialogTitle>
+            <DialogTitle>
+              Sign out {selectedCount} device{selectedCount === 1 ? "" : "s"}?
+            </DialogTitle>
             <DialogDescription>
               {bulkNeedsPassword
                 ? "Re-enter your password to confirm."
