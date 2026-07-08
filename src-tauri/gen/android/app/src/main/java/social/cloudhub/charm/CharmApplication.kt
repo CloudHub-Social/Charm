@@ -23,7 +23,7 @@ class CharmApplication : Application() {
 
         SentryAndroid.init(this) { options ->
             options.setDsn(dsn)
-            options.setEnvironment(BuildConfig.SENTRY_ENVIRONMENT.takeIf { it.isNotBlank() })
+            BuildConfig.SENTRY_ENVIRONMENT.takeIf { it.isNotBlank() }?.let { options.setEnvironment(it) }
             BuildConfig.SENTRY_RELEASE.takeIf { it.isNotBlank() }?.let { options.setRelease(it) }
             options.setSendDefaultPii(false)
             options.setSendClientReports(false)
@@ -53,7 +53,12 @@ class CharmApplication : Application() {
             return false
         }
         val lastModified = file.lastModified()
-        if (file == cachedSentryConsentFile && lastModified == cachedSentryConsentLastModified) {
+        val canUseCachedTimestamp = lastModified > 0L
+        if (
+            canUseCachedTimestamp &&
+            file == cachedSentryConsentFile &&
+            lastModified == cachedSentryConsentLastModified
+        ) {
             return cachedSentryConsentEnabled
         }
 
@@ -66,7 +71,7 @@ class CharmApplication : Application() {
             state?.optBoolean("sentryEnabled", false) == true
         }.getOrDefault(false)
         cachedSentryConsentFile = file
-        cachedSentryConsentLastModified = lastModified
+        cachedSentryConsentLastModified = if (canUseCachedTimestamp) lastModified else Long.MIN_VALUE
         cachedSentryConsentEnabled = enabled
         return enabled
     }
