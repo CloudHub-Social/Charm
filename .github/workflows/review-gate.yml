@@ -71,9 +71,9 @@ jobs:
           # (it leaves no reaction). Seer above still anchors the latest commit.
           codex_done() {
             local react rev
-            react=$(gh api "repos/$REPO/issues/$PR/reactions" \
+            react=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
                      --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")] | length')
-            rev=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+            rev=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
                    --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")] | length')
             [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
           }
