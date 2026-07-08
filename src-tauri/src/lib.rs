@@ -301,7 +301,8 @@ fn cached_observability_logs_enabled(app_data_dir: &Path) -> bool {
             .is_some_and(|cached_dir| cached_dir == app_data_dir);
         let fresh = cache
             .refreshed_at
-            .is_some_and(|refreshed_at| now.duration_since(refreshed_at) < LOG_CONSENT_CACHE_TTL);
+            .and_then(|refreshed_at| now.checked_duration_since(refreshed_at))
+            .is_some_and(|age| age < LOG_CONSENT_CACHE_TTL);
         if same_dir && fresh {
             return cache.logs_enabled;
         }
