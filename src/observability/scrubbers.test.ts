@@ -15,7 +15,8 @@ describe("observability scrubbers", () => {
     const payload = {
       message: "failed in !room:example.org",
       extra: {
-        password: "safe because keys alone are not sent",
+        password: "secret",
+        access_token: "token",
         nested: ["@user:example.org", "plain string"],
       },
     };
@@ -23,7 +24,8 @@ describe("observability scrubbers", () => {
     expect(scrubSentryValue(payload)).toEqual({
       message: "failed in ![redacted]:[redacted]",
       extra: {
-        password: "safe because keys alone are not sent",
+        password: "[redacted]",
+        access_token: "[redacted]",
         nested: ["@[redacted]:[redacted]", "plain string"],
       },
     });

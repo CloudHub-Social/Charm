@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
  * of the entire app when a render error escapes every component below it.
  * Without a boundary at all, that same error unmounts React's root and
  * leaves a blank window with no recovery path — this at least gives the
- * user a way back in, and Sentry has already captured the error by the time
- * this renders when the user opted in under Settings -> Observability.
+ * user a way back in. When the user opted in under Settings -> Observability
+ * and the build has a Sentry DSN, the surrounding boundary captures the error
+ * before this renders.
  */
 export function ErrorFallback({ resetError }: { resetError: () => void }) {
   return (

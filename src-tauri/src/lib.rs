@@ -33,8 +33,17 @@ static SECRET_FIELD_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     .expect("SECRET_FIELD_PATTERN is a valid static regex")
 });
 
+static SECRET_FIELD_NAME_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+    || {
+        regex::Regex::new(
+        r#"(?i)^(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)$"#,
+    )
+    .expect("SECRET_FIELD_NAME_PATTERN is a valid static regex")
+    },
+);
+
 static MATRIX_ID_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"([!@#$#])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?"#)
+    regex::Regex::new(r#"([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?"#)
         .expect("MATRIX_ID_PATTERN is a valid static regex")
 });
 
@@ -73,8 +82,12 @@ fn scrub_json_value(value: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Object(fields) => {
-            for field in fields.values_mut() {
-                scrub_json_value(field);
+            for (key, field) in fields.iter_mut() {
+                if SECRET_FIELD_NAME_PATTERN.is_match(key) {
+                    *field = serde_json::Value::String("[redacted]".to_owned());
+                } else {
+                    scrub_json_value(field);
+                }
             }
         }
         serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::Null => {}
@@ -87,9 +100,11 @@ fn scrub_json_value(value: &mut serde_json::Value) {
 fn scrub_event(
     event: sentry::protocol::Event<'static>,
 ) -> Option<sentry::protocol::Event<'static>> {
-    let mut value = serde_json::to_value(&event).ok()?;
+    let Ok(mut value) = serde_json::to_value(&event) else {
+        return Some(event);
+    };
     scrub_json_value(&mut value);
-    serde_json::from_value(value).ok()
+    Some(serde_json::from_value(value).unwrap_or(event))
 }
 
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
@@ -454,6 +469,32 @@ mod observability_tests {
         assert_eq!(
             scrub_sensitive_text(input),
             r#"room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] password="[redacted]""#
+        );
+    }
+
+    #[test]
+    fn scrub_json_value_redacts_secret_field_values() {
+        let mut value = serde_json::json!({
+            "message": "failed in !room:example.org",
+            "extra": {
+                "password": "secret",
+                "access_token": "token",
+                "nested": ["@user:example.org", "plain string"]
+            }
+        });
+
+        scrub_json_value(&mut value);
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "message": "failed in ![redacted]:[redacted]",
+                "extra": {
+                    "password": "[redacted]",
+                    "access_token": "[redacted]",
+                    "nested": ["@[redacted]:[redacted]", "plain string"]
+                }
+            })
         );
     }
 
