@@ -531,6 +531,12 @@ describe("matrix web transport", () => {
     await expect(invoke("try_restore_session")).resolves.toBeNull();
   });
 
+  it("treats a malformed restore response as no browser session", async () => {
+    fetchMock().mockResolvedValueOnce(new Response("session has no device id", { status: 400 }));
+
+    await expect(invoke("try_restore_session")).resolves.toBeNull();
+  });
+
   it("dispatches multiplexed WebSocket events to matching listeners", async () => {
     const roomList = vi.fn();
     const sasUpdate = vi.fn();

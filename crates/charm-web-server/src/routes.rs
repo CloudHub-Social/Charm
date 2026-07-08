@@ -487,7 +487,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoRe
     let device_id = session
         .client
         .device_id()
-        .ok_or_else(|| ApiError::bad_request("session has no device id"))?
+        .ok_or_else(|| ApiError::unauthorized("session has no device id"))?
         .to_string();
     Ok(Json(MeResponse {
         user_id: session.user_id.clone(),

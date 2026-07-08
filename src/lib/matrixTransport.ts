@@ -263,7 +263,9 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", "/api/auth/register", args.request);
     case "try_restore_session":
       return requestJson<T>("GET", "/api/auth/me").catch((error: unknown) => {
-        if (error instanceof HttpError && error.status === 401) return null as T;
+        if (error instanceof HttpError && (error.status === 401 || error.status === 400)) {
+          return null as T;
+        }
         throw error;
       });
     case "logout":
