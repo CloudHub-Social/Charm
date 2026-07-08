@@ -32,46 +32,64 @@ function humanBytes(bytes) {
   return `${value.toFixed(unitIndex === 0 ? 0 : 2)} ${units[unitIndex]}`;
 }
 
-async function collectFiles(path, seenFiles) {
+function compareFiles(left, right) {
+  return right.bytes - left.bytes || left.path.localeCompare(right.path);
+}
+
+function recordFile(topFiles, file) {
+  topFiles.push(file);
+  topFiles.sort(compareFiles);
+  if (topFiles.length > maxFiles) {
+    topFiles.pop();
+  }
+}
+
+async function collectFiles(path, seenFiles, topFiles) {
   let details;
   try {
     details = await stat(path);
   } catch (error) {
     if (error?.code === "ENOENT") {
-      return [];
+      return { bytes: 0, count: 0 };
     }
     throw error;
   }
 
   if (details.isFile()) {
     if (seenFiles.has(path)) {
-      return [];
+      return { bytes: 0, count: 0 };
     }
     seenFiles.add(path);
-    return [{ path, bytes: details.size }];
+    recordFile(topFiles, { path, bytes: details.size });
+    return { bytes: details.size, count: 1 };
   }
 
   if (!details.isDirectory()) {
-    return [];
+    return { bytes: 0, count: 0 };
   }
 
   const children = await readdir(path);
-  const nested = [];
+  let bytes = 0;
+  let count = 0;
   for (const child of children) {
-    nested.push(...(await collectFiles(resolve(path, child), seenFiles)));
+    const nested = await collectFiles(resolve(path, child), seenFiles, topFiles);
+    bytes += nested.bytes;
+    count += nested.count;
   }
-  return nested;
+  return { bytes, count };
 }
 
 const cwd = process.cwd();
 const seenFiles = new Set();
-const files = [];
+const topFiles = [];
+let total = 0;
+let fileCount = 0;
 for (const root of roots) {
-  files.push(...(await collectFiles(resolve(root), seenFiles)));
+  const nested = await collectFiles(resolve(root), seenFiles, topFiles);
+  total += nested.bytes;
+  fileCount += nested.count;
 }
-files.sort((a, b) => b.bytes - a.bytes || a.path.localeCompare(b.path));
 
-const total = files.reduce((sum, file) => sum + file.bytes, 0);
 const lines = [
   `### ${title}`,
   "",
@@ -79,16 +97,16 @@ const lines = [
   "",
 ];
 
-if (files.length === 0) {
+if (fileCount === 0) {
   lines.push("_No files were found in the configured paths._", "");
 } else {
   lines.push("| File | Size | Bytes |", "| --- | ---: | ---: |");
-  for (const file of files.slice(0, maxFiles)) {
+  for (const file of topFiles) {
     const path = relative(cwd, file.path);
     lines.push(`| \`${path}\` | ${humanBytes(file.bytes)} | ${byteFormatter.format(file.bytes)} |`);
   }
-  if (files.length > maxFiles) {
-    lines.push(`| _${files.length - maxFiles} smaller files omitted_ | | |`);
+  if (fileCount > maxFiles) {
+    lines.push(`| _${fileCount - maxFiles} smaller files omitted_ | | |`);
   }
   lines.push("");
 }
