@@ -1277,7 +1277,6 @@ struct ResolveAvatarQuery {
 async fn resolve_avatar(
     State(state): State<AppState>,
     jar: CookieJar,
-    headers: axum::http::HeaderMap,
     Query(query): Query<ResolveAvatarQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
@@ -1340,7 +1339,7 @@ async fn resolve_avatar(
             ("x-content-type-options", "nosniff".to_string()),
             (
                 "cross-origin-resource-policy",
-                media_corp_header(&headers).to_string(),
+                media_corp_header().to_string(),
             ),
         ],
         body,
@@ -1413,7 +1412,7 @@ async fn resolve_message_media(
         )));
     }
 
-    let file = tokio::fs::File::open(&path)
+    let mut file = tokio::fs::File::open(&path)
         .await
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     // Sniff the actual resolved bytes first, falling back to the message's
@@ -1468,31 +1467,100 @@ async fn resolve_message_media(
     } else {
         ("application/octet-stream".to_string(), "attachment")
     };
-    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
-    Ok((
-        [
-            ("content-type", content_type),
-            ("content-disposition", content_disposition.to_string()),
-            ("x-content-type-options", "nosniff".to_string()),
-            // Same-site subdomains attach this session's cookie
-            // automatically (`SameSite=Strict` only blocks cross-*site*),
-            // so without this a subdomain page could embed this URL as an
-            // `<img>`/`<video>` and — even unable to read the bytes
-            // directly — learn whether the victim can access this private
-            // attachment at all (load succeeds vs. errors) purely from
-            // `onload`/`onerror`/media-metadata timing, and render it
-            // inside the attacker's own page. `same-origin` refuses to load
-            // this response as a subresource from any origin but this one —
-            // relaxed to `cross-origin` only for a request whose `Origin` is
-            // actually on `CHARM_WEB_SERVER_ALLOWED_ORIGIN`, see
-            // `media_corp_header`'s doc comment.
-            (
-                "cross-origin-resource-policy",
-                media_corp_header(&headers).to_string(),
-            ),
-        ],
-        body,
-    ))
+    // `<audio>`/`<video>` elements commonly issue `Range` requests for
+    // initial buffering and seeking — without honoring them, a browser has
+    // to download a large file from the very start before playback (or any
+    // seek) can begin, and every seek re-fetches the whole file. Only a
+    // single range is handled (`parse_range` rejects a comma-separated
+    // multi-range request by returning `None`), which is what every real
+    // browser media element actually sends; an unsatisfiable/invalid Range
+    // falls back to serving the full file as a plain `200`, same as if no
+    // `Range` header had been sent at all, rather than erroring.
+    let file_len = metadata.len();
+    let range = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| parse_byte_range(v, file_len));
+    let (status, start, response_len, content_range) = match range {
+        Some((start, end)) => (
+            StatusCode::PARTIAL_CONTENT,
+            start,
+            end - start + 1,
+            Some(format!("bytes {start}-{end}/{file_len}")),
+        ),
+        None => (StatusCode::OK, 0, file_len, None),
+    };
+    if start > 0 {
+        use tokio::io::AsyncSeekExt;
+        file.seek(std::io::SeekFrom::Start(start))
+            .await
+            .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    }
+    let limited = tokio::io::AsyncReadExt::take(file, response_len);
+    let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(limited));
+
+    let mut response = axum::response::Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        .header("content-disposition", content_disposition)
+        .header("x-content-type-options", "nosniff")
+        .header("accept-ranges", "bytes")
+        .header("content-length", response_len.to_string())
+        // Same-site subdomains attach this session's cookie automatically
+        // (`SameSite=Strict` only blocks cross-*site*), so without this a
+        // subdomain page could embed this URL as an `<img>`/`<video>` and
+        // — even unable to read the bytes directly — learn whether the
+        // victim can access this private attachment at all (load succeeds
+        // vs. errors) purely from `onload`/`onerror`/media-metadata timing,
+        // and render it inside the attacker's own page. `same-origin`
+        // refuses to load this response as a subresource from any origin
+        // but this one — relaxed to `cross-origin` only when
+        // `CHARM_WEB_SERVER_ALLOWED_ORIGIN` is configured, see
+        // `media_corp_header`'s doc comment.
+        .header("cross-origin-resource-policy", media_corp_header());
+    if let Some(content_range) = content_range {
+        response = response.header("content-range", content_range);
+    }
+    response
+        .body(body)
+        .map_err(|e| ApiError::bad_request(e.to_string()))
+}
+
+/// Parses a single-range `Range: bytes=...` header value against a known
+/// file length, returning the inclusive `(start, end)` byte offsets to
+/// serve. `None` for anything this doesn't confidently understand — a
+/// missing/malformed header, a multi-range request (`bytes=0-10,20-30`,
+/// vanishingly rare from a real media element and not worth the added
+/// complexity of a multipart/byteranges response), or a range starting at
+/// or past the end of the file — callers treat `None` the same as "no Range
+/// header was sent" and serve the full file rather than erroring.
+fn parse_byte_range(header: &str, file_len: u64) -> Option<(u64, u64)> {
+    let spec = header.strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (start_str, end_str) = spec.split_once('-')?;
+    if start_str.is_empty() {
+        // Suffix range (`bytes=-500` = "the last 500 bytes").
+        let suffix_len: u64 = end_str.parse().ok()?;
+        if suffix_len == 0 || file_len == 0 {
+            return None;
+        }
+        return Some((file_len.saturating_sub(suffix_len), file_len - 1));
+    }
+    let start: u64 = start_str.parse().ok()?;
+    if start >= file_len {
+        return None;
+    }
+    let end = if end_str.is_empty() {
+        file_len - 1
+    } else {
+        end_str.parse::<u64>().ok()?.min(file_len - 1)
+    };
+    if end < start {
+        return None;
+    }
+    Some((start, end))
 }
 
 /// Best-effort lookup of an image/video/audio/file message's declared
@@ -1812,7 +1880,16 @@ fn sniffed_av_mime(bytes: &[u8]) -> Option<String> {
         };
     }
     match bytes {
-        [0x1A, 0x45, 0xDF, 0xA3, ..] => Some("video/webm".to_string()),
+        // EBML (Matroska/WebM's container format) has no fixed-offset
+        // signal distinguishing an audio-only WebM/Opus file from one that
+        // also carries video — that requires parsing into the EBML tree
+        // itself, well beyond a magic-byte sniff. Unlike the MP4 case
+        // above (where the `ftyp` major brand *does* cheaply disambiguate
+        // audio-only), guessing `video/webm` here would mislabel a
+        // legitimate audio-only attachment the same way HEIC did — so this
+        // returns `None`/unrecognized instead, letting the message's
+        // declared mimetype win.
+        [0x1A, 0x45, 0xDF, 0xA3, ..] => None,
         [b'O', b'g', b'g', b'S', ..] => Some("audio/ogg".to_string()),
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => {
             Some("audio/wav".to_string())
@@ -2053,16 +2130,28 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
 /// `cross-origin` policy — silently loosening protection for the common
 /// same-origin/local-dev case that never needed it relaxed in the first
 /// place.
-fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
-    let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
-        return "same-origin";
-    };
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    match origin {
-        Some(origin) if allowed.split(',').map(str::trim).any(|o| o == origin) => "cross-origin",
-        _ => "same-origin",
+fn media_corp_header() -> &'static str {
+    // Deliberately not conditioned on the *request's* `Origin` header — the
+    // documented cross-origin-frontend deployment loads these URLs as plain
+    // `<img>`/`<video>`/`<audio src>` subresource fetches, which are
+    // "no-cors" loads: browsers do not attach `Origin` to those the way
+    // they do to `fetch`/XHR, so gating on it (an earlier version of this
+    // function did exactly that) left every such subresource load still
+    // falling through to `same-origin` and blocked — the configured
+    // frontend could call the JSON API but never render any media/avatar.
+    // `CHARM_WEB_SERVER_ALLOWED_ORIGIN` being set at all is itself the
+    // deployer's explicit signal that a cross-origin frontend is part of
+    // this deployment, and CORP isn't this route's actual access control
+    // anyway — `require_session`'s cookie check already gates who can
+    // successfully call it at all; CORP only decides whether a
+    // *successful* response can be embedded as a subresource by another
+    // origin's page. Relaxing it deployment-wide once cross-origin is
+    // opted into is consistent with that: same-origin/local-dev (the
+    // unset-env-var case) keeps the strict default.
+    if std::env::var(ALLOWED_ORIGIN_ENV).is_ok() {
+        "cross-origin"
+    } else {
+        "same-origin"
     }
 }
 
@@ -2251,6 +2340,39 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
         }
     }
 
+    // Replay the signed-in user's latest `profile:self` update too — see
+    // `Session::profile_snapshot`'s doc comment.
+    let profile_snapshot = session
+        .profile_snapshot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(event) = profile_snapshot {
+        if let Ok(json) = serde_json::to_string(&event) {
+            if socket.send(Message::Text(json.into())).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    // Replay each known user's latest `presence:update` too — see
+    // `Session::presence_snapshots`'s doc comment.
+    let presence_snapshots: Vec<_> = session
+        .presence_snapshots
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    for event in presence_snapshots {
+        let Ok(json) = serde_json::to_string(&event) else {
+            continue;
+        };
+        if socket.send(Message::Text(json.into())).await.is_err() {
+            return;
+        }
+    }
+
     let mut keepalive = tokio::time::interval(WS_KEEPALIVE_INTERVAL);
     // The first `tick()` fires immediately, not after the first interval —
     // skip it so this doesn't send a redundant ping the instant a client
@@ -2362,5 +2484,47 @@ impl IntoResponse for ApiError {
             Json(serde_json::json!({ "error": self.message })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::parse_byte_range;
+
+    #[test]
+    fn a_plain_range_returns_the_requested_inclusive_bounds() {
+        assert_eq!(parse_byte_range("bytes=0-499", 1000), Some((0, 499)));
+        assert_eq!(parse_byte_range("bytes=500-999", 1000), Some((500, 999)));
+    }
+
+    #[test]
+    fn an_open_ended_range_extends_to_the_end_of_the_file() {
+        assert_eq!(parse_byte_range("bytes=900-", 1000), Some((900, 999)));
+    }
+
+    #[test]
+    fn a_suffix_range_returns_the_last_n_bytes() {
+        assert_eq!(parse_byte_range("bytes=-500", 1000), Some((500, 999)));
+    }
+
+    #[test]
+    fn an_end_past_the_file_length_is_clamped() {
+        assert_eq!(parse_byte_range("bytes=0-9999", 1000), Some((0, 999)));
+    }
+
+    #[test]
+    fn a_start_at_or_past_the_file_length_is_rejected() {
+        assert_eq!(parse_byte_range("bytes=1000-", 1000), None);
+    }
+
+    #[test]
+    fn a_multi_range_request_is_rejected() {
+        assert_eq!(parse_byte_range("bytes=0-10,20-30", 1000), None);
+    }
+
+    #[test]
+    fn a_malformed_header_is_rejected() {
+        assert_eq!(parse_byte_range("not a range", 1000), None);
+        assert_eq!(parse_byte_range("bytes=abc-def", 1000), None);
     }
 }

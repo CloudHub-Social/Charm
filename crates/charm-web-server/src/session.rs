@@ -176,6 +176,21 @@ pub struct Session {
     /// a user as typing indefinitely.
     pub typing_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    /// The signed-in user's latest `profile:self` update (display
+    /// name/avatar change), replayed on every new WebSocket connection. The
+    /// frontend's `useOwnProfile` hook only refetches on mount or on this
+    /// invalidation event — without a replay, a profile change that lands
+    /// while a tab's WebSocket is disconnected leaves the header/profile
+    /// chip stale until a remount.
+    pub profile_snapshot: Arc<std::sync::Mutex<Option<ServerEvent>>>,
+    /// The latest `presence:update` per user this session has seen. The
+    /// frontend's `usePresence` only does a one-shot `getPresence` fetch
+    /// when a user's presence atom is still empty — once populated, it
+    /// relies entirely on live `presence:update` pushes to stay current, so
+    /// a presence change missed during a WebSocket reconnect gap would
+    /// otherwise leave that user's status stale indefinitely.
+    pub presence_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedUserId, ServerEvent>>>,
 }
 
 /// Bundles `Session`'s "current state, replayed to every new connection"
@@ -210,6 +225,28 @@ impl Session {
     }
 }
 
+/// `profile_snapshot`/`presence_snapshots` are updated by handlers
+/// registered directly on the `Client` (`sync_loop::register_presence_handler`/
+/// `register_self_profile_handler`) rather than by `sync_loop::spawn`'s own
+/// loop like `SyncSnapshots`'s fields — passed as their own clones into
+/// `sync_loop::register_event_handlers` rather than folded into
+/// `SyncSnapshots`, matching that function's existing `events`/
+/// `pending_verification_events` parameter shape.
+pub struct ProfileAndPresenceSnapshots {
+    pub profile_snapshot: Arc<std::sync::Mutex<Option<ServerEvent>>>,
+    pub presence_snapshots:
+        Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedUserId, ServerEvent>>>,
+}
+
+impl Session {
+    pub fn profile_and_presence_snapshots(&self) -> ProfileAndPresenceSnapshots {
+        ProfileAndPresenceSnapshots {
+            profile_snapshot: self.profile_snapshot.clone(),
+            presence_snapshots: self.presence_snapshots.clone(),
+        }
+    }
+}
+
 /// See `Session::pending_verification_events`'s doc comment.
 pub(crate) const MAX_PENDING_VERIFICATION_EVENTS: usize = 20;
 
@@ -233,6 +270,8 @@ impl Session {
             room_details_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             receipt_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             typing_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
+            presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             events,
         }
     }

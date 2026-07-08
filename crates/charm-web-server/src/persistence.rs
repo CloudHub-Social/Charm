@@ -425,6 +425,7 @@ async fn restore_one(
         &client,
         session.events.clone(),
         session.pending_verification_events.clone(),
+        session.profile_and_presence_snapshots(),
     );
 
     // Re-establish local room-store state the same way a fresh login does

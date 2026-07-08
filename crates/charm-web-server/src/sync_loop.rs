@@ -125,9 +125,18 @@ pub fn register_event_handlers(
     client: &Client,
     events: broadcast::Sender<ServerEvent>,
     pending_verification_events: std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    profile_and_presence: crate::session::ProfileAndPresenceSnapshots,
 ) {
-    register_presence_handler(client.clone(), events.clone());
-    register_self_profile_handler(client.clone(), events.clone());
+    register_presence_handler(
+        client.clone(),
+        events.clone(),
+        profile_and_presence.presence_snapshots,
+    );
+    register_self_profile_handler(
+        client.clone(),
+        events.clone(),
+        profile_and_presence.profile_snapshot,
+    );
     register_verification_handler(client.clone(), events, pending_verification_events);
 }
 
@@ -455,17 +464,34 @@ async fn emit_room_updates(
 /// Web-server-local equivalent of `presence::register_presence_handler`,
 /// reusing its pure `presence_event_to_update` mapper rather than
 /// `app.emit`.
-fn register_presence_handler(client: Client, events: broadcast::Sender<ServerEvent>) {
+fn register_presence_handler(
+    client: Client,
+    events: broadcast::Sender<ServerEvent>,
+    presence_snapshots: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedUserId, ServerEvent>>,
+    >,
+) {
     client.add_event_handler(move |ev: PresenceEvent| {
         let events = events.clone();
+        let presence_snapshots = presence_snapshots.clone();
         async move {
-            let _ = events.send(ServerEvent::Presence(presence_event_to_update(&ev)));
+            let sender = ev.sender.clone();
+            let event = ServerEvent::Presence(presence_event_to_update(&ev));
+            presence_snapshots
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(sender, event.clone());
+            let _ = events.send(event);
         }
     });
 }
 
 /// Web-server-local equivalent of `profiles::register_self_profile_handler`.
-fn register_self_profile_handler(client: Client, events: broadcast::Sender<ServerEvent>) {
+fn register_self_profile_handler(
+    client: Client,
+    events: broadcast::Sender<ServerEvent>,
+    profile_snapshot: std::sync::Arc<std::sync::Mutex<Option<ServerEvent>>>,
+) {
     let own_user_id = client.user_id().map(ToOwned::to_owned);
     let last_emitted: std::sync::Arc<
         std::sync::Mutex<Option<charm_lib::matrix::profiles::SelfProfileUpdate>>,
@@ -474,6 +500,7 @@ fn register_self_profile_handler(client: Client, events: broadcast::Sender<Serve
         let events = events.clone();
         let own_user_id = own_user_id.clone();
         let last_emitted = last_emitted.clone();
+        let profile_snapshot = profile_snapshot.clone();
         async move {
             let Some(own_user_id) = own_user_id else {
                 return;
@@ -489,7 +516,9 @@ fn register_self_profile_handler(client: Client, events: broadcast::Sender<Serve
                 return;
             }
             *last_emitted = Some(update.clone());
-            let _ = events.send(ServerEvent::ProfileSelf(update));
+            let event = ServerEvent::ProfileSelf(update);
+            *profile_snapshot.lock().unwrap_or_else(|e| e.into_inner()) = Some(event.clone());
+            let _ = events.send(event);
         }
     });
 }

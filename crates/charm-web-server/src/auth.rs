@@ -59,6 +59,7 @@ pub async fn login(
         &client,
         session.events.clone(),
         session.pending_verification_events.clone(),
+        session.profile_and_presence_snapshots(),
     );
 
     // Room APIs (`snapshot_rooms`/`client.get_room`) read the SDK's local
@@ -110,6 +111,7 @@ pub async fn register(
         &client,
         session.events.clone(),
         session.pending_verification_events.clone(),
+        session.profile_and_presence_snapshots(),
     );
 
     let initial_response = client
