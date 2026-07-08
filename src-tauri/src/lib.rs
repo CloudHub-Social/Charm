@@ -208,7 +208,7 @@ fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> 
 
 fn install_sentry_tracing(app_data_dir: PathBuf) -> bool {
     if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
-        return false;
+        return true;
     }
 
     let event_app_data_dir = app_data_dir.clone();
