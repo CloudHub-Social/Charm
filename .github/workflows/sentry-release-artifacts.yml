@@ -144,7 +144,7 @@ jobs:
           SIZE_REPORT_TITLE: Linux release artifact sizes
           SIZE_REPORT_PATHS: |
             ${{ steps.cargo-target.outputs.dir }}/release
-            src-tauri/target/release/bundle
+            ${{ steps.cargo-target.outputs.dir }}/release/bundle
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/linux-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
@@ -217,6 +217,7 @@ jobs:
             printf '%s\n' "${existing[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "bundle-path=$target_dir/release/bundle" >> "$GITHUB_OUTPUT"
 
       - name: Upload Apple debug information files
         env:
@@ -244,6 +245,7 @@ jobs:
           SIZE_REPORT_TITLE: Apple build artifact sizes
           SIZE_REPORT_PATHS: |
             ${{ steps.apple-debug-files.outputs.paths }}
+            ${{ steps.apple-debug-files.outputs.bundle-path }}
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/apple-build-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
@@ -294,11 +296,13 @@ jobs:
         run: |
           $metadata = cargo metadata --format-version=1 --no-deps | ConvertFrom-Json
           $releaseDir = Join-Path $metadata.target_directory "release"
+          $bundleDir = Join-Path $releaseDir "bundle"
           if (-not (Test-Path $releaseDir)) {
             Write-Error "No Windows release debug-file directory found at $releaseDir"
             exit 1
           }
           "path=$releaseDir" >> $env:GITHUB_OUTPUT
+          "bundle-path=$bundleDir" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows debug information files
         shell: pwsh
@@ -321,7 +325,7 @@ jobs:
           SIZE_REPORT_TITLE: Windows release artifact sizes
           SIZE_REPORT_PATHS: |
             ${{ steps.windows-debug-files.outputs.path }}
-            src-tauri/target/release/bundle
+            ${{ steps.windows-debug-files.outputs.bundle-path }}
           SIZE_REPORT_OUTPUT: .artifacts/sentry-size-analysis/windows-release-sizes.md
         run: node .github/scripts/report-artifact-sizes.mjs
 
