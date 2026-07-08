@@ -30,3 +30,14 @@ export const membersDrawerOpenAtomFamily = boundedAtomFamily((_roomId: string) =
   void _roomId;
   return atom(false);
 }, MAX_TRACKED_ROOMS);
+
+/**
+ * Fallback for `useAtom(membersDrawerOpenAtomFamily(...))` call sites that
+ * can render with no active room (e.g. `RoomsScreen` before any room is
+ * selected). Deliberately a plain atom outside the family rather than
+ * calling the family with a placeholder key like `""` — doing that would
+ * still occupy one of `MAX_TRACKED_ROOMS` slots, and once created it could
+ * eventually get evicted-into (or itself cause the eviction of) a real
+ * room's tracked entry.
+ */
+export const noRoomMembersDrawerOpenAtom = atom(false);
