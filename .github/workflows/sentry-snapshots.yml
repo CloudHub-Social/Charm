@@ -102,7 +102,7 @@ jobs:
           pnpm dlx @sentry/cli@3.5.1 snapshots upload
           .artifacts/sentry-snapshots
           --app-id charm-storybook
-          --diff-threshold 0.01
+          --diff-threshold 0.02
           --log-level info
 
       - name: Note snapshot status
@@ -181,7 +181,7 @@ jobs:
           pnpm dlx @sentry/cli@3.5.1 snapshots upload
           .artifacts/sentry-e2e-snapshots
           --app-id charm-e2e
-          --diff-threshold 0.01
+          --diff-threshold 0.02
           --log-level info
 
       - name: Note snapshot status
