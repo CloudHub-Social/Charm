@@ -110,16 +110,22 @@ export type {
   VerificationRequestSummary,
 };
 
+// captureOnError: false — a failed login/register (wrong password,
+// unreachable homeserver, etc.) is expected user-facing UX handled inline by
+// LoginScreen, not a bug to report to Sentry.
 export function login(request: LoginRequest): Promise<LoginResponse> {
-  return invoke("login", { request });
+  return invoke("login", { request }, { captureOnError: false });
 }
 
 export function register(request: RegisterRequest): Promise<LoginResponse> {
-  return invoke("register", { request });
+  return invoke("register", { request }, { captureOnError: false });
 }
 
+// captureOnError: false — this fires on every keystroke via
+// useHomeserverDiscovery while the user is still typing a server name, so an
+// unresolvable address is the common case, not an error worth reporting.
 export function discoverHomeserver(input: string): Promise<DiscoverHomeserverResponse> {
-  return invoke("discover_homeserver", { input });
+  return invoke("discover_homeserver", { input }, { captureOnError: false });
 }
 
 export function startSsoLogin(homeserverUrl: string): Promise<string> {

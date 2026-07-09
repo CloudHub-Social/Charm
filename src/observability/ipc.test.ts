@@ -127,6 +127,7 @@ describe("IPC observability", () => {
         name: "IpcError",
       }),
       expect.objectContaining({
+        fingerprint: ["ipc-invoke-failed", "change_password"],
         contexts: expect.objectContaining({
           "tauri.ipc": expect.objectContaining({
             command: "change_password",
@@ -142,6 +143,71 @@ describe("IPC observability", () => {
         }),
       }),
     );
+  });
+
+  it("fingerprints captured exceptions by command so different commands don't collapse into one Sentry issue", async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error("boom a"));
+    await expect(invoke("command_a")).rejects.toThrow("boom a");
+
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error("boom b"));
+    await expect(invoke("command_b")).rejects.toThrow("boom b");
+
+    expect(Sentry.captureException).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ fingerprint: ["ipc-invoke-failed", "command_a"] }),
+    );
+    expect(Sentry.captureException).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ fingerprint: ["ipc-invoke-failed", "command_b"] }),
+    );
+  });
+
+  it("does not capture an expected/handled failure when the caller opts out via captureOnError: false", async () => {
+    const error = new Error("wrong password");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("login", { request: {} }, { captureOnError: false })).rejects.toBe(error);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    // Breadcrumbs still get recorded — only the Sentry exception capture is skipped.
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC login failed",
+      }),
+    );
+  });
+
+  it("still captures a command's failure by default when no options are passed", async () => {
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("some_other_command")).rejects.toBe(error);
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("redacts camelCase secret-ish field names, not just exact snake_case keys", () => {
+    expect(
+      ipcObservabilityTestHooks.summarizeArgs({
+        newPassword: "super-secret-new-password",
+        oldPassword: "super-secret-old-password",
+        currentPassword: "super-secret-current-password",
+        recoveryKey: "recovery-key-value",
+        accessToken: "token-value",
+        password: "plain-password",
+      }),
+    ).toEqual({
+      newPassword: "[redacted]",
+      oldPassword: "[redacted]",
+      currentPassword: "[redacted]",
+      recoveryKey: "[redacted]",
+      accessToken: "[redacted]",
+      password: "[redacted]",
+    });
   });
 
   it("does not capture expected UIA challenges as IPC failures", async () => {

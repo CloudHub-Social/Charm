@@ -1,6 +1,10 @@
 import { listen as tauriListen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { IPC_OPERATION_ID_HEADER, invoke as tauriInvoke } from "@/observability/ipc";
+import {
+  IPC_OPERATION_ID_HEADER,
+  invoke as tauriInvoke,
+  type InvokeOptions,
+} from "@/observability/ipc";
 import { createIpcOperationId } from "@/observability/operationId";
 import { isWebBuild } from "./platform";
 
@@ -561,8 +565,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
   }
 }
 
-export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
-  if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args);
+export async function invoke<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: InvokeOptions,
+): Promise<T> {
+  if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args, options);
   return invokeWeb<T>(command, args ?? {});
 }
 
