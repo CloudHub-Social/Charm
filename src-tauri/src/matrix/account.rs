@@ -425,11 +425,11 @@ pub async fn set_display_name(
 const MAX_AVATAR_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Validates that `file_path` is safe to read and upload as an avatar:
-/// resolves to a real file on disk (rejecting anything a symlink might be
-/// hiding), isn't implausibly large, and decodes as one of the image formats
+/// resolves symlinks to a real file on disk, isn't implausibly large, and
+/// decodes as one of the image formats
 /// the picker in `RoomSettingsForm`/profile settings offers (png/jpeg/gif/
 /// webp — matches this crate's `image` feature set). Returns the canonical
-/// path and decoded bytes on success.
+/// path, original bytes, and detected MIME type on success.
 ///
 /// This command has no Tauri fs-plugin capability backing it (see
 /// `src-tauri/capabilities/default.json` — there is no `fs:*` permission),
@@ -443,7 +443,9 @@ const MAX_AVATAR_BYTES: u64 = 20 * 1024 * 1024;
 /// uploading them as the account avatar. Validating the *decoded* image
 /// content (not just the extension or a `mime_guess` off the file name) means
 /// a renamed non-image file is rejected too.
-async fn validate_avatar_path(file_path: &str) -> Result<(std::path::PathBuf, Vec<u8>), String> {
+async fn validate_avatar_path(
+    file_path: &str,
+) -> Result<(std::path::PathBuf, Vec<u8>, mime_guess::Mime), String> {
     let path = tokio::fs::canonicalize(file_path)
         .await
         .map_err(|e| format!("invalid avatar path: {e}"))?;
@@ -462,11 +464,19 @@ async fn validate_avatar_path(file_path: &str) -> Result<(std::path::PathBuf, Ve
     }
 
     let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-    if image::guess_format(&data).is_err() {
+    let format = image::guess_format(&data)
+        .map_err(|_| "avatar file is not a recognized image format".to_string())?;
+    image::load_from_memory_with_format(&data, format)
+        .map_err(|_| "avatar file is not a valid image".to_string())?;
+    let mime: mime_guess::Mime = format
+        .to_mime_type()
+        .parse()
+        .map_err(|_| "avatar file has an unsupported image format".to_string())?;
+    if mime.type_() != mime_guess::mime::IMAGE {
         return Err("avatar file is not a recognized image format".to_string());
     }
 
-    Ok((path, data))
+    Ok((path, data, mime))
 }
 
 /// Reads `file_path` off disk and uploads it as the account avatar, setting
@@ -476,8 +486,7 @@ async fn validate_avatar_path(file_path: &str) -> Result<(std::path::PathBuf, Ve
 #[tauri::command]
 pub async fn set_avatar(state: State<'_, MatrixState>, file_path: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let (path, data) = validate_avatar_path(&file_path).await?;
-    let mime = mime_guess::from_path(&path).first_or_octet_stream();
+    let (_path, data, mime) = validate_avatar_path(&file_path).await?;
 
     client
         .account()
@@ -583,10 +592,30 @@ mod tests {
         tokio::fs::write(&file_path, &png_bytes).await.unwrap();
 
         let result = validate_avatar_path(file_path.to_str().unwrap()).await;
-        assert!(
-            result.is_ok(),
-            "expected a real PNG to validate, got {result:?}"
-        );
+        let (_path, _data, mime) =
+            result.unwrap_or_else(|err| panic!("expected a real PNG to validate, got {err}"));
+        assert_eq!(mime, mime_guess::mime::IMAGE_PNG);
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_uses_detected_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("avatar.png");
+        let mut jpeg_bytes = Vec::new();
+        image::RgbImage::new(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg_bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        tokio::fs::write(&file_path, &jpeg_bytes).await.unwrap();
+
+        let (_path, _data, mime) = validate_avatar_path(file_path.to_str().unwrap())
+            .await
+            .unwrap_or_else(|err| {
+                panic!("expected JPEG bytes with a PNG extension to validate, got {err}")
+            });
+        assert_eq!(mime, mime_guess::mime::IMAGE_JPEG);
     }
 
     #[tokio::test]
@@ -610,6 +639,21 @@ mod tests {
         assert!(
             result.is_err(),
             "expected a non-image file to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_an_image_header_without_image_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("fake.png");
+        let mut fake_png = b"\x89PNG\r\n\x1a\n".to_vec();
+        fake_png.extend_from_slice(b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot an image\n");
+        tokio::fs::write(&file_path, fake_png).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected a fake PNG header to be rejected, got {result:?}"
         );
     }
 
