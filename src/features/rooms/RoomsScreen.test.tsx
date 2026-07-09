@@ -64,12 +64,17 @@ vi.mock("./SpaceRail", () => ({
   SpaceRail: ({
     activeMode,
     activeSpaceId,
+    onCreateJoin,
   }: {
     activeMode: string;
     activeSpaceId: string | null;
+    onCreateJoin: () => void;
   }) => (
     <div>
       space-rail:{activeMode}:{activeSpaceId ?? "none"}
+      <button type="button" onClick={onCreateJoin}>
+        create-join
+      </button>
     </div>
   ),
 }));
@@ -260,6 +265,38 @@ describe("RoomsScreen", () => {
       expect(screen.getByText("space-rail:space:!space:example.org")).toBeInTheDocument(),
     );
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
+  it("auto-selects a room when create/join exits a consumed space deep link", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("space-rail:space:!space:example.org");
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:none");
+
+    fireEvent.click(screen.getByRole("button", { name: "create-join" }));
+
+    await screen.findByText("space-rail:home:none");
+    expect(screen.getByText("chat-content:!room:example.org")).toBeInTheDocument();
   });
 
   it("returns to the mobile list when a space deep link arrives from room detail", async () => {

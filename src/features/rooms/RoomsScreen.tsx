@@ -211,10 +211,7 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
-    const firstHomeRoom = rooms.find(
-      (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
-    );
-    const firstSelectableRoom = firstHomeRoom ?? rooms.find((room) => !room.is_space);
+    const firstSelectableRoom = getInitialSelectableRoom(rooms);
     if (activeRoomId === null && firstSelectableRoom) {
       if (spaceDeepLinkSelectedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
@@ -269,9 +266,14 @@ export function RoomsScreen({
             onSelectDms={selectDms}
             onSelectSpace={selectSpace}
             onCreateJoin={() => {
+              spaceDeepLinkSelectedRef.current = false;
               setRoomListMode("home");
               setSelectedSpaceId(null);
               setCreateJoinNotice(true);
+              if (activeRoomId === null) {
+                const firstSelectableRoom = getInitialSelectableRoom(rooms);
+                if (firstSelectableRoom) selectRoom(firstSelectableRoom.room_id);
+              }
             }}
           />
         }
@@ -310,4 +312,11 @@ export function RoomsScreen({
       <SettingsScreen onLoggedOut={onLoggedOut} />
     </>
   );
+}
+
+function getInitialSelectableRoom(rooms: RoomSummary[]) {
+  const firstHomeRoom = rooms.find(
+    (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
+  );
+  return firstHomeRoom ?? rooms.find((room) => !room.is_space);
 }
