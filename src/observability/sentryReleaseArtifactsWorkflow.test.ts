@@ -36,6 +36,7 @@ describe("Sentry release artifact workflow", () => {
   });
 
   it("uploads frontend sourcemaps only from explicit Sentry release builds", () => {
+    expect(workflow).toContain('REQUIRE_VITE_SENTRY_DSN: "true"');
     expect(workflow).toContain('WRITE_FRONTEND_UPLOAD_ENV: "true"');
     expect(releaseEnvScript).toContain("SENTRY_UPLOAD=true");
     expect(viteConfig).toContain('procEnv.SENTRY_UPLOAD === "true"');
