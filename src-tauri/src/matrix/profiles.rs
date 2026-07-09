@@ -82,7 +82,10 @@ pub async fn get_own_profile(
 ) -> Result<OwnProfile, String> {
     let client = state.require_client().await?;
     let media_cache = state.require_media_cache(&app).await.ok();
-    let presence = *state.sync_presence.lock().unwrap();
+    let presence = *state
+        .sync_presence
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     get_own_profile_impl(&client, media_cache, presence).await
 }
 
