@@ -36,9 +36,7 @@
         <!-- Keep both Sentry auto-init keys for SDK-version compatibility. -->
         <meta-data android:name="io.sentry.auto-init" android:value="false" />
         <meta-data android:name="io.sentry.sdk.auto-init" android:value="false" />
-        <!-- sentry-android-core 8.48.0 declares class-suffix authorities; keep
-             io.sentry.* removal stubs too so provider auto-init stays stripped
-             if Sentry changes authorities across 8.x patch releases. -->
+        <!-- sentry-android-core 8.48.0 declares these provider authorities. -->
         <provider
             android:name="io.sentry.android.core.SentryInitProvider"
             android:authorities="${applicationId}.SentryInitProvider"
@@ -46,14 +44,6 @@
         <provider
             android:name="io.sentry.android.core.SentryPerformanceProvider"
             android:authorities="${applicationId}.SentryPerformanceProvider"
-            tools:node="remove" />
-        <provider
-            android:name="io.sentry.android.core.SentryInitProvider"
-            android:authorities="${applicationId}.io.sentry.InitProvider"
-            tools:node="remove" />
-        <provider
-            android:name="io.sentry.android.core.SentryPerformanceProvider"
-            android:authorities="${applicationId}.io.sentry.PerformanceProvider"
             tools:node="remove" />
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
