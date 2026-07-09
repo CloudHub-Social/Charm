@@ -151,6 +151,36 @@ describe("SpaceRail", () => {
     expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
   });
 
+  it("guards recursive folder rendering against reachable cyclic child links", () => {
+    renderRail({
+      activeMode: "space",
+      activeSpaceId: "!space-b:localhost",
+      rooms: [
+        makeRoomSummary({
+          room_id: "!root:localhost",
+          name: "Root",
+          is_space: true,
+        }),
+        makeRoomSummary({
+          room_id: "!space-a:localhost",
+          name: "Space A",
+          is_space: true,
+          parent_space_ids: ["!root:localhost", "!space-b:localhost"],
+        }),
+        makeRoomSummary({
+          room_id: "!space-b:localhost",
+          name: "Space B",
+          is_space: true,
+          parent_space_ids: ["!space-a:localhost"],
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: "Collapse Root" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse Space A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Space B" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("subtracts hidden direct-room badge counts from parent spaces", () => {
     renderRail({
       badgeState: {

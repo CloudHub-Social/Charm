@@ -88,14 +88,17 @@ export function SpaceRail({
     };
   }
 
-  function renderSpaceEntry(space: RoomSummary) {
+  function renderSpaceEntry(space: RoomSummary, ancestorIds = new Set<string>()) {
+    const nextAncestorIds = new Set(ancestorIds);
+    nextAncestorIds.add(space.room_id);
     const children = childSpacesByParent.get(space.room_id) ?? [];
+    const visibleChildren = children.filter((child) => !nextAncestorIds.has(child.room_id));
     const folderOpen = openFolders[space.room_id] ?? false;
     const counts = spaceBadge(space.room_id);
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
         <div className="relative flex h-11 w-14 items-center justify-center">
-          {children.length > 0 && (
+          {visibleChildren.length > 0 && (
             <button
               type="button"
               aria-label={`${folderOpen ? "Collapse" : "Expand"} ${displayName(
@@ -119,9 +122,9 @@ export function SpaceRail({
             onClick={() => onSelectSpace(space.room_id)}
           />
         </div>
-        {folderOpen && children.length > 0 && (
+        {folderOpen && visibleChildren.length > 0 && (
           <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
-            {children.map(renderSpaceEntry)}
+            {visibleChildren.map((child) => renderSpaceEntry(child, nextAncestorIds))}
           </div>
         )}
       </div>
@@ -183,7 +186,7 @@ export function SpaceRail({
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
-            {topLevelSpaces.map(renderSpaceEntry)}
+            {topLevelSpaces.map((space) => renderSpaceEntry(space))}
           </div>
         </nav>
         <RailIconButton label="Create or join space" active={false} onClick={onCreateJoin}>
