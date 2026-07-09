@@ -35,7 +35,7 @@ jobs:
         id: config
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CHARM_WEB_API_BASE_URL; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -51,6 +51,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - if: steps.config.outputs.enabled == 'true'
+        env:
+          VITE_CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
         run: pnpm build:web
 
       - name: Deploy to Cloudflare Pages

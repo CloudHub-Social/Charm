@@ -82,7 +82,10 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
         {ownProfile ? (
           <div className="flex min-w-0 items-center gap-2">
             <Avatar size="sm">
-              <AvatarImage src={resolveAvatar(ownProfile.avatar_path)} alt="" />
+              <AvatarImage
+                src={resolveAvatar(ownProfile.avatar_path, ownProfile.avatar_url)}
+                alt=""
+              />
               <AvatarFallback
                 style={{ background: avatarColor(ownProfile.user_id) }}
                 className="font-bold text-white"

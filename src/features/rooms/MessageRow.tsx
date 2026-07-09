@@ -149,7 +149,10 @@ export function MessageRow({
       {!own &&
         (showAvatar ? (
           <Avatar size="sm">
-            <AvatarImage src={resolveAvatar(message.sender_avatar_path)} alt="" />
+            <AvatarImage
+              src={resolveAvatar(message.sender_avatar_path, message.sender_avatar_url)}
+              alt=""
+            />
             <AvatarFallback
               style={{ background: avatarColor(message.sender) }}
               className="font-bold text-white"

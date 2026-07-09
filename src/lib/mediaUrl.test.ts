@@ -17,6 +17,9 @@ describe("toLoadableMediaUrl", () => {
     expect(toLoadableMediaUrl("/api/rooms/!r%3Aexample.org/avatar")).toBe(
       "/api/rooms/!r%3Aexample.org/avatar",
     );
+    expect(toLoadableMediaUrl("/charm/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fa")).toBe(
+      "/charm/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fa",
+    );
   });
 
   it("passes through already-loadable media URLs", () => {

@@ -462,9 +462,16 @@ describe("matrix web transport", () => {
   });
 
   it("stores the local onboarding flag in browser storage", async () => {
-    await expect(invoke("get_local_onboarding_flag")).resolves.toBe(false);
-    await invoke("set_local_onboarding_flag");
-    await expect(invoke("get_local_onboarding_flag")).resolves.toBe(true);
+    await expect(
+      invoke("get_local_onboarding_flag", { userId: "@alice:example.org" }),
+    ).resolves.toBe(false);
+    await invoke("set_local_onboarding_flag", { userId: "@alice:example.org" });
+    await expect(
+      invoke("get_local_onboarding_flag", { userId: "@alice:example.org" }),
+    ).resolves.toBe(true);
+    await expect(invoke("get_local_onboarding_flag", { userId: "@bob:example.org" })).resolves.toBe(
+      false,
+    );
   });
 
   it("fetches account deactivation links from the web companion", async () => {

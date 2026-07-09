@@ -45,6 +45,12 @@ describe("resolveAvatar", () => {
     expect(resolveAvatar("/cache/media/abc123")).toBe("asset://localhost//cache/media/abc123");
   });
 
+  it("resolves an mxc avatar URL through the web companion when no path exists", () => {
+    expect(resolveAvatar(null, "mxc://example.org/abc123")).toBe(
+      "/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fabc123",
+    );
+  });
+
   it("returns undefined (fallback to initials) when there's no path", () => {
     expect(resolveAvatar(null)).toBeUndefined();
   });

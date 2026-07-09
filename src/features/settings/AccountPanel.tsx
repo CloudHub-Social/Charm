@@ -169,8 +169,12 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         />
       </SettingsCard>
 
-      <ContactInformationCard />
-      <BlockedUsersCard />
+      {!isWebBuild() && (
+        <>
+          <ContactInformationCard />
+          <BlockedUsersCard />
+        </>
+      )}
 
       <SettingsCard heading="Security">
         <SettingTile

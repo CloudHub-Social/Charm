@@ -49,6 +49,7 @@ import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import { invoke, listen, type UnlistenFn } from "./matrixTransport";
+import { isWebBuild } from "./platform";
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see
@@ -410,12 +411,16 @@ export function setAccountData(eventType: string, content: unknown): Promise<voi
 }
 
 /** Local (non-account-data) fast-path onboarding flag — see Spec 12's gate precedence. */
-export function getLocalOnboardingFlag(): Promise<boolean> {
-  return invoke("get_local_onboarding_flag");
+export function getLocalOnboardingFlag(userId?: string): Promise<boolean> {
+  return isWebBuild()
+    ? invoke("get_local_onboarding_flag", { userId })
+    : invoke("get_local_onboarding_flag");
 }
 
-export function setLocalOnboardingFlag(): Promise<void> {
-  return invoke("set_local_onboarding_flag");
+export function setLocalOnboardingFlag(userId?: string): Promise<void> {
+  return isWebBuild()
+    ? invoke("set_local_onboarding_flag", { userId })
+    : invoke("set_local_onboarding_flag");
 }
 
 export function setRoomLowPriority(roomId: string, lowPriority: boolean): Promise<void> {

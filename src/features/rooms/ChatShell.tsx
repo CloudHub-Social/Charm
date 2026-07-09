@@ -503,7 +503,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       <div className="flex items-center justify-between gap-2 border-b border-border p-4">
         <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
           <Avatar size="sm">
-            <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(room.room_id) }}
               className="font-bold text-white"

@@ -117,6 +117,13 @@ function unsupported(command: string): never {
   );
 }
 
+function onboardingStorageKey(userId: unknown): string | null {
+  if (typeof userId === "string" && userId.length > 0) {
+    return `charm:onboarding-complete:${userId}`;
+  }
+  return null;
+}
+
 function dispatchWebEvent(event: string, payload: unknown): void {
   const listeners = webEventListeners.get(event);
   if (!listeners) return;
@@ -462,11 +469,15 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         `/api/account-data/${encodeSegment(String(args.eventType))}`,
         args.content,
       );
-    case "get_local_onboarding_flag":
-      return (localStorage.getItem("charm:onboarding-complete") === "true") as T;
-    case "set_local_onboarding_flag":
-      localStorage.setItem("charm:onboarding-complete", "true");
+    case "get_local_onboarding_flag": {
+      const key = onboardingStorageKey(args.userId);
+      return (key ? localStorage.getItem(key) === "true" : false) as T;
+    }
+    case "set_local_onboarding_flag": {
+      const key = onboardingStorageKey(args.userId);
+      if (key) localStorage.setItem(key, "true");
       return undefined as T;
+    }
     case "resolve_media":
       return `${apiBase()}/api/rooms/${encodeSegment(String(args.roomId))}/events/${encodeSegment(
         String(args.eventId),

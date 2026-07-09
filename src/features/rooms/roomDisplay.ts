@@ -40,12 +40,14 @@ export function avatarColor(roomId: string): string {
 }
 
 /**
- * Turns a backend-resolved local avatar thumbnail path into a webview-loadable
- * URL via `convertFileSrc` (Tauri's asset-protocol URL for a local path).
- * Returns `undefined` when there's no path (no avatar set, or Spec 02's media
- * cache unavailable), so callers fall back to the initials avatar rather than
- * rendering a broken image.
+ * Turns a backend-resolved local avatar thumbnail path, or a web companion
+ * resolver URL built from the avatar's `mxc://` URI, into a loadable image URL.
+ * Returns `undefined` when there's neither value, so callers fall back to the
+ * initials avatar rather than rendering a broken image.
  */
-export function resolveAvatar(path: string | null): string | undefined {
-  return path ? toLoadableMediaUrl(path) : undefined;
+export function resolveAvatar(path: string | null, mxcUrl?: string | null): string | undefined {
+  if (path) return toLoadableMediaUrl(path);
+  return mxcUrl
+    ? toLoadableMediaUrl(`/api/media/avatar?mxc=${encodeURIComponent(mxcUrl)}`)
+    : undefined;
 }
