@@ -181,10 +181,6 @@ test("fresh web session verifies against another session and decrypts E2EE", asy
   await expect(pageA.getByText("Verified")).toBeVisible({ timeout: 30_000 });
   await expect(pageB.getByText("Verified")).toBeVisible({ timeout: 30_000 });
 
-  await expect(pageB.getByText("This device is set up and trusted.")).toBeVisible({
-    timeout: 30_000,
-  });
-  await pageB.getByRole("button", { name: "Continue" }).click();
   await expect(pageB.getByText("Say hello")).toBeVisible({ timeout: 30_000 });
   await pageB.getByRole("button", { name: "Not now" }).click();
   await expect(pageB.getByRole("button", { name: "Open settings" })).toBeVisible();

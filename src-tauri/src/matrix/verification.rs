@@ -150,18 +150,21 @@ pub async fn cross_signing_status_impl(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-    if client
-        .encryption()
-        .request_user_identity(&user_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_some()
-    {
-        return Ok(CrossSigningStatusSummary {
-            has_master_key: true,
-            has_self_signing_key: true,
-            has_user_signing_key: true,
-        });
+    match client.encryption().request_user_identity(&user_id).await {
+        Ok(Some(_)) => {
+            return Ok(CrossSigningStatusSummary {
+                has_master_key: true,
+                has_self_signing_key: true,
+                has_user_signing_key: true,
+            });
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to refresh cross-signing identity; falling back to cached status"
+            );
+        }
     }
 
     let status = client.encryption().cross_signing_status().await;
