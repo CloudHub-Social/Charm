@@ -84,6 +84,7 @@ export function RoomList({
     [rooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
   );
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
+  const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
 
   useEffect(() => {
@@ -116,16 +117,18 @@ export function RoomList({
     return expanded[key] ?? true;
   }
 
-  function renderSectionRooms(sectionRooms: RoomSummary[]) {
+  function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
+    const canReorder = hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => (
       <DraggableRoomRow
         key={room.room_id}
         room={room}
         index={index}
         sectionRooms={sectionRooms}
+        canReorder={canReorder}
         active={room.room_id === activeRoomId}
         onSelect={() => onSelectRoom(room.room_id)}
-        onReorder={(targetIndex) => reorderWithin(sectionRooms, room.room_id, targetIndex)}
+        onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
       />
     ));
   }
@@ -262,7 +265,7 @@ export function RoomList({
               expanded={isExpanded("favourites")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, favourites: v }))}
             >
-              {renderSectionRooms(sections.favourites)}
+              {renderSectionRooms(sections.favourites, fullSections.favourites)}
             </RoomListSection>
 
             {mode === "space" && selectedSpace ? (
@@ -282,17 +285,24 @@ export function RoomList({
                 })}
               </RoomListSection>
             ) : (
-              sections.spaceGroups.map(({ space, rooms: spaceRooms }) => (
-                <RoomListSection
-                  key={space.room_id}
-                  title={displayName(space.room_id, space.name)}
-                  count={spaceRooms.length}
-                  expanded={isExpanded(space.room_id)}
-                  onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, [space.room_id]: v }))}
-                >
-                  {renderSectionRooms(spaceRooms)}
-                </RoomListSection>
-              ))
+              sections.spaceGroups.map(({ space, rooms: spaceRooms }) => {
+                const fullSpaceRooms =
+                  fullSections.spaceGroups.find((group) => group.space.room_id === space.room_id)
+                    ?.rooms ?? spaceRooms;
+                return (
+                  <RoomListSection
+                    key={space.room_id}
+                    title={displayName(space.room_id, space.name)}
+                    count={spaceRooms.length}
+                    expanded={isExpanded(space.room_id)}
+                    onExpandedChange={(v) =>
+                      setExpanded((prev) => ({ ...prev, [space.room_id]: v }))
+                    }
+                  >
+                    {renderSectionRooms(spaceRooms, fullSpaceRooms)}
+                  </RoomListSection>
+                );
+              })
             )}
 
             <RoomListSection
@@ -301,7 +311,7 @@ export function RoomList({
               expanded={isExpanded("rooms")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, rooms: v }))}
             >
-              {renderSectionRooms(roomSectionRooms)}
+              {renderSectionRooms(roomSectionRooms, fullSections.rooms)}
             </RoomListSection>
 
             <RoomListSection
@@ -310,7 +320,7 @@ export function RoomList({
               expanded={isExpanded("lowPriority")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, lowPriority: v }))}
             >
-              {renderSectionRooms(sections.lowPriority)}
+              {renderSectionRooms(sections.lowPriority, fullSections.lowPriority)}
             </RoomListSection>
           </div>
         )}
@@ -357,7 +367,7 @@ function countVisibleHierarchyNodes(
 ): number {
   return nodes.reduce((count, node) => {
     const joinedRoom = roomById.get(node.child.room_id);
-    if (isTaggedSectionRoom(joinedRoom)) return count;
+    if (isTaggedNonSpaceRoom(joinedRoom)) return count;
     return count + 1 + countVisibleHierarchyNodes(node.children, roomById);
   }, 0);
 }
@@ -376,7 +386,7 @@ function renderHierarchy(
 ): ReactElement[] {
   return nodes.flatMap((node) => {
     const joinedRoom = options.roomById.get(node.child.room_id);
-    if (isTaggedSectionRoom(joinedRoom)) return [];
+    if (isTaggedNonSpaceRoom(joinedRoom)) return [];
     return [
       <HierarchyRow
         key={node.child.room_id}
@@ -394,8 +404,15 @@ function renderHierarchy(
   });
 }
 
-function isTaggedSectionRoom(room: RoomSummary | undefined) {
-  return room?.is_favourite === true || room?.is_low_priority === true;
+function isTaggedNonSpaceRoom(room: RoomSummary | undefined) {
+  return room?.is_space !== true && (room?.is_favourite === true || room?.is_low_priority === true);
+}
+
+function hasSameRoomOrder(visibleRooms: RoomSummary[], fullSectionRooms: RoomSummary[]) {
+  return (
+    visibleRooms.length === fullSectionRooms.length &&
+    visibleRooms.every((room, index) => room.room_id === fullSectionRooms[index]?.room_id)
+  );
 }
 
 interface HierarchyRowProps {
@@ -484,6 +501,7 @@ interface DraggableRoomRowProps {
   room: RoomSummary;
   index: number;
   sectionRooms: RoomSummary[];
+  canReorder: boolean;
   active: boolean;
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
@@ -493,6 +511,7 @@ function DraggableRoomRow({
   room,
   index,
   sectionRooms,
+  canReorder,
   active,
   onSelect,
   onReorder,
@@ -502,6 +521,7 @@ function DraggableRoomRow({
 
   const bind = useDrag(
     ({ movement: [, my], down }) => {
+      if (!canReorder) return;
       setDragging(down);
       setDragOffset(down ? my : 0);
       if (!down) {
@@ -515,6 +535,7 @@ function DraggableRoomRow({
     {
       axis: "y",
       filterTaps: true,
+      enabled: canReorder,
     },
   );
 

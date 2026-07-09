@@ -130,6 +130,30 @@ describe("RoomsScreen", () => {
     hasFocus.mockRestore();
   });
 
+  it("auto-selects the first room visible in the default Home scope", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!dm:example.org", name: "Alice", is_direct: true }),
+      room({
+        room_id: "!child:example.org",
+        name: "Child",
+        parent_space_ids: ["!space:example.org"],
+      }),
+      room({ room_id: "!orphan:example.org", name: "Orphan" }),
+    ]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!orphan:example.org");
+    expect(screen.queryByText("chat-content:!dm:example.org")).not.toBeInTheDocument();
+  });
+
   it("clears focus when the window loses focus", async () => {
     // jsdom doesn't tie `document.hasFocus()` to blur/focus events firing on
     // `window`, so drive it directly rather than relying on jsdom to

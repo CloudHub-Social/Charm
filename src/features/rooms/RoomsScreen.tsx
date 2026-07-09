@@ -79,6 +79,27 @@ export function RoomsScreen({
     setCreateJoinNotice(false);
   }
 
+  function selectRoomInVisibleMode(room: RoomSummary) {
+    if (room.is_direct) {
+      selectDms();
+    } else if (room.parent_space_ids.length > 0) {
+      const parentSpaceId = room.parent_space_ids.find((spaceId) =>
+        rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+      );
+      if (parentSpaceId) {
+        selectSpace(parentSpaceId);
+      } else {
+        setRoomListMode("home");
+        setSelectedSpaceId(null);
+        setShowAllRooms(true);
+        setCreateJoinNotice(false);
+      }
+    } else {
+      selectHome();
+    }
+    selectRoom(room.room_id);
+  }
+
   // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
   // app; consumers (the DM header/room-list presence dot) read the atoms
   // directly via `usePresence` — see ChatShell/RoomListItem.
@@ -165,7 +186,7 @@ export function RoomsScreen({
       // `charm://room/<id>` link while mobile is showing a list tab) must
       // still bump `selectionRequestId` so the mobile detail view actually
       // opens, not just silently consume the link.
-      selectRoom(match.room_id);
+      selectRoomInVisibleMode(match);
       setResolvedDeepLinkTarget(null);
       onDeepLinkConsumed();
     }
@@ -174,8 +195,11 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
-    if (activeRoomId === null && rooms.length > 0) {
-      selectRoom(rooms[0].room_id);
+    const firstHomeRoom = rooms.find(
+      (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
+    );
+    if (activeRoomId === null && firstHomeRoom) {
+      selectRoom(firstHomeRoom.room_id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, activeRoomId, deepLinkRoomId]);

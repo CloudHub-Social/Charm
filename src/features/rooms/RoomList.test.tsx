@@ -285,6 +285,54 @@ describe("RoomList", () => {
     expect(joinRoom).toHaveBeenCalledWith("!public-space:localhost");
   });
 
+  it("keeps tagged child spaces visible in the selected space hierarchy", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteSpace = makeRoomSummary({
+      room_id: "!fav-space:localhost",
+      name: "Pinned subspace",
+      is_space: true,
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-space:localhost",
+          name: "Pinned subspace",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!child:localhost",
+              name: "Child under pinned subspace",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "public",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, favouriteSpace],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: /Pinned subspace/ })).toBeInTheDocument();
+    expect(screen.getByText("Child under pinned subspace")).toBeInTheDocument();
+  });
+
   it("does not render children of hierarchy rooms shown in tagged sections", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     const favouriteParent = makeRoomSummary({

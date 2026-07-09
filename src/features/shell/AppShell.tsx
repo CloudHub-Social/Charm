@@ -79,7 +79,7 @@ export function AppShell({
         {mobileView === "detail" && activeRoomId ? (
           (rightPanel ?? content)
         ) : (
-          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink">
+          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
             {spaceRail}
             {roomList}
           </div>
