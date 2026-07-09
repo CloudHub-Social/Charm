@@ -722,6 +722,9 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
                 reserve_notified_for_app(app, &event_id).await
             }
         },
+        |event_id| {
+            app.state::<MatrixState>().forget_notified(&event_id);
+        },
     )
     .await?
     else {
@@ -768,6 +771,7 @@ pub(crate) async fn handle_headless_push(
         message,
         |_| false,
         |event_id| async move { Ok(!has_headless_notified_at(store_root, &event_id)?) },
+        |_| {},
     )
     .await
 }
@@ -928,6 +932,7 @@ async fn build_push_notification<Fut>(
     message: PushMessage,
     should_suppress_for_room: impl Fn(&RoomId) -> bool,
     mark_notified: impl FnOnce(String) -> Fut,
+    forget_notified: impl FnOnce(String),
 ) -> Result<Option<PushNotification>, PushError>
 where
     Fut: std::future::Future<Output = Result<bool, PushError>>,
@@ -1053,6 +1058,7 @@ where
     // Re-read focus after that final await so a user who opened the room while
     // we waited does not still get a notification for the now-focused room.
     if should_suppress_for_room(&room_id) {
+        forget_notified(message.event_id);
         return Ok(None);
     }
 
