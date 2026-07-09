@@ -352,6 +352,17 @@ jobs:
     # integration tests run separately (see rust-integration below) — macOS
     # GitHub runners can't run Linux Docker containers.
     runs-on: macos-latest
+    # RUSTC_WRAPPER routes every rustc invocation through sccache, which
+    # caches at the individual compilation-unit level (object-code cache) —
+    # complementary to Swatinem/rust-cache's coarser whole-target/-dir
+    # caching below, catching cases where only a few crates in the
+    # dependency tree actually changed. NOTE: sccache's GitHub Actions cache
+    # backend uses the same underlying Actions Cache storage/10GB-per-repo
+    # budget as rust-cache, and has no save-if-equivalent to scope saves to
+    # main only — watch total repo cache usage after this lands.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     defaults:
       run:
         working-directory: src-tauri
@@ -361,6 +372,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -479,6 +492,10 @@ jobs:
       # collide (see common::test_username_2).
       TEST_MATRIX_USERNAME_2: ${{ secrets.CI_MATRIX_TEST_USERNAME_2 || 'evie2' }}
       TEST_MATRIX_PASSWORD_2: ${{ secrets.CI_MATRIX_TEST_PASSWORD_2 || 'testpass123' }}
+      # Object-level compilation cache — see the `rust` job's comment above
+      # for the full rationale and the shared-cache-budget caveat.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -492,6 +509,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -602,6 +621,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     defaults:
       run:
         working-directory: src-tauri
@@ -614,6 +638,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -729,10 +755,17 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: read
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -768,10 +801,17 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -807,6 +847,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -816,6 +861,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -851,12 +898,19 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: read
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: aarch64-apple-ios-sim
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -893,12 +947,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Object-level compilation cache — see the `rust` job's comment for the
+    # full rationale and the shared-cache-budget caveat.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: aarch64-linux-android
+
+      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
