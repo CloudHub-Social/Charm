@@ -25,7 +25,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     const timelineRoomId = room?.room_id;
     if (!timelineRoomId) {
       setMessages([]);
-      return;
+      return undefined;
     }
     setLoading(true);
     let cancelled = false;
