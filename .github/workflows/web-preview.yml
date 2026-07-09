@@ -32,8 +32,11 @@ jobs:
         id: filter
         run: |
           # Everything `pnpm build:web` can actually read: the app source, web
-          # entry points, root config, the web-mode env file (VITE_CHARM_BUILD_TARGET,
-          # consumed by src/lib/platform.ts), and the generated ts-rs bindings
+          # entry points, root config, the env files Vite loads for `--mode
+          # web` (the generic .env plus .env.web — VITE_CHARM_BUILD_TARGET in
+          # .env.web is consumed by src/lib/platform.ts; .env isn't tracked
+          # yet, but nothing gitignores a plain .env so it could be added),
+          # and the generated ts-rs bindings
           # (build:web runs tsc first, and tsconfig maps @bindings/* to these —
           # src/lib/matrix.ts imports them throughout, so a DTO shape change
           # here can break the web build same as a src/ change). Deliberately
@@ -43,7 +46,7 @@ jobs:
           # something this workflow builds) — unlike quality-checks.yml's
           # broader frontend_pattern, this one is scoped to just what a
           # Cloudflare Worker preview deploy needs.
-          web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
+          web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env$|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
 
           diff_from() {
             # --no-renames: default rename detection can report ONLY the
