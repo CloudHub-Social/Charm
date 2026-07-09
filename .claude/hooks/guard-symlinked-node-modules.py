@@ -81,7 +81,22 @@ def classify_segment(segment):
     segment of a command."""
     saw_run = bool(BIN_INVOCATION.search(segment))
     for m in PKG_MANAGER_NAME.finditer(segment):
-        sub = find_subcommand(segment[m.end():])
+        rest = segment[m.end():]
+        if m.group(1) == "npx":
+            # npx runs arbitrary third-party packages as commands (e.g.
+            # install-peerdeps, npm-check-updates, patch-package,
+            # npm-force-resolutions) — an open-ended set we can't enumerate
+            # subcommand-by-subcommand like pnpm/npm/yarn's own fixed verb
+            # list. Treat every invocation as install-equivalent (always
+            # denied on a symlinked node_modules) except the couple of
+            # genuinely inert forms — checked as the literal first token,
+            # not via find_subcommand (which skips flags to find a verb
+            # that, for npx, doesn't exist the same way).
+            first = rest.split()[:1]
+            if first and first[0] not in {"--version", "-v"}:
+                return "install"
+            continue
+        sub = find_subcommand(rest)
         if sub is None:
             continue
         if sub in HARD_DENY_SUBCOMMANDS:
