@@ -1,36 +1,5 @@
-import type { ReactElement } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient } from "@tanstack/react-query";
-import { AppProviders } from "@/providers";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { fireEvent, screen } from "@testing-library/react";
 import type { RoomDetails } from "@/lib/matrix";
-
-/**
- * Wraps `ui` in the same provider tree `renderWithProviders` uses, without
- * rendering it — for tests that need to call RTL's `rerender` (which
- * replaces the whole tree it was given, so a bare `rerender(<Component />)`
- * would drop the QueryClient/TooltipProvider context and throw).
- */
-export function wrapWithProviders(ui: ReactElement, client: QueryClient) {
-  return (
-    <AppProviders client={client}>
-      <TooltipProvider>{ui}</TooltipProvider>
-    </AppProviders>
-  );
-}
-
-/**
- * Fresh, retry-disabled `QueryClient` per test — this feature is the first
- * user of TanStack Query, so every test needs its own provider tree rather
- * than a global singleton. Also wraps in `TooltipProvider`, since every
- * gated control in this feature renders a `Tooltip` when disabled — in the
- * app that ancestor comes from `RoomInfoPanel`, but components under test
- * here are often rendered standalone.
- */
-export function renderWithProviders(ui: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return { ...render(wrapWithProviders(ui, client)), client };
-}
 
 /** Radix's `DropdownMenu` opens on pointerdown, not click, in jsdom — see `MessageActions.test.tsx`'s identical helper. */
 export function openDropdownMenu(triggerName: string) {
