@@ -217,17 +217,20 @@ mod android {
     fn with_env<T>(
         f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> Result<T, SecretStoreError>,
     ) -> Result<T, SecretStoreError> {
-        let override_guard = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(override_context) = override_guard.as_ref() {
-            let mut env = override_context
-                .vm
+        let override_context = {
+            let override_guard = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+            override_guard
+                .as_ref()
+                .map(|context| (context.vm.clone(), context.context.clone()))
+        };
+        if let Some((vm, context_ref)) = override_context {
+            let mut env = vm
                 .attach_current_thread()
                 .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
-            let result = env.new_local_ref(override_context.context.as_obj());
+            let result = env.new_local_ref(context_ref.as_obj());
             let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
             return f(&mut env, &context);
         }
-        drop(override_guard);
 
         let ctx = ndk_context::android_context();
         // SAFETY: `ctx.vm()`/`ctx.context()` are raw JNI pointers Tauri's own
