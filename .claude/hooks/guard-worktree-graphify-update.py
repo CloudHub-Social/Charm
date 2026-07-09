@@ -27,6 +27,12 @@ import re
 import sys
 
 GRAPHIFY_UPDATE = re.compile(r"\bgraphify\s+update\b")
+# `graphify update` takes a path argument (documented usage is `graphify
+# update .`, but it isn't required to be "."). Capture it so the check can
+# target *that* path instead of assuming it's always the invocation's cwd.
+GRAPHIFY_UPDATE_ARG = re.compile(
+    r'\bgraphify\s+update\s+("[^"]+"|\'[^\']+\'|\S+)'
+)
 SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\|)")
 CD_SEGMENT = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*$')
 
@@ -84,7 +90,19 @@ def main():
     for segment, cwd in iter_segments_with_cwd(command, default_root):
         if not GRAPHIFY_UPDATE.search(segment):
             continue
-        graphify_out = os.path.join(cwd, "graphify-out")
+
+        # The path graphify actually operates on is its argument (`graphify
+        # update <path>`, e.g. "."), resolved against this segment's cwd —
+        # not necessarily the cwd itself, since the argument can point
+        # elsewhere (`graphify update ~/git/Charm` from inside a worktree).
+        m = GRAPHIFY_UPDATE_ARG.search(segment)
+        target = m.group(1).strip("\"'") if m else "."
+        target = os.path.expanduser(target)
+        if not os.path.isabs(target):
+            target = os.path.join(cwd, target)
+        target = os.path.normpath(target)
+
+        graphify_out = os.path.join(target, "graphify-out")
         if os.path.islink(graphify_out):
             deny()
             return 0
