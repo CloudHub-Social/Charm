@@ -58,8 +58,7 @@ function PushTransportTile() {
             {TRANSPORT_LABELS[transport]}.
             {showAndroidDistributorNotice && (
               <span className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
-                Android push needs a UnifiedPush distributor. Install one such as ntfy, then turn
-                push notifications on again.
+                Android push requires a UnifiedPush distributor (for example, ntfy). Install one, then turn on push notifications.
               </span>
             )}
             {status?.last_error && (
