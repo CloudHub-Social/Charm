@@ -132,7 +132,7 @@ describe("SettingsScreen shell mode", () => {
 
     await screen.findByRole("button", { name: "Close settings" });
     expect(screen.queryByRole("tab", { name: "Notifications" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Devices" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Devices" })).toBeInTheDocument();
   });
 
   it("hides the Desktop section on a Tauri *mobile* build even at a desktop-width viewport", async () => {

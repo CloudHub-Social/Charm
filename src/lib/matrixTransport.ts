@@ -527,6 +527,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       );
     case "cross_signing_status":
       return requestJson<T>("GET", "/api/verification/cross-signing");
+    case "list_devices":
+      return requestJson<T>("GET", "/api/devices");
     case "accept_verification_request":
     case "cancel_verification":
     case "start_sas_verification":

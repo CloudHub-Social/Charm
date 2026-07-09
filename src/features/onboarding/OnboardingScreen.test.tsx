@@ -11,6 +11,8 @@ const getOwnProfile = vi.fn();
 const onSelfProfileUpdate = vi.fn();
 const setDisplayName = vi.fn();
 const listDevices = vi.fn();
+const onSasUpdate = vi.fn();
+const requestDeviceVerification = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   crossSigningStatus: (...args: unknown[]) => crossSigningStatus(...args),
@@ -23,6 +25,11 @@ vi.mock("@/lib/matrix", () => ({
   },
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
   listDevices: (...args: unknown[]) => listDevices(...args),
+  onSasUpdate: (...args: unknown[]) => {
+    onSasUpdate(...args);
+    return Promise.resolve(() => {});
+  },
+  requestDeviceVerification: (...args: unknown[]) => requestDeviceVerification(...args),
 }));
 
 const VERIFIED_CURRENT_DEVICE = {
@@ -78,6 +85,8 @@ beforeEach(() => {
   });
   setDisplayName.mockReset().mockResolvedValue(undefined);
   listDevices.mockReset().mockResolvedValue([VERIFIED_CURRENT_DEVICE]);
+  onSasUpdate.mockReset();
+  requestDeviceVerification.mockReset().mockResolvedValue("flow-id");
 });
 
 describe("OnboardingScreen", () => {

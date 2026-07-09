@@ -347,6 +347,7 @@ describe("matrix web transport", () => {
       { password: "pw" },
     ],
     ["cross_signing_status", {}, "GET", "/api/verification/cross-signing", undefined],
+    ["list_devices", {}, "GET", "/api/devices", undefined],
     [
       "accept_verification_request",
       { otherUserId: "@alice:example.org", flowId: "flow" },

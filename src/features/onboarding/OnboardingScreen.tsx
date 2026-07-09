@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useCrossSigningStatus, useDevices } from "@/features/settings/useDevices";
-import { isWebBuild } from "@/lib/platform";
 import { OrientationPane } from "./OrientationPane";
 import { ProfilePane } from "./ProfilePane";
 import { VerifyDevicePane } from "./VerifyDevicePane";
@@ -33,10 +32,9 @@ type PaneKey = "orientation" | "verify" | "profile";
  * "verify" pane either query would have omitted a moment later.
  */
 export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
-  const webBuild = isWebBuild();
   const { data: crossSigningStatus, isPending: crossSigningStatusPending } =
-    useCrossSigningStatus(!webBuild);
-  const { data: devices, isPending: devicesPending } = useDevices(!webBuild);
+    useCrossSigningStatus();
+  const { data: devices, isPending: devicesPending } = useDevices();
   const currentDevice = devices?.find((device) => device.is_current);
   const isVerified = Boolean(
     crossSigningStatus?.has_master_key &&
@@ -44,14 +42,14 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
     crossSigningStatus.has_user_signing_key &&
     currentDevice?.is_verified,
   );
-  const verificationStatusPending = !webBuild && (crossSigningStatusPending || devicesPending);
+  const verificationStatusPending = crossSigningStatusPending || devicesPending;
 
   const panes = useMemo<PaneKey[]>(() => {
     const list: PaneKey[] = ["orientation"];
-    if (!webBuild && !isVerified) list.push("verify");
+    if (!isVerified) list.push("verify");
     list.push("profile");
     return list;
-  }, [isVerified, webBuild]);
+  }, [isVerified]);
 
   const [index, setIndex] = useState(0);
   // Clamped rather than reset: if the verify pane disappears out from under

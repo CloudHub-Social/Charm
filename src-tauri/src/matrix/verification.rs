@@ -113,7 +113,25 @@ pub async fn bootstrap_cross_signing_impl(
     retry_uia_with_session(&user_id, password, |auth| {
         encryption.bootstrap_cross_signing_if_needed(auth)
     })
-    .await
+    .await?;
+
+    if let Some(device) = encryption
+        .get_own_device()
+        .await
+        .map_err(|error| UiaCommandError::Other {
+            message: error.to_string(),
+        })?
+        .filter(|device| !device.is_verified())
+    {
+        device
+            .verify()
+            .await
+            .map_err(|error| UiaCommandError::Other {
+                message: error.to_string(),
+            })?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -235,6 +253,16 @@ pub async fn start_sas_verification_impl(
     other_user_id: &str,
     flow_id: &str,
 ) -> Result<matrix_sdk::encryption::verification::SasVerification, String> {
+    let user_id = matrix_sdk::ruma::UserId::parse(other_user_id).map_err(|e| e.to_string())?;
+    if let Some(Verification::SasV1(sas)) = client
+        .encryption()
+        .get_verification(&user_id, flow_id)
+        .await
+    {
+        sas.accept().await.map_err(|e| e.to_string())?;
+        return Ok(sas);
+    }
+
     let request = get_request(client, other_user_id, flow_id).await?;
 
     request

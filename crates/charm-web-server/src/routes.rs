@@ -23,6 +23,7 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
 use charm_lib::matrix::commands::SlashCommand;
+use charm_lib::matrix::devices::list_devices_impl;
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
@@ -239,6 +240,7 @@ pub fn router(state: AppState) -> Router {
             "/api/verification/devices/{device_id}/request",
             post(request_device_verification),
         )
+        .route("/api/devices", get(list_devices))
         // -- live events --
         .route("/api/ws", get(ws_handler))
         .layer(cors_layer())
@@ -2213,6 +2215,17 @@ async fn request_device_verification(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(flow_id))
+}
+
+async fn list_devices(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let devices = list_devices_impl(&session.client)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(devices))
 }
 
 // ---------------------------------------------------------------------

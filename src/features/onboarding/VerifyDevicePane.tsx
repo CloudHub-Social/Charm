@@ -3,10 +3,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useCrossSigningResetUrl } from "@/features/settings/useDevices";
+import {
+  CROSS_SIGNING_STATUS_QUERY_KEY,
+  useCrossSigningResetUrl,
+  useDeviceActions,
+  useDevices,
+} from "@/features/settings/useDevices";
 import { useUiaRetry } from "@/features/settings/useUiaRetry";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { bootstrapCrossSigning } from "@/lib/matrix";
+import { bootstrapCrossSigning, onSasUpdate } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 
 interface VerifyDevicePaneProps {
@@ -23,16 +28,35 @@ interface VerifyDevicePaneProps {
  */
 export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
   const queryClient = useQueryClient();
+  const { data: devices } = useDevices();
   const { data: resetUrl } = useCrossSigningResetUrl();
+  const { verify, invalidateDevices, invalidateCrossSigning } = useDeviceActions();
   const [done, setDone] = useState(false);
   const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
   const { needsPassword, password, setPassword, error, submitting } = uia;
+  const verifierDevices = (devices ?? []).filter((device) => !device.is_current);
+  const canVerifyWithAnotherDevice = verifierDevices.length > 0;
 
   async function handleSetUp() {
     if (await uia.submit()) {
-      queryClient.invalidateQueries({ queryKey: ["crossSigningStatus"] });
+      queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY });
+      invalidateCrossSigning();
       setDone(true);
     }
+  }
+
+  async function handleVerifyWith(deviceId: string) {
+    const flowId = await verify.mutateAsync(deviceId);
+    const unlisten = await onSasUpdate(flowId, (update) => {
+      if (update.state === "done") {
+        invalidateDevices();
+        invalidateCrossSigning();
+        setDone(true);
+        unlisten();
+      } else if (update.state === "cancelled") {
+        unlisten();
+      }
+    });
   }
 
   return (
@@ -40,6 +64,45 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
       <h1 className="text-xl font-bold text-foreground">Verify this device</h1>
       {done ? (
         <p className="text-sm text-foreground">This device is set up and trusted.</p>
+      ) : canVerifyWithAnotherDevice ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            Choose a session you already trust, then compare emojis there to verify this sign-in.
+          </p>
+          {verifierDevices.length > 0 ? (
+            <div className="flex w-full flex-col gap-2">
+              {verifierDevices.map((device) => (
+                <Button
+                  key={device.device_id}
+                  className="h-11 w-full"
+                  onClick={() => handleVerifyWith(device.device_id).catch(logAndIgnore)}
+                  disabled={verify.isPending}
+                >
+                  Verify with {device.display_name ?? device.device_id}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Open Charm on a trusted session, then come back here to start verification.
+            </p>
+          )}
+          {verify.isError && (
+            <p className="text-sm text-destructive">
+              Couldn't start verification: {String(verify.error)}
+            </p>
+          )}
+          <Button
+            variant="ghost"
+            className="h-11 w-full"
+            onClick={() => {
+              invalidateDevices();
+              invalidateCrossSigning();
+            }}
+          >
+            Check again
+          </Button>
+        </>
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
