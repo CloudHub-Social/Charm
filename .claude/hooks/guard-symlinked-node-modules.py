@@ -135,7 +135,12 @@ def main():
     if not os.path.islink(node_modules):
         return 0
 
-    main_root = os.path.dirname(os.readlink(node_modules))
+    # realpath, not readlink: readlink returns the symlink's literal target,
+    # which is relative to node_modules's own directory if it was created as
+    # a relative symlink (e.g. hand-linked per CLAUDE.md's fallback
+    # instructions) — dirname()'ing that directly would resolve to the wrong
+    # place. realpath always returns an absolute, fully resolved path.
+    main_root = os.path.dirname(os.path.realpath(node_modules))
 
     if kind == "install":
         deny(
