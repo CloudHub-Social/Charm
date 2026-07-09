@@ -62,7 +62,11 @@ export function SpaceRail({
           >
             <Home aria-hidden="true" />
           </RailIconButton>
-          <div className="flex flex-col items-center gap-1" aria-label="Direct messages">
+          <div
+            className="flex flex-col items-center gap-1"
+            role="group"
+            aria-label="Direct messages"
+          >
             <RailIconButton
               label="Direct messages"
               active={activeMode === "dms"}
