@@ -90,7 +90,11 @@ jobs:
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}
         run: |
-          status=$(curl --silent --show-error --output /tmp/charm-preview-proxy.txt --write-out "%{http_code}" "${PREVIEW_URL}/api/profile/me")
+          if ! status=$(curl --silent --show-error --output /tmp/charm-preview-proxy.txt --write-out "%{http_code}" "${PREVIEW_URL}/api/profile/me"); then
+            echo "::error::Failed to connect to deployed preview API proxy."
+            cat /tmp/charm-preview-proxy.txt
+            exit 1
+          fi
           case "$status" in
             401|403)
               ;;

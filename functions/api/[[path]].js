@@ -51,7 +51,8 @@ function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   for (const name of Array.from(headers.keys())) {
     const normalizedName = name.toLowerCase();
     if (
-      (!preserveUpgrade && HOP_BY_HOP_HEADERS.has(normalizedName)) ||
+      (HOP_BY_HOP_HEADERS.has(normalizedName) &&
+        (!preserveUpgrade || (normalizedName !== "connection" && normalizedName !== "upgrade"))) ||
       normalizedName === "host" ||
       normalizedName.startsWith("cf-")
     ) {
@@ -83,7 +84,10 @@ export async function onRequest({ env, request }) {
         ? incomingUrl.pathname.slice("/api".length)
         : incomingUrl.pathname;
   const relativePath = incomingPath.replace(/^\/+/, "");
-  const targetUrl = new URL(`${relativePath}${incomingUrl.search}`, `${apiBase}/`);
+  const targetUrl = new URL(apiBase);
+  const basePath = targetUrl.pathname.replace(/\/+$/, "");
+  targetUrl.pathname = `${basePath}/${relativePath}`;
+  targetUrl.search = incomingUrl.search;
   const preserveUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
 
   return fetch(targetUrl, {
