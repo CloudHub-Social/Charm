@@ -1,5 +1,4 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -14,6 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { BlockedUsersCard } from "./BlockedUsersCard";
@@ -28,14 +28,6 @@ import { useUiaRetry } from "./useUiaRetry";
 
 interface AccountPanelProps {
   onLoggedOut: () => void;
-}
-
-function openExternalUrl(url: string) {
-  if (isWebBuild()) {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
-  }
-  openUrl(url);
 }
 
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
@@ -216,7 +208,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => openExternalUrl(deactivateUrl)}
+                  onClick={() => void openExternalUrl(deactivateUrl)}
                 >
                   Deactivate account
                 </Button>

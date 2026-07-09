@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -41,14 +41,24 @@ describe("avatarColor", () => {
 });
 
 describe("resolveAvatar", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("converts a resolved local path to a webview-loadable URL", () => {
     expect(resolveAvatar("/cache/media/abc123")).toBe("asset://localhost//cache/media/abc123");
   });
 
   it("resolves an mxc avatar URL through the web companion when no path exists", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
     expect(resolveAvatar(null, "mxc://example.org/abc123")).toBe(
       "/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fabc123",
     );
+  });
+
+  it("falls back to initials for unresolved desktop mxc avatar URLs", () => {
+    expect(resolveAvatar(null, "mxc://example.org/abc123")).toBeUndefined();
   });
 
   it("returns undefined (fallback to initials) when there's no path", () => {

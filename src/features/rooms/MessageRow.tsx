@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Avatar,
   AvatarFallback,
@@ -8,6 +7,7 @@ import {
 } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import type { RoomMessageSummary } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
@@ -56,7 +56,7 @@ function handleMessageLinkClick(event: React.MouseEvent<HTMLElement>) {
     // No base argument: a relative or fragment href (both valid per the
     // sanitizer's allowlist) throws here instead of being silently resolved
     // into an absolute `http(s)` URL against the app's own origin and
-    // handed to `openUrl` — that would both contradict "left alone" above
+    // handed to `openExternalUrl` — that would both contradict "left alone" above
     // and make no sense to open in an external browser. Only a href that's
     // already absolute reaches the scheme check below.
     parsed = new URL(href);
@@ -66,7 +66,7 @@ function handleMessageLinkClick(event: React.MouseEvent<HTMLElement>) {
   if (!ALLOWED_LINK_PROTOCOLS.has(parsed.protocol)) return;
 
   event.preventDefault();
-  void openUrl(parsed.href);
+  void openExternalUrl(parsed.href);
 }
 
 function formatTime(timestampMs: number): string {

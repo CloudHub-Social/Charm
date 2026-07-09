@@ -1,5 +1,4 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +16,7 @@ import {
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
@@ -123,7 +123,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl);
       ssoInProgressRef.current = true;
-      await openUrl(ssoUrl);
+      await openExternalUrl(ssoUrl);
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.

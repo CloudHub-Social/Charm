@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +11,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { DeviceRow } from "./DeviceRow";
 import {
@@ -195,7 +195,7 @@ export function DevicesPanel() {
               </Button>
             )}
             {resetUrl && (
-              <Button size="sm" variant="outline" onClick={() => openUrl(resetUrl)}>
+              <Button size="sm" variant="outline" onClick={() => void openExternalUrl(resetUrl)}>
                 {isBootstrapped ? "Reset" : "Set up"}
               </Button>
             )}

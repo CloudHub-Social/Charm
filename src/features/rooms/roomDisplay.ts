@@ -1,4 +1,5 @@
 import { toLoadableMediaUrl } from "@/lib/mediaUrl";
+import { isWebBuild } from "@/lib/platform";
 
 // Solid-fill variants (not --color-accent/-warning/-success/-danger/
 // -text-muted directly): every avatar fallback pairs one of these
@@ -47,7 +48,7 @@ export function avatarColor(roomId: string): string {
  */
 export function resolveAvatar(path: string | null, mxcUrl?: string | null): string | undefined {
   if (path) return toLoadableMediaUrl(path);
-  return mxcUrl
+  return isWebBuild() && mxcUrl
     ? toLoadableMediaUrl(`/api/media/avatar?mxc=${encodeURIComponent(mxcUrl)}`)
     : undefined;
 }
