@@ -361,7 +361,9 @@ fn spawn_headless_push(
             vm_for_secret_store,
             secret_store_context,
         );
-        let result = runtime.block_on(super::handle_headless_push(&store_root, message));
+        let result = super::with_headless_push_lock(|| {
+            runtime.block_on(super::handle_headless_push(&store_root, message))
+        });
         match result {
             Ok(Some(notification)) => {
                 if let Err(e) = show_headless_notification(

@@ -61,11 +61,15 @@ const HEADLESS_NOTIFIED_EVENTS_FILE: &str = "headless_notified_events";
 const MAX_HEADLESS_NOTIFIED_EVENT_IDS: usize = 200;
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-static HEADLESS_PUSH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+static HEADLESS_PUSH_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn headless_push_lock() -> &'static tokio::sync::Mutex<()> {
-    HEADLESS_PUSH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+pub(crate) fn with_headless_push_lock<T>(run: impl FnOnce() -> T) -> T {
+    let _guard = HEADLESS_PUSH_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    run()
 }
 
 /// Which transport (if any) currently backs push delivery — the ts-rs IPC
@@ -732,7 +736,6 @@ pub(crate) async fn handle_headless_push(
     store_root: &std::path::Path,
     message: PushMessage,
 ) -> Result<Option<PushNotification>, PushError> {
-    let _guard = headless_push_lock().lock().await;
     persistence::sweep_orphan_temp_stores_at(store_root)?;
     let client = restore_any_client_at(store_root)
         .await?
