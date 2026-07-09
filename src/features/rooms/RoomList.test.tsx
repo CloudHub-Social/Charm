@@ -405,4 +405,10 @@ describe("RoomList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss create or join notice" }));
     expect(onDismiss).toHaveBeenCalledOnce();
   });
+
+  it("disables the Phase 4 create/join dismiss control without a handler", () => {
+    renderRoomList(<RoomList {...roomListProps({ createJoinNotice: true })} />);
+
+    expect(screen.getByRole("button", { name: "Dismiss create or join notice" })).toBeDisabled();
+  });
 });

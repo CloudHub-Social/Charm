@@ -233,8 +233,9 @@ export function RoomList({
             <button
               type="button"
               aria-label="Dismiss create or join notice"
-              className="rounded-sm p-0.5 hover:bg-accent hover:text-foreground"
-              onClick={onDismissCreateJoinNotice}
+              className="rounded-sm p-0.5 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!onDismissCreateJoinNotice}
+              onClick={() => onDismissCreateJoinNotice?.()}
             >
               <X className="size-3" aria-hidden="true" />
             </button>
@@ -438,13 +439,23 @@ function HierarchyRow({
   if (joinedRoom && !joinedRoom.is_space) {
     return (
       <div style={{ paddingLeft: indent }}>
-        <DraggableRoomRow
+        <RoomListItem
           room={joinedRoom}
-          index={0}
-          sectionRooms={[joinedRoom]}
           active={active}
           onSelect={() => onSelectRoom(joinedRoom.room_id)}
-          onReorder={() => {}}
+          onToggleFavourite={() =>
+            setRoomFavourite(joinedRoom.room_id, !joinedRoom.is_favourite).catch(logAndIgnore)
+          }
+          onToggleLowPriority={() =>
+            setRoomLowPriority(joinedRoom.room_id, !joinedRoom.is_low_priority).catch(logAndIgnore)
+          }
+          onToggleMuted={
+            isWebBuild()
+              ? undefined
+              : () => setRoomMuted(joinedRoom.room_id, !joinedRoom.is_muted).catch(logAndIgnore)
+          }
+          onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
+          onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
         />
       </div>
     );
