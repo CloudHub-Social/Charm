@@ -32,38 +32,100 @@ export function SpaceRail({
 }: SpaceRailProps) {
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const badge = useAtomValue(badgeAtom);
-  const { topLevelSpaces, childSpacesByParent, directRooms } = useMemo(() => {
-    const spaces = rooms.filter((room) => room.is_space);
-    const knownSpaceIds = new Set(spaces.map((space) => space.room_id));
-    const children = new Map<string, RoomSummary[]>();
-    for (const space of spaces) {
-      for (const parentId of space.parent_space_ids) {
-        if (!knownSpaceIds.has(parentId)) continue;
-        const list = children.get(parentId) ?? [];
-        list.push(space);
-        children.set(parentId, list);
+  const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
+    useMemo(() => {
+      const spaces = rooms.filter((room) => room.is_space);
+      const knownSpaceIds = new Set(spaces.map((space) => space.room_id));
+      const children = new Map<string, RoomSummary[]>();
+      const parents = new Map<string, string[]>();
+      for (const space of spaces) {
+        for (const parentId of space.parent_space_ids) {
+          if (!knownSpaceIds.has(parentId)) continue;
+          const list = children.get(parentId) ?? [];
+          list.push(space);
+          children.set(parentId, list);
+          parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
+        }
       }
-    }
-    return {
-      topLevelSpaces: spaces.filter((space) =>
-        space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
-      ),
-      childSpacesByParent: children,
-      directRooms: rooms.filter((room) => room.is_direct),
-    };
-  }, [rooms]);
+      return {
+        topLevelSpaces: spaces.filter((space) =>
+          space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
+        ),
+        childSpacesByParent: children,
+        parentSpaceIdsByChild: parents,
+        directRooms: rooms.filter((room) => room.is_direct),
+      };
+    }, [rooms]);
+  const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
+  const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
+  const hiddenDirectBadgesBySpace = useMemo(
+    () => getHiddenDirectBadgesBySpace(directRooms, parentSpaceIdsByChild),
+    [directRooms, parentSpaceIdsByChild],
+  );
 
   useEffect(() => {
     if (!activeSpaceId) return;
     const parentsToOpen: Record<string, boolean> = {};
-    for (const [parentId, children] of childSpacesByParent) {
-      if (children.some((child) => child.room_id === activeSpaceId)) {
+    const stack = [...(parentSpaceIdsByChild.get(activeSpaceId) ?? [])];
+    while (stack.length > 0) {
+      const parentId = stack.pop();
+      if (parentId) {
         parentsToOpen[parentId] = true;
+        stack.push(...(parentSpaceIdsByChild.get(parentId) ?? []));
       }
     }
     if (Object.keys(parentsToOpen).length === 0) return;
     setOpenFolders((prev) => ({ ...prev, ...parentsToOpen }));
-  }, [activeSpaceId, childSpacesByParent]);
+  }, [activeSpaceId, parentSpaceIdsByChild]);
+
+  function spaceBadge(spaceId: string) {
+    const raw = badge?.spaces[spaceId];
+    const hidden = hiddenDirectBadgesBySpace.get(spaceId);
+    return {
+      unread: Math.max(0, (raw?.total_unread ?? 0) - (hidden?.unread ?? 0)),
+      highlight: Math.max(0, (raw?.total_highlight ?? 0) - (hidden?.highlight ?? 0)),
+    };
+  }
+
+  function renderSpaceEntry(space: RoomSummary) {
+    const children = childSpacesByParent.get(space.room_id) ?? [];
+    const folderOpen = openFolders[space.room_id] ?? false;
+    const counts = spaceBadge(space.room_id);
+    return (
+      <div key={space.room_id} className="flex flex-col items-center gap-1">
+        <div className="relative flex h-11 w-14 items-center justify-center">
+          {children.length > 0 && (
+            <button
+              type="button"
+              aria-label={`${folderOpen ? "Collapse" : "Expand"} ${displayName(
+                space.room_id,
+                space.name,
+              )}`}
+              className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
+            >
+              <ChevronDown
+                aria-hidden="true"
+                className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
+              />
+            </button>
+          )}
+          <SpaceButton
+            space={space}
+            active={activeMode === "space" && activeSpaceId === space.room_id}
+            unread={counts.unread}
+            highlight={counts.highlight}
+            onClick={() => onSelectSpace(space.room_id)}
+          />
+        </div>
+        {folderOpen && children.length > 0 && (
+          <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
+            {children.map(renderSpaceEntry)}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <TooltipProvider>
@@ -83,7 +145,8 @@ export function SpaceRail({
             <RailIconButton
               label="Direct messages"
               active={activeMode === "dms"}
-              unread={directRooms.filter((room) => room.has_unread).length}
+              unread={directUnreadCount}
+              highlight={directHighlightCount}
               onClick={onSelectDms}
             >
               <Users aria-hidden="true" />
@@ -119,55 +182,7 @@ export function SpaceRail({
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
-            {topLevelSpaces.map((space) => {
-              const children = childSpacesByParent.get(space.room_id) ?? [];
-              const folderOpen = openFolders[space.room_id] ?? false;
-              return (
-                <div key={space.room_id} className="flex flex-col items-center gap-1">
-                  <div className="relative flex h-11 w-14 items-center justify-center">
-                    {children.length > 0 && (
-                      <button
-                        type="button"
-                        aria-label={`${folderOpen ? "Collapse" : "Expand"} ${displayName(
-                          space.room_id,
-                          space.name,
-                        )}`}
-                        className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                        onClick={() =>
-                          setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))
-                        }
-                      >
-                        <ChevronDown
-                          aria-hidden="true"
-                          className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
-                        />
-                      </button>
-                    )}
-                    <SpaceButton
-                      space={space}
-                      active={activeMode === "space" && activeSpaceId === space.room_id}
-                      unread={badge?.spaces[space.room_id]?.total_unread ?? 0}
-                      highlight={badge?.spaces[space.room_id]?.total_highlight ?? 0}
-                      onClick={() => onSelectSpace(space.room_id)}
-                    />
-                  </div>
-                  {folderOpen && children.length > 0 && (
-                    <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
-                      {children.map((child) => (
-                        <SpaceButton
-                          key={child.room_id}
-                          space={child}
-                          active={activeMode === "space" && activeSpaceId === child.room_id}
-                          unread={badge?.spaces[child.room_id]?.total_unread ?? 0}
-                          highlight={badge?.spaces[child.room_id]?.total_highlight ?? 0}
-                          onClick={() => onSelectSpace(child.room_id)}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {topLevelSpaces.map(renderSpaceEntry)}
           </div>
         </nav>
         <RailIconButton label="Create or join space" active={false} onClick={onCreateJoin}>
@@ -269,6 +284,43 @@ function labelWithBadge(label: string, unread: number, highlight: number) {
     highlight > 0 ? `${highlight} mentions` : null,
   ].filter(Boolean);
   return counts.length > 0 ? `${label}, ${counts.join(", ")}` : label;
+}
+
+function getHiddenDirectBadgesBySpace(
+  directRooms: RoomSummary[],
+  parentSpaceIdsByChild: Map<string, string[]>,
+) {
+  const badges = new Map<string, { unread: number; highlight: number }>();
+  for (const room of directRooms) {
+    const parentIds = new Set(room.parent_space_ids);
+    for (const parentId of room.parent_space_ids) {
+      for (const ancestorId of collectAncestorSpaceIds(parentId, parentSpaceIdsByChild)) {
+        parentIds.add(ancestorId);
+      }
+    }
+    for (const spaceId of parentIds) {
+      const current = badges.get(spaceId) ?? { unread: 0, highlight: 0 };
+      badges.set(spaceId, {
+        unread: current.unread + (room.has_unread ? 1 : 0),
+        highlight: current.highlight + room.unread_count,
+      });
+    }
+  }
+  return badges;
+}
+
+function collectAncestorSpaceIds(spaceId: string, parentSpaceIdsByChild: Map<string, string[]>) {
+  const ancestors: string[] = [];
+  const visited = new Set<string>();
+  const stack = [...(parentSpaceIdsByChild.get(spaceId) ?? [])];
+  while (stack.length > 0) {
+    const parentId = stack.pop();
+    if (!parentId || visited.has(parentId)) continue;
+    visited.add(parentId);
+    ancestors.push(parentId);
+    stack.push(...(parentSpaceIdsByChild.get(parentId) ?? []));
+  }
+  return ancestors;
 }
 
 function BadgeDot({ unread, highlight }: { unread: number; highlight: number }) {

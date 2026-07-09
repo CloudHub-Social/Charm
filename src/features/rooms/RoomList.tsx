@@ -80,6 +80,10 @@ export function RoomList({
   const selectedSpaceId = selectedSpace?.room_id ?? null;
 
   const roomById = useMemo(() => new Map(rooms.map((room) => [room.room_id, room])), [rooms]);
+  const visibleHierarchyCount = useMemo(
+    () => countVisibleHierarchyNodes(spaceHierarchy, roomById),
+    [spaceHierarchy, roomById],
+  );
   const scopedRooms = useMemo(
     () => getScopedRooms({ rooms, mode, selectedSpace, showAllRooms, hierarchy: spaceHierarchy }),
     [rooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
@@ -256,7 +260,7 @@ export function RoomList({
           <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
         ) : mode === "space" && spaceLoading ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
-        ) : !spaceError && allEmpty && (mode !== "space" || spaceHierarchy.length === 0) ? (
+        ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
           </p>
@@ -275,7 +279,7 @@ export function RoomList({
             {mode === "space" && selectedSpace ? (
               <RoomListSection
                 title="Space rooms"
-                count={countVisibleHierarchyNodes(spaceHierarchy, roomById)}
+                count={visibleHierarchyCount}
                 expanded={isExpanded("spaceRooms")}
                 onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
               >

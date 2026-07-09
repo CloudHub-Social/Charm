@@ -403,6 +403,41 @@ describe("RoomList", () => {
     expect(screen.queryByText("Alice")).not.toBeInTheDocument();
   });
 
+  it("shows the empty state when the selected space has only hidden hierarchy rooms", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const directRoom = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!dm:localhost",
+          name: "Alice",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, directRoom],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("No rooms yet")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
   it("keeps tagged child spaces visible in the selected space hierarchy", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     const favouriteSpace = makeRoomSummary({
