@@ -345,7 +345,10 @@ fn spawn_headless_push(
     message: super::PushMessage,
 ) {
     std::thread::spawn(move || {
-        let _pending_result = pending_result;
+        // Finish the BroadcastReceiver work before Matrix network/decrypt work.
+        // Android gives async broadcasts a short timeout; the headless restore
+        // continues as detached process work after the receiver is released.
+        drop(pending_result);
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
