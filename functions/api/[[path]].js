@@ -35,6 +35,13 @@ function previewApiBase(env) {
         ),
       };
     }
+    if (url.username !== "" || url.password !== "") {
+      return {
+        response: new Response("CHARM_WEB_API_BASE_URL must not include credentials", {
+          status: 502,
+        }),
+      };
+    }
     return { url };
   } catch {
     return {
@@ -53,7 +60,7 @@ function containsDotSegment(path) {
     } catch {
       return true;
     }
-    if (decodedSegment === "." || decodedSegment === "..") {
+    if (decodedSegment === "." || decodedSegment === ".." || /[\\/]/.test(decodedSegment)) {
       return true;
     }
   }
