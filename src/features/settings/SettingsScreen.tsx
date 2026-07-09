@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -7,15 +8,20 @@ import { AboutPanel } from "./AboutPanel";
 import { AccountPanel } from "./AccountPanel";
 import { AppearancePanel } from "./AppearancePanel";
 import { DesktopPanel } from "./DesktopPanel";
-import { DevicesPanel } from "./DevicesPanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
-import { NotificationsPanel } from "./NotificationsPanel";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
 import { isWebBuild } from "@/lib/platform";
+
+const DevicesPanel = lazy(() =>
+  import("./DevicesPanel").then((mod) => ({ default: mod.DevicesPanel })),
+);
+const NotificationsPanel = lazy(() =>
+  import("./NotificationsPanel").then((mod) => ({ default: mod.NotificationsPanel })),
+);
 
 interface SettingsScreenProps {
   onLoggedOut: () => void;
@@ -106,10 +112,14 @@ function SettingsBody({
         {!webBuild && (
           <>
             <TabsContent value="notifications">
-              <NotificationsPanel />
+              <Suspense fallback={null}>
+                <NotificationsPanel />
+              </Suspense>
             </TabsContent>
             <TabsContent value="devices">
-              <DevicesPanel />
+              <Suspense fallback={null}>
+                <DevicesPanel />
+              </Suspense>
             </TabsContent>
           </>
         )}

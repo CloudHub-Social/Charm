@@ -13,14 +13,14 @@ describe("openExternalUrl", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     openUrl.mockClear();
   });
 
   it("opens absolute http, https, mailto, and tel URLs in web builds", async () => {
-    const open = vi.fn();
-    vi.stubGlobal("open", open);
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
 
     await openExternalUrl("https://example.org/account");
     await openExternalUrl("http://example.org/account");
@@ -43,8 +43,7 @@ describe("openExternalUrl", () => {
   });
 
   it("ignores invalid or unsafe URLs in web builds", async () => {
-    const open = vi.fn();
-    vi.stubGlobal("open", open);
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
 
     await openExternalUrl("javascript:alert(1)");
     await openExternalUrl("data:text/html,hello");

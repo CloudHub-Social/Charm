@@ -32,6 +32,7 @@ interface AccountPanelProps {
 }
 
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
+  const webBuild = isWebBuild();
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
   const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
@@ -59,7 +60,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   }
 
   async function handlePickAvatar() {
-    if (isWebBuild()) {
+    if (webBuild) {
       avatarInputRef.current?.click();
       return;
     }
@@ -162,7 +163,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         />
       </SettingsCard>
 
-      {!isWebBuild() && (
+      {!webBuild && (
         <>
           <ContactInformationCard />
           <BlockedUsersCard />
@@ -178,7 +179,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
               : undefined
           }
           control={
-            profile?.uses_oauth ? undefined : (
+            profile?.uses_oauth || webBuild ? undefined : (
               <Button variant="outline" size="sm" onClick={() => setPasswordDialogOpen(true)}>
                 Change password
               </Button>
@@ -199,12 +200,14 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         <SettingTile
           title="Deactivate account"
           description={
-            profile?.uses_oauth && !deactivateUrl
-              ? "This account signs in through your identity provider — deactivate it there instead."
-              : "Permanently deactivates your account. This cannot be undone."
+            webBuild && !profile?.uses_oauth
+              ? "Account deactivation is not available in the web preview yet."
+              : profile?.uses_oauth && !deactivateUrl
+                ? "This account signs in through your identity provider — deactivate it there instead."
+                : "Permanently deactivates your account. This cannot be undone."
           }
           control={
-            profile?.uses_oauth ? (
+            webBuild && !profile?.uses_oauth ? undefined : profile?.uses_oauth ? (
               deactivateUrl ? (
                 <Button
                   variant="destructive"

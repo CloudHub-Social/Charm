@@ -54,8 +54,25 @@ jobs:
 
       - if: steps.config.outputs.enabled == 'true'
         env:
-          VITE_CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
+          VITE_CHARM_WEB_API_BASE_URL: /api
         run: pnpm build:web
+
+      - name: Configure same-origin API proxy
+        if: steps.config.outputs.enabled == 'true'
+        run: |
+          api_base="${CHARM_WEB_API_BASE_URL%/}"
+          case "$api_base" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API origin for preview proxying"
+              exit 1
+              ;;
+          esac
+          case "$api_base" in
+            */api) api_target="${api_base}/:splat" ;;
+            *) api_target="${api_base}/api/:splat" ;;
+          esac
+          printf '/api/* %s 200\n' "$api_target" > dist/_redirects
 
       - name: Deploy to Cloudflare Pages
         if: steps.config.outputs.enabled == 'true'
@@ -93,7 +110,7 @@ jobs:
           body="${marker}
           Web preview: ${PREVIEW_URL}
 
-          Built with \`VITE_CHARM_BUILD_TARGET=web\` and same-origin companion-server API routes so Strict session cookies work in authenticated preview flows."
+          Built with \`VITE_CHARM_BUILD_TARGET=web\` and a same-origin \`/api/*\` Pages proxy so Strict session cookies work in authenticated preview flows."
           existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\"))) | .id" \
             | tail -n 1)
