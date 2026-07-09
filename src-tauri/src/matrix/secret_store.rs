@@ -127,7 +127,10 @@ mod android {
     use super::SecretStoreError;
     use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
     use jni::JavaVM;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, OnceLock,
+    };
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
 
@@ -137,24 +140,35 @@ mod android {
     static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
 
     struct ContextOverride {
+        id: u64,
         vm: JavaVM,
         context: GlobalRef,
     }
 
     static CONTEXT_OVERRIDE: Mutex<Option<ContextOverride>> = Mutex::new(None);
+    static NEXT_CONTEXT_OVERRIDE_ID: AtomicU64 = AtomicU64::new(1);
 
-    pub(crate) struct ContextOverrideGuard;
+    pub(crate) struct ContextOverrideGuard {
+        id: u64,
+    }
 
     impl Drop for ContextOverrideGuard {
         fn drop(&mut self) {
-            *CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+            if current
+                .as_ref()
+                .is_some_and(|context| context.id == self.id)
+            {
+                *current = None;
+            }
         }
     }
 
     pub(crate) fn install_context_override(vm: JavaVM, context: GlobalRef) -> ContextOverrideGuard {
+        let id = NEXT_CONTEXT_OVERRIDE_ID.fetch_add(1, Ordering::Relaxed);
         *CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(ContextOverride { vm, context });
-        ContextOverrideGuard
+            Some(ContextOverride { id, vm, context });
+        ContextOverrideGuard { id }
     }
 
     /// Maps a JNI call's result to `SecretStoreError`, and — if it failed —

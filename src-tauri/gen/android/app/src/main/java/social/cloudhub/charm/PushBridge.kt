@@ -8,7 +8,6 @@ import android.content.Context
 import android.os.Build
 import androidx.annotation.Keep
 import org.unifiedpush.android.connector.UnifiedPush
-import kotlin.math.absoluteValue
 
 /**
  * Kotlin half of Spec 11's Android push transport — called from the Rust
@@ -42,6 +41,8 @@ import kotlin.math.absoluteValue
 @Keep
 object PushBridge {
     private const val MESSAGE_CHANNEL_ID = "messages"
+
+    private fun notificationId(eventId: String): Int = eventId.hashCode() and Int.MAX_VALUE
 
     /**
      * Picks a distributor (whatever the user already has saved, else the
@@ -114,7 +115,7 @@ object PushBridge {
      * `AppHandle` to ask for paths.
      */
     @JvmStatic
-    fun appDataDir(context: Context): String = context.applicationContext.filesDir.absolutePath
+    fun appDataDir(context: Context): String = context.applicationInfo.dataDir
 
     /**
      * Direct notification path for Android cold-start pushes. This bypasses
@@ -164,6 +165,6 @@ object PushBridge {
             .setContentIntent(pendingIntent)
             .build()
 
-        manager.notify(eventId.hashCode().absoluteValue, notification)
+        manager.notify(notificationId(eventId), notification)
     }
 }
