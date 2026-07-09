@@ -714,7 +714,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
                 .clone();
             focused_room_id.as_deref() == Some(room_id.as_str())
         },
-        |event_id| Ok(app.state::<MatrixState>().mark_notified(event_id)),
+        |event_id| mark_notified_for_app(app, event_id),
     )
     .await?
     else {
@@ -789,6 +789,25 @@ fn mark_headless_notified_at(
         .map_err(|e| format!("failed to write headless push notification dedupe file: {e}"))?;
 
     Ok(true)
+}
+
+pub(crate) fn mark_notified_for_app(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let store_root = persistence::matrix_store_root_at(&app_data_dir)?;
+    mark_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mark_notified_for_app_at(
+    store_root: &std::path::Path,
+    matrix_state: &MatrixState,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    if !mark_headless_notified_at(store_root, event_id)? {
+        return Ok(false);
+    }
+
+    Ok(matrix_state.mark_notified(event_id))
 }
 
 async fn build_push_notification(
@@ -1030,6 +1049,24 @@ mod tests {
 
         let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
         assert_eq!(contents, "$event:example.org\n$other:example.org\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_notified_events_consult_headless_dedupe() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-app-push-dedupe-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let state = MatrixState::default();
+
+        assert!(mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(!mark_notified_for_app_at(&root, &state, "$event:example.org").unwrap());
+        assert!(mark_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(!mark_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
 
         let _ = std::fs::remove_dir_all(root);
     }

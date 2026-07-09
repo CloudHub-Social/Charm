@@ -343,8 +343,15 @@ pub async fn maybe_send_notification<F, Fut>(
     if own_user_id.is_some_and(|me| me.as_str() == sender) {
         return;
     }
-    if !app.state::<MatrixState>().mark_notified(event_id) {
-        return;
+    match crate::push::mark_notified_for_app(app, event_id) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            eprintln!("failed to check persisted notification dedupe: {e}");
+            if !app.state::<MatrixState>().mark_notified(event_id) {
+                return;
+            }
+        }
     }
 
     let mode = room.notification_mode().await;
