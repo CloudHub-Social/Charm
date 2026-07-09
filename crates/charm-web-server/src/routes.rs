@@ -252,21 +252,12 @@ pub fn router(state: AppState) -> Router {
 /// this API's JSON `POST`/`PUT`/`DELETE` routes) has no `OPTIONS` handler to
 /// answer it with either.
 ///
-/// Deliberately **not** as permissive as `origin_is_allowed`'s own "env var
-/// unset" fallback (which allows any origin, relying on `SameSite=Strict`
-/// alone to still block a truly cross-*site* browser from having the cookie
-/// attached). CORS is a much bigger surface than that one WS handshake check
-/// — it would apply to every route on this router, credentialed — so
-/// reflecting an arbitrary `Origin` back here would let *any* site make
-/// authenticated cross-origin requests carrying this session's cookie
-/// wherever `SameSite=Strict` doesn't already block it (e.g. top-level
-/// navigations, or any future relaxation of that cookie attribute). With no
-/// allowlist configured, this simply grants no cross-origin CORS access at
+/// With no allowlist configured, this grants no cross-origin CORS access at
 /// all: same-origin requests (the common local-dev shape, and any
 /// same-origin production deployment) need no CORS headers to work in the
 /// first place, so "no configuration" still works out of the box for that
-/// case — only a genuinely cross-origin frontend needs
-/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WS check already
+/// case. A genuinely cross-origin frontend needs
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WebSocket check
 /// requires for that same deployment shape.
 fn cors_layer() -> tower_http::cors::CorsLayer {
     use axum::http::{header, Method};
@@ -292,17 +283,23 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
         ])
         .allow_credentials(true);
 
-    let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
+    let origins: Vec<String> = std::env::var(ALLOWED_ORIGIN_ENV)
         .map(|allowed| {
             allowed
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .filter_map(|origin| origin.parse().ok())
+                .map(ToOwned::to_owned)
                 .collect()
         })
         .unwrap_or_default();
-    layer.allow_origin(AllowOrigin::list(origins))
+    layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+        origin.to_str().ok().is_some_and(|origin| {
+            origins
+                .iter()
+                .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        })
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -2189,22 +2186,19 @@ async fn request_device_verification(
 const ALLOWED_ORIGIN_ENV: &str = "CHARM_WEB_SERVER_ALLOWED_ORIGIN";
 
 /// Logged at most once per process — `origin_is_allowed` runs on every WS
-/// handshake, and warning on every single one when this just isn't
-/// configured (e.g. local dev) would be pure noise.
+/// handshake, and warning on every single rejected handshake while a
+/// deployment is misconfigured would be pure noise.
 static WARNED_NO_ALLOWED_ORIGIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 fn origin_is_allowed(origin: Option<&str>) -> bool {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         WARNED_NO_ALLOWED_ORIGIN.get_or_init(|| {
             tracing::warn!(
-                "{ALLOWED_ORIGIN_ENV} not set — cross-origin requests (including from same-site \
-                 subdomains of this deployment, which the session cookie's SameSite=Strict does \
-                 not protect against) are accepted, letting any page on one of them act as or \
-                 read another logged-in user's live session data. Set it before deploying \
-                 behind a shared registrable domain."
+                "{ALLOWED_ORIGIN_ENV} not set — rejecting WebSocket and raw-body requests with \
+                 an Origin header. Set it explicitly before deploying charm-web-server."
             );
         });
-        return true;
+        return false;
     };
     let Some(origin) = origin else {
         return false;
@@ -2212,17 +2206,41 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
     allowed
         .split(',')
         .map(str::trim)
-        .any(|allowed_origin| allowed_origin == origin)
+        .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+}
+
+fn origin_matches_allowed_entry(allowed_origin: &str, origin: &str) -> bool {
+    let Some(wildcard_index) = allowed_origin.find('*') else {
+        return allowed_origin == origin;
+    };
+    if allowed_origin[wildcard_index + 1..].contains('*') {
+        return false;
+    }
+
+    let (prefix, suffix_with_wildcard) = allowed_origin.split_at(wildcard_index);
+    let suffix = &suffix_with_wildcard[1..];
+    if prefix.is_empty() || suffix.is_empty() || prefix.ends_with("://") {
+        return false;
+    }
+
+    origin.starts_with(prefix)
+        && origin.ends_with(suffix)
+        && origin.len() > prefix.len() + suffix.len()
 }
 
 /// Shared guard for the state-changing routes that accept a raw (non-JSON)
 /// body and so don't get an automatic CORS preflight — see
 /// `send_attachment`'s call site for the full rationale.
 fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    if origin_is_allowed(origin) {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return Ok(());
+    };
+    let origin = origin.to_str().map_err(|_| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: "origin not allowed".to_string(),
+        kind: None,
+    })?;
+    if origin_is_allowed(Some(origin)) {
         Ok(())
     } else {
         Err(ApiError {
@@ -2245,14 +2263,11 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
 /// own `Origin` header is actually on that same allowlist keeps every
 /// still-untrusted origin blocked (including same-site subdomains
 /// `SameSite=Strict` doesn't stop) while unblocking the one frontend this
-/// deployment is actually configured to trust. Deliberately does **not**
-/// reuse `origin_is_allowed`'s "env var unset → permissive" fallback: that
-/// fallback exists for the narrower WS-origin check (where `SameSite=Strict`
-/// is still a backstop), but here it would mean *every* deployment without
-/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set defaults to the more permissive
-/// `cross-origin` policy — silently loosening protection for the common
-/// same-origin/local-dev case that never needed it relaxed in the first
-/// place.
+/// deployment is actually configured to trust. When
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` is unset, this keeps the stricter
+/// `same-origin` policy rather than silently loosening protection for the
+/// common same-origin/local-dev case that never needed it relaxed in the
+/// first place.
 /// Extracts just the `scheme://host[:port]` portion of a `Referer` header
 /// value — enough to compare against an `Origin`-shaped allowlist entry,
 /// without pulling in a full URL-parsing crate for one field.
@@ -2297,13 +2312,20 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         return "same-origin";
     };
-    let allowed_origins: Vec<&str> = allowed.split(',').map(str::trim).collect();
+    let allowed_origins: Vec<&str> = allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .collect();
 
     if let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
     {
-        return if allowed_origins.contains(&origin) {
+        return if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        {
             "cross-origin"
         } else {
             "same-origin"
@@ -2315,7 +2337,10 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
         .and_then(|v| v.to_str().ok())
         .and_then(origin_from_referer)
     {
-        if allowed_origins.contains(&referer_origin.as_str()) {
+        if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, &referer_origin))
+        {
             return "cross-origin";
         }
     }
@@ -2329,7 +2354,16 @@ async fn ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_allowed_origin(&headers)?;
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if !origin_is_allowed(origin) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+            kind: None,
+        });
+    }
     let session = require_session(&state, &jar).await?;
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
 }
@@ -2768,5 +2802,54 @@ mod referer_origin_tests {
     #[test]
     fn a_malformed_value_is_rejected() {
         assert_eq!(origin_from_referer("not a url"), None);
+    }
+}
+
+#[cfg(test)]
+mod origin_allowlist_tests {
+    use super::origin_matches_allowed_entry;
+
+    #[test]
+    fn exact_origin_entries_match_only_the_same_origin() {
+        assert!(origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://charm.example.test"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://other.example.test"
+        ));
+    }
+
+    #[test]
+    fn constrained_wildcard_entries_match_dynamic_preview_origins() {
+        assert!(origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://manual-main-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-other-preview.example.workers.dev"
+        ));
+    }
+
+    #[test]
+    fn broad_or_ambiguous_wildcard_entries_do_not_match() {
+        assert!(!origin_matches_allowed_entry(
+            "*.workers.dev",
+            "https://anything.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://*.workers.dev",
+            "https://preview.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-**-preview.example.workers.dev",
+            "https://pr-112-preview.example.workers.dev"
+        ));
     }
 }
