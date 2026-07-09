@@ -15,27 +15,30 @@ function readRepoFile(path: string): string {
 function configureSentryReleaseEnv(env: Record<string, string | undefined> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "charm-sentry-release-env-"));
   const githubEnv = join(dir, "github-env");
-  const result = spawnSync(
-    "bash",
-    [join(root, ".github/scripts/configure-sentry-release-env.sh")],
-    {
-      cwd: root,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_ENV: githubEnv,
-        SENTRY_AUTH_TOKEN: "token",
-        SENTRY_ORG: "cloudhubsocial",
-        SENTRY_PROJECT: "charm",
-        GITHUB_SHA: "local-test-sha",
-        ...env,
+  try {
+    const result = spawnSync(
+      "bash",
+      [join(root, ".github/scripts/configure-sentry-release-env.sh")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GITHUB_ENV: githubEnv,
+          SENTRY_AUTH_TOKEN: "token",
+          SENTRY_ORG: "cloudhubsocial",
+          SENTRY_PROJECT: "charm",
+          GITHUB_SHA: "local-test-sha",
+          ...env,
+        },
       },
-    },
-  );
-  const githubEnvContents = result.status === 0 ? readFileSync(githubEnv, "utf8") : "";
-  rmSync(dir, { recursive: true, force: true });
+    );
+    const githubEnvContents = result.status === 0 ? readFileSync(githubEnv, "utf8") : "";
 
-  return { ...result, githubEnvContents };
+    return { ...result, githubEnvContents };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 describe("Sentry release artifact workflow", () => {
