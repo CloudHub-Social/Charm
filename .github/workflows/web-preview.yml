@@ -127,10 +127,8 @@ jobs:
           if ! npx --yes wrangler@4.107.1 versions list --name charm-preview >/dev/null 2>&1; then
             npx --yes wrangler@4.107.1 deploy --config preview-worker/wrangler.jsonc >/dev/null
           fi
-          npx --yes wrangler@4.107.1 versions upload preview-worker/worker.mjs \
-            --name charm-preview \
-            --compatibility-date 2026-07-09 \
-            --assets dist \
+          npx --yes wrangler@4.107.1 versions upload \
+            --config preview-worker/wrangler.jsonc \
             --preview-alias "$preview_alias" \
             | tee wrangler-output.txt
           url=$(grep -Eo 'https://[^[:space:]]+\.workers\.dev' wrangler-output.txt | tail -n 1)
@@ -189,10 +187,11 @@ jobs:
         run: |
           set +e
           marker="<!-- charm-web-preview -->"
-          body="${marker}
-          Web preview: ${PREVIEW_URL}
-
-          Built with \`VITE_CHARM_BUILD_TARGET=web\` and a same-origin \`/api/*\` Worker proxy so Strict session cookies work in authenticated preview flows."
+          body=$(printf "%s\nWeb preview: %s\n\nBuilt with \`%s\` and a same-origin \`%s\` Worker proxy so Strict session cookies work in authenticated preview flows." \
+            "$marker" \
+            "$PREVIEW_URL" \
+            "VITE_CHARM_BUILD_TARGET=web" \
+            "/api/*")
           existing=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\"))) | .id" \
             | tail -n 1)
