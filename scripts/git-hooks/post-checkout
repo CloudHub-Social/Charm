@@ -33,6 +33,7 @@ cd "$worktree_root" || exit 0
 
 if [ ! -e node_modules ] && [ ! -L node_modules ] \
    && [ -d "$main_root/node_modules" ] \
+   && [ ! -e "$main_root/node_modules/.charm-stale" ] \
    && [ -f "$main_root/pnpm-lock.yaml" ] && [ -f pnpm-lock.yaml ] \
    && diff -q "$main_root/pnpm-lock.yaml" pnpm-lock.yaml >/dev/null 2>&1; then
   ln -s "$main_root/node_modules" node_modules

@@ -41,7 +41,10 @@ import sys
 # ci is npm's separate "clean install" verb) plus link/rebuild/dedupe, which
 # rewrite node_modules without going through the install/remove path at all.
 HARD_DENY_SUBCOMMANDS = {
-    "install", "i", "in", "ins", "inst", "ci", "add",
+    "install", "i", "in", "ins", "inst",
+    "insta", "instal", "isnt", "isnta", "isntal", "isntall",
+    "install-test", "it",
+    "ci", "add",
     "remove", "rm", "uninstall", "un", "unlink", "r",
     "update", "up", "prune",
     "link", "rebuild", "dedupe",
@@ -51,35 +54,49 @@ HARD_DENY_SUBCOMMANDS = {
 SAFE_SUBCOMMANDS = {"--version", "-v", "list", "ls", "why", "outdated", "config", "store"}
 # Leading package-manager options that take a following value token, so the
 # token after them isn't the subcommand either (e.g. `npm --prefix . install`
-# — "." is --prefix's value, "install" is the actual verb).
+# — "." is --prefix's value, "install" is the actual verb). Also used to
+# redirect the check to the target directory itself, since that's where
+# the command actually operates, not the caller's cwd.
 VALUE_FLAGS = {"--prefix", "--dir", "--cwd", "-C"}
 
 PKG_MANAGER_NAME = re.compile(r"\b(pnpm|npm|yarn|npx)\b")
 BIN_INVOCATION = re.compile(r"(?:^|[/\s])node_modules/\.bin/")
-SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\|)")
+SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\||\n)")
 CD_SEGMENT = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*$')
 
 
 def find_subcommand(rest_of_segment):
     """Given the text after a package-manager name within one segment,
-    return the actual subcommand token — skipping leading option flags and,
-    for known value-taking flags, their value token too."""
+    return (subcommand, target_override) — skipping leading option flags,
+    and for a known value-taking flag, capturing its value as the effective
+    target directory (e.g. `npm --prefix ~/other install` operates on
+    ~/other, not the caller's cwd) while still skipping past it to find the
+    actual verb."""
     tokens = rest_of_segment.split()
     i = 0
+    override = None
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith("-"):
-            i += 2 if tok in VALUE_FLAGS else 1
+            if tok in VALUE_FLAGS:
+                if i + 1 < len(tokens):
+                    override = tokens[i + 1]
+                i += 2
+            else:
+                i += 1
             continue
-        return tok
-    return None
+        return tok, override
+    return None, override
 
 
 def classify_segment(segment):
-    """Returns "install" (always deny), "run" (deny only on lockfile
-    mismatch), or None (nothing risky) for one shell-operator-separated
-    segment of a command."""
+    """Returns (kind, target_override) for one shell-operator-separated
+    segment of a command. kind is "install" (always deny), "run" (deny only
+    on lockfile mismatch), or None (nothing risky). target_override is a
+    directory (from e.g. --prefix) the command actually operates on, if
+    different from the caller's cwd."""
     saw_run = bool(BIN_INVOCATION.search(segment))
+    run_override = None
     for m in PKG_MANAGER_NAME.finditer(segment):
         rest = segment[m.end():]
         if m.group(1) == "npx":
@@ -94,16 +111,17 @@ def classify_segment(segment):
             # that, for npx, doesn't exist the same way).
             first = rest.split()[:1]
             if first and first[0] not in {"--version", "-v"}:
-                return "install"
+                return "install", None
             continue
-        sub = find_subcommand(rest)
+        sub, override = find_subcommand(rest)
         if sub is None:
             continue
         if sub in HARD_DENY_SUBCOMMANDS:
-            return "install"
+            return "install", override
         if sub not in SAFE_SUBCOMMANDS:
             saw_run = True
-    return "run" if saw_run else None
+            run_override = override
+    return ("run", run_override) if saw_run else (None, None)
 
 
 def iter_segments_with_cwd(command, default_cwd):
@@ -197,6 +215,23 @@ def check_segment(kind, cwd):
         )
         return True
 
+    # Written by scripts/sync-main-graphify.sh when a reinstall of main's own
+    # dependencies fails after a lockfile-changing fast-forward. Lockfiles
+    # can match while this is set — that's exactly the case it exists to
+    # catch: main's real install doesn't actually reflect its own lockfile
+    # right now, so a "matching" comparison would otherwise wrongly pass.
+    if os.path.exists(os.path.join(main_root, "node_modules", ".charm-stale")):
+        deny(
+            "node_modules here is a symlink into main's node_modules, but "
+            "main's own dependency reinstall failed after its last "
+            "lockfile change (see scripts/sync-main-graphify.sh) — its "
+            "real node_modules doesn't actually reflect its own lockfile "
+            "right now, even though the lockfiles compare equal. `rm "
+            "node_modules && pnpm install --frozen-lockfile` first to get "
+            "a real, isolated install."
+        )
+        return True
+
     return False
 
 
@@ -206,15 +241,23 @@ def main():
     except ValueError:
         return 0
 
-    if (payload.get("tool_name") or "") != "Bash":
+    if (payload.get("tool_name") or "") not in ("Bash", "PowerShell"):
         return 0
 
     command = (payload.get("tool_input") or {}).get("command") or ""
     default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
     for segment, cwd in iter_segments_with_cwd(command, default_root):
-        kind = classify_segment(segment)
-        if kind is not None and check_segment(kind, cwd):
+        kind, override = classify_segment(segment)
+        if kind is None:
+            continue
+        effective_cwd = cwd
+        if override:
+            override_path = os.path.expanduser(override)
+            if not os.path.isabs(override_path):
+                override_path = os.path.join(cwd, override_path)
+            effective_cwd = os.path.normpath(override_path)
+        if check_segment(kind, effective_cwd):
             return 0
 
     return 0

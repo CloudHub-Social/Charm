@@ -67,15 +67,23 @@ if [ "$local_head" != "$remote_head" ]; then
   # lockfile-comparison guard (which only catches divergence, not main
   # itself being behind its own lockfile).
   if [ "$lockfile_before" != "$lockfile_after" ]; then
+    # A marker file living *inside* node_modules itself (not a separate /tmp
+    # file) — it travels automatically through the symlink, so post-checkout
+    # and guard-symlinked-node-modules.py both see it without needing to
+    # duplicate a lookup against some out-of-band coordination file.
+    stale_marker="$repo_root/node_modules/.charm-stale"
     if command -v pnpm >/dev/null 2>&1; then
       echo "sync-main-graphify: pnpm-lock.yaml changed — reinstalling main's dependencies"
       if pnpm install --frozen-lockfile >/tmp/charm-sync-pnpm-install.log 2>&1; then
         echo "sync-main-graphify: pnpm install completed"
+        rm -f "$stale_marker"
       else
         echo "sync-main-graphify: pnpm install failed — see /tmp/charm-sync-pnpm-install.log" >&2
+        [ -d "$repo_root/node_modules" ] && touch "$stale_marker"
       fi
     else
       echo "sync-main-graphify: pnpm-lock.yaml changed but pnpm not found on PATH — main's node_modules is now stale" >&2
+      [ -d "$repo_root/node_modules" ] && touch "$stale_marker"
     fi
   fi
 fi

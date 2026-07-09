@@ -33,7 +33,7 @@ GRAPHIFY_UPDATE = re.compile(r"\bgraphify\s+update\b")
 GRAPHIFY_UPDATE_ARG = re.compile(
     r'\bgraphify\s+update\s+("[^"]+"|\'[^\']+\'|\S+)'
 )
-SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\|)")
+SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\||\n)")
 CD_SEGMENT = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*$')
 
 
@@ -79,7 +79,7 @@ def main():
     except ValueError:
         return 0
 
-    if (payload.get("tool_name") or "") != "Bash":
+    if (payload.get("tool_name") or "") not in ("Bash", "PowerShell"):
         return 0
 
     command = (payload.get("tool_input") or {}).get("command") or ""
