@@ -43,8 +43,32 @@ At the start of any task that will edit files:
 git fetch origin --quiet
 git worktree add -b <branch-name> ~/git/Charm-<short-suffix> origin/main --no-track
 cd ~/git/Charm-<short-suffix>
-pnpm install --frozen-lockfile   # node_modules isn't shared across worktrees
 ```
+
+A repo-tracked `post-checkout` git hook (`scripts/git-hooks/post-checkout`, installed
+into the shared hooks dir by `pnpm install`'s `prepare` step — see
+`scripts/install-git-hooks.sh`) fires automatically on that `worktree add` and:
+
+- symlinks `node_modules` from `~/git/Charm` into the new worktree when its
+  `pnpm-lock.yaml` matches main's exactly, instead of running a full `pnpm install`;
+- symlinks `graphify-out` from `~/git/Charm` so `graphify query`/`explain`/`path`
+  work immediately, without a rebuild.
+
+If your task's branch changes `package.json`/`pnpm-lock.yaml`, the hook won't create
+the `node_modules` symlink (lockfiles no longer match) and you still need
+`pnpm install --frozen-lockfile` — do **not** manually symlink over a mismatched
+lockfile, that corrupts main's `node_modules`. If the hook didn't fire for some other
+reason (e.g. hooks installed after the worktree already existed), you can always fall
+back to running the same two `ln -s` commands yourself, or just `pnpm install
+--frozen-lockfile`.
+
+The `graphify-out` symlink points at main's graph, so it's only as fresh as main's
+last `graphify update .`. A local launchd job
+(`scripts/sync-main-graphify.sh` + `scripts/social.cloudhub.charm.sync-main-graphify.plist`)
+polls `origin/main` every 15 minutes, fast-forwards the main worktree when it's
+moved (never touches main if it has uncommitted changes or has diverged), and reruns
+`graphify update .` there — so worktrees generally see a graph that's at most ~15
+minutes stale, without anyone needing to remember to refresh it by hand.
 
 For a release backport, branch from `origin/release/X.Y.Z` instead of `origin/main`,
 matching the branch rules above.
