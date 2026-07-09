@@ -77,9 +77,9 @@ jobs:
           # negative here (wrongly skipping) is much worse than the cost of an
           # occasional unnecessary run, so this errs toward over-matching.
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
-          # root config files that workflow doesn't need to care about but
-          # lint/typecheck/build do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|\.github/workflows/quality-checks\.yml$)'
+          # root config/test-support files that workflow doesn't need to care
+          # about but lint/typecheck/build/test/drift checks do.
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|sentry-release-artifacts)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -142,20 +142,27 @@ jobs:
           else
             frontend=false
           fi
-          echo "platform=$platform" >> "$GITHUB_OUTPUT"
-          echo "integration=$integration" >> "$GITHUB_OUTPUT"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          {
+            echo "platform=$platform"
+            echo "integration=$integration"
+            echo "frontend=$frontend"
+          } >> "$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
     needs: changes
-    # Pure JS/TS job — a Rust-only or docs-only PR can't change its result.
-    # A skipped required check still satisfies branch protection (same
-    # mechanism already relied on for the rust/macos/windows/linux/ios/android
-    # jobs' path-based skips above).
-    if: needs.changes.outputs.frontend == 'true'
+    # Keep this required context alive even when frontend paths are untouched:
+    # it must fail if change detection fails, and pnpm audit is advisory-data
+    # sensitive rather than frontend-path sensitive.
+    if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: Fail if change detection failed
+        if: needs.changes.result == 'failure' || needs.changes.result == 'cancelled'
+        run: |
+          echo "::error::changes job did not complete successfully: ${{ needs.changes.result }}"
+          exit 1
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
@@ -167,20 +174,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Deterministic local static checks are skipped on merge_group to cut CI
-      # load during merge-queue churn. Security, project-graph, drift, build,
-      # and test gates stay unconditional because their result can depend on the
-      # queued tree, fresh advisory data, or generated artifacts.
+      # Audit stays unconditional because fresh advisory data is not tied to
+      # changed frontend files. Frontend-specific checks are gated below.
       - run: pnpm audit --audit-level=high
-      - if: github.event_name != 'merge_group'
+      - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
         run: pnpm lint
-      - if: github.event_name != 'merge_group'
+      - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
         run: pnpm fmt:check
-      - if: github.event_name != 'merge_group'
+      - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
         run: pnpm typecheck
-      - run: pnpm test:coverage
-      - run: pnpm knip
-      - run: pnpm build
+      - if: needs.changes.outputs.frontend == 'true'
+        run: pnpm test:coverage
+      - if: needs.changes.outputs.frontend == 'true'
+        run: pnpm knip
+      - if: needs.changes.outputs.frontend == 'true'
+        run: pnpm build
 
       # Charm 2.0 Spec 09: tokens.css's primitive+semantic tiers are generated
       # from .design-sync/tokens/design-tokens.json (the Claude Design sync
@@ -189,6 +197,7 @@ jobs:
       # mismatch means either the JSON source or the generated CSS was
       # hand-edited out of sync with the other.
       - name: Design tokens are in sync (drift check)
+        if: needs.changes.outputs.frontend == 'true'
         run: |
           pnpm tokens:pull
           git diff --exit-code src/styles/tokens.css
