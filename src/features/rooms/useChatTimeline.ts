@@ -28,14 +28,22 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       return;
     }
     setLoading(true);
+    let cancelled = false;
     // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
     // which holds items in their natural oldest-to-newest order — unlike the
     // old `room.messages()` backward-pagination page, which was newest-first
     // and needed reversing.
     getTimelinePage(timelineRoomId)
-      .then((page) => setMessages(page.messages))
+      .then((page) => {
+        if (!cancelled) setMessages(page.messages);
+      })
       .catch(logAndIgnore)
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [room?.room_id]);
 
   useEffect(() => {
