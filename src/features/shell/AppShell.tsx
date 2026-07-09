@@ -1,9 +1,8 @@
 import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
-type MobileTab = "chats";
 export type MobileView = "list" | "detail";
 
 interface AppShellProps {
@@ -50,7 +49,6 @@ export function AppShell({
   isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
-  const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
   const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
@@ -88,14 +86,9 @@ export function AppShell({
       <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
         <button
           type="button"
-          aria-current={
-            mobileTab === "chats" && mobileView === "list" && !isSettingsActive ? "page" : undefined
-          }
+          aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => {
-            setMobileTab("chats");
-            onMobileViewChange("list");
-          }}
+          onClick={() => onMobileViewChange("list")}
         >
           <MessageSquare className="size-5" aria-hidden="true" />
           Chats

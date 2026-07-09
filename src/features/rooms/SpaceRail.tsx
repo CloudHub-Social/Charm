@@ -252,8 +252,11 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
 }
 
 function labelWithBadge(label: string, unread: number, highlight: number) {
-  if (unread <= 0 && highlight <= 0) return label;
-  return `${label}, ${unread} unread${highlight > 0 ? `, ${highlight} mentions` : ""}`;
+  const counts = [
+    unread > 0 ? `${unread} unread` : null,
+    highlight > 0 ? `${highlight} mentions` : null,
+  ].filter(Boolean);
+  return counts.length > 0 ? `${label}, ${counts.join(", ")}` : label;
 }
 
 function BadgeDot({ unread, highlight }: { unread: number; highlight: number }) {
