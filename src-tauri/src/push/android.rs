@@ -247,6 +247,101 @@ fn jstring_to_string(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s).map(|s| s.into()).unwrap_or_default()
 }
 
+fn call_push_bridge_string_method(
+    env: &mut JNIEnv,
+    context: &JObject,
+    method: &str,
+) -> Result<String, PushError> {
+    let class = push_bridge_class(env, context)?;
+    let result = env.call_static_method(
+        class,
+        method,
+        "(Landroid/content/Context;)Ljava/lang/String;",
+        &[JValue::from(context)],
+    );
+    let return_value = jni_result(env, method, result)?;
+    let result = return_value.l();
+    let obj = jni_result(env, method, result)?;
+    if obj.is_null() {
+        return Err(format!("PushBridge.{method} returned null"));
+    }
+    let value = JString::from(obj);
+    let result = env.get_string(&value);
+    let value: String = jni_result(env, method, result)?.into();
+    Ok(value)
+}
+
+fn show_headless_notification(
+    vm: JavaVM,
+    context: GlobalRef,
+    notification: super::PushNotification,
+) -> Result<(), PushError> {
+    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let result = env.new_local_ref(context.as_obj());
+    let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
+    let class = push_bridge_class(&mut env, &context)?;
+    let result = env.new_string(notification.title);
+    let title = jni_result(&mut env, "new_string(notification title)", result)?;
+    let result = env.new_string(notification.body);
+    let body = jni_result(&mut env, "new_string(notification body)", result)?;
+    let result = env.new_string(notification.event_id);
+    let event_id = jni_result(&mut env, "new_string(notification event id)", result)?;
+    let result = env.call_static_method(
+        class,
+        "showMessageNotification",
+        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        &[
+            JValue::from(&context),
+            JValue::from(&title),
+            JValue::from(&body),
+            JValue::from(&event_id),
+        ],
+    );
+    jni_result(&mut env, "PushBridge.showMessageNotification", result)?;
+    Ok(())
+}
+
+fn spawn_headless_push(
+    vm_for_secret_store: JavaVM,
+    secret_store_context: GlobalRef,
+    vm_for_notification: JavaVM,
+    notification_context: GlobalRef,
+    store_root: std::path::PathBuf,
+    message: super::PushMessage,
+) {
+    std::thread::spawn(move || {
+        let runtime = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(e) => {
+                eprintln!("failed to create headless push runtime: {e}");
+                return;
+            }
+        };
+
+        let _secret_store_context = crate::matrix::secret_store::install_android_context_override(
+            vm_for_secret_store,
+            secret_store_context,
+        );
+        let result = runtime.block_on(super::handle_headless_push(&store_root, message));
+        match result {
+            Ok(Some(notification)) => {
+                if let Err(e) = show_headless_notification(
+                    vm_for_notification,
+                    notification_context,
+                    notification,
+                ) {
+                    eprintln!("failed to show headless push notification: {e}");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("handle_headless_push failed: {e}"),
+        }
+    });
+}
+
 /// Called from `PushMessagingReceiver.onNewEndpoint` once UnifiedPush (or the
 /// embedded FCM fallback distributor) has an endpoint for `instance`. `via_fcm`
 /// distinguishes which Sygnal `app_id` this endpoint should be registered
@@ -353,30 +448,84 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 ///
 /// If Android cold-started this process purely to deliver this broadcast
 /// (the app was fully killed), `lib.rs`'s `setup()` hasn't run yet and
-/// `global_app_handle()` is empty — this push is dropped rather than
-/// handled. Making the killed-app path work fully requires a headless
-/// bootstrap that doesn't depend on Tauri's own `setup()` lifecycle; that's
-/// a larger follow-up, not attempted here.
+/// `global_app_handle()` is empty. In that case this uses the receiver's
+/// Android `Context` to restore the SQLCipher-backed Matrix client and show
+/// a platform notification directly, without Tauri's app/plugin lifecycle.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnMessage<'local>(
     mut env: JNIEnv<'local>,
     _this: JObject<'local>,
+    context: JObject<'local>,
     payload_json: JString<'local>,
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);
-    let Some(app) = super::global_app_handle() else {
-        eprintln!("push received before the app handle was initialized; dropping");
-        return;
-    };
     let Some(message) = parse_event_id_only_payload(&payload) else {
         eprintln!("push payload missing room_id/event_id; dropping");
         return;
     };
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = super::handle_push(&app, message).await {
-            eprintln!("handle_push failed: {e}");
+
+    if let Some(app) = super::global_app_handle() {
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = super::handle_push(&app, message).await {
+                eprintln!("handle_push failed: {e}");
+            }
+        });
+        return;
+    }
+
+    let app_data_dir = match call_push_bridge_string_method(&mut env, &context, "appDataDir") {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("cannot resolve app data dir for headless push: {e}");
+            return;
         }
-    });
+    };
+    let store_root =
+        match crate::matrix::persistence::matrix_store_root_at(std::path::Path::new(&app_data_dir))
+        {
+            Ok(path) => path,
+            Err(e) => {
+                eprintln!("cannot resolve matrix store root for headless push: {e}");
+                return;
+            }
+        };
+    let vm_for_secret_store = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("cannot read JavaVM for headless push: {e}");
+            return;
+        }
+    };
+    let vm_for_notification = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            eprintln!("cannot read JavaVM for headless push notification: {e}");
+            return;
+        }
+    };
+    let secret_store_context = match env.new_global_ref(&context) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!("cannot retain Android context for headless push: {e}");
+            return;
+        }
+    };
+    let notification_context = match env.new_global_ref(&context) {
+        Ok(context) => context,
+        Err(e) => {
+            eprintln!("cannot retain Android notification context for headless push: {e}");
+            return;
+        }
+    };
+
+    spawn_headless_push(
+        vm_for_secret_store,
+        secret_store_context,
+        vm_for_notification,
+        notification_context,
+        store_root,
+        message,
+    );
 }
 
 /// Parses the `notification.room_id`/`notification.event_id` fields out of a

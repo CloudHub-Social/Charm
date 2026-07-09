@@ -20,6 +20,11 @@
 
 use std::fmt;
 
+#[cfg(target_os = "android")]
+use jni::objects::GlobalRef;
+#[cfg(target_os = "android")]
+use jni::JavaVM;
+
 #[derive(Debug)]
 pub(crate) enum SecretStoreError {
     /// No entry exists for this service/account — stands in for
@@ -122,7 +127,7 @@ mod android {
     use super::SecretStoreError;
     use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
     use jni::JavaVM;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
 
@@ -130,6 +135,27 @@ mod android {
     /// once via the Activity's own classloader (see [`secure_storage_class`])
     /// rather than looked up by name on every call.
     static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
+
+    struct ContextOverride {
+        vm: JavaVM,
+        context: GlobalRef,
+    }
+
+    static CONTEXT_OVERRIDE: Mutex<Option<ContextOverride>> = Mutex::new(None);
+
+    pub(crate) struct ContextOverrideGuard;
+
+    impl Drop for ContextOverrideGuard {
+        fn drop(&mut self) {
+            *CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
+    pub(crate) fn install_context_override(vm: JavaVM, context: GlobalRef) -> ContextOverrideGuard {
+        *CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(ContextOverride { vm, context });
+        ContextOverrideGuard
+    }
 
     /// Maps a JNI call's result to `SecretStoreError`, and — if it failed —
     /// clears any pending Java exception first.
@@ -159,6 +185,18 @@ mod android {
     fn with_env<T>(
         f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> Result<T, SecretStoreError>,
     ) -> Result<T, SecretStoreError> {
+        let override_guard = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(override_context) = override_guard.as_ref() {
+            let mut env = override_context
+                .vm
+                .attach_current_thread()
+                .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
+            let result = env.new_local_ref(override_context.context.as_obj());
+            let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
+            return f(&mut env, &context);
+        }
+        drop(override_guard);
+
         let ctx = ndk_context::android_context();
         // SAFETY: `ctx.vm()`/`ctx.context()` are raw JNI pointers Tauri's own
         // Android runtime already established and keeps alive for the life
@@ -309,4 +347,15 @@ mod android {
             Ok(())
         })
     }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) type AndroidContextOverrideGuard = android::ContextOverrideGuard;
+
+#[cfg(target_os = "android")]
+pub(crate) fn install_android_context_override(
+    vm: JavaVM,
+    context: GlobalRef,
+) -> AndroidContextOverrideGuard {
+    android::install_context_override(vm, context)
 }

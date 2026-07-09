@@ -27,7 +27,10 @@ class PushMessagingReceiver : MessagingReceiver() {
 
     external fun nativeOnUnregistered()
 
-    external fun nativeOnMessage(payloadJson: String)
+    external fun nativeOnMessage(
+        context: Context,
+        payloadJson: String,
+    )
 
     override fun onNewEndpoint(
         context: Context,
@@ -64,7 +67,7 @@ class PushMessagingReceiver : MessagingReceiver() {
         message: PushMessage,
         instance: String,
     ) {
-        nativeOnMessage(String(message.content, Charsets.UTF_8))
+        nativeOnMessage(context.applicationContext, String(message.content, Charsets.UTF_8))
     }
 
     companion object {

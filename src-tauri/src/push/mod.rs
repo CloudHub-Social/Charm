@@ -91,6 +91,13 @@ pub struct PushMessage {
     pub event_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PushNotification {
+    pub event_id: String,
+    pub title: String,
+    pub body: String,
+}
+
 /// A pluggable push transport: obtain an endpoint/token from the platform's
 /// push mechanism, register/unregister it, and report whatever endpoint is
 /// currently active. `register_push`/`unregister_push` (below) and
@@ -677,6 +684,51 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         }
     };
 
+    let focused_room_id = app
+        .state::<MatrixState>()
+        .focused_room_id
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+
+    let Some(notification) =
+        build_push_notification(&client, message, focused_room_id.as_deref(), |event_id| {
+            app.state::<MatrixState>().mark_notified(event_id)
+        })
+        .await?
+    else {
+        return Ok(());
+    };
+
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title(notification.title)
+        .body(notification.body)
+        .show();
+
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) async fn handle_headless_push(
+    store_root: &std::path::Path,
+    message: PushMessage,
+) -> Result<Option<PushNotification>, PushError> {
+    let client = restore_any_client_at(store_root)
+        .await?
+        .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
+
+    build_push_notification(&client, message, None, |_| true).await
+}
+
+async fn build_push_notification(
+    client: &Client,
+    message: PushMessage,
+    focused_room_id: Option<&str>,
+    mark_notified: impl FnOnce(&str) -> bool,
+) -> Result<Option<PushNotification>, PushError> {
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
     let event_id =
         matrix_sdk::ruma::EventId::parse(&message.event_id).map_err(|e| e.to_string())?;
@@ -690,7 +742,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         mode,
         Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
     ) {
-        return Ok(());
+        return Ok(None);
     }
 
     // No further notify/suppress re-derivation here beyond the mute check
@@ -716,8 +768,8 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     // event that was never actually shown. Still unconditional otherwise — a
     // UTD/generic-fallback notification needs the same guard a successfully
     // decrypted one gets.
-    if !app.state::<MatrixState>().mark_notified(&message.event_id) {
-        return Ok(());
+    if !mark_notified(&message.event_id) {
+        return Ok(None);
     }
 
     let is_utd = timeline_event.kind.is_utd();
@@ -726,7 +778,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     let (sender, body) = match message_preview(timeline_event.kind.raw()) {
         Some((sender, body)) => {
             if own_user_id.as_deref() == Some(sender.as_str()) {
-                return Ok(());
+                return Ok(None);
             }
             (sender, body)
         }
@@ -757,14 +809,8 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     // Suppress only for whichever room the user is already looking at right
     // now — the same signal `shell::should_notify` uses for Spec 10's local
     // notifications (a push can still arrive while the app is foregrounded).
-    let focused_room_id = app
-        .state::<MatrixState>()
-        .focused_room_id
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    if focused_room_id.as_deref() == Some(room_id.as_str()) {
-        return Ok(());
+    if focused_room_id == Some(room_id.as_str()) {
+        return Ok(None);
     }
 
     let sender_display_name = if sender.is_empty() {
@@ -801,15 +847,11 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         &body,
     );
 
-    use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(notif_body)
-        .show();
-
-    Ok(())
+    Ok(Some(PushNotification {
+        event_id: message.event_id,
+        title,
+        body: notif_body,
+    }))
 }
 
 /// Tries every known account's saved session (headlessly — no `MatrixState`
@@ -820,6 +862,16 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
 async fn restore_any_client(app: &AppHandle) -> Result<Option<Client>, PushError> {
     for account_key in persistence::known_account_keys(app)? {
         if let Some(client) = auth::restore_session_for_push(app, &account_key).await? {
+            return Ok(Some(client));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn restore_any_client_at(store_root: &std::path::Path) -> Result<Option<Client>, PushError> {
+    for account_key in persistence::known_account_keys_at(store_root)? {
+        if let Some(client) = auth::restore_session_for_push_at(store_root, &account_key).await? {
             return Ok(Some(client));
         }
     }
@@ -868,6 +920,28 @@ mod tests {
         let (sender, body) = message_preview(&raw).expect("a text message has a preview");
         assert_eq!(sender, ALICE.to_string());
         assert_eq!(body, "see you at 6");
+    }
+
+    #[tokio::test]
+    async fn headless_client_construction_uses_explicit_store_root() {
+        let root =
+            std::env::temp_dir().join(format!("charm-headless-push-store-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store_key = "headless-client-construction";
+        let store_path = persistence::store_path_at(&root, store_key).unwrap();
+
+        let client = auth::build_persisted_client_with_store_passphrase(
+            "https://example.invalid",
+            &store_path,
+            "headless-push-test-passphrase",
+        )
+        .await
+        .expect("client builds directly against the explicit SQLCipher store path");
+
+        assert_eq!(client.homeserver().as_str(), "https://example.invalid/");
+        assert!(store_path.is_dir());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
