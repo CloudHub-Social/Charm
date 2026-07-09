@@ -1,10 +1,12 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const root = process.cwd();
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const describeWithBash = process.platform === "win32" ? describe.skip : describe;
 
 function readRepoFile(path: string): string {
   return readFileSync(join(root, path), "utf8");
@@ -46,7 +48,8 @@ describe("Sentry release artifact workflow", () => {
     expect(workflow).toContain('WRITE_FRONTEND_UPLOAD_ENV: "true"');
     expect(workflow).toContain("SENTRY_UPLOAD=true");
     expect(workflow).toContain("pnpm build");
-    expect(workflow).toContain("Verify sourcemaps are not left in dist");
+    expect(workflow).toContain("find dist -name '*.map' -print -quit");
+    expect(workflow).toContain("Sentry sourcemap upload left .map files in dist");
     expect(viteConfig).toContain("build: { sourcemap: sentryEnabled }");
     expect(viteConfig).toContain("sentryVitePlugin");
     expect(viteConfig).toContain(
@@ -89,7 +92,7 @@ describe("Sentry release artifact workflow", () => {
   });
 });
 
-describe("configure-sentry-release-env.sh", () => {
+describeWithBash("configure-sentry-release-env.sh", () => {
   it("writes frontend upload environment from manual dispatch inputs", () => {
     const result = configureSentryReleaseEnv({
       RELEASE_INPUT: "charm@2.0.0-test",
