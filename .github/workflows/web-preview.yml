@@ -92,7 +92,12 @@ jobs:
         run: |
           status=$(curl --silent --show-error --output /tmp/charm-preview-proxy.txt --write-out "%{http_code}" "${PREVIEW_URL}/api/profile/me")
           case "$status" in
-            401|403|404)
+            401|403)
+              ;;
+            404)
+              echo "::error::Preview API proxy returned 404 for /api/profile/me. The Pages Function proxy is likely missing or not routing."
+              cat /tmp/charm-preview-proxy.txt
+              exit 1
               ;;
             502)
               echo "::error::Preview API proxy returned 502. Ensure CHARM_WEB_API_BASE_URL is configured as a Pages runtime variable for the cloudflare-preview environment."

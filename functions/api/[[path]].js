@@ -21,7 +21,21 @@ function previewApiBase(env) {
   }
 
   try {
-    return { url: new URL(configured.replace(/\/+$/, "")) };
+    const url = new URL(configured.replace(/\/+$/, ""));
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return {
+        response: new Response("CHARM_WEB_API_BASE_URL must use http or https", { status: 502 }),
+      };
+    }
+    if (url.search !== "" || url.hash !== "") {
+      return {
+        response: new Response(
+          "CHARM_WEB_API_BASE_URL must not include a query string or fragment",
+          { status: 502 },
+        ),
+      };
+    }
+    return { url };
   } catch {
     return {
       response: new Response("CHARM_WEB_API_BASE_URL must be an absolute URL", {
@@ -75,7 +89,7 @@ export async function onRequest({ env, request }) {
   return fetch(targetUrl, {
     method: request.method,
     headers: proxyHeaders(request, { preserveUpgrade }),
-    body: request.body,
+    body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
     redirect: "manual",
   });
 }
