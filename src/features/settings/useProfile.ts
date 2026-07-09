@@ -37,7 +37,7 @@ export function useResolvedAvatarSrc(mxcUrl: string | null | undefined) {
     queryFn: async () => {
       if (!mxcUrl) return null;
       const path = await resolveAvatar(mxcUrl);
-      return path ? toLoadableMediaUrl(path) : null;
+      return path ? (toLoadableMediaUrl(path) ?? null) : null;
     },
     enabled: Boolean(mxcUrl),
     staleTime: 5 * 60 * 1000,

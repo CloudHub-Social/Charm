@@ -1,11 +1,18 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { toLoadableMediaUrl } from "./mediaUrl";
 
+const convertFileSrc = vi.fn((path: string) => `asset://localhost/${path}`);
+
 vi.mock("@tauri-apps/api/core", () => ({
-  convertFileSrc: (path: string) => `asset://localhost/${path}`,
+  convertFileSrc: (path: string) => convertFileSrc(path),
 }));
 
 describe("toLoadableMediaUrl", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    convertFileSrc.mockClear();
+  });
+
   it("passes through absolute HTTP URLs", () => {
     expect(toLoadableMediaUrl("http://example.org/media.png")).toBe("http://example.org/media.png");
     expect(toLoadableMediaUrl("https://example.org/media.png")).toBe(
@@ -39,5 +46,12 @@ describe("toLoadableMediaUrl", () => {
     expect(toLoadableMediaUrl("/cache/media/avatar.png")).toBe(
       "asset://localhost//cache/media/avatar.png",
     );
+  });
+
+  it("does not call the Tauri converter for local file paths in web builds", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    expect(toLoadableMediaUrl("/cache/media/avatar.png")).toBeUndefined();
+    expect(convertFileSrc).not.toHaveBeenCalled();
   });
 });
