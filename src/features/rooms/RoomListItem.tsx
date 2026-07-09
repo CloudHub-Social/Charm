@@ -54,7 +54,7 @@ export function RoomListItem({
       {...dragHandleProps}
     >
       <Avatar>
-        <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+        <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
         <AvatarFallback
           style={{ background: avatarColor(room.room_id) }}
           className="font-bold text-white"

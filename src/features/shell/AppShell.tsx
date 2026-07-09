@@ -1,16 +1,15 @@
-import { MessageSquare, Settings as SettingsIcon, Users } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
+import { useEffect, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
-type MobileTab = "chats" | "people";
 export type MobileView = "list" | "detail";
 
 interface AppShellProps {
+  /** The dedicated spaces rail, shown beside the room list on desktop and mobile list views. */
+  spaceRail: ReactNode;
   /** The rooms rail (`RoomList`) — rendered as the sidebar on desktop, and as the "Chats" tab's list on mobile. */
   roomList: ReactNode;
-  /** A direct-messages-only view of the room list — the mobile "People" tab. Desktop has no separate People destination; DMs already live in `roomList`'s sections. */
-  peopleList: ReactNode;
   /** The active room's chat view (`ChatShell`). */
   content: ReactNode;
   /** Whether the Settings destination is currently active in mobile navigation. */
@@ -33,14 +32,14 @@ interface AppShellProps {
 
 /**
  * Switches between the desktop sidebar layout (rooms rail + content side by
- * side) and a mobile bottom-nav layout (Chats / People / Settings tabs, one
- * full-screen view at a time) at the `useAdaptiveLayout` breakpoint — Spec 10.
+ * side) and a mobile bottom navigation with Chats and Settings destinations at
+ * the `useAdaptiveLayout` breakpoint — Spec 10.
  * Bottom-nav is Day-1; swipe gestures and haptics are Day-2 (see the spec's
  * non-goals).
  */
 export function AppShell({
+  spaceRail,
   roomList,
-  peopleList,
   content,
   rightPanel,
   activeRoomId,
@@ -50,7 +49,6 @@ export function AppShell({
   isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
-  const [mobileTab, setMobileTab] = useState<MobileTab>("chats");
   const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
@@ -65,6 +63,7 @@ export function AppShell({
   if (layout === "desktop") {
     return (
       <div className="flex h-screen">
+        {spaceRail}
         {roomList}
         {content}
         {rightPanel}
@@ -74,43 +73,25 @@ export function AppShell({
 
   return (
     <div className="flex h-screen flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden [&>aside]:w-full [&>aside]:border-r-0 [&>div]:w-full [&>div]:border-l-0">
-        {mobileView === "detail" && activeRoomId
-          ? (rightPanel ?? content)
-          : mobileTab === "chats"
-            ? roomList
-            : peopleList}
+      <div className="min-h-0 flex-1 overflow-hidden [&>div]:w-full [&>div]:border-l-0">
+        {mobileView === "detail" && activeRoomId ? (
+          (rightPanel ?? content)
+        ) : (
+          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink [&>aside:last-child]:border-r-0">
+            {spaceRail}
+            {roomList}
+          </div>
+        )}
       </div>
       <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
         <button
           type="button"
-          aria-current={
-            mobileTab === "chats" && mobileView === "list" && !isSettingsActive ? "page" : undefined
-          }
+          aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
           className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => {
-            setMobileTab("chats");
-            onMobileViewChange("list");
-          }}
+          onClick={() => onMobileViewChange("list")}
         >
           <MessageSquare className="size-5" aria-hidden="true" />
           Chats
-        </button>
-        <button
-          type="button"
-          aria-current={
-            mobileTab === "people" && mobileView === "list" && !isSettingsActive
-              ? "page"
-              : undefined
-          }
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => {
-            setMobileTab("people");
-            onMobileViewChange("list");
-          }}
-        >
-          <Users className="size-5" aria-hidden="true" />
-          People
         </button>
         <button
           type="button"

@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MessageSquareWarning } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { closeSentry, initializeSentry } from "@/observability/instrument";
+import {
+  closeSentry,
+  initializeSentry,
+  openSentryFeedbackDialog,
+} from "@/observability/instrument";
+import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "@/observability/messages";
 import {
   persistObservabilitySettings,
   readObservabilitySettings,
@@ -85,6 +92,15 @@ export function ObservabilityPanel() {
   };
   const subDisabled = !settings.sentryEnabled;
   const canvasDisabled = subDisabled || !settings.replayEnabled;
+  const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+
+  const openFeedback = async () => {
+    setFeedbackStatus(null);
+    const opened = await openSentryFeedbackDialog({ surface: "settings" });
+    if (!opened) {
+      setFeedbackStatus(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE);
+    }
+  };
 
   return (
     <div className="max-w-lg space-y-6">
@@ -149,6 +165,31 @@ export function ObservabilityPanel() {
             />
           }
         />
+      </SettingsCard>
+      <SettingsCard heading="Feedback">
+        <SettingTile
+          title="Report a problem"
+          description="Open Sentry's feedback form. Optional screenshots may include visible room names, Matrix IDs, or message text and are not scrubbed like text fields."
+          control={
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={subDisabled}
+              onClick={() => void openFeedback()}
+            >
+              <MessageSquareWarning aria-hidden="true" />
+              Send feedback
+            </Button>
+          }
+        />
+        {feedbackStatus ? (
+          <SettingTile>
+            <output aria-live="polite" className="text-sm text-muted-foreground">
+              {feedbackStatus}
+            </output>
+          </SettingTile>
+        ) : null}
       </SettingsCard>
       <SettingsCard heading="Privacy">
         <SettingTile

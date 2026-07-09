@@ -62,6 +62,7 @@ export function useOnboardingGate(userId: string | null) {
       return undefined;
     }
 
+    const evaluatedUserId = userId;
     let cancelled = false;
 
     async function evaluate() {
@@ -73,7 +74,7 @@ export function useOnboardingGate(userId: string | null) {
           // catch below — coercing it to `false` would instead bias toward
           // `pending` (re-showing onboarding) on a transient filesystem
           // error, exactly backwards from Spec 12's fail-safe intent.
-          getLocalOnboardingFlag().catch(() => true),
+          getLocalOnboardingFlag(evaluatedUserId).catch(() => true),
         ]);
         if (cancelled) return;
 
@@ -89,7 +90,10 @@ export function useOnboardingGate(userId: string | null) {
           // without the `userId` check a fast logout-then-login-as-someone-
           // else could land this account's onboarding flags on the new one.
           if (!localFlag) {
-            void writeCompletionFlags(() => activeUserIdRef.current === userId);
+            void writeCompletionFlags(
+              evaluatedUserId,
+              () => activeUserIdRef.current === evaluatedUserId,
+            );
           }
           return;
         }
@@ -128,9 +132,9 @@ export function useOnboardingGate(userId: string | null) {
           // once earlier in `evaluate`, so an account switch in the gap
           // can't backfill this account's flag onto whoever is now signed
           // in.
-          const isStillActive = () => activeUserIdRef.current === userId;
+          const isStillActive = () => activeUserIdRef.current === evaluatedUserId;
           if (isStillActive()) {
-            void setLocalOnboardingFlag().catch((err: unknown) => {
+            void setLocalOnboardingFlag(evaluatedUserId).catch((err: unknown) => {
               console.error("useOnboardingGate: failed to backfill the local onboarding flag", err);
             });
           }
@@ -162,8 +166,9 @@ export function useOnboardingGate(userId: string | null) {
   }, [userId]);
 
   const complete = useCallback(async () => {
+    if (!userId) return;
     if (activeUserIdRef.current !== userId) return;
-    await writeCompletionFlags(() => activeUserIdRef.current === userId);
+    await writeCompletionFlags(userId, () => activeUserIdRef.current === userId);
     if (activeUserIdRef.current !== userId) return;
     setStatus("done");
   }, [userId]);
@@ -189,14 +194,14 @@ export function useOnboardingGate(userId: string | null) {
  * underlying IPC commands resolve against the *currently* active client,
  * not whichever account's JS closure happened to call them).
  */
-async function writeCompletionFlags(isStillActive: () => boolean): Promise<void> {
+async function writeCompletionFlags(userId: string, isStillActive: () => boolean): Promise<void> {
   if (!isStillActive()) return;
   const content: OnboardingAccountData = { completed_at: Date.now(), version: 1 };
   setAccountData(ONBOARDING_ACCOUNT_DATA_TYPE, content).catch((err: unknown) => {
     console.error("useOnboardingGate: failed to write the onboarding account-data flag", err);
   });
   if (!isStillActive()) return;
-  await setLocalOnboardingFlag().catch((err: unknown) => {
+  await setLocalOnboardingFlag(userId).catch((err: unknown) => {
     console.error("useOnboardingGate: failed to write the local onboarding flag", err);
   });
 }

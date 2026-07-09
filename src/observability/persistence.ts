@@ -3,6 +3,7 @@ import {
   normalizeObservabilitySettings,
   type ObservabilitySettings,
 } from "./settings";
+import { isTauri } from "@/lib/platform";
 
 export const OBSERVABILITY_LOCAL_STORAGE_KEY = "charm:observability";
 export const OBSERVABILITY_STORE_FILENAME = "observability.json";
@@ -12,6 +13,9 @@ interface PersistedEnvelope {
   state: ObservabilitySettings;
   updatedAt: number;
 }
+
+let persistMutationId = 0;
+let durablePersistTail = Promise.resolve();
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
@@ -52,7 +56,20 @@ function writeLocalEnvelope(envelope: PersistedEnvelope): void {
 
 async function getStore() {
   const { load } = await import("@tauri-apps/plugin-store");
-  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: true, defaults: {} });
+  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: false, defaults: {} });
+}
+
+async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("update_observability_log_consent", { logsEnabled });
+  } catch (error) {
+    console.warn("Failed to sync Rust observability log consent", error);
+    // Rust reads the persisted store on the next app start if same-session IPC is unavailable.
+  }
 }
 
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
@@ -78,15 +95,44 @@ export async function persistObservabilitySettings(
   settings: ObservabilitySettings,
   updatedAt: number = Date.now(),
 ): Promise<void> {
+  const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = {
     state: normalizeObservabilitySettings(settings),
     updatedAt,
   };
   writeLocalEnvelope(envelope);
+  if (!envelope.state.logsEnabled) {
+    await syncRustLogConsent(false);
+  }
+  let persisted = false;
   try {
-    const store = await getStore();
-    await store.set(OBSERVABILITY_STORE_KEY, envelope);
-  } catch {
+    const durablePersist = durablePersistTail.then(async () => {
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      const store = await getStore();
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.set(OBSERVABILITY_STORE_KEY, envelope);
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.save();
+      return mutationId === persistMutationId;
+    });
+    durablePersistTail = durablePersist.then(
+      () => undefined,
+      () => undefined,
+    );
+    persisted = await durablePersist;
+  } catch (error) {
+    if (isTauri()) {
+      console.warn("Failed to persist observability settings to the Tauri store", error);
+    }
     // The local mirror already landed; plain-browser tests and dev previews use it.
+  }
+  if (persisted && mutationId === persistMutationId && envelope.state.logsEnabled) {
+    await syncRustLogConsent(true);
   }
 }

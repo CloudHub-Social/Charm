@@ -182,19 +182,24 @@ this in a production deployment that's actually behind TLS.
 
 - `CHARM_WEB_SERVER_ALLOWED_ORIGIN` — the frontend origin(s) allowed to open
   `GET /api/ws` (comma-separated for more than one). **Set this before
-  deploying behind a shared registrable domain** — the session cookie's
+  deploying charm-web-server** — the session cookie's
   `SameSite=Strict` doesn't defend against a same-*site* subdomain (a
   different origin, same registrable domain) opening this socket and
   attaching the cookie automatically; only an explicit `Origin` check does.
-  Unset by default (permissive, with a one-time startup warning) so local
-  dev keeps working with zero configuration.
+  Unset by default; WebSocket upgrades and raw-body requests with an
+  `Origin` header fail closed until this is configured. Configure this even
+  for same-origin browser deployments, because browsers send an `Origin`
+  header on WebSocket handshakes.
+  - Exact origins are preferred. For dynamic preview URLs, one constrained
+    wildcard is supported per entry, with both a non-empty prefix and suffix
+    (for example,
+    `https://pr-*-charm-preview.<account>.workers.dev`). Broad host-wide
+    patterns such as `https://*.workers.dev` are intentionally rejected.
 - The same allowlist also drives the router's `CorsLayer` (credentialed —
   `Access-Control-Allow-Credentials: true`, needed for the session cookie),
-  covering the rest of the HTTP API. Unlike the WS check above, this is
-  **not** permissive-by-default when unset: an empty allowlist grants no
-  cross-origin CORS access at all (same-origin requests need no CORS headers
-  to work, so this still requires zero configuration for a same-origin
-  deployment or the common local-dev shape). **Set
+  covering the rest of the HTTP API. An empty allowlist grants no
+  cross-origin CORS access at all. Same-origin HTTP requests that do not hit
+  the WebSocket/raw-body origin guard need no CORS headers to work. **Set
   `CHARM_WEB_SERVER_ALLOWED_ORIGIN` if the frontend is served from a
   different origin than this API** (e.g. a Vite dev server on a different
   port, or a separately-hosted production frontend) — otherwise the browser
@@ -208,7 +213,10 @@ Synapse/Dex/MAS — either another `docker-compose` service or a systemd unit,
 matching how that stack already runs. No Cloudflare Containers spike (that's
 explicitly shelved in the spec). This PR does not deploy anything live —
 confirm VPS capacity and add the compose service/systemd unit as a separate,
-deliberate change.
+deliberate change. This repository currently does not include that production
+compose/systemd configuration, so this README is the checked-in deployment
+contract: every real deployment must set `CHARM_WEB_SERVER_ALLOWED_ORIGIN`
+explicitly to the trusted frontend origin(s).
 
 ## Testing
 

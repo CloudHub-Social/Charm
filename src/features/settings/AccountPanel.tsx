@@ -1,6 +1,5 @@
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +12,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
+import { isWebBuild } from "@/lib/platform";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 import { BlockedUsersCard } from "./BlockedUsersCard";
 import { ContactInformationCard } from "./ContactInformationCard";
@@ -30,10 +32,12 @@ interface AccountPanelProps {
 }
 
 export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
+  const webBuild = isWebBuild();
   const { data: profile } = useProfile();
   const { updateDisplayName, updateAvatar } = useUpdateProfile();
   const avatarSrc = useResolvedAvatarSrc(profile?.avatar_url);
   const { data: deactivateUrl } = useAccountDeactivateUrl();
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const [displayNameDraft, setDisplayNameDraft] = useState<string | null>(null);
   const displayName = displayNameDraft ?? profile?.display_name ?? "";
@@ -56,6 +60,10 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
   }
 
   async function handlePickAvatar() {
+    if (webBuild) {
+      avatarInputRef.current?.click();
+      return;
+    }
     const selected = await openFileDialog({
       multiple: false,
       filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
@@ -63,6 +71,17 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
     if (typeof selected !== "string") return;
     try {
       await updateAvatar.mutateAsync(selected);
+    } catch {
+      // Surfaced via `updateAvatar.error` below.
+    }
+  }
+
+  async function handleAvatarInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      await updateAvatar.mutateAsync(file);
     } catch {
       // Surfaced via `updateAvatar.error` below.
     }
@@ -89,6 +108,13 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
       <SettingsCard heading="Profile">
         <SettingTile>
           <div className="flex items-center gap-4">
+            <input
+              ref={avatarInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="hidden"
+              onChange={handleAvatarInputChange}
+            />
             <Avatar size="lg">
               {avatarSrc && <AvatarImage src={avatarSrc} alt="" />}
               <AvatarFallback>
@@ -137,8 +163,12 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         />
       </SettingsCard>
 
-      <ContactInformationCard />
-      <BlockedUsersCard />
+      {!webBuild && (
+        <>
+          <ContactInformationCard />
+          <BlockedUsersCard />
+        </>
+      )}
 
       <SettingsCard heading="Security">
         <SettingTile
@@ -149,7 +179,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
               : undefined
           }
           control={
-            profile?.uses_oauth ? undefined : (
+            profile?.uses_oauth || webBuild ? undefined : (
               <Button variant="outline" size="sm" onClick={() => setPasswordDialogOpen(true)}>
                 Change password
               </Button>
@@ -170,14 +200,20 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
         <SettingTile
           title="Deactivate account"
           description={
-            profile?.uses_oauth && !deactivateUrl
-              ? "This account signs in through your identity provider — deactivate it there instead."
-              : "Permanently deactivates your account. This cannot be undone."
+            webBuild && !profile?.uses_oauth
+              ? "Account deactivation is not available in the web preview yet."
+              : profile?.uses_oauth && !deactivateUrl
+                ? "This account signs in through your identity provider — deactivate it there instead."
+                : "Permanently deactivates your account. This cannot be undone."
           }
           control={
-            profile?.uses_oauth ? (
+            webBuild && !profile?.uses_oauth ? undefined : profile?.uses_oauth ? (
               deactivateUrl ? (
-                <Button variant="destructive" size="sm" onClick={() => openUrl(deactivateUrl)}>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => openExternalUrl(deactivateUrl).catch(logAndIgnore)}
+                >
                   Deactivate account
                 </Button>
               ) : undefined

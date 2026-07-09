@@ -1,5 +1,4 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +16,8 @@ import {
 import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { openExternalUrl } from "@/lib/openExternalUrl";
+import { isWebBuild } from "@/lib/platform";
 
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
@@ -48,6 +49,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // multi-stage lifecycle (generating, waiting for scan, check code,
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
   const [showQrLogin, setShowQrLogin] = useState(false);
+  const showNativeSignInOptions = !isWebBuild();
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -58,6 +60,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const ssoInProgressRef = useRef(false);
 
   useEffect(() => {
+    if (isWebBuild()) return undefined;
+
     // Shared by both the cold-launch check and the warm onOpenUrl listener
     // below. On a cold launch (app was fully closed during the browser step,
     // then relaunched by the OS via the redirect), there's no in-memory
@@ -123,7 +127,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     try {
       const ssoUrl = await startSsoLogin(homeserverUrl);
       ssoInProgressRef.current = true;
-      await openUrl(ssoUrl);
+      await openExternalUrl(ssoUrl);
       // Left pending: resolved by the onOpenUrl listener above once the
       // system browser redirects back with charm://sso-callback, or by
       // handleCancelSso if the user gives up and comes back without it.
@@ -228,7 +232,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       : "Create account"}
                 </Button>
 
-                {mode === "sign-in" && (
+                {mode === "sign-in" && showNativeSignInOptions && (
                   <>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <div className="h-px flex-1 bg-border" />

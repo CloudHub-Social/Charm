@@ -493,6 +493,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconstructed_store_restores_session_from_same_disk_file() {
+        let dir = scratch_dir("restart-survival");
+        let key = [8u8; 32];
+        let writer = PersistenceStore::new_for_test(&dir, key);
+
+        writer
+            .save(
+                "tok-restart",
+                "https://example.invalid",
+                &dummy_session("@restart:example.invalid"),
+            )
+            .await
+            .unwrap();
+
+        drop(writer);
+
+        let reader = PersistenceStore::new_for_test(&dir, key);
+        let all = reader.read_all().await;
+
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].token, "tok-restart");
+        assert_eq!(all[0].homeserver_url, "https://example.invalid");
+        assert_eq!(
+            all[0].session.meta.user_id.as_str(),
+            "@restart:example.invalid"
+        );
+        assert_eq!(all[0].session.tokens.access_token, "test-access-token");
+    }
+
+    #[tokio::test]
     async fn on_disk_file_never_carries_plaintext_secrets() {
         let dir = scratch_dir("no-plaintext");
         let store = PersistenceStore::new_for_test(&dir, [3u8; 32]);

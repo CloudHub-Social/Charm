@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Info, Paperclip, Send, Settings, X } from "lucide-react";
@@ -6,31 +6,14 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
-import {
-  canRedact,
-  editMessage,
-  getTimelinePage,
-  markRoomRead,
-  onTimelineUpdate,
-  onTypingUpdate,
-  onUploadProgress,
-  redactEvent,
-  runCommand,
-  sendAttachment,
-  sendMessage,
-  sendReply,
-  sendTyping,
-  toggleReaction,
-  type RoomMessageSummary,
-  type RoomSummary,
-} from "@/lib/matrix";
+import { isWebBuild } from "@/lib/platform";
+import { canRedact, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
-import type { ParsedSlashCommand } from "./slashCommands";
 import { type MessageActionsHandle } from "./MessageActions";
 import { MessageRow, messageRowKey } from "./MessageRow";
 import { ReplyPreview } from "./ReplyPreview";
-import { UploadTray, type PendingUpload } from "./UploadTray";
+import { UploadTray } from "./UploadTray";
 import {
   activeReplyTargetAtomFamily,
   editingEventIdAtomFamily,
@@ -45,21 +28,15 @@ import {
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
+import { useChatTimeline } from "./useChatTimeline";
+import { useChatTyping } from "./useChatTyping";
+import { useMessageActions } from "./useMessageActions";
+import { useMessageSend } from "./useMessageSend";
 
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
-}
-
-/** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
-const TYPING_REFRESH_MS = 4000;
-
-function typingLabel(userIds: string[]): string {
-  if (userIds.length === 0) return "";
-  if (userIds.length === 1) return `${userIds[0]} is typing…`;
-  if (userIds.length === 2) return `${userIds[0]} and ${userIds[1]} are typing…`;
-  const [first, second, ...rest] = userIds;
-  return `${first}, ${second}, and ${rest.length} other${rest.length === 1 ? "" : "s"} are typing…`;
 }
 
 /**
@@ -127,16 +104,8 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 }
 
 export function ChatShell({ room, currentUserId }: ChatShellProps) {
-  const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [uploads, setUploads] = useState<PendingUpload[]>([]);
-  const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
-  const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const composerRef = useRef<ComposerHandle>(null);
-  const lastMarkedReadRoomId = useRef<string | null>(null);
-  const lastMarkedReadEventId = useRef<string | null>(null);
-  const lastTypingSentAt = useRef(0);
-  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -144,12 +113,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // on the row open that message's action menu.
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
-  // Tracks the *currently viewed* room id across renders — used by
-  // `handleSlashCommand`'s async continuation below to check whether the
-  // user switched rooms mid-command, so a stale room's feedback isn't
-  // misattributed to whatever room is showing now.
-  const currentRoomIdRef = useRef(roomId);
-  currentRoomIdRef.current = roomId;
+  const activeRoomId = room?.room_id ?? null;
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
   );
@@ -165,175 +129,33 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // already at the bottom) behind it shouldn't be silently marked read, same
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
+  const { messages, loading, bottomSentinelRef } = useChatTimeline(room, roomSettingsOpen);
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
-
-  // Room-scoped, not persistent: a bad-args/permission-denied banner from
-  // room A shouldn't still be showing once the user has switched to room B.
-  useEffect(() => {
-    setCommandFeedback(null);
-  }, [roomId]);
-
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
-
-  useEffect(() => {
-    // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
-    // this a fresh `room` reference on every `room_list:update`, and
-    // `Timeline::paginate_backwards`'s pagination is now stateful per-room
-    // (Spec 14), so re-running this on every such refresh would silently
-    // walk further back into history each time instead of just loading the
-    // room once.
-    const timelineRoomId = room?.room_id;
-    if (!timelineRoomId) {
-      setMessages([]);
-      return;
-    }
-    setLoading(true);
-    // `page.messages` now comes from `matrix-sdk-ui`'s `Timeline` (Spec 14),
-    // which holds items in their natural oldest-to-newest order — unlike the
-    // old `room.messages()` backward-pagination page, which was newest-first
-    // and needed reversing.
-    getTimelinePage(timelineRoomId)
-      .then((page) => setMessages(page.messages))
-      .catch(logAndIgnore)
-      .finally(() => setLoading(false));
-  }, [room?.room_id]);
-
-  useEffect(() => {
-    if (!room) return undefined;
-    const unlisten = onTimelineUpdate((update) => {
-      if (update.room_id !== room.room_id) return;
-      // `update.messages` is a full re-snapshot of the room's live Timeline
-      // (Spec 14) — every call to `timeline:update` carries the complete
-      // current item list, not a delta to merge onto existing state. Merging
-      // (as the pre-Spec-14 per-batch model required) would keep stale
-      // items a newer snapshot no longer has — e.g. a local echo keyed by
-      // transaction id lingering alongside the remote event that replaced
-      // it, since the remote item's `transaction_id` is `None` and so
-      // wouldn't match it for removal. Replacing outright is both correct
-      // and simpler.
-      setMessages(update.messages);
+  const { typingText, handleTypingInput, stopTyping } = useChatTyping(activeRoomId, currentUserId);
+  const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
+  const { commandFeedback, setCommandFeedback, handleComposerSubmit, handleSlashCommand } =
+    useMessageSend({
+      room,
+      editingEventId,
+      replyTarget,
+      setEditingEventId,
+      setReplyTarget,
+      stopTyping,
     });
-    return () => {
-      unlisten.then((fn) => fn()).catch(logAndIgnore);
-    };
-  }, [room]);
+  const { handleToggleReaction, handleDelete, handleReply, handleEdit } = useMessageActions({
+    roomId: activeRoomId,
+    setReplyTarget,
+    setEditingEventId,
+  });
 
   // No `send_queue:update` listener here: the live `Timeline` (Spec 14)
   // surfaces the same pending -> sent -> error transitions as `send_state` on
   // the `RoomMessageSummary`s pushed via `timeline:update` above, so a
   // separate room-wide send-queue event would just be redundant for the
   // message list.
-
-  useEffect(() => {
-    const unlisten = onUploadProgress((progress) => {
-      setUploads((prev) => {
-        const existing = prev.find((u) => u.txnId === progress.txn_id);
-        if (!existing) return prev;
-        const done = progress.sent >= progress.total && progress.total > 0;
-        if (done) {
-          return prev.filter((u) => u.txnId !== progress.txn_id);
-        }
-        return prev.map((u) =>
-          u.txnId === progress.txn_id ? { ...u, sent: progress.sent, total: progress.total } : u,
-        );
-      });
-    });
-    return () => {
-      unlisten.then((fn) => fn()).catch(logAndIgnore);
-    };
-  }, []);
-
-  useEffect(() => {
-    // Clear on every room change, not just to `null` — otherwise switching
-    // directly from room A (mid "X is typing…") to room B keeps A's typing
-    // row rendered under B until B happens to get its own typing update.
-    setTypingUserIds([]);
-    const typingRoomId = room?.room_id;
-    if (!typingRoomId) return undefined;
-    // Keyed to the room id, not the `room` object — a `room_list:update`
-    // refresh gives the active room a fresh object with the same id, which
-    // would otherwise re-subscribe (and briefly double-listen, since the old
-    // listener's teardown is async) on every refresh instead of only on an
-    // actual room change.
-    const unlisten = onTypingUpdate((update) => {
-      if (update.room_id !== typingRoomId) return;
-      setTypingUserIds(update.user_ids.filter((id) => id !== currentUserId));
-    });
-    return () => {
-      unlisten.then((fn) => fn()).catch(logAndIgnore);
-    };
-  }, [room?.room_id, currentUserId]);
-
-  const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
-
-  // Mark the room read as soon as it becomes active — deduped on room id
-  // (not event id) so this still fires the first time even before any
-  // messages have loaded. Reset the dedup key when navigating away so
-  // returning to the same room later (e.g. with newly-arrived unread
-  // messages) fires mark-read again instead of silently no-oping. Skipped
-  // (without consuming the dedup key) while room settings covers the chat —
-  // re-running this effect once the modal closes, with `roomSettingsOpen` in
-  // the deps, fires it then instead.
-  useEffect(() => {
-    if (!room) {
-      lastMarkedReadRoomId.current = null;
-      return;
-    }
-    if (roomSettingsOpen) return;
-    if (lastMarkedReadRoomId.current === room.room_id) return;
-    lastMarkedReadRoomId.current = room.room_id;
-    markRoomRead(room.room_id).catch(logAndIgnore);
-  }, [room, roomSettingsOpen]);
-
-  useEffect(() => {
-    if (!room || !latestEventId) return undefined;
-    // Same reasoning as above: don't mark read while the modal covers the
-    // chat. `roomSettingsOpen` in the deps re-creates the observer on close,
-    // which fires its callback immediately with the sentinel's current
-    // intersection state — no need to wait for it to re-intersect.
-    if (roomSettingsOpen) return undefined;
-    const sentinel = bottomSentinelRef.current;
-    if (!sentinel) return undefined;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const isVisible = entries.some((entry) => entry.isIntersecting);
-        if (!isVisible) return;
-        if (lastMarkedReadEventId.current === latestEventId) return;
-        lastMarkedReadEventId.current = latestEventId;
-        markRoomRead(room.room_id).catch(logAndIgnore);
-      },
-      { threshold: 1 },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [room, latestEventId, roomSettingsOpen]);
-
-  // Keyed to the room id, not the `room` object — RoomsScreen rebuilds
-  // `activeRoom` from every `room_list:update`, so a plain `[room]` dep would
-  // treat "same room, refreshed object" as a room change and send a spurious
-  // `sendTyping(false)` while the user is still actively typing there.
-  useEffect(() => {
-    const typingRoomId = room?.room_id;
-    // A room switch (or unmount) resets the throttle too — otherwise typing
-    // in room A within the last 4s can suppress the first `sendTyping(true)`
-    // in room B, since the throttle was keyed globally rather than per room.
-    lastTypingSentAt.current = 0;
-    return () => {
-      if (typingRoomId) sendTyping(typingRoomId, false).catch(logAndIgnore);
-    };
-  }, [room?.room_id]);
-
-  function handleTypingInput(typingRoomId: string) {
-    const now = Date.now();
-    if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
-    lastTypingSentAt.current = now;
-    sendTyping(typingRoomId, true).catch(logAndIgnore);
-  }
-
-  const typingText = useMemo(() => typingLabel(typingUserIds), [typingUserIds]);
 
   if (!room) {
     return (
@@ -346,132 +168,42 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const editingMessage = messages.find((m) => m.event_id === editingEventId) ?? null;
   const composerMode: ComposerMode = editingEventId ? "edit" : replyTarget ? "reply" : "send";
 
-  async function handleComposerSubmit(content: {
-    body: string;
-    formattedBody: string | null;
-    mentions: string[] | null;
-  }) {
-    if (!room) return;
-    const targetRoom = room;
-
-    if (editingEventId) {
-      const eventId = editingEventId;
-      setEditingEventId(null);
-      sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
-      try {
-        await editMessage(targetRoom.room_id, eventId, content.body);
-      } catch (err) {
-        console.error(err);
-      }
+  async function handleAttachClick() {
+    if (isWebBuild()) {
+      attachmentInputRef.current?.click();
       return;
     }
-
-    const replyingTo = replyTarget;
-    setReplyTarget(null);
-    sendTyping(targetRoom.room_id, false).catch(logAndIgnore);
-
-    // No client-side optimistic echo any more (Spec 14): the room's live
-    // `Timeline` creates the local echo itself the moment the send is queued
-    // (with `send_state: "pending"`) and pushes it via `timeline:update`,
-    // keyed on the SDK's own send-queue transaction id — the same id the
-    // eventual synced event's `transaction_id` carries — so the echo is
-    // replaced in place by the Timeline itself rather than reconciled here.
-    // This call's return value (also that same transaction id) isn't needed
-    // for rendering any more, only for triggering the send.
-    try {
-      if (replyingTo) {
-        // Replies don't yet carry formatting/mentions — `send_reply` wasn't
-        // extended in this pass (only `send_message` was, per spec scope); a
-        // formatted reply falls back to its plain body.
-        await sendReply(targetRoom.room_id, replyingTo.event_id, content.body);
-      } else {
-        await sendMessage(
-          targetRoom.room_id,
-          content.body,
-          content.formattedBody,
-          content.mentions,
-        );
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function handleSlashCommand(parsed: ParsedSlashCommand) {
-    if (!room) return;
-    const targetRoomId = room.room_id;
-    sendTyping(targetRoomId, false).catch(logAndIgnore);
-    try {
-      const result = await runCommand(targetRoomId, parsed.command, parsed.args);
-      // The user may have switched rooms while this command was in flight —
-      // don't show room A's feedback under room B, and don't leave a stale
-      // failure banner up once a later command (in the still-active room)
-      // succeeds.
-      if (currentRoomIdRef.current !== targetRoomId) return;
-      setCommandFeedback(result.status === "success" ? null : result.message);
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function handleToggleReaction(targetEventId: string, key: string) {
-    if (!room) return;
-    try {
-      await toggleReaction(room.room_id, targetEventId, key);
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function handleDelete(eventId: string) {
-    if (!room) return;
-    try {
-      await redactEvent(room.room_id, eventId);
-    } catch (err) {
-      console.error(err);
-    }
-  }
-
-  async function handleAttachFile(filePath: string) {
-    if (!room) return;
-    const filename = filePath.split(/[/\\]/).pop() ?? filePath;
-    const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
-    try {
-      await sendAttachment(room.room_id, filePath, txnId);
-      setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
-    } catch (err) {
-      console.error(err);
-      setUploads((prev) => prev.map((u) => (u.txnId === txnId ? { ...u, failed: true } : u)));
-    }
-  }
-
-  async function handleAttachClick() {
     const selected = await openFileDialog({ multiple: false });
     if (typeof selected === "string") {
       await handleAttachFile(selected);
     }
   }
 
+  function handleAttachmentInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) {
+      handleAttachFile(file);
+    }
+  }
+
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    // Tauri's webview exposes dropped files' real filesystem paths via
-    // `webkitGetAsEntry`-less File objects that still carry a `path` on
-    // desktop; browsers' plain `File` has no path, so this only actually
-    // triggers a send inside the Tauri webview, same as production runs in.
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
-    if (file?.path) {
-      handleAttachFile(file.path);
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
+      handleAttachFile(upload);
     }
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
     const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
     const file = files.find((f) => f.type.startsWith("image/"));
-    if (file?.path) {
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
       event.preventDefault();
-      handleAttachFile(file.path);
+      handleAttachFile(upload);
     }
   }
 
@@ -484,7 +216,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       <div className="flex items-center justify-between gap-2 border-b border-border p-4">
         <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
           <Avatar size="sm">
-            <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(room.room_id) }}
               className="font-bold text-white"
@@ -549,19 +281,9 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 if (el) actionsRefs.current.set(key, el);
                 else actionsRefs.current.delete(key);
               }}
-              onReply={() =>
-                setReplyTarget({
-                  event_id: message.event_id,
-                  sender: message.sender,
-                  sender_display_name: message.sender_display_name,
-                  preview: message.body,
-                })
-              }
+              onReply={() => handleReply(message)}
               onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-              onEdit={() => {
-                setReplyTarget(null);
-                setEditingEventId(message.event_id);
-              }}
+              onEdit={() => handleEdit(message.event_id)}
               onDelete={() => handleDelete(message.event_id)}
               onCopy={() => navigator.clipboard?.writeText(message.body)}
             />
@@ -577,10 +299,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
       )}
 
-      <UploadTray
-        uploads={uploads}
-        onDismiss={(txnId) => setUploads((prev) => prev.filter((u) => u.txnId !== txnId))}
-      />
+      <UploadTray uploads={uploads} onDismiss={dismissUpload} />
 
       {replyTarget && !editingEventId && (
         <div className="px-3 pb-1">
@@ -624,6 +343,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       )}
 
       <div className="p-3">
+        <input
+          ref={attachmentInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleAttachmentInputChange}
+        />
         <div
           className="flex items-end gap-2 rounded-lg border border-border bg-card p-2"
           onPaste={handlePaste}
@@ -654,8 +379,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               if (editingEventId) setEditingEventId(null);
               else if (replyTarget) setReplyTarget(null);
             }}
-            onTypingInput={() => handleTypingInput(room.room_id)}
-            onBlur={() => sendTyping(room.room_id, false).catch(logAndIgnore)}
+            onTypingInput={handleTypingInput}
+            onBlur={stopTyping}
           />
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css. */}
