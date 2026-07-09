@@ -32,8 +32,8 @@ function Harness({
       mobileView={mobileView}
       onMobileViewChange={setMobileView}
       isSettingsActive={isSettingsActive}
+      spaceRail={<div>space-rail</div>}
       roomList={<div>room-list</div>}
-      peopleList={<div>people-list</div>}
       content={<div>chat-content</div>}
       rightPanel={rightPanel}
     />
@@ -66,6 +66,7 @@ describe("AppShell", () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     renderShell("!room:example.org", { rightPanel: <div>right-panel</div> });
 
+    expect(screen.getByText("space-rail")).toBeInTheDocument();
     expect(screen.getByText("room-list")).toBeInTheDocument();
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.getByText("right-panel")).toBeInTheDocument();
@@ -77,6 +78,7 @@ describe("AppShell", () => {
     renderShell(null);
 
     expect(screen.getByRole("navigation")).toBeInTheDocument();
+    expect(screen.getByText("space-rail")).toBeInTheDocument();
     expect(screen.getByText("room-list")).toBeInTheDocument();
     expect(screen.queryByText("right-panel")).not.toBeInTheDocument();
   });
@@ -107,15 +109,6 @@ describe("AppShell", () => {
     expect(screen.getByText("room-list")).toBeInTheDocument();
   });
 
-  it("tapping the People tab shows the people list", () => {
-    mockUseAdaptiveLayout.mockReturnValue("mobile");
-    renderShell(null);
-
-    fireEvent.click(screen.getByRole("button", { name: /people/i }));
-
-    expect(screen.getByText("people-list")).toBeInTheDocument();
-  });
-
   it("tapping Settings opens the settings overlay via settingsOpenAtom", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const { store } = renderShell(null);
@@ -137,7 +130,6 @@ describe("AppShell", () => {
       "page",
     );
     expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("button", { name: /people/i })).not.toHaveAttribute("aria-current");
   });
 
   it("reopens the detail view when selectionRequestId bumps for the already-active room", () => {

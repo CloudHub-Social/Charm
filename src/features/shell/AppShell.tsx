@@ -1,16 +1,16 @@
-import { MessageSquare, Settings as SettingsIcon, Users } from "lucide-react";
+import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
-type MobileTab = "chats" | "people";
+type MobileTab = "chats";
 export type MobileView = "list" | "detail";
 
 interface AppShellProps {
+  /** The dedicated spaces rail — desktop-only. */
+  spaceRail: ReactNode;
   /** The rooms rail (`RoomList`) — rendered as the sidebar on desktop, and as the "Chats" tab's list on mobile. */
   roomList: ReactNode;
-  /** A direct-messages-only view of the room list — the mobile "People" tab. Desktop has no separate People destination; DMs already live in `roomList`'s sections. */
-  peopleList: ReactNode;
   /** The active room's chat view (`ChatShell`). */
   content: ReactNode;
   /** Whether the Settings destination is currently active in mobile navigation. */
@@ -39,8 +39,8 @@ interface AppShellProps {
  * non-goals).
  */
 export function AppShell({
+  spaceRail,
   roomList,
-  peopleList,
   content,
   rightPanel,
   activeRoomId,
@@ -65,6 +65,7 @@ export function AppShell({
   if (layout === "desktop") {
     return (
       <div className="flex h-screen">
+        {spaceRail}
         {roomList}
         {content}
         {rightPanel}
@@ -74,12 +75,15 @@ export function AppShell({
 
   return (
     <div className="flex h-screen flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden [&>aside]:w-full [&>aside]:border-r-0 [&>div]:w-full [&>div]:border-l-0">
-        {mobileView === "detail" && activeRoomId
-          ? (rightPanel ?? content)
-          : mobileTab === "chats"
-            ? roomList
-            : peopleList}
+      <div className="min-h-0 flex-1 overflow-hidden [&>div]:w-full [&>div]:border-l-0">
+        {mobileView === "detail" && activeRoomId ? (
+          (rightPanel ?? content)
+        ) : (
+          <div className="flex h-full min-w-0 [&>aside:first-child]:w-[72px] [&>aside:last-child]:w-[calc(100%-72px)] [&>aside:last-child]:shrink">
+            {spaceRail}
+            {roomList}
+          </div>
+        )}
       </div>
       <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
         <button
@@ -95,22 +99,6 @@ export function AppShell({
         >
           <MessageSquare className="size-5" aria-hidden="true" />
           Chats
-        </button>
-        <button
-          type="button"
-          aria-current={
-            mobileTab === "people" && mobileView === "list" && !isSettingsActive
-              ? "page"
-              : undefined
-          }
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => {
-            setMobileTab("people");
-            onMobileViewChange("list");
-          }}
-        >
-          <Users className="size-5" aria-hidden="true" />
-          People
         </button>
         <button
           type="button"

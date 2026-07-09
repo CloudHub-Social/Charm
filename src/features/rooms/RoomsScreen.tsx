@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
+import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
@@ -42,6 +43,10 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [showAllRooms, setShowAllRooms] = useState(false);
+  const [createJoinNotice, setCreateJoinNotice] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
 
   // Bumped on every room selection — via the room list, a deep link, or the
@@ -54,6 +59,24 @@ export function RoomsScreen({
   function selectRoom(roomId: string) {
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
+  }
+
+  function selectHome() {
+    setRoomListMode("home");
+    setSelectedSpaceId(null);
+    setCreateJoinNotice(false);
+  }
+
+  function selectDms() {
+    setRoomListMode("dms");
+    setSelectedSpaceId(null);
+    setCreateJoinNotice(false);
+  }
+
+  function selectSpace(spaceId: string) {
+    setRoomListMode("space");
+    setSelectedSpaceId(spaceId);
+    setCreateJoinNotice(false);
   }
 
   // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
@@ -158,6 +181,10 @@ export function RoomsScreen({
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const selectedSpace =
+    roomListMode === "space"
+      ? (rooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
+      : null;
   // Keeps `useRoomDetails`' `room_details:update` listener alive for the
   // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
   // are open — those now mount `useRoomDetails` independently and only
@@ -191,17 +218,37 @@ export function RoomsScreen({
   return (
     <>
       <AppShell
+        spaceRail={
+          <SpaceRail
+            rooms={rooms}
+            activeMode={roomListMode}
+            activeSpaceId={selectedSpaceId}
+            onSelectHome={selectHome}
+            onSelectDms={selectDms}
+            onSelectSpace={selectSpace}
+            onCreateJoin={() => {
+              setRoomListMode("home");
+              setSelectedSpaceId(null);
+              setCreateJoinNotice(true);
+            }}
+          />
+        }
         activeRoomId={activeRoomId}
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
         isSettingsActive={settingsSection !== null}
-        roomList={<RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={selectRoom} />}
-        peopleList={
+        roomList={
           <RoomList
-            rooms={rooms.filter((room) => room.is_direct)}
+            rooms={rooms}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
+            mode={roomListMode}
+            selectedSpace={selectedSpace}
+            showAllRooms={showAllRooms}
+            onShowAllRoomsChange={setShowAllRooms}
+            createJoinNotice={createJoinNotice}
+            onDismissCreateJoinNotice={() => setCreateJoinNotice(false)}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}

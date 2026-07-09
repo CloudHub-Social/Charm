@@ -60,6 +60,10 @@ vi.mock("./ChatShell", () => ({
   ),
 }));
 
+vi.mock("./SpaceRail", () => ({
+  SpaceRail: () => <div>space-rail</div>,
+}));
+
 vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
