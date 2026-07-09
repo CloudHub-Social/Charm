@@ -1,17 +1,16 @@
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  CROSS_SIGNING_STATUS_QUERY_KEY,
   useCrossSigningResetUrl,
+  useCrossSigningStatus,
   useDeviceActions,
   useDevices,
 } from "@/features/settings/useDevices";
 import { useUiaRetry } from "@/features/settings/useUiaRetry";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { bootstrapCrossSigning, onSasUpdate } from "@/lib/matrix";
+import { bootstrapCrossSigning } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 
 interface VerifyDevicePaneProps {
@@ -27,36 +26,30 @@ interface VerifyDevicePaneProps {
  * cross-signing-verified; see its `isVerified` check.
  */
 export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
-  const queryClient = useQueryClient();
   const { data: devices } = useDevices();
+  const { data: crossSigningStatus } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
   const { verify, invalidateDevices, invalidateCrossSigning } = useDeviceActions();
   const [done, setDone] = useState(false);
   const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
   const { needsPassword, password, setPassword, error, submitting } = uia;
+  const isBootstrapped = Boolean(
+    crossSigningStatus?.has_master_key &&
+    crossSigningStatus.has_self_signing_key &&
+    crossSigningStatus.has_user_signing_key,
+  );
   const verifierDevices = (devices ?? []).filter((device) => !device.is_current);
-  const canVerifyWithAnotherDevice = verifierDevices.length > 0;
+  const canVerifyWithAnotherDevice = isBootstrapped && verifierDevices.length > 0;
 
   async function handleSetUp() {
     if (await uia.submit()) {
-      queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY });
       invalidateCrossSigning();
       setDone(true);
     }
   }
 
   async function handleVerifyWith(deviceId: string) {
-    const flowId = await verify.mutateAsync(deviceId);
-    const unlisten = await onSasUpdate(flowId, (update) => {
-      if (update.state === "done") {
-        invalidateDevices();
-        invalidateCrossSigning();
-        setDone(true);
-        unlisten();
-      } else if (update.state === "cancelled") {
-        unlisten();
-      }
-    });
+    await verify.mutateAsync(deviceId);
   }
 
   return (
@@ -135,6 +128,18 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
               disabled={submitting || (needsPassword && password === "")}
             >
               {submitting ? "Setting up…" : needsPassword ? "Confirm" : "Verify this device"}
+            </Button>
+          )}
+          {verifierDevices.length > 0 && (
+            <Button
+              variant="ghost"
+              className="h-11 w-full"
+              onClick={() => {
+                invalidateDevices();
+                invalidateCrossSigning();
+              }}
+            >
+              Check again
             </Button>
           )}
         </>

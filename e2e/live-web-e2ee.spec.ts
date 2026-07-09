@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, type APIRequestContext, type Page, test } from "@playwright/test";
 
 // snapshot-exempt: live-gated Matrix E2EE round trip against Synapse/charm-web-server;
@@ -101,13 +102,22 @@ async function bootstrapFromSettings(page: Page) {
 
   await page.getByRole("button", { name: "Set up" }).click();
   const passwordPrompt = page.getByLabel("Account password");
+  const successMessage = page.getByText("Cross-signing is set up.");
+  await expect
+    .poll(
+      async () => {
+        if (await passwordPrompt.isVisible().catch(() => false)) return "password";
+        if (await successMessage.isVisible().catch(() => false)) return "success";
+        return "pending";
+      },
+      { timeout: 30_000 },
+    )
+    .not.toBe("pending");
   if (await passwordPrompt.isVisible().catch(() => false)) {
     await passwordPrompt.fill(password);
     await page.getByRole("button", { name: "Confirm" }).click();
   }
-  await expect(page.getByText("Cross-signing is set up.")).toBeVisible({
-    timeout: 30_000,
-  });
+  await expect(successMessage).toBeVisible({ timeout: 30_000 });
 }
 
 test("fresh web session verifies against another session and decrypts E2EE", async ({
@@ -115,7 +125,7 @@ test("fresh web session verifies against another session and decrypts E2EE", asy
   request,
 }) => {
   test.setTimeout(180_000);
-  const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const suffix = `${Date.now()}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const username = `web_e2ee_${suffix}`;
   const roomName = `Encrypted web ${suffix}`;
   const message = `encrypted hello ${suffix}`;
@@ -146,7 +156,19 @@ test("fresh web session verifies against another session and decrypts E2EE", asy
   await pageB.getByRole("button", { name: "Continue" }).click();
   await expect(pageB.getByRole("heading", { name: "Verify this device" })).toBeVisible();
 
-  await pageB.getByRole("button", { name: `Verify with ${deviceAId}` }).click();
+  const verifyWithA = pageB.getByRole("button", { name: `Verify with ${deviceAId}` });
+  const refresh = pageB.getByRole("button", { name: "Check again" });
+  await expect
+    .poll(
+      async () => {
+        if (await verifyWithA.isVisible().catch(() => false)) return "visible";
+        if (await refresh.isVisible().catch(() => false)) await refresh.click();
+        return "pending";
+      },
+      { timeout: 10_000 },
+    )
+    .toBe("visible");
+  await verifyWithA.click();
   await expect(pageA.getByText("Verify new sign-in")).toBeVisible({ timeout: 30_000 });
   await pageA.getByRole("button", { name: "Accept" }).click();
   await expect(pageB.getByText("Verify new sign-in")).toBeVisible({ timeout: 30_000 });

@@ -146,6 +146,24 @@ pub async fn cross_signing_status(
 pub async fn cross_signing_status_impl(
     client: &Client,
 ) -> Result<CrossSigningStatusSummary, String> {
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    if client
+        .encryption()
+        .request_user_identity(&user_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Ok(CrossSigningStatusSummary {
+            has_master_key: true,
+            has_self_signing_key: true,
+            has_user_signing_key: true,
+        });
+    }
+
     let status = client.encryption().cross_signing_status().await;
 
     Ok(CrossSigningStatusSummary {

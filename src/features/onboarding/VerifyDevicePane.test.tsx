@@ -1,12 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VerifyDevicePane } from "./VerifyDevicePane";
 
 const getCrossSigningResetUrl = vi.fn();
 const bootstrapCrossSigning = vi.fn();
-let sasUpdateCallbacks: Map<string, (update: { state: "done" | "cancelled" }) => void>;
 const verifyMutateAsync = vi.fn();
 
 const UNBOOTSTRAPPED_STATUS = {
@@ -35,14 +34,6 @@ let devices = [
 
 vi.mock("@/lib/matrix", () => ({
   bootstrapCrossSigning: (...args: unknown[]) => bootstrapCrossSigning(...args),
-  onSasUpdate: vi.fn(
-    (flowId: string, callback: (update: { state: "done" | "cancelled" }) => void) => {
-      sasUpdateCallbacks.set(flowId, callback);
-      return Promise.resolve(() => {
-        sasUpdateCallbacks.delete(flowId);
-      });
-    },
-  ),
 }));
 
 vi.mock("@/features/settings/useDevices", () => ({
@@ -65,7 +56,6 @@ function renderWithProviders(children: ReactNode) {
 beforeEach(() => {
   getCrossSigningResetUrl.mockReset().mockReturnValue(null);
   bootstrapCrossSigning.mockReset();
-  sasUpdateCallbacks = new Map();
   verifyMutateAsync.mockReset().mockResolvedValue("flow-id");
   crossSigningStatus = UNBOOTSTRAPPED_STATUS;
   devices = [
@@ -131,11 +121,39 @@ describe("VerifyDevicePane", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Verify with Desktop" }));
 
-    expect(verifyMutateAsync).toHaveBeenCalledWith("DESKTOP_DEVICE");
+    await waitFor(() => expect(verifyMutateAsync).toHaveBeenCalled());
+    expect(verifyMutateAsync.mock.calls[0]?.[0]).toBe("DESKTOP_DEVICE");
     expect(bootstrapCrossSigning).not.toHaveBeenCalled();
   });
 
-  it("lets onboarding continue after the outgoing SAS flow completes", async () => {
+  it("does not offer cross-device verification before cross-signing is bootstrapped", () => {
+    crossSigningStatus = UNBOOTSTRAPPED_STATUS;
+    devices = [
+      {
+        device_id: "WEB_DEVICE",
+        display_name: "This browser",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: true,
+        is_verified: false,
+      },
+      {
+        device_id: "DESKTOP_DEVICE",
+        display_name: "Desktop",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: true,
+      },
+    ];
+
+    renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
+
+    expect(screen.queryByRole("button", { name: "Verify with Desktop" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Verify this device" })).toBeInTheDocument();
+  });
+
+  it("keeps outgoing SAS terminal-state watching centralized in device actions", async () => {
     crossSigningStatus = BOOTSTRAPPED_STATUS;
     devices = [
       {
@@ -158,10 +176,10 @@ describe("VerifyDevicePane", () => {
     renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Verify with Desktop" }));
-    await screen.findByRole("button", { name: "Verify with Desktop" });
-    sasUpdateCallbacks.get("flow-id")?.({ state: "done" });
+    await waitFor(() => expect(verifyMutateAsync).toHaveBeenCalled());
+    expect(verifyMutateAsync.mock.calls[0]?.[0]).toBe("DESKTOP_DEVICE");
 
-    expect(await screen.findByText("This device is set up and trusted.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    expect(screen.queryByText("This device is set up and trusted.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Not now" })).toBeInTheDocument();
   });
 });

@@ -527,8 +527,19 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       );
     case "cross_signing_status":
       return requestJson<T>("GET", "/api/verification/cross-signing");
+    case "get_cross_signing_reset_url":
+      return requestJson<T>("GET", "/api/verification/cross-signing/reset-url");
     case "list_devices":
       return requestJson<T>("GET", "/api/devices");
+    case "delete_device":
+      return requestJson<T>("DELETE", `/api/devices/${encodeSegment(String(args.deviceId))}`, {
+        password: args.password,
+      });
+    case "get_device_delete_url":
+      return requestJson<T>(
+        "GET",
+        `/api/devices/${encodeSegment(String(args.deviceId))}/delete-url`,
+      );
     case "accept_verification_request":
     case "cancel_verification":
     case "start_sas_verification":
