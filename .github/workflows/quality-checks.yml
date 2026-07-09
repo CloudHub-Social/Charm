@@ -185,6 +185,8 @@ jobs:
         run: pnpm typecheck
       - if: needs.changes.outputs.frontend == 'true'
         run: pnpm test:coverage
+      # Knip is a project-graph check, so it still runs on merge_group when the
+      # queued tree includes frontend inputs.
       - if: needs.changes.outputs.frontend == 'true'
         run: pnpm knip
       - if: needs.changes.outputs.frontend == 'true'
@@ -195,7 +197,9 @@ jobs:
       # contract's interim system of record — see scripts/tokens-pull.mjs).
       # Re-running the pull on a clean checkout must produce zero diff; a
       # mismatch means either the JSON source or the generated CSS was
-      # hand-edited out of sync with the other.
+      # hand-edited out of sync with the other. This is intentionally kept for
+      # merge_group when frontend inputs changed because generated CSS drift can
+      # appear only in the combined queue tree.
       - name: Design tokens are in sync (drift check)
         if: needs.changes.outputs.frontend == 'true'
         run: |
@@ -208,7 +212,9 @@ jobs:
     # Keep this required context alive even when frontend paths are untouched
     # (same rationale as the frontend job above): it must fail if change
     # detection fails rather than silently report "skipped" (which branch
-    # protection treats as passing).
+    # protection treats as passing). When frontend inputs did change, Storybook
+    # stays active on merge_group because a11y regressions can appear only in the
+    # combined queue tree.
     if: always()
     runs-on: ubuntu-latest
     steps:
