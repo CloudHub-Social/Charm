@@ -32,18 +32,29 @@ jobs:
         id: filter
         run: |
           # Everything `pnpm build:web` can actually read: the app source, web
-          # entry points, and root config. Deliberately excludes src-tauri/**
-          # (native-only) and crates/charm-web-server/** (a separately
-          # deployed companion server this preview only proxies to via an
-          # already-configured URL, not something this workflow builds) —
-          # unlike quality-checks.yml's broader frontend_pattern, this one is
-          # scoped to just what a Cloudflare Worker preview deploy needs.
-          web_pattern='^(src/|public/|\.design-sync/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
+          # entry points, root config, the web-mode env file (VITE_CHARM_BUILD_TARGET,
+          # consumed by src/lib/platform.ts), and the generated ts-rs bindings
+          # (build:web runs tsc first, and tsconfig maps @bindings/* to these —
+          # src/lib/matrix.ts imports them throughout, so a DTO shape change
+          # here can break the web build same as a src/ change). Deliberately
+          # excludes the REST of src-tauri/** (native-only) and
+          # crates/charm-web-server/** (a separately deployed companion server
+          # this preview only proxies to via an already-configured URL, not
+          # something this workflow builds) — unlike quality-checks.yml's
+          # broader frontend_pattern, this one is scoped to just what a
+          # Cloudflare Worker preview deploy needs.
+          web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           diff_from() {
+            # --no-renames: default rename detection can report ONLY the
+            # destination path for a moved file (e.g. src/Foo.tsx ->
+            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
+            # that a web source file left the tree entirely. Verified
+            # empirically — plain `git diff --name-only` omits the source
+            # side of a rename; --no-renames reports both.
             git fetch --no-tags --depth=1 --quiet origin "$1" \
-              && git diff --name-only "$1" "${{ github.sha }}"
+              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
           }
           # On a fetch/diff failure, deploy anyway (safe default — this can
           # only over-run, never wrongly skip a real web change).
@@ -65,6 +76,32 @@ jobs:
             web=false
           fi
           echo "web=$web" >> "$GITHUB_OUTPUT"
+
+  mark-stale-preview:
+    name: Mark existing preview comment stale
+    needs: changes
+    # A PR that already has a preview comment from an earlier, web-affecting
+    # revision, then gets a later push that removes/reverts those changes,
+    # would otherwise leave that comment's URL silently pointing at a stale
+    # deployed bundle — nothing else in this workflow runs to update it once
+    # `deploy` is skipped.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note that the preview no longer reflects the current diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- charm-web-preview -->"
+          stale_note="_No web-affecting changes in the latest revision — this preview reflects an earlier commit._"
+          id=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\")) and (.body | contains(\"${stale_note}\") | not)) | .id" \
+            | tail -n 1)
+          [ -z "$id" ] && exit 0
+          body=$(gh api "repos/${{ github.repository }}/issues/comments/${id}" --jq .body)
+          gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${id}" \
+            -f body="$(printf '%s\n\n%s' "$body" "$stale_note")"
 
   deploy:
     name: Cloudflare Worker preview
