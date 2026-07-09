@@ -5,6 +5,7 @@ import { IPC_OPERATION_ID_HEADER, invoke, ipcObservabilityTestHooks } from "./ip
 
 vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
+  captureException: vi.fn(),
   getClient: vi.fn(),
 }));
 
@@ -118,6 +119,38 @@ describe("IPC observability", () => {
         }),
       }),
     );
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      error,
+      expect.objectContaining({
+        contexts: expect.objectContaining({
+          "tauri.ipc": expect.objectContaining({
+            command: "change_password",
+            operationId: expect.stringMatching(/^ipc-/),
+            durationMs: expect.any(Number),
+            args: {
+              password: "[redacted]",
+            },
+          }),
+        }),
+        tags: expect.objectContaining({
+          "ipc.command": "change_password",
+        }),
+      }),
+    );
+  });
+
+  it("does not send a Sentry event while the current Sentry client is disabled, even on failure", async () => {
+    vi.mocked(Sentry.getClient).mockReturnValue({
+      getOptions: () => ({ enabled: false }),
+    } as ReturnType<typeof Sentry.getClient>);
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("logout")).rejects.toBe(error);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it("falls back to a local operation id when crypto randomUUID is unavailable", async () => {

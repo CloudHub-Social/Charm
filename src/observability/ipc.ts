@@ -68,6 +68,33 @@ function addIpcBreadcrumb(
   });
 }
 
+function captureIpcException(
+  error: unknown,
+  context: {
+    command: string;
+    operationId: string;
+    durationMs: number;
+    args?: Record<string, unknown>;
+  },
+): void {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return;
+
+  Sentry.captureException(error, {
+    contexts: {
+      "tauri.ipc": {
+        command: context.command,
+        operationId: context.operationId,
+        durationMs: context.durationMs,
+        args: context.args,
+      },
+    },
+    tags: {
+      "ipc.command": context.command,
+    },
+  });
+}
+
 export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
   const id = createIpcOperationId();
   const startedAt = performance.now();
@@ -93,11 +120,18 @@ export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> 
     });
     return result;
   } catch (error) {
+    const durationMs = Math.round(performance.now() - startedAt);
     addIpcBreadcrumb("error", `IPC ${command} failed`, {
       command,
       operationId: id,
-      durationMs: Math.round(performance.now() - startedAt),
+      durationMs,
       error: summarizeError(error),
+    });
+    captureIpcException(error, {
+      command,
+      operationId: id,
+      durationMs,
+      args: argsSummary,
     });
     throw error;
   }
