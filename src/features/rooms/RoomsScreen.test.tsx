@@ -229,6 +229,37 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
+  it("returns to the mobile list when a space deep link arrives from room detail", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    listRooms.mockResolvedValue([
+      room({ room_id: "!room:example.org", name: "Room" }),
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+    ]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:!room:example.org");
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("space-rail:space:!space:example.org");
+    expect(screen.getByRole("button", { name: /chats/i })).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+  });
+
   it("clears focus when the window loses focus", async () => {
     // jsdom doesn't tie `document.hasFocus()` to blur/focus events firing on
     // `window`, so drive it directly rather than relying on jsdom to

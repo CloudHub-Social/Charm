@@ -82,6 +82,8 @@ export function RoomsScreen({
   function selectRoomInVisibleMode(room: RoomSummary) {
     if (room.is_space) {
       selectSpace(room.room_id);
+      setActiveRoomId(null);
+      setMobileView("list");
       return;
     }
     if (room.is_direct) {

@@ -1,6 +1,6 @@
 import type { ComponentProps, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
@@ -315,6 +315,58 @@ describe("RoomList", () => {
 
     expect(joinRoom).toHaveBeenCalledOnce();
     resolveJoin();
+  });
+
+  it("ignores hierarchy join errors after leaving the selected space", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    let rejectJoin!: (error: Error) => void;
+    joinRoom.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectJoin = reject;
+        }),
+    );
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!public:localhost",
+          name: "Public room",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createStore();
+    const renderWithProviders = (ui: ReactElement) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(
+      renderWithProviders(
+        <RoomList
+          {...roomListProps({
+            rooms: [space],
+            mode: "space",
+            selectedSpace: space,
+          })}
+        />,
+      ),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    rerender(renderWithProviders(<RoomList {...roomListProps({ rooms: [] })} />));
+    await act(async () => {
+      rejectJoin(new Error("join failed"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("join failed")).not.toBeInTheDocument();
   });
 
   it("opens joined hierarchy spaces and joins public hierarchy spaces", async () => {

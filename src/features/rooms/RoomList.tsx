@@ -74,10 +74,12 @@ export function RoomList({
   const [spaceError, setSpaceError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
+  const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
   const selectedSpaceId = selectedSpace?.room_id ?? null;
+  currentScopeRef.current = { mode, selectedSpaceId };
 
   const roomById = useMemo(() => new Map(rooms.map((room) => [room.room_id, room])), [rooms]);
   const visibleHierarchyCount = useMemo(
@@ -153,6 +155,7 @@ export function RoomList({
 
   async function handleJoin(child: SpaceChild) {
     if (pendingJoinRoomIdRef.current) return;
+    const requestScope = { mode, selectedSpaceId };
     pendingJoinRoomIdRef.current = child.room_id;
     setPendingRoomId(child.room_id);
     setSpaceError(null);
@@ -163,7 +166,13 @@ export function RoomList({
         await joinRoom(child.room_id);
       }
     } catch (err) {
-      setSpaceError(String(err));
+      const currentScope = currentScopeRef.current;
+      if (
+        currentScope.mode === requestScope.mode &&
+        currentScope.selectedSpaceId === requestScope.selectedSpaceId
+      ) {
+        setSpaceError(String(err));
+      }
     } finally {
       pendingJoinRoomIdRef.current = null;
       setPendingRoomId(null);
