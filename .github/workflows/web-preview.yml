@@ -137,7 +137,7 @@ jobs:
             "$PREVIEW_URL" \
             "VITE_CHARM_BUILD_TARGET=web" \
             "/api/*")
-          existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+          existing=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- charm-web-preview -->"))) | .id' \
             | tail -n 1)
           if [ -n "$existing" ]; then

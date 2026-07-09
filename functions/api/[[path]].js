@@ -60,7 +60,7 @@ function containsDotSegment(path) {
     } catch {
       return true;
     }
-    if (decodedSegment === "." || decodedSegment === ".." || /[\\/]/.test(decodedSegment)) {
+    if (decodedSegment.split(/[\\/]/).some((part) => part === "." || part === "..")) {
       return true;
     }
   }
@@ -69,13 +69,22 @@ function containsDotSegment(path) {
 
 function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   const headers = new Headers(request.headers);
+  const connectionTokens = new Set(
+    (headers.get("connection") ?? "")
+      .split(",")
+      .map((token) => token.trim().toLowerCase())
+      .filter(Boolean),
+  );
   const namesToDelete = [];
   for (const name of Array.from(headers.keys())) {
     const normalizedName = name.toLowerCase();
     if (
       (HOP_BY_HOP_HEADERS.has(normalizedName) &&
         (!preserveUpgrade || (normalizedName !== "connection" && normalizedName !== "upgrade"))) ||
+      (connectionTokens.has(normalizedName) &&
+        (!preserveUpgrade || (normalizedName !== "connection" && normalizedName !== "upgrade"))) ||
       normalizedName === "host" ||
+      normalizedName === "proxy-connection" ||
       normalizedName.startsWith("cf-")
     ) {
       namesToDelete.push(name);
