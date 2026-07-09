@@ -2207,12 +2207,14 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
 /// body and so don't get an automatic CORS preflight — see
 /// `send_attachment`'s call site for the full rationale.
 fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    let Some(origin) = origin else {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
         return Ok(());
     };
+    let origin = origin.to_str().map_err(|_| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: "origin not allowed".to_string(),
+        kind: None,
+    })?;
     if origin_is_allowed(Some(origin)) {
         Ok(())
     } else {
