@@ -356,18 +356,22 @@ jobs:
     # caches at the individual compilation-unit level (object-code cache) —
     # complementary to Swatinem/rust-cache's coarser whole-target/-dir
     # caching below, catching cases where only a few crates in the
-    # dependency tree actually changed. NOTE: sccache's GitHub Actions cache
-    # backend uses the same underlying Actions Cache storage/10GB-per-repo
-    # budget as rust-cache, and has no save-if-equivalent to scope saves to
-    # main only — watch total repo cache usage after this lands.
+    # dependency tree actually changed.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     defaults:
       run:
         working-directory: src-tauri
@@ -498,14 +502,21 @@ jobs:
       TEST_MATRIX_USERNAME_2: ${{ secrets.CI_MATRIX_TEST_USERNAME_2 || 'evie2' }}
       TEST_MATRIX_PASSWORD_2: ${{ secrets.CI_MATRIX_TEST_PASSWORD_2 || 'testpass123' }}
       # Object-level compilation cache — see the `rust` job's comment above
-      # for the full rationale and the shared-cache-budget caveat.
+      # for the full rationale.
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -632,15 +643,22 @@ jobs:
     if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     defaults:
       run:
         working-directory: src-tauri
@@ -771,15 +789,22 @@ jobs:
     permissions:
       contents: read
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -822,15 +847,22 @@ jobs:
     permissions:
       contents: read
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -873,15 +905,22 @@ jobs:
     permissions:
       contents: read
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -929,15 +968,22 @@ jobs:
     permissions:
       contents: read
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -983,15 +1029,22 @@ jobs:
     permissions:
       contents: read
     # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale and the shared-cache-budget caveat.
+    # full rationale.
     env:
       RUSTC_WRAPPER: sccache
-      SCCACHE_GHA_ENABLED: "true"
-      # Read-only everywhere except main: sccache defaults to READ_WRITE,
-      # which would reintroduce the exact branch-scoped cache duplication
-      # rust-cache/Gradle just got fixed for (every PR writing its own
-      # copy against the shared 10GB/repo budget). Only main writes.
-      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
+      # sccache's GHA backend shares the same 10GB/repo budget as
+      # rust-cache/Gradle and has no reliable way to scope writes without
+      # still contending for that space; a dedicated bucket has no such
+      # cap, so every branch can freely read+write instead of being
+      # restricted to main-only saves.
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
