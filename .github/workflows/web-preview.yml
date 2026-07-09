@@ -64,19 +64,23 @@ jobs:
           case "$api_base" in
             http://*|https://*) ;;
             *)
-              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API origin for preview proxying"
+              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API base URL for preview proxying"
               exit 1
               ;;
           esac
           mkdir -p preview-worker
           cat > preview-worker/worker.mjs <<EOF
-          const API_ORIGIN = ${api_base@Q};
+          const API_BASE = ${api_base@Q};
 
           export default {
             async fetch(request, env) {
               const url = new URL(request.url);
               if (url.pathname.startsWith("/api/")) {
-                const upstream = new URL(\`\${url.pathname}\${url.search}\`, API_ORIGIN);
+                const apiBase = new URL(API_BASE);
+                const basePath = apiBase.pathname.replace(/\/$/, "");
+                const upstream = new URL(apiBase);
+                upstream.pathname = \`\${basePath}\${url.pathname}\`;
+                upstream.search = url.search;
                 const headers = new Headers(request.headers);
                 headers.set("x-forwarded-host", url.host);
                 headers.set("x-forwarded-proto", url.protocol.replace(/:$/, ""));
