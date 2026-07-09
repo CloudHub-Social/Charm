@@ -31,10 +31,7 @@ function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
   const pushError = status?.last_error?.toLowerCase() ?? "";
-  const pushRegistrationFailed =
-    pushError.includes("unifiedpush") ||
-    pushError.includes("fcm") ||
-    pushError.includes("endpoint");
+  const pushRegistrationFailed = pushError.includes("unifiedpush") || pushError.includes("fcm");
   const showAndroidDistributorNotice =
     status?.available === true &&
     transport === "none" &&

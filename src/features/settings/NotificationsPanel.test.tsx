@@ -226,6 +226,21 @@ describe("NotificationsPanel", () => {
     expect(screen.getByRole("button", { name: "Turn on push notifications" })).toBeVisible();
   });
 
+  it("does not prompt for a distributor on unrelated endpoint errors", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "none",
+      registered: false,
+      endpoint_present: false,
+      last_error: "homeserver endpoint returned 503",
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(await screen.findByText("homeserver endpoint returned 503")).toBeVisible();
+    expect(screen.queryByText(/requires a UnifiedPush distributor/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Turn on push notifications" })).toBeVisible();
+  });
+
   it("requests OS notification permission before registering push, on a platform where it's available", async () => {
     getPushStatus.mockResolvedValue({
       transport: "unified_push",
