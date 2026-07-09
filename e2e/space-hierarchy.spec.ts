@@ -13,6 +13,7 @@ const ROOT_SPACE_ID = "!space-root:e2e";
 const SUB_SPACE_ID = "!space-sub:e2e";
 const DIRECT_ROOM_ID = "!space-direct:e2e";
 const NESTED_ROOM_ID = "!space-nested:e2e";
+const HOME_ROOM_ID = "!space-home:e2e";
 
 const subSpaceChild = {
   room_id: SUB_SPACE_ID,
@@ -67,6 +68,10 @@ test("renders nested space rooms and exposes recursive hierarchy plus space badg
         unread_messages: 3,
         has_unread: true,
         parent_space_ids: [SUB_SPACE_ID],
+      },
+      {
+        room_id: HOME_ROOM_ID,
+        name: "Home base",
       },
     ],
     spaceChildren: {
