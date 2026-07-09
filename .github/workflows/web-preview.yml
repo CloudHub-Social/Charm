@@ -17,6 +17,7 @@ jobs:
   deploy:
     name: Cloudflare Pages preview
     runs-on: ubuntu-latest
+    environment: cloudflare-preview
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

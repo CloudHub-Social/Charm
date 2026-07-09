@@ -4,7 +4,12 @@ import { isWebBuild } from "./platform";
 function isSafeWebUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    return (
+      parsed.protocol === "http:" ||
+      parsed.protocol === "https:" ||
+      parsed.protocol === "mailto:" ||
+      parsed.protocol === "tel:"
+    );
   } catch {
     return false;
   }

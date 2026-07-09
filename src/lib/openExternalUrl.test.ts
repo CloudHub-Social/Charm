@@ -18,12 +18,14 @@ describe("openExternalUrl", () => {
     openUrl.mockClear();
   });
 
-  it("opens absolute http and https URLs in web builds", async () => {
+  it("opens absolute http, https, mailto, and tel URLs in web builds", async () => {
     const open = vi.fn();
     vi.stubGlobal("open", open);
 
     await openExternalUrl("https://example.org/account");
     await openExternalUrl("http://example.org/account");
+    await openExternalUrl("mailto:alice@example.org");
+    await openExternalUrl("tel:+15551234567");
 
     expect(open).toHaveBeenCalledWith(
       "https://example.org/account",
@@ -35,6 +37,8 @@ describe("openExternalUrl", () => {
       "_blank",
       "noopener,noreferrer",
     );
+    expect(open).toHaveBeenCalledWith("mailto:alice@example.org", "_blank", "noopener,noreferrer");
+    expect(open).toHaveBeenCalledWith("tel:+15551234567", "_blank", "noopener,noreferrer");
     expect(openUrl).not.toHaveBeenCalled();
   });
 
