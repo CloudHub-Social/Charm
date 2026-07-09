@@ -54,3 +54,16 @@ updates:
         update-types:
           - minor
           - patch
+    # `imbl` is a direct dependency (src-tauri/Cargo.toml) only so our code can
+    # share `imbl::Vector`/`Arc<TimelineItem>` types with what matrix-sdk-ui
+    # 0.18.0 returns from its timeline API — see the comment there. Bumping it
+    # independently of matrix-sdk-ui's own (older) imbl requirement leaves two
+    # semver-incompatible `imbl` versions in the dependency graph, which Cargo
+    # treats as distinct types even though the crate name matches — breaking
+    # every call site that passes a matrix-sdk-ui Vector into our code (first
+    # seen in PR #42, dependabot/cargo/src-tauri/main/cargo-major-12407c90ff:
+    # E0308 "multiple different versions of crate `imbl`"). Ignore it here
+    # until matrix-sdk-ui bumps its own imbl requirement past 6.x; remove this
+    # ignore in the same PR that bumps matrix-sdk/matrix-sdk-ui.
+    ignore:
+      - dependency-name: "imbl"
