@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
 
@@ -74,6 +74,10 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("SettingsScreen", () => {
   it("renders nothing when closed", () => {
     renderScreen(null);
@@ -120,5 +124,15 @@ describe("SettingsScreen", () => {
     // trigger or content, which would otherwise render nothing at all.
     expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Account" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("hides native notification settings in web builds", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    renderScreen("general");
+
+    expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "General" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Desktop notifications")).not.toBeInTheDocument();
   });
 });

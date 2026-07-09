@@ -53,8 +53,6 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - if: steps.config.outputs.enabled == 'true'
-        env:
-          VITE_CHARM_WEB_API_BASE_URL: /api
         run: pnpm build:web
 
       - name: Configure same-origin API proxy

@@ -8,7 +8,6 @@ import { AboutPanel } from "./AboutPanel";
 import { AccountPanel } from "./AccountPanel";
 import { AppearancePanel } from "./AppearancePanel";
 import { DesktopPanel } from "./DesktopPanel";
-import { GeneralPanel } from "./GeneralPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 import type { SettingsSection } from "./settingsAtoms";
@@ -18,6 +17,9 @@ import { isWebBuild } from "@/lib/platform";
 
 const DevicesPanel = lazy(() =>
   import("./DevicesPanel").then((mod) => ({ default: mod.DevicesPanel })),
+);
+const GeneralPanel = lazy(() =>
+  import("./GeneralPanel").then((mod) => ({ default: mod.GeneralPanel })),
 );
 const NotificationsPanel = lazy(() =>
   import("./NotificationsPanel").then((mod) => ({ default: mod.NotificationsPanel })),
@@ -34,7 +36,7 @@ const SECTIONS: {
   webUnsupported?: boolean;
 }[] = [
   { value: "account", label: "Account" },
-  { value: "general", label: "General" },
+  { value: "general", label: "General", webUnsupported: true },
   { value: "notifications", label: "Notifications", webUnsupported: true },
   { value: "devices", label: "Devices", webUnsupported: true },
   { value: "appearance", label: "Appearance" },
@@ -106,9 +108,13 @@ function SettingsBody({
         <TabsContent value="account">
           <AccountPanel onLoggedOut={onLoggedOut} />
         </TabsContent>
-        <TabsContent value="general">
-          <GeneralPanel />
-        </TabsContent>
+        {!webBuild && (
+          <TabsContent value="general">
+            <Suspense fallback={null}>
+              <GeneralPanel />
+            </Suspense>
+          </TabsContent>
+        )}
         {!webBuild && (
           <>
             <TabsContent value="notifications">
