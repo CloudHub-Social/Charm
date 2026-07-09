@@ -171,7 +171,7 @@ pub async fn cross_signing_status_impl(
     let status = client.encryption().cross_signing_status().await;
     let has_local_keys = status
         .as_ref()
-        .is_some_and(|s| s.has_master || s.has_self_signing || s.has_user_signing);
+        .is_some_and(|s| s.has_master && s.has_self_signing && s.has_user_signing);
 
     Ok(CrossSigningStatusSummary {
         has_identity: has_identity || has_local_keys,
