@@ -7,6 +7,8 @@ import { VerifyDevicePane } from "./VerifyDevicePane";
 const getCrossSigningResetUrl = vi.fn();
 const bootstrapCrossSigning = vi.fn();
 const verifyMutateAsync = vi.fn();
+const invalidateDevices = vi.fn();
+const invalidateCrossSigning = vi.fn();
 
 const UNBOOTSTRAPPED_STATUS = {
   has_master_key: false,
@@ -42,8 +44,8 @@ vi.mock("@/features/settings/useDevices", () => ({
   useCrossSigningStatus: () => ({ data: crossSigningStatus }),
   useDeviceActions: () => ({
     verify: { mutateAsync: verifyMutateAsync, isPending: false, isError: false, error: null },
-    invalidateDevices: vi.fn(),
-    invalidateCrossSigning: vi.fn(),
+    invalidateDevices,
+    invalidateCrossSigning,
   }),
   useDevices: () => ({ data: devices }),
 }));
@@ -57,6 +59,8 @@ beforeEach(() => {
   getCrossSigningResetUrl.mockReset().mockReturnValue(null);
   bootstrapCrossSigning.mockReset();
   verifyMutateAsync.mockReset().mockResolvedValue("flow-id");
+  invalidateDevices.mockReset();
+  invalidateCrossSigning.mockReset();
   crossSigningStatus = UNBOOTSTRAPPED_STATUS;
   devices = [
     {
@@ -85,6 +89,8 @@ describe("VerifyDevicePane", () => {
 
     expect(await screen.findByText("This device is set up and trusted.")).toBeInTheDocument();
     expect(bootstrapCrossSigning).toHaveBeenLastCalledWith("current-password");
+    expect(invalidateDevices).toHaveBeenCalledOnce();
+    expect(invalidateCrossSigning).toHaveBeenCalledOnce();
   });
 
   it("surfaces a non-UIA error on the first attempt instead of prompting for a password", async () => {
