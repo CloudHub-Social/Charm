@@ -422,20 +422,21 @@ function HierarchyRow({
   const indent = `${Math.min(depth, 6) * 16}px`;
   if (joinedRoom?.is_space) {
     return (
-      <button
-        type="button"
-        className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground"
-        style={{ marginLeft: indent }}
-        onClick={() => onSelectSpace(joinedRoom.room_id)}
-      >
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-foreground">
-            {displayName(joinedRoom.room_id, joinedRoom.name)}
-          </p>
-          {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
-        </div>
-        <span className="text-xs font-medium text-muted-foreground">Open</span>
-      </button>
+      <div style={{ paddingLeft: indent }}>
+        <button
+          type="button"
+          className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground"
+          onClick={() => onSelectSpace(joinedRoom.room_id)}
+        >
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium text-foreground">
+              {displayName(joinedRoom.room_id, joinedRoom.name)}
+            </p>
+            {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
+          </div>
+          <span className="text-xs font-medium text-muted-foreground">Open</span>
+        </button>
+      </div>
     );
   }
   if (joinedRoom && !joinedRoom.is_space) {
@@ -463,19 +464,18 @@ function HierarchyRow({
     );
   }
   return (
-    <div
-      className="flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-left"
-      style={{ marginLeft: indent }}
-    >
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-foreground">
-          {child.name ?? child.room_id}
-        </p>
-        {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
+    <div style={{ paddingLeft: indent }}>
+      <div className="flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-left">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">
+            {child.name ?? child.room_id}
+          </p>
+          {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
+        </div>
+        <Button size="sm" variant="outline" disabled={pending} onClick={() => onJoin(child)}>
+          {child.join_rule === "knock" ? "Request" : "Join"}
+        </Button>
       </div>
-      <Button size="sm" variant="outline" disabled={pending} onClick={() => onJoin(child)}>
-        {child.join_rule === "knock" ? "Request" : "Join"}
-      </Button>
     </div>
   );
 }
