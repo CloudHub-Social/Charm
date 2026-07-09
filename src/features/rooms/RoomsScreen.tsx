@@ -198,8 +198,9 @@ export function RoomsScreen({
     const firstHomeRoom = rooms.find(
       (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
     );
-    if (activeRoomId === null && firstHomeRoom) {
-      selectRoom(firstHomeRoom.room_id);
+    const firstSelectableRoom = firstHomeRoom ?? rooms.find((room) => !room.is_space);
+    if (activeRoomId === null && firstSelectableRoom) {
+      selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, activeRoomId, deepLinkRoomId]);

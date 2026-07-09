@@ -154,6 +154,28 @@ describe("RoomsScreen", () => {
     expect(screen.queryByText("chat-content:!dm:example.org")).not.toBeInTheDocument();
   });
 
+  it("falls back to selecting the first non-space room when Home has no visible rooms", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!dm:example.org", name: "Alice", is_direct: true }),
+      room({
+        room_id: "!child:example.org",
+        name: "Child",
+        parent_space_ids: ["!space:example.org"],
+      }),
+    ]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!dm:example.org");
+  });
+
   it("clears focus when the window loses focus", async () => {
     // jsdom doesn't tie `document.hasFocus()` to blur/focus events firing on
     // `window`, so drive it directly rather than relying on jsdom to
