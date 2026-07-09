@@ -20,8 +20,8 @@ describe("Sentry release artifact workflow", () => {
 
   it("keeps manual release and environment inputs available", () => {
     expect(workflow).toContain("workflow_dispatch:");
-    expect(workflow).toMatch(/release:\n\s+description: "Sentry release name\./);
-    expect(workflow).toMatch(/environment:\n\s+description: "Sentry environment tag/);
+    expect(workflow).toMatch(/release:\r?\n\s+description: "Sentry release name\./);
+    expect(workflow).toMatch(/environment:\r?\n\s+description: "Sentry environment tag/);
     expect(workflow).toContain("default: production");
   });
 
