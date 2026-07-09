@@ -357,11 +357,12 @@ fn spawn_headless_push(
             }
         };
 
-        let _secret_store_context = crate::matrix::secret_store::install_android_context_override(
-            vm_for_secret_store,
-            secret_store_context,
-        );
         let result = super::with_headless_push_lock(|| {
+            let _secret_store_context =
+                crate::matrix::secret_store::install_android_context_override(
+                    vm_for_secret_store,
+                    secret_store_context,
+                );
             runtime.block_on(super::handle_headless_push(&store_root, message))
         });
         match result {
