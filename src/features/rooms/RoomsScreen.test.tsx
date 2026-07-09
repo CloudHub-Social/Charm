@@ -229,6 +229,39 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
+  it("does not auto-select a room after a consumed space deep link clears", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("space-rail:space:!space:example.org");
+    expect(onDeepLinkConsumed).toHaveBeenCalledOnce();
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("space-rail:space:!space:example.org")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
   it("returns to the mobile list when a space deep link arrives from room detail", async () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     listRooms.mockResolvedValue([

@@ -48,6 +48,7 @@ export function RoomsScreen({
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinNotice, setCreateJoinNotice] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
+  const spaceDeepLinkSelectedRef = useRef(false);
 
   // Bumped on every room selection — via the room list, a deep link, or the
   // initial auto-select — even when it re-selects the already-active room.
@@ -57,17 +58,20 @@ export function RoomsScreen({
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
   function selectRoom(roomId: string) {
+    spaceDeepLinkSelectedRef.current = false;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
   }
 
   function selectHome() {
+    spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("home");
     setSelectedSpaceId(null);
     setCreateJoinNotice(false);
   }
 
   function selectDms() {
+    spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
     setCreateJoinNotice(false);
@@ -196,6 +200,9 @@ export function RoomsScreen({
       // still bump `selectionRequestId` so the mobile detail view actually
       // opens, not just silently consume the link.
       selectRoomInVisibleMode(match);
+      if (match.is_space) {
+        spaceDeepLinkSelectedRef.current = true;
+      }
       setResolvedDeepLinkTarget(null);
       onDeepLinkConsumed();
     }
@@ -209,6 +216,7 @@ export function RoomsScreen({
     );
     const firstSelectableRoom = firstHomeRoom ?? rooms.find((room) => !room.is_space);
     if (activeRoomId === null && firstSelectableRoom) {
+      if (spaceDeepLinkSelectedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

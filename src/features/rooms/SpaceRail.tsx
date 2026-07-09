@@ -40,11 +40,12 @@ export function SpaceRail({
       const parents = new Map<string, string[]>();
       for (const space of spaces) {
         for (const parentId of space.parent_space_ids) {
-          if (!knownSpaceIds.has(parentId)) continue;
-          const list = children.get(parentId) ?? [];
-          list.push(space);
-          children.set(parentId, list);
           parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
+          if (knownSpaceIds.has(parentId)) {
+            const list = children.get(parentId) ?? [];
+            list.push(space);
+            children.set(parentId, list);
+          }
         }
       }
       const rootSpaces = spaces.filter((space) =>

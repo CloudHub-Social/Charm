@@ -96,10 +96,7 @@ export function RoomList({
   const fullRoomSectionRooms =
     mode === "dms"
       ? roomSectionRooms
-      : rooms.filter(
-          (room) =>
-            !room.is_space && !room.is_direct && !room.is_favourite && !room.is_low_priority,
-        );
+      : getFullRoomSectionRooms(roomSectionRooms, fullSections.rooms);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
@@ -385,6 +382,14 @@ function getScopedRooms({
 
 function flattenHierarchy(nodes: SpaceHierarchyNode[]): SpaceHierarchyNode[] {
   return nodes.flatMap((node) => [node, ...flattenHierarchy(node.children)]);
+}
+
+function getFullRoomSectionRooms(
+  visibleRoomSectionRooms: RoomSummary[],
+  fullRoomSectionRooms: RoomSummary[],
+) {
+  const visibleRoomIds = new Set(visibleRoomSectionRooms.map((room) => room.room_id));
+  return fullRoomSectionRooms.filter((room) => visibleRoomIds.has(room.room_id));
 }
 
 function countVisibleHierarchyNodes(
