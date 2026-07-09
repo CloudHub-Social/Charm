@@ -56,7 +56,7 @@ function writeLocalEnvelope(envelope: PersistedEnvelope): void {
 
 async function getStore() {
   const { load } = await import("@tauri-apps/plugin-store");
-  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: true, defaults: {} });
+  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: false, defaults: {} });
 }
 
 async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {

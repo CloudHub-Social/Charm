@@ -84,6 +84,10 @@ describe("observability persistence", () => {
     };
     await persistObservabilitySettings(settings, 42);
 
+    expect(mocks.load).toHaveBeenCalledWith("observability.json", {
+      autoSave: false,
+      defaults: {},
+    });
     expect(mocks.storeSet).toHaveBeenCalledWith("observability", {
       state: settings,
       updatedAt: 42,
