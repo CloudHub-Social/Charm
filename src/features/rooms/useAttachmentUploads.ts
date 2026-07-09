@@ -15,6 +15,10 @@ export function useAttachmentUploads(roomId: string | null) {
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
 
   useEffect(() => {
+    setUploads([]);
+  }, [roomId]);
+
+  useEffect(() => {
     const unlisten = onUploadProgress((progress) => {
       setUploads((prev) => {
         const existing = prev.find((u) => u.txnId === progress.txn_id);
