@@ -31,7 +31,7 @@ function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
   const showAndroidDistributorNotice =
-    status?.available === true && !status.registered && transport === "none";
+    status?.available === true && transport === "none" && status?.endpoint_present === false;
 
   // The homeserver can only deliver a push if the OS has also granted the
   // notification permission — without this, `register_push` can succeed
