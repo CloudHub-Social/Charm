@@ -428,11 +428,16 @@ const MAX_AVATAR_BYTES: u64 = 20 * 1024 * 1024;
 /// before the full decode happens. A compressed file well under
 /// `MAX_AVATAR_BYTES` can still decode to a huge `DynamicImage` (a
 /// decompression bomb) — e.g. a tiny, highly-compressible PNG that unpacks
-/// to tens of thousands of pixels per side. 8192px per side is far beyond
-/// any real avatar (a 4000x4000 RGBA frame is already ~64MB decoded) while
-/// still bounding worst-case decoded memory to roughly 8192*8192*4 bytes
-/// (~256MB) rather than something unbounded.
-const MAX_AVATAR_DIMENSION: u32 = 8192;
+/// to tens of thousands of pixels per side. No UI anywhere in this app
+/// (`src/components/ui/avatar.tsx`'s largest size, or the room/profile
+/// settings avatar previews) ever displays an avatar above a few hundred
+/// pixels per side, so 2048px per side is already a generous multiple of
+/// any real use case while bounding worst-case decoded memory to roughly
+/// 2048*2048*4 bytes (~16MB) — small enough to not be a meaningful DoS
+/// risk even on memory-constrained builds (this is a Tauri app with
+/// Android/iOS targets), unlike the previous 8192px cap (~256MB worst
+/// case).
+const MAX_AVATAR_DIMENSION: u32 = 2048;
 
 /// Formats the avatar picker in `RoomSettingsForm`/profile settings actually
 /// offers. Kept as an explicit allowlist — rather than just checking
@@ -476,7 +481,11 @@ const ALLOWED_AVATAR_FORMATS: [image::ImageFormat; 4] = [
 /// uploading them as the account avatar. Validating the *decoded* image
 /// content (not just the extension or a `mime_guess` off the file name)
 /// means a renamed non-image file is rejected too.
-async fn validate_avatar_path(
+///
+/// Shared with `room_admin::set_room_avatar_impl`, which uploads a room
+/// avatar from the same kind of frontend-supplied file-picker path — same
+/// validation needs to apply there too, not just to the account avatar.
+pub(crate) async fn validate_avatar_path(
     file_path: &str,
 ) -> Result<(std::path::PathBuf, Vec<u8>, mime_guess::Mime), String> {
     use tokio::io::AsyncReadExt;
