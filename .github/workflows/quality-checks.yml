@@ -355,9 +355,18 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Prebuilt binary from the official installer, pinned to a version and
       # verified against a published SHA-256 (rather than piping an unpinned
@@ -477,9 +486,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create Docker network
         # A bare `docker run` puts containers on the default bridge network,
@@ -590,9 +608,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create Docker network
         run: docker network create charm-ci-mas
@@ -700,9 +727,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -730,9 +766,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -765,9 +810,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -797,9 +851,18 @@ jobs:
         with:
           targets: aarch64-apple-ios-sim
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -830,9 +893,18 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -845,6 +917,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+          # Caches ~/.gradle/caches and ~/.gradle/wrapper (AndroidX/Kotlin
+          # stdlib downloads + the Gradle distribution itself), keyed on the
+          # wrapper/build files — this build was downloading all of it fresh
+          # every run with no caching at all.
+          cache: gradle
 
       - name: Set up Android SDK/NDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
