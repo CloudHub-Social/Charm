@@ -98,6 +98,12 @@ export async function onRequest({ env, request }) {
 
   const apiBase = result.url;
   const incomingUrl = new URL(request.url);
+  const requestOrigin = request.headers.get("origin");
+  if (requestOrigin !== null && requestOrigin !== incomingUrl.origin) {
+    return new Response("Preview API proxy origin is not allowed", {
+      status: 403,
+    });
+  }
   if (incomingUrl.pathname !== "/api" && !incomingUrl.pathname.startsWith("/api/")) {
     return new Response("Preview API proxy only accepts /api requests", {
       status: 400,
