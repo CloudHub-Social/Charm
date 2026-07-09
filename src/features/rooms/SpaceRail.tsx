@@ -109,7 +109,7 @@ export function SpaceRail({
               const folderOpen = openFolders[space.room_id] ?? false;
               return (
                 <div key={space.room_id} className="flex flex-col items-center gap-1">
-                  <div className="flex items-center gap-1">
+                  <div className="relative flex h-11 w-14 items-center justify-center">
                     {children.length > 0 && (
                       <button
                         type="button"
@@ -117,7 +117,7 @@ export function SpaceRail({
                           space.room_id,
                           space.name,
                         )}`}
-                        className="flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                        className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
                         onClick={() =>
                           setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))
                         }
