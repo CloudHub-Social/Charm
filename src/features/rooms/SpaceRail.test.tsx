@@ -181,6 +181,28 @@ describe("SpaceRail", () => {
     expect(screen.getByRole("button", { name: "Space B" })).toHaveAttribute("aria-current", "page");
   });
 
+  it("surfaces rootless cyclic spaces as rail entries", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({
+          room_id: "!space-a:localhost",
+          name: "Space A",
+          is_space: true,
+          parent_space_ids: ["!space-b:localhost"],
+        }),
+        makeRoomSummary({
+          room_id: "!space-b:localhost",
+          name: "Space B",
+          is_space: true,
+          parent_space_ids: ["!space-a:localhost"],
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: "Space A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Space B" })).toBeInTheDocument();
+  });
+
   it("subtracts hidden direct-room badge counts from parent spaces", () => {
     renderRail({
       badgeState: {

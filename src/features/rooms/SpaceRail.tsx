@@ -47,10 +47,20 @@ export function SpaceRail({
           parents.set(space.room_id, [...(parents.get(space.room_id) ?? []), parentId]);
         }
       }
+      const rootSpaces = spaces.filter((space) =>
+        space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
+      );
+      const reachableSpaceIds = new Set<string>();
+      const stack = [...rootSpaces];
+      while (stack.length > 0) {
+        const space = stack.pop();
+        if (!space || reachableSpaceIds.has(space.room_id)) continue;
+        reachableSpaceIds.add(space.room_id);
+        stack.push(...(children.get(space.room_id) ?? []));
+      }
+      const rootlessSpaces = spaces.filter((space) => !reachableSpaceIds.has(space.room_id));
       return {
-        topLevelSpaces: spaces.filter((space) =>
-          space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
-        ),
+        topLevelSpaces: [...rootSpaces, ...rootlessSpaces],
         childSpacesByParent: children,
         parentSpaceIdsByChild: parents,
         directRooms: rooms.filter((room) => room.is_direct),

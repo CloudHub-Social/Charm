@@ -137,7 +137,7 @@ describe("RoomList", () => {
     );
   });
 
-  it("keeps Home room rows reorderable when non-orphan rooms are outside the Home scope", () => {
+  it("disables Home room row reordering when non-orphan rooms are outside the Home scope", () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     const child = makeRoomSummary({
       room_id: "!child:localhost",
@@ -150,7 +150,7 @@ describe("RoomList", () => {
     expect(screen.queryByText("Team chat")).not.toBeInTheDocument();
     expect(screen.getByText("Orphan").closest("button")).toHaveAttribute(
       "data-reorder-enabled",
-      "true",
+      "false",
     );
   });
 
