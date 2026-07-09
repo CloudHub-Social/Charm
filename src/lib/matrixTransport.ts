@@ -292,6 +292,17 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           limit: args.limit as number | undefined,
         })}`,
       );
+    case "list_space_hierarchy":
+      return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.spaceId))}/hierarchy`);
+    case "join_room":
+      return requestJson<T>("POST", "/api/rooms/join", {
+        room_id_or_alias: args.roomIdOrAlias,
+      });
+    case "knock_room":
+      return requestJson<T>("POST", "/api/rooms/knock", {
+        room_id_or_alias: args.roomIdOrAlias,
+        reason: args.reason,
+      });
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,

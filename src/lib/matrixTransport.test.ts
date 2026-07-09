@@ -113,6 +113,27 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "list_space_hierarchy",
+      { spaceId: "!space:example.org" },
+      "GET",
+      "/api/rooms/!space%3Aexample.org/hierarchy",
+      undefined,
+    ],
+    [
+      "join_room",
+      { roomIdOrAlias: "#space-room:example.org" },
+      "POST",
+      "/api/rooms/join",
+      { room_id_or_alias: "#space-room:example.org" },
+    ],
+    [
+      "knock_room",
+      { roomIdOrAlias: "!knock:example.org", reason: "please" },
+      "POST",
+      "/api/rooms/knock",
+      { room_id_or_alias: "!knock:example.org", reason: "please" },
+    ],
+    [
       "send_message",
       { roomId: "!r:example.org", body: "hi", formattedBody: null, mentions: null },
       "POST",

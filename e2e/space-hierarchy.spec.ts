@@ -3,10 +3,9 @@ import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
 
 /**
- * Spec 19 Phase 1 foundation coverage: the UI still renders the current
- * direct space groups, while the mocked Tauri IPC exposes the recursive
- * `list_space_hierarchy` and `badge:update.spaces` contracts that the next
- * Spaces rail phase will consume.
+ * Spec 19 Phase 2 coverage: the space rail is separate from the room list,
+ * selecting a space scopes the list to the recursive hierarchy, and Phase 1's
+ * space badge rollups are consumed by the rail/header UI.
  */
 
 const USER_ID = "@e2e:localhost";
@@ -14,6 +13,7 @@ const ROOT_SPACE_ID = "!space-root:e2e";
 const SUB_SPACE_ID = "!space-sub:e2e";
 const DIRECT_ROOM_ID = "!space-direct:e2e";
 const NESTED_ROOM_ID = "!space-nested:e2e";
+const HOME_ROOM_ID = "!space-home:e2e";
 
 const subSpaceChild = {
   room_id: SUB_SPACE_ID,
@@ -69,6 +69,10 @@ test("renders nested space rooms and exposes recursive hierarchy plus space badg
         has_unread: true,
         parent_space_ids: [SUB_SPACE_ID],
       },
+      {
+        room_id: HOME_ROOM_ID,
+        name: "Home base",
+      },
     ],
     spaceChildren: {
       [ROOT_SPACE_ID]: [subSpaceChild, directRoomChild],
@@ -92,10 +96,17 @@ test("renders nested space rooms and exposes recursive hierarchy plus space badg
     { child: directRoomChild, children: [] },
   ]);
 
+  await expect(page.getByRole("navigation", { name: "Spaces" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Team Space", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Team Space 1" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Product", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Product 1" })).toBeVisible();
+  await expect(page.getByText("Planning")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Team Space", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "Team Space" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Space rooms/ })).toBeVisible();
+  await expect(page.getByText("Product", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Announcements" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Planning" }).getByText("3")).toBeVisible();
 
   await page.evaluate((payload) => window.__e2eEmit("badge:update", payload), {
