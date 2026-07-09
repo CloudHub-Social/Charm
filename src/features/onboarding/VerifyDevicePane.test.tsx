@@ -153,6 +153,31 @@ describe("VerifyDevicePane", () => {
     expect(screen.getByRole("button", { name: "Verify this device" })).toBeInTheDocument();
   });
 
+  it("does not offer cross-signing setup when already bootstrapped without verifier devices", () => {
+    crossSigningStatus = BOOTSTRAPPED_STATUS;
+    devices = [
+      {
+        device_id: "WEB_DEVICE",
+        display_name: "This browser",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: true,
+        is_verified: false,
+      },
+    ];
+
+    renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
+
+    expect(
+      screen.getByText(
+        "Open Charm on a trusted session, then come back here to start verification.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Verify this device" })).not.toBeInTheDocument();
+    expect(bootstrapCrossSigning).not.toHaveBeenCalled();
+  });
+
   it("keeps outgoing SAS terminal-state watching centralized in device actions", async () => {
     crossSigningStatus = BOOTSTRAPPED_STATUS;
     devices = [

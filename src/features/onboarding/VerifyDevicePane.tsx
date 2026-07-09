@@ -39,7 +39,6 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
     crossSigningStatus.has_user_signing_key,
   );
   const verifierDevices = (devices ?? []).filter((device) => !device.is_current);
-  const canVerifyWithAnotherDevice = isBootstrapped && verifierDevices.length > 0;
 
   async function handleSetUp() {
     if (await uia.submit()) {
@@ -57,10 +56,12 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
       <h1 className="text-xl font-bold text-foreground">Verify this device</h1>
       {done ? (
         <p className="text-sm text-foreground">This device is set up and trusted.</p>
-      ) : canVerifyWithAnotherDevice ? (
+      ) : isBootstrapped ? (
         <>
           <p className="text-sm text-muted-foreground">
-            Choose a session you already trust, then compare emojis there to verify this sign-in.
+            {verifierDevices.length > 0
+              ? "Choose a session you already trust, then compare emojis there to verify this sign-in."
+              : "Open Charm on a trusted session, then come back here to start verification."}
           </p>
           {verifierDevices.length > 0 ? (
             <div className="flex w-full flex-col gap-2">
@@ -75,11 +76,7 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
                 </Button>
               ))}
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Open Charm on a trusted session, then come back here to start verification.
-            </p>
-          )}
+          ) : null}
           {verify.isError && (
             <p className="text-sm text-destructive">
               Couldn't start verification: {String(verify.error)}
