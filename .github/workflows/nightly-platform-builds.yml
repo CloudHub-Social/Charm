@@ -1,0 +1,349 @@
+name: Nightly platform builds
+
+# Tier 3 of the CI/release model (see docs/ci-tiers.md): the full native
+# platform matrix (macOS/Windows/Linux/iOS/Android) used to run on every PR
+# push and merge_group entry, which was the dominant cost driver of CI wall
+# time. These builds only prove "does it compile and bundle" — they don't
+# need to gate every commit, just catch drift within a day. Moved here,
+# off tip of `main`, on a daily schedule + manual dispatch. Non-blocking:
+# a failure here never blocks a PR or the merge queue, it opens/updates a
+# tracking GitHub issue instead.
+#
+# Tier 1 (PR gate) and Tier 2 (merge queue) — quality-checks.yml's fmt/
+# clippy/nextest/frontend/storybook/e2e checks — are unaffected by this
+# change and remain the actual required checks.
+
+on:
+  schedule:
+    # 09:00 UTC daily — arbitrary; adjust if a different time better fits
+    # when someone's actually around to triage a failure.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS (tauri build)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: write
+    # Object-level compilation cache — see quality-checks.yml's `rust` job
+    # for the full rationale.
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
+      # the macOS .app/.dmg bundler. Not signed or notarized — that's a
+      # separate concern from "does it build".
+      - run: pnpm tauri build
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: macOS"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
+
+  windows:
+    name: Windows (tauri build)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
+      # have no system sqlite3 on PATH, so this is the one platform where
+      # linking against the vendored copy is actually load-bearing.
+      - run: pnpm tauri build
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Windows"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
+
+  linux:
+    name: Linux (tauri build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # rust-integration (quality-checks.yml) already covers `cargo test` on
+      # Linux; this is the full app bundle (AppImage/deb via the Tauri
+      # bundler plus frontend asset embedding), a build path nothing else
+      # exercises.
+      - run: pnpm tauri build
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Linux"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
+
+  ios:
+    name: iOS (tauri ios build, simulator target)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
+      # Silicon) rather than a device. This repo has no Apple Developer
+      # signing identity configured for CI, and simulator builds don't need
+      # one — compile verification only, not a distributable IPA.
+      - run: pnpm tauri ios build --target aarch64-sim --debug --ci
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: iOS"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
+
+  android:
+    name: Android (tauri android build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_BUCKET: charm-sccache-storage
+      SCCACHE_REGION: tor1
+      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+      SCCACHE_S3_USE_SSL: "true"
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - run: pnpm install --frozen-lockfile
+
+      # Single arch (aarch64) — this is a compile check, not a release
+      # artifact, so building all 4 ABIs would just burn CI time for no
+      # extra coverage. No release keystore is configured (build.gradle.kts
+      # has no signingConfig for the release build type), which is fine: an
+      # unsigned APK still proves the Rust/Kotlin/NDK toolchain compiles.
+      - name: Build
+        # ANDROID_HOME is set by android-actions/setup-android via
+        # $GITHUB_ENV, which only becomes a real shell variable in later
+        # steps' `run:` — it is NOT reflected in the `env` context, so
+        # `${{ env.ANDROID_HOME }}` here would resolve to an empty string.
+        # Deriving NDK_HOME/RANLIB/AR from $ANDROID_HOME inside the shell
+        # avoids that trap.
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          # openssl-sys vendors OpenSSL from source for the Android target
+          # (see Cargo.toml); NDK r23+ dropped the <triple>-ranlib/<triple>-ar
+          # wrapper scripts openssl-src's Makefile expects, keeping only
+          # llvm-ranlib/llvm-ar. Pointing RANLIB/AR at those directly avoids
+          # "ranlib: not found" (make error 127) — same fix as commit c69b5a8
+          # on the Spec 13 spike branch, for the same vendored-OpenSSL build.
+          export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+          export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          pnpm tauri android build --target aarch64 --ci
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Android"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
