@@ -751,8 +751,12 @@ jobs:
 
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
       # the macOS .app/.dmg bundler. Not signed or notarized — that's a
-      # separate concern from "does it build".
-      - run: pnpm tauri build
+      # separate concern from "does it build". --debug: this is a compile
+      # check, not a release artifact (same rationale as the ios/android
+      # jobs below) — release's opt-level=3 LLVM optimization passes over
+      # the whole matrix-rust-sdk dependency tree are the dominant cost of
+      # this job and buy nothing a debug build doesn't already prove.
+      - run: pnpm tauri build --debug
 
   windows:
     name: Windows (tauri build)
@@ -790,8 +794,9 @@ jobs:
 
       # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
       # have no system sqlite3 on PATH, so this is the one platform where
-      # linking against the vendored copy is actually load-bearing.
-      - run: pnpm tauri build
+      # linking against the vendored copy is actually load-bearing. --debug:
+      # compile check, not a release artifact — see the macOS job's comment.
+      - run: pnpm tauri build --debug
 
   linux:
     name: Linux (tauri build)
@@ -834,8 +839,9 @@ jobs:
 
       # rust-integration (above) already covers `cargo test` on Linux; this is
       # the full app bundle (AppImage/deb via the Tauri bundler plus frontend
-      # asset embedding), a build path nothing else here exercises.
-      - run: pnpm tauri build
+      # asset embedding), a build path nothing else here exercises. --debug:
+      # compile check, not a release artifact — see the macOS job's comment.
+      - run: pnpm tauri build --debug
 
   ios:
     name: iOS (tauri ios build, simulator target)
