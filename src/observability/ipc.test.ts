@@ -97,7 +97,7 @@ describe("IPC observability", () => {
     );
   });
 
-  it("records a redacted failure breadcrumb and rethrows the original error", async () => {
+  it("records a redacted failure breadcrumb, captures a summarized error, and rethrows the original error", async () => {
     const error = new Error("failed for @alice:example.org with password=secret");
     vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
 
@@ -122,7 +122,10 @@ describe("IPC observability", () => {
 
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(
-      error,
+      expect.objectContaining({
+        message: 'IPC invoke failed: {"name":"Error","message":"[redacted-string:50]"}',
+        name: "IpcError",
+      }),
       expect.objectContaining({
         contexts: expect.objectContaining({
           "tauri.ipc": expect.objectContaining({
@@ -139,6 +142,40 @@ describe("IPC observability", () => {
         }),
       }),
     );
+  });
+
+  it("does not capture expected UIA challenges as IPC failures", async () => {
+    const challenge = { kind: "UiaChallenge", session: "session-id" };
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(challenge);
+
+    await expect(invoke("change_password", { password: undefined })).rejects.toBe(challenge);
+
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC change_password failed",
+      }),
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("does not capture noisy best-effort typing failures", async () => {
+    const error = new Error("offline");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("send_typing", { roomId: "!room:example.org", typing: true })).rejects.toBe(
+      error,
+    );
+
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC send_typing failed",
+      }),
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it("does not send a Sentry event while the current Sentry client is disabled, even on failure", async () => {
@@ -189,6 +226,15 @@ describe("IPC observability", () => {
     ).toEqual({
       body: "[string:33]",
       roomId: "[redacted-string:17]",
+    });
+  });
+
+  it("builds captured IPC errors from summarized data only", () => {
+    const error = new Error("https://homeserver.example login failed");
+
+    expect(ipcObservabilityTestHooks.createCapturedIpcError(error)).toMatchObject({
+      message: 'IPC invoke failed: {"name":"Error","message":"[string:39]"}',
+      name: "IpcError",
     });
   });
 

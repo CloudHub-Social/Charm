@@ -7,6 +7,8 @@ type InvokeArgs = Record<string, unknown>;
 
 export const IPC_OPERATION_ID_HEADER = "x-charm-operation-id";
 
+const BEST_EFFORT_IPC_COMMANDS = new Set(["send_typing"]);
+
 function summarizeString(value: string): string {
   const scrubbed = scrubSensitiveText(value);
   if (scrubbed !== value) return `[redacted-string:${value.length}]`;
@@ -52,6 +54,26 @@ function summarizeError(error: unknown): unknown {
   return summarizeValue(error);
 }
 
+function isUiaChallenge(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { kind?: unknown }).kind === "UiaChallenge"
+  );
+}
+
+function shouldCaptureIpcException(command: string, error: unknown): boolean {
+  if (isUiaChallenge(error)) return false;
+  return !BEST_EFFORT_IPC_COMMANDS.has(command);
+}
+
+function createCapturedIpcError(error: unknown): Error {
+  const summary = summarizeError(error);
+  const capturedError = new Error(`IPC invoke failed: ${JSON.stringify(summary)}`);
+  capturedError.name = error instanceof Error ? `Ipc${error.name}` : "IpcError";
+  return capturedError;
+}
+
 function addIpcBreadcrumb(
   level: "info" | "error",
   message: string,
@@ -69,7 +91,7 @@ function addIpcBreadcrumb(
 }
 
 function captureIpcException(
-  error: unknown,
+  capturedError: Error,
   context: {
     command: string;
     operationId: string;
@@ -80,7 +102,7 @@ function captureIpcException(
   const client = Sentry.getClient();
   if (!client?.getOptions().enabled) return;
 
-  Sentry.captureException(error, {
+  Sentry.captureException(capturedError, {
     contexts: {
       "tauri.ipc": {
         command: context.command,
@@ -127,17 +149,21 @@ export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> 
       durationMs,
       error: summarizeError(error),
     });
-    captureIpcException(error, {
-      command,
-      operationId: id,
-      durationMs,
-      args: argsSummary,
-    });
+    if (shouldCaptureIpcException(command, error)) {
+      captureIpcException(createCapturedIpcError(error), {
+        command,
+        operationId: id,
+        durationMs,
+        args: argsSummary,
+      });
+    }
     throw error;
   }
 }
 
 export const ipcObservabilityTestHooks = {
+  createCapturedIpcError,
+  shouldCaptureIpcException,
   summarizeArgs,
   summarizeError,
   summarizeValue,
