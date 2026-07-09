@@ -348,11 +348,12 @@ function flattenHierarchy(nodes: SpaceHierarchyNode[]): SpaceHierarchyNode[] {
 function countVisibleHierarchyNodes(
   nodes: SpaceHierarchyNode[],
   roomById: Map<string, RoomSummary>,
-) {
-  return flattenHierarchy(nodes).filter((node) => {
+): number {
+  return nodes.reduce((count, node) => {
     const joinedRoom = roomById.get(node.child.room_id);
-    return !joinedRoom?.is_favourite && !joinedRoom?.is_low_priority;
-  }).length;
+    if (isTaggedSectionRoom(joinedRoom)) return count;
+    return count + 1 + countVisibleHierarchyNodes(node.children, roomById);
+  }, 0);
 }
 
 function renderHierarchy(
@@ -368,23 +369,25 @@ function renderHierarchy(
 ): ReactElement[] {
   return nodes.flatMap((node) => {
     const joinedRoom = options.roomById.get(node.child.room_id);
-    const row =
-      joinedRoom?.is_favourite || joinedRoom?.is_low_priority ? null : (
-        <HierarchyRow
-          key={node.child.room_id}
-          child={node.child}
-          joinedRoom={joinedRoom}
-          depth={depth}
-          active={node.child.room_id === options.activeRoomId}
-          pending={options.pendingRoomId === node.child.room_id}
-          onSelectRoom={options.onSelectRoom}
-          onJoin={options.onJoin}
-        />
-      );
-    return [row, ...renderHierarchy(node.children, options, depth + 1)].filter(
-      (item): item is ReactElement => item !== null,
-    );
+    if (isTaggedSectionRoom(joinedRoom)) return [];
+    return [
+      <HierarchyRow
+        key={node.child.room_id}
+        child={node.child}
+        joinedRoom={joinedRoom}
+        depth={depth}
+        active={node.child.room_id === options.activeRoomId}
+        pending={options.pendingRoomId === node.child.room_id}
+        onSelectRoom={options.onSelectRoom}
+        onJoin={options.onJoin}
+      />,
+      ...renderHierarchy(node.children, options, depth + 1),
+    ];
   });
+}
+
+function isTaggedSectionRoom(room: RoomSummary | undefined) {
+  return room?.is_favourite === true || room?.is_low_priority === true;
 }
 
 interface HierarchyRowProps {

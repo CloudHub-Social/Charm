@@ -225,6 +225,55 @@ describe("RoomList", () => {
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
   });
 
+  it("does not render children of hierarchy rooms shown in tagged sections", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteParent = makeRoomSummary({
+      room_id: "!fav-parent:localhost",
+      name: "Pinned project",
+      parent_space_ids: ["!space:localhost"],
+      is_favourite: true,
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-parent:localhost",
+          name: "Pinned project",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!child:localhost",
+              name: "Child under pinned project",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "public",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, favouriteParent],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("Pinned project")).toBeInTheDocument();
+    expect(screen.getByText("Favourites")).toBeInTheDocument();
+    expect(screen.queryByText("Space rooms")).not.toBeInTheDocument();
+    expect(screen.queryByText("Child under pinned project")).not.toBeInTheDocument();
+  });
+
   it("does not refetch the space hierarchy when the selected space object is recreated", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     listSpaceHierarchy.mockResolvedValue([]);
