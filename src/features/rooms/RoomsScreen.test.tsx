@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomsScreen } from "./RoomsScreen";
@@ -64,14 +64,19 @@ vi.mock("./SpaceRail", () => ({
   SpaceRail: ({
     activeMode,
     activeSpaceId,
+    onSelectSpace,
     onCreateJoin,
   }: {
     activeMode: string;
     activeSpaceId: string | null;
+    onSelectSpace: (spaceId: string) => void;
     onCreateJoin: () => void;
   }) => (
     <div>
       space-rail:{activeMode}:{activeSpaceId ?? "none"}
+      <button type="button" onClick={() => onSelectSpace("!other-space:example.org")}>
+        select-other-space
+      </button>
       <button type="button" onClick={onCreateJoin}>
         create-join
       </button>
@@ -297,6 +302,80 @@ describe("RoomsScreen", () => {
 
     await screen.findByText("space-rail:home:none");
     expect(screen.getByText("chat-content:!room:example.org")).toBeInTheDocument();
+  });
+
+  it("keeps create/join fallback mode consistent when only DMs are selectable", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+      room({ room_id: "!dm:example.org", name: "Alice", is_direct: true }),
+    ]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("space-rail:space:!space:example.org");
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:none");
+
+    fireEvent.click(screen.getByRole("button", { name: "create-join" }));
+
+    await screen.findByText("space-rail:dms:none");
+    expect(screen.getByText("chat-content:!dm:example.org")).toBeInTheDocument();
+  });
+
+  it("clears the space deep-link guard when another space is selected", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+      room({ room_id: "!other-space:example.org", name: "Other", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("space-rail:space:!space:example.org");
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:none");
+
+    fireEvent.click(screen.getByRole("button", { name: "select-other-space" }));
+    await screen.findByText("space-rail:space:!other-space:example.org");
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([
+        room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+        room({ room_id: "!other-space:example.org", name: "Other", is_space: true }),
+        room({ room_id: "!room:example.org", name: "Room" }),
+      ]);
+    });
+
+    await screen.findByText("chat-content:!room:example.org");
   });
 
   it("returns to the mobile list when a space deep link arrives from room detail", async () => {

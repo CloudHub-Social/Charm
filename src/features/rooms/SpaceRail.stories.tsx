@@ -48,6 +48,7 @@ const meta = {
     rooms,
     activeMode: "home",
     activeSpaceId: null,
+    showAllRooms: false,
     onSelectHome: () => {},
     onSelectDms: () => {},
     onSelectSpace: () => {},

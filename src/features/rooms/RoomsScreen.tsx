@@ -78,6 +78,7 @@ export function RoomsScreen({
   }
 
   function selectSpace(spaceId: string) {
+    spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
     setCreateJoinNotice(false);
@@ -262,6 +263,7 @@ export function RoomsScreen({
             rooms={rooms}
             activeMode={roomListMode}
             activeSpaceId={selectedSpaceId}
+            showAllRooms={showAllRooms}
             onSelectHome={selectHome}
             onSelectDms={selectDms}
             onSelectSpace={selectSpace}
@@ -272,7 +274,10 @@ export function RoomsScreen({
               setCreateJoinNotice(true);
               if (activeRoomId === null) {
                 const firstSelectableRoom = getInitialSelectableRoom(rooms);
-                if (firstSelectableRoom) selectRoom(firstSelectableRoom.room_id);
+                if (firstSelectableRoom) {
+                  selectRoomInVisibleMode(firstSelectableRoom);
+                  setCreateJoinNotice(true);
+                }
               }
             }}
           />

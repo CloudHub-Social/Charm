@@ -49,6 +49,7 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
     ],
     activeMode: "home" as const,
     activeSpaceId: null,
+    showAllRooms: false,
     onSelectHome: vi.fn(),
     onSelectDms: vi.fn(),
     onSelectSpace: vi.fn(),
@@ -105,6 +106,40 @@ describe("SpaceRail", () => {
     });
 
     expect(screen.getByRole("button", { name: "Home, 1 unread, 2 mentions" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Direct messages, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
+  });
+
+  it("includes non-DM space children in the Home badge when Show all rooms is enabled", () => {
+    renderRail({
+      showAllRooms: true,
+      rooms: [
+        makeRoomSummary({
+          room_id: "!home:localhost",
+          name: "Home room",
+          has_unread: true,
+          unread_count: 2,
+        }),
+        makeRoomSummary({ room_id: "!space:localhost", name: "Team", is_space: true }),
+        makeRoomSummary({
+          room_id: "!child:localhost",
+          name: "Team chat",
+          has_unread: true,
+          unread_count: 4,
+          parent_space_ids: ["!space:localhost"],
+        }),
+        makeRoomSummary({
+          room_id: "!dm:localhost",
+          name: "Alice",
+          is_direct: true,
+          has_unread: true,
+          unread_count: 3,
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: "Home, 2 unread, 6 mentions" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Direct messages, 1 unread, 3 mentions" }),
     ).toBeInTheDocument();

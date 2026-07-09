@@ -15,6 +15,7 @@ interface SpaceRailProps {
   rooms: RoomSummary[];
   activeMode: RoomListMode;
   activeSpaceId: string | null;
+  showAllRooms: boolean;
   onSelectHome: () => void;
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
@@ -25,6 +26,7 @@ export function SpaceRail({
   rooms,
   activeMode,
   activeSpaceId,
+  showAllRooms,
   onSelectHome,
   onSelectDms,
   onSelectSpace,
@@ -69,7 +71,7 @@ export function SpaceRail({
     }, [rooms]);
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
-  const homeBadge = useMemo(() => getHomeBadge(rooms), [rooms]);
+  const homeBadge = useMemo(() => getHomeBadge(rooms, showAllRooms), [rooms, showAllRooms]);
   const hiddenDirectBadgesBySpace = useMemo(
     () => getHiddenDirectBadgesBySpace(directRooms, parentSpaceIdsByChild),
     [directRooms, parentSpaceIdsByChild],
@@ -302,11 +304,14 @@ function labelWithBadge(label: string, unread: number, highlight: number) {
   return counts.length > 0 ? `${label}, ${counts.join(", ")}` : label;
 }
 
-function getHomeBadge(rooms: RoomSummary[]) {
+function getHomeBadge(rooms: RoomSummary[], showAllRooms: boolean) {
   return rooms
     .filter(
       (room) =>
-        !room.is_space && !room.is_direct && room.parent_space_ids.length === 0 && room.has_unread,
+        !room.is_space &&
+        !room.is_direct &&
+        (showAllRooms || room.parent_space_ids.length === 0) &&
+        room.has_unread,
     )
     .reduce(
       (counts, room) => ({
