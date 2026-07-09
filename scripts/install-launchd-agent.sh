@@ -4,9 +4,13 @@
 # unlike the git hooks (scripts/install-git-hooks.sh), this starts a standing
 # background job on your machine, so it isn't wired into `pnpm install`.
 #
-# The committed plist has a __REPO_ROOT__ placeholder instead of a hardcoded
-# path because the repo location differs per machine/clone; this substitutes
-# it with this checkout's actual path before loading.
+# The committed plist has __REPO_ROOT__/__HOME_DIR__ placeholders instead of
+# hardcoded paths because both differ per machine/clone; this substitutes
+# them with this checkout's actual path and this user's home before loading.
+# __HOME_DIR__ also seeds launchd's PATH (its default environment is a
+# minimal one that often doesn't include Homebrew or pyenv/user-local bins,
+# which is where graphify/pnpm commonly live) so the job can actually find
+# them instead of silently retrying forever.
 set -e
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,7 +19,7 @@ src="$repo_root/scripts/$label.plist"
 dest="$HOME/Library/LaunchAgents/$label.plist"
 
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s#__REPO_ROOT__#$repo_root#g" "$src" > "$dest"
+sed "s#__REPO_ROOT__#$repo_root#g; s#__HOME_DIR__#$HOME#g" "$src" > "$dest"
 
 launchctl unload "$dest" 2>/dev/null || true
 launchctl load "$dest"

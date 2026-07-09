@@ -19,31 +19,29 @@ that can go stale:
    an install ever touching the symlink. Blocked only when the lockfiles
    currently mismatch, since that's the actual signal something drifted.
 
-Resolves the effective working directory from a leading `cd <path> &&`/`;`
-in the command when present (e.g. `cd ~/git/Charm && pnpm install`), rather
-than trusting CLAUDE_PROJECT_DIR blindly — otherwise a command that
-deliberately cd's into main to run there would be wrongly blocked just
-because the *session* is rooted in a worktree.
+Tracks the effective working directory per shell-operator-separated segment
+(splitting on &&/||/;/|), updating it on each `cd <path>` segment, instead of
+resolving one cwd from only a single leading `cd` — a compound command can
+`cd` more than once before the actual package-manager invocation (e.g. `cd
+~/git/Charm && true; cd ~/git/Charm-worktree && npm install`), and only the
+cwd active *at that invocation* is the one that matters. This is a plain
+whitespace/operator split, not real shell parsing (doesn't handle quoting,
+subshells, or command substitution) — a best-effort heuristic, not a
+security boundary.
 """
 import json
 import os
 import re
 import sys
 
-# Matches each package-manager invocation together with its *immediate* next
-# token (the actual subcommand) — deliberately not a scan over the rest of
-# the line, so a test file or flag named e.g. "install"/"config" elsewhere in
-# the command can't be mistaken for the subcommand itself.
-PKG_MANAGER_INVOCATION = re.compile(r"\b(?:pnpm|npm|yarn|npx)\b\s+(\S+)")
-
 # Subcommands that mutate the dependency tree in place (write straight
 # through the symlink into main's real node_modules) — always denied,
 # regardless of whether the lockfiles currently happen to match. Includes
-# npm's documented aliases (uninstall: un/unlink/r; install: i; ci is npm's
-# separate "clean install" verb) plus link/rebuild/dedupe, which rewrite
-# node_modules without going through the install/remove path at all.
+# npm's documented aliases (install: i/in/ins/inst; uninstall: un/unlink/r;
+# ci is npm's separate "clean install" verb) plus link/rebuild/dedupe, which
+# rewrite node_modules without going through the install/remove path at all.
 HARD_DENY_SUBCOMMANDS = {
-    "install", "i", "ci", "add",
+    "install", "i", "in", "ins", "inst", "ci", "add",
     "remove", "rm", "uninstall", "un", "unlink", "r",
     "update", "up", "prune",
     "link", "rebuild", "dedupe",
@@ -51,16 +49,41 @@ HARD_DENY_SUBCOMMANDS = {
 # Read-only/informational subcommands — never touch node_modules, so never
 # worth blocking or even lockfile-checking.
 SAFE_SUBCOMMANDS = {"--version", "-v", "list", "ls", "why", "outdated", "config", "store"}
+# Leading package-manager options that take a following value token, so the
+# token after them isn't the subcommand either (e.g. `npm --prefix . install`
+# — "." is --prefix's value, "install" is the actual verb).
+VALUE_FLAGS = {"--prefix", "--dir", "--cwd", "-C"}
+
+PKG_MANAGER_NAME = re.compile(r"\b(pnpm|npm|yarn|npx)\b")
 BIN_INVOCATION = re.compile(r"(?:^|[/\s])node_modules/\.bin/")
-LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
+SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\|)")
+CD_SEGMENT = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*$')
 
 
-def classify_command(command):
+def find_subcommand(rest_of_segment):
+    """Given the text after a package-manager name within one segment,
+    return the actual subcommand token — skipping leading option flags and,
+    for known value-taking flags, their value token too."""
+    tokens = rest_of_segment.split()
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("-"):
+            i += 2 if tok in VALUE_FLAGS else 1
+            continue
+        return tok
+    return None
+
+
+def classify_segment(segment):
     """Returns "install" (always deny), "run" (deny only on lockfile
-    mismatch), or None (nothing risky) for the given shell command."""
-    saw_run = bool(BIN_INVOCATION.search(command))
-    for m in PKG_MANAGER_INVOCATION.finditer(command):
-        sub = m.group(1)
+    mismatch), or None (nothing risky) for one shell-operator-separated
+    segment of a command."""
+    saw_run = bool(BIN_INVOCATION.search(segment))
+    for m in PKG_MANAGER_NAME.finditer(segment):
+        sub = find_subcommand(segment[m.end():])
+        if sub is None:
+            continue
         if sub in HARD_DENY_SUBCOMMANDS:
             return "install"
         if sub not in SAFE_SUBCOMMANDS:
@@ -68,15 +91,20 @@ def classify_command(command):
     return "run" if saw_run else None
 
 
-def resolve_cwd(command, default_cwd):
-    m = LEADING_CD.match(command)
-    if not m:
-        return default_cwd
-    path = m.group(1).strip("\"'")
-    path = os.path.expanduser(path)
-    if not os.path.isabs(path):
-        path = os.path.join(default_cwd, path)
-    return os.path.normpath(path)
+def iter_segments_with_cwd(command, default_cwd):
+    """Yields (segment, cwd) pairs, tracking cwd across `cd` segments."""
+    cwd = default_cwd
+    for part in SHELL_OPERATORS.split(command):
+        if SHELL_OPERATORS.fullmatch(part):
+            continue
+        m = CD_SEGMENT.match(part)
+        if m:
+            path = m.group(1).strip("\"'")
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                path = os.path.join(cwd, path)
+            cwd = os.path.normpath(path)
+        yield part, cwd
 
 
 def find_package_root(start_dir):
@@ -115,25 +143,13 @@ def deny(reason):
     }))
 
 
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except ValueError:
-        return 0
-
-    if (payload.get("tool_name") or "") != "Bash":
-        return 0
-
-    command = (payload.get("tool_input") or {}).get("command") or ""
-    kind = classify_command(command)
-    if kind is None:
-        return 0
-
-    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    root = find_package_root(resolve_cwd(command, default_root))
+def check_segment(kind, cwd):
+    """Returns True (and prints a deny) if this segment's node_modules
+    situation should block the command; False if it's fine."""
+    root = find_package_root(cwd)
     node_modules = os.path.join(root, "node_modules")
     if not os.path.islink(node_modules):
-        return 0
+        return False
 
     # realpath, not readlink: readlink returns the symlink's literal target,
     # which is relative to node_modules's own directory if it was created as
@@ -152,7 +168,7 @@ def main():
             "`rm node_modules` first, then `pnpm install "
             "--frozen-lockfile` to get a real, isolated install."
         )
-        return 0
+        return True
 
     if not lockfiles_match(root, main_root):
         deny(
@@ -164,6 +180,27 @@ def main():
             "`rm node_modules && pnpm install --frozen-lockfile` first to "
             "get a real, isolated install matching this branch's lockfile."
         )
+        return True
+
+    return False
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return 0
+
+    if (payload.get("tool_name") or "") != "Bash":
+        return 0
+
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+
+    for segment, cwd in iter_segments_with_cwd(command, default_root):
+        kind = classify_segment(segment)
+        if kind is not None and check_segment(kind, cwd):
+            return 0
 
     return 0
 

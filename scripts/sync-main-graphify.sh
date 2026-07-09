@@ -9,7 +9,12 @@
 set -e
 
 repo_root="${CHARM_MAIN_WORKTREE:-$HOME/git/Charm}"
-[ -d "$repo_root/.git" ] || exit 0
+# A `-d .git` check misses a valid checkout that's itself a linked worktree
+# (where .git is a file pointing at the common dir, not a directory) — probe
+# with git itself instead, which works for both a normal checkout and a
+# linked worktree.
+[ -d "$repo_root" ] || exit 0
+git -C "$repo_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0
 cd "$repo_root"
 
 branch="$(git rev-parse --abbrev-ref HEAD)"
@@ -43,9 +48,36 @@ if [ "$local_head" != "$remote_head" ]; then
     echo "sync-main-graphify: local main has diverged from origin/main — skipping" >&2
     exit 0
   fi
+
+  lockfile_before=""
+  [ -f "$repo_root/pnpm-lock.yaml" ] && lockfile_before="$(cat "$repo_root/pnpm-lock.yaml")"
+
   git merge --quiet --ff-only origin/main
   echo "sync-main-graphify: fast-forwarded main $local_head -> $remote_head"
   need_graphify_update=1
+
+  lockfile_after=""
+  [ -f "$repo_root/pnpm-lock.yaml" ] && lockfile_after="$(cat "$repo_root/pnpm-lock.yaml")"
+
+  # If the fast-forward moved pnpm-lock.yaml, main's own real node_modules
+  # is now stale relative to its own lockfile — and every worktree created
+  # afterwards would symlink that stale install while believing (correctly,
+  # by lockfile comparison) that it matches main. Reinstalling here is what
+  # actually keeps the shared node_modules trustworthy, not just the
+  # lockfile-comparison guard (which only catches divergence, not main
+  # itself being behind its own lockfile).
+  if [ "$lockfile_before" != "$lockfile_after" ]; then
+    if command -v pnpm >/dev/null 2>&1; then
+      echo "sync-main-graphify: pnpm-lock.yaml changed — reinstalling main's dependencies"
+      if pnpm install --frozen-lockfile >/tmp/charm-sync-pnpm-install.log 2>&1; then
+        echo "sync-main-graphify: pnpm install completed"
+      else
+        echo "sync-main-graphify: pnpm install failed — see /tmp/charm-sync-pnpm-install.log" >&2
+      fi
+    else
+      echo "sync-main-graphify: pnpm-lock.yaml changed but pnpm not found on PATH — main's node_modules is now stale" >&2
+    fi
+  fi
 fi
 
 if [ "$need_graphify_update" = "1" ]; then

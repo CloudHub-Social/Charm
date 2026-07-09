@@ -11,12 +11,15 @@ itself has a real (non-symlink) graphify-out, so this only fires for
 worktrees, and scripts/sync-main-graphify.sh remains the intended way to
 refresh the shared graph.
 
-Resolves the effective working directory from a leading `cd <path> &&`/`;` in
-the command when present (e.g. `cd ~/git/Charm && graphify update .`), rather
-than trusting CLAUDE_PROJECT_DIR blindly — a Claude session rooted in a
-worktree can still legitimately `cd` into main first to run the update there,
-and that's exactly the documented workaround this hook's own message
-suggests, so it must not itself be blocked.
+Tracks the effective working directory per shell-operator-separated segment
+(splitting on &&/||/;/|), updating it on each `cd <path>` segment, instead of
+resolving one cwd from only a single leading `cd` — a compound command can
+`cd` more than once before the actual `graphify update` invocation (e.g. `cd
+~/git/Charm && true; cd ~/git/Charm-worktree && graphify update .`), and only
+the cwd active *at that invocation* is the one that matters. This is a plain
+whitespace/operator split, not real shell parsing (doesn't handle quoting,
+subshells, or command substitution) — a best-effort heuristic, not a
+security boundary.
 """
 import json
 import os
@@ -24,39 +27,27 @@ import re
 import sys
 
 GRAPHIFY_UPDATE = re.compile(r"\bgraphify\s+update\b")
-LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
+SHELL_OPERATORS = re.compile(r"(&&|\|\||;|\|)")
+CD_SEGMENT = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*$')
 
 
-def resolve_cwd(command, default_cwd):
-    m = LEADING_CD.match(command)
-    if not m:
-        return default_cwd
-    path = m.group(1).strip("\"'")
-    path = os.path.expanduser(path)
-    if not os.path.isabs(path):
-        path = os.path.join(default_cwd, path)
-    return os.path.normpath(path)
+def iter_segments_with_cwd(command, default_cwd):
+    """Yields (segment, cwd) pairs, tracking cwd across `cd` segments."""
+    cwd = default_cwd
+    for part in SHELL_OPERATORS.split(command):
+        if SHELL_OPERATORS.fullmatch(part):
+            continue
+        m = CD_SEGMENT.match(part)
+        if m:
+            path = m.group(1).strip("\"'")
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                path = os.path.join(cwd, path)
+            cwd = os.path.normpath(path)
+        yield part, cwd
 
 
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except ValueError:
-        return 0
-
-    if (payload.get("tool_name") or "") != "Bash":
-        return 0
-
-    command = (payload.get("tool_input") or {}).get("command") or ""
-    if not GRAPHIFY_UPDATE.search(command):
-        return 0
-
-    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    root = resolve_cwd(command, default_root)
-    graphify_out = os.path.join(root, "graphify-out")
-    if not os.path.islink(graphify_out):
-        return 0
-
+def deny():
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -74,6 +65,30 @@ def main():
             ),
         }
     }))
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        return 0
+
+    if (payload.get("tool_name") or "") != "Bash":
+        return 0
+
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    if not GRAPHIFY_UPDATE.search(command):
+        return 0
+
+    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    for segment, cwd in iter_segments_with_cwd(command, default_root):
+        if not GRAPHIFY_UPDATE.search(segment):
+            continue
+        graphify_out = os.path.join(cwd, "graphify-out")
+        if os.path.islink(graphify_out):
+            deny()
+            return 0
+
     return 0
 
 
