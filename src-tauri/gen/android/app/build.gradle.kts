@@ -30,6 +30,16 @@ if (hasGoogleServicesConfig) {
 fun requiredSentryEnv(name: String): String =
     System.getenv(name) ?: error("$name is required when SENTRY_ANDROID_UPLOAD=true")
 
+fun buildConfigString(value: String): String =
+    "\"${
+        value
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+    }\""
+
 val sentryAndroidUpload = System.getenv("SENTRY_ANDROID_UPLOAD") == "true"
 if (sentryAndroidUpload) {
     apply(plugin = "io.sentry.android.gradle")
@@ -64,6 +74,21 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+        buildConfigField(
+            "String",
+            "SENTRY_DSN",
+            buildConfigString(System.getenv("SENTRY_DSN") ?: System.getenv("VITE_SENTRY_DSN") ?: ""),
+        )
+        buildConfigField(
+            "String",
+            "SENTRY_ENVIRONMENT",
+            buildConfigString(System.getenv("SENTRY_ENVIRONMENT") ?: System.getenv("VITE_SENTRY_ENVIRONMENT") ?: ""),
+        )
+        buildConfigField(
+            "String",
+            "SENTRY_RELEASE",
+            buildConfigString(System.getenv("SENTRY_RELEASE") ?: System.getenv("VITE_SENTRY_RELEASE") ?: ""),
+        )
     }
     buildTypes {
         getByName("debug") {
@@ -108,6 +133,7 @@ dependencies {
     // — `matrix::secret_store`'s Android implementation, called via JNI,
     // stands in for `keyring`'s desktop-only OS-keychain backends there.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("io.sentry:sentry-android:8.48.0")
     // Spec 11: UnifiedPush-first push transport, falling back to the
     // embedded FCM distributor when no external distributor is installed —
     // see `push::android`'s doc comment. Coordinates/versions per each

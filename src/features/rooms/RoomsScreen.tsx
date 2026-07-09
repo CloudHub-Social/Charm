@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
+import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
@@ -42,7 +43,12 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
+  const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [showAllRooms, setShowAllRooms] = useState(false);
+  const [createJoinNotice, setCreateJoinNotice] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
+  const spaceDeepLinkSelectedRef = useRef(false);
 
   // Bumped on every room selection — via the room list, a deep link, or the
   // initial auto-select — even when it re-selects the already-active room.
@@ -52,8 +58,60 @@ export function RoomsScreen({
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
   function selectRoom(roomId: string) {
+    spaceDeepLinkSelectedRef.current = false;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
+  }
+
+  function selectHome() {
+    spaceDeepLinkSelectedRef.current = false;
+    setRoomListMode("home");
+    setSelectedSpaceId(null);
+    setCreateJoinNotice(false);
+  }
+
+  function selectDms() {
+    spaceDeepLinkSelectedRef.current = false;
+    setRoomListMode("dms");
+    setSelectedSpaceId(null);
+    setCreateJoinNotice(false);
+  }
+
+  function selectSpace(spaceId: string) {
+    spaceDeepLinkSelectedRef.current = false;
+    setRoomListMode("space");
+    setSelectedSpaceId(spaceId);
+    setCreateJoinNotice(false);
+  }
+
+  function selectRoomInVisibleMode(room: RoomSummary) {
+    if (room.is_space) {
+      selectSpace(room.room_id);
+      setActiveRoomId(null);
+      setMobileView("list");
+      return;
+    }
+    if (room.is_direct) {
+      selectDms();
+    } else if (room.parent_space_ids.length > 0) {
+      const joinedParentSpaceIds = room.parent_space_ids
+        .filter((spaceId) =>
+          rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+        )
+        .toSorted();
+      const parentSpaceId = joinedParentSpaceIds[0];
+      if (parentSpaceId) {
+        selectSpace(parentSpaceId);
+      } else {
+        setRoomListMode("home");
+        setSelectedSpaceId(null);
+        setShowAllRooms(true);
+        setCreateJoinNotice(false);
+      }
+    } else {
+      selectHome();
+    }
+    selectRoom(room.room_id);
   }
 
   // Feeds `presenceAtomFamily` from `presence:update` pushes for the whole
@@ -142,7 +200,10 @@ export function RoomsScreen({
       // `charm://room/<id>` link while mobile is showing a list tab) must
       // still bump `selectionRequestId` so the mobile detail view actually
       // opens, not just silently consume the link.
-      selectRoom(match.room_id);
+      selectRoomInVisibleMode(match);
+      if (match.is_space) {
+        spaceDeepLinkSelectedRef.current = true;
+      }
       setResolvedDeepLinkTarget(null);
       onDeepLinkConsumed();
     }
@@ -151,13 +212,19 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
-    if (activeRoomId === null && rooms.length > 0) {
-      selectRoom(rooms[0].room_id);
+    const firstSelectableRoom = getInitialSelectableRoom(rooms);
+    if (activeRoomId === null && firstSelectableRoom) {
+      if (spaceDeepLinkSelectedRef.current) return;
+      selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const selectedSpace =
+    roomListMode === "space"
+      ? (rooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
+      : null;
   // Keeps `useRoomDetails`' `room_details:update` listener alive for the
   // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
   // are open — those now mount `useRoomDetails` independently and only
@@ -191,17 +258,47 @@ export function RoomsScreen({
   return (
     <>
       <AppShell
+        spaceRail={
+          <SpaceRail
+            rooms={rooms}
+            activeMode={roomListMode}
+            activeSpaceId={selectedSpaceId}
+            showAllRooms={showAllRooms}
+            onSelectHome={selectHome}
+            onSelectDms={selectDms}
+            onSelectSpace={selectSpace}
+            onCreateJoin={() => {
+              spaceDeepLinkSelectedRef.current = false;
+              setRoomListMode("home");
+              setSelectedSpaceId(null);
+              setCreateJoinNotice(true);
+              if (activeRoomId === null) {
+                const firstSelectableRoom = getInitialHomeRoom(rooms);
+                if (firstSelectableRoom) {
+                  selectRoomInVisibleMode(firstSelectableRoom);
+                  setCreateJoinNotice(true);
+                }
+              }
+            }}
+          />
+        }
         activeRoomId={activeRoomId}
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
         isSettingsActive={settingsSection !== null}
-        roomList={<RoomList rooms={rooms} activeRoomId={activeRoomId} onSelectRoom={selectRoom} />}
-        peopleList={
+        roomList={
           <RoomList
-            rooms={rooms.filter((room) => room.is_direct)}
+            rooms={rooms}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
+            onSelectSpace={selectSpace}
+            mode={roomListMode}
+            selectedSpace={selectedSpace}
+            showAllRooms={showAllRooms}
+            onShowAllRoomsChange={setShowAllRooms}
+            createJoinNotice={createJoinNotice}
+            onDismissCreateJoinNotice={() => setCreateJoinNotice(false)}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
@@ -219,5 +316,15 @@ export function RoomsScreen({
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
     </>
+  );
+}
+
+function getInitialSelectableRoom(rooms: RoomSummary[]) {
+  return getInitialHomeRoom(rooms) ?? rooms.find((room) => !room.is_space);
+}
+
+function getInitialHomeRoom(rooms: RoomSummary[]) {
+  return rooms.find(
+    (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
   );
 }

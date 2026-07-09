@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 
+use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
     can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
@@ -25,7 +26,7 @@ use charm_lib::matrix::commands::SlashCommand;
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
-use charm_lib::matrix::profiles::get_own_profile_impl;
+use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
 use charm_lib::matrix::room_admin::{
     ban_member_impl, build_room_details, enable_room_encryption_impl, get_room_member_list_impl,
     invite_member_impl, kick_member_impl, remove_room_avatar_impl, set_member_power_level_impl,
@@ -40,12 +41,14 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
+use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hierarchy_impl};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
     confirm_sas_verification_impl, cross_signing_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -80,6 +83,8 @@ pub fn router(state: AppState) -> Router {
         // -- rooms --
         .route("/api/rooms", get(list_rooms))
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
+        .route("/api/rooms/join", post(join_room))
+        .route("/api/rooms/knock", post(knock_room))
         .route("/api/rooms/{room_id}", get(get_room_details))
         .route("/api/rooms/{room_id}/members", get(get_room_members))
         .route(
@@ -87,6 +92,7 @@ pub fn router(state: AppState) -> Router {
             get(get_room_member_list),
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
+        .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
         .route("/api/rooms/{room_id}/reply", post(send_reply))
@@ -98,10 +104,7 @@ pub fn router(state: AppState) -> Router {
             "/api/rooms/{room_id}/events/{event_id}/redact",
             post(redact_event),
         )
-        .route(
-            "/api/rooms/{room_id}/events/{event_id}/can-redact",
-            get(can_redact),
-        )
+        .route("/api/rooms/{room_id}/can-redact", get(can_redact))
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
@@ -171,6 +174,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/presence", put(set_presence))
         .route("/api/presence/{user_id}", get(get_presence))
         .route("/api/profile/me", get(get_own_profile))
+        .route("/api/profile/display-name", put(set_display_name))
+        .route(
+            "/api/account/deactivate-url",
+            get(get_account_deactivate_url),
+        )
         // -- account data --
         .route(
             "/api/account-data/{event_type}",
@@ -248,21 +256,12 @@ pub fn router(state: AppState) -> Router {
 /// this API's JSON `POST`/`PUT`/`DELETE` routes) has no `OPTIONS` handler to
 /// answer it with either.
 ///
-/// Deliberately **not** as permissive as `origin_is_allowed`'s own "env var
-/// unset" fallback (which allows any origin, relying on `SameSite=Strict`
-/// alone to still block a truly cross-*site* browser from having the cookie
-/// attached). CORS is a much bigger surface than that one WS handshake check
-/// — it would apply to every route on this router, credentialed — so
-/// reflecting an arbitrary `Origin` back here would let *any* site make
-/// authenticated cross-origin requests carrying this session's cookie
-/// wherever `SameSite=Strict` doesn't already block it (e.g. top-level
-/// navigations, or any future relaxation of that cookie attribute). With no
-/// allowlist configured, this simply grants no cross-origin CORS access at
+/// With no allowlist configured, this grants no cross-origin CORS access at
 /// all: same-origin requests (the common local-dev shape, and any
 /// same-origin production deployment) need no CORS headers to work in the
 /// first place, so "no configuration" still works out of the box for that
-/// case — only a genuinely cross-origin frontend needs
-/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WS check already
+/// case. A genuinely cross-origin frontend needs
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set, exactly as the WebSocket check
 /// requires for that same deployment shape.
 fn cors_layer() -> tower_http::cors::CorsLayer {
     use axum::http::{header, Method};
@@ -276,25 +275,35 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
     // `POST` with `Content-Type: application/json`) instead of erroring
     // loudly. Listing exactly what this API actually uses avoids the
     // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
-    // and the only non-default header any request needs to set is
+    // and the only non-default headers requests need to set are
     // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
-    // browsers set that one themselves, but it still needs to be allowed).
+    // browsers set that one themselves, but it still needs to be allowed) and
+    // `x-charm-operation-id` (used to correlate upload progress).
     let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("x-charm-operation-id"),
+        ])
         .allow_credentials(true);
 
-    let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
+    let origins: Vec<String> = std::env::var(ALLOWED_ORIGIN_ENV)
         .map(|allowed| {
             allowed
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .filter_map(|origin| origin.parse().ok())
+                .map(ToOwned::to_owned)
                 .collect()
         })
         .unwrap_or_default();
-    layer.allow_origin(AllowOrigin::list(origins))
+    layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+        origin.to_str().ok().is_some_and(|origin| {
+            origins
+                .iter()
+                .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        })
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -476,12 +485,19 @@ async fn logout(
 #[derive(Serialize)]
 struct MeResponse {
     user_id: String,
+    device_id: String,
 }
 
 async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    let device_id = session
+        .client
+        .device_id()
+        .ok_or_else(|| ApiError::unauthorized("session has no device id"))?
+        .to_string();
     Ok(Json(MeResponse {
         user_id: session.user_id.clone(),
+        device_id,
     }))
 }
 
@@ -617,6 +633,57 @@ async fn get_timeline_page(
     Ok(Json(page))
 }
 
+async fn list_space_hierarchy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let hierarchy = list_space_hierarchy_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(hierarchy))
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinRoomRequest {
+    room_id_or_alias: String,
+}
+
+async fn join_room(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<JoinRoomRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    join_room_impl(&session.client, &request.room_id_or_alias)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct KnockRoomRequest {
+    room_id_or_alias: String,
+    reason: Option<String>,
+}
+
+async fn knock_room(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<KnockRoomRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    knock_room_impl(
+        &session.client,
+        &request.room_id_or_alias,
+        request.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------------------------------------------------------------
 // Messaging
 // ---------------------------------------------------------------------
@@ -748,7 +815,7 @@ struct CanRedactQuery {
 async fn can_redact(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path((room_id, _event_id)): Path<(String, String)>,
+    Path(room_id): Path<String>,
     Query(query): Query<CanRedactQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
@@ -1208,7 +1275,44 @@ async fn get_own_profile(
     let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(Json(profile))
+    Ok(Json(OwnProfileResponse {
+        profile,
+        uses_oauth: session.client.oauth().user_session().is_some(),
+    }))
+}
+
+#[derive(Serialize)]
+struct OwnProfileResponse {
+    #[serde(flatten)]
+    profile: OwnProfile,
+    uses_oauth: bool,
+}
+
+async fn get_account_deactivate_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Option<String>>, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(
+        account_management_url(
+            &session.client,
+            AccountManagementActionData::AccountDeactivate,
+        )
+        .await,
+    ))
+}
+
+async fn account_management_url(
+    client: &matrix_sdk::Client,
+    action: AccountManagementActionData<'_>,
+) -> Option<String> {
+    if client.matrix_auth().logged_in() {
+        return None;
+    }
+    let metadata = client.oauth().server_metadata().await.ok()?;
+    metadata
+        .account_management_url_with_action(action)
+        .map(|url| url.to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -1835,6 +1939,21 @@ async fn set_avatar(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn set_display_name(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(display_name): Json<Option<String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    session
+        .client
+        .account()
+        .set_display_name(display_name.as_deref())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Sniffs the real content type from the image bytes themselves (the `image`
 /// crate's own format-detection, not a hand-rolled magic-byte match — this
 /// crate already depends on it for `attachment_info_for`'s dimension
@@ -2004,7 +2123,10 @@ async fn bootstrap_cross_signing(
     let request: BootstrapCrossSigningRequest = parse_optional_json(&body)?;
     bootstrap_cross_signing_impl(&session.client, request.password)
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|error| match error {
+            UiaCommandError::UiaChallenge => ApiError::uia_challenge(),
+            UiaCommandError::Other { message } => ApiError::uia_other(message),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2119,22 +2241,19 @@ async fn request_device_verification(
 const ALLOWED_ORIGIN_ENV: &str = "CHARM_WEB_SERVER_ALLOWED_ORIGIN";
 
 /// Logged at most once per process — `origin_is_allowed` runs on every WS
-/// handshake, and warning on every single one when this just isn't
-/// configured (e.g. local dev) would be pure noise.
+/// handshake, and warning on every single rejected handshake while a
+/// deployment is misconfigured would be pure noise.
 static WARNED_NO_ALLOWED_ORIGIN: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 fn origin_is_allowed(origin: Option<&str>) -> bool {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         WARNED_NO_ALLOWED_ORIGIN.get_or_init(|| {
             tracing::warn!(
-                "{ALLOWED_ORIGIN_ENV} not set — cross-origin requests (including from same-site \
-                 subdomains of this deployment, which the session cookie's SameSite=Strict does \
-                 not protect against) are accepted, letting any page on one of them act as or \
-                 read another logged-in user's live session data. Set it before deploying \
-                 behind a shared registrable domain."
+                "{ALLOWED_ORIGIN_ENV} not set — rejecting WebSocket and raw-body requests with \
+                 an Origin header. Set it explicitly before deploying charm-web-server."
             );
         });
-        return true;
+        return false;
     };
     let Some(origin) = origin else {
         return false;
@@ -2142,22 +2261,47 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
     allowed
         .split(',')
         .map(str::trim)
-        .any(|allowed_origin| allowed_origin == origin)
+        .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+}
+
+fn origin_matches_allowed_entry(allowed_origin: &str, origin: &str) -> bool {
+    let Some(wildcard_index) = allowed_origin.find('*') else {
+        return allowed_origin == origin;
+    };
+    if allowed_origin[wildcard_index + 1..].contains('*') {
+        return false;
+    }
+
+    let (prefix, suffix_with_wildcard) = allowed_origin.split_at(wildcard_index);
+    let suffix = &suffix_with_wildcard[1..];
+    if prefix.is_empty() || suffix.is_empty() || prefix.ends_with("://") {
+        return false;
+    }
+
+    origin.starts_with(prefix)
+        && origin.ends_with(suffix)
+        && origin.len() > prefix.len() + suffix.len()
 }
 
 /// Shared guard for the state-changing routes that accept a raw (non-JSON)
 /// body and so don't get an automatic CORS preflight — see
 /// `send_attachment`'s call site for the full rationale.
 fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
-    let origin = headers
-        .get(axum::http::header::ORIGIN)
-        .and_then(|v| v.to_str().ok());
-    if origin_is_allowed(origin) {
+    let Some(origin) = headers.get(axum::http::header::ORIGIN) else {
+        return Ok(());
+    };
+    let origin = origin.to_str().map_err(|_| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: "origin not allowed".to_string(),
+        kind: None,
+    })?;
+    if origin_is_allowed(Some(origin)) {
         Ok(())
     } else {
         Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: "origin not allowed".to_string(),
+            kind: None,
         })
     }
 }
@@ -2174,14 +2318,11 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
 /// own `Origin` header is actually on that same allowlist keeps every
 /// still-untrusted origin blocked (including same-site subdomains
 /// `SameSite=Strict` doesn't stop) while unblocking the one frontend this
-/// deployment is actually configured to trust. Deliberately does **not**
-/// reuse `origin_is_allowed`'s "env var unset → permissive" fallback: that
-/// fallback exists for the narrower WS-origin check (where `SameSite=Strict`
-/// is still a backstop), but here it would mean *every* deployment without
-/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` set defaults to the more permissive
-/// `cross-origin` policy — silently loosening protection for the common
-/// same-origin/local-dev case that never needed it relaxed in the first
-/// place.
+/// deployment is actually configured to trust. When
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN` is unset, this keeps the stricter
+/// `same-origin` policy rather than silently loosening protection for the
+/// common same-origin/local-dev case that never needed it relaxed in the
+/// first place.
 /// Extracts just the `scheme://host[:port]` portion of a `Referer` header
 /// value — enough to compare against an `Origin`-shaped allowlist entry,
 /// without pulling in a full URL-parsing crate for one field.
@@ -2226,13 +2367,20 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         return "same-origin";
     };
-    let allowed_origins: Vec<&str> = allowed.split(',').map(str::trim).collect();
+    let allowed_origins: Vec<&str> = allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .collect();
 
     if let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
     {
-        return if allowed_origins.contains(&origin) {
+        return if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        {
             "cross-origin"
         } else {
             "same-origin"
@@ -2244,7 +2392,10 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
         .and_then(|v| v.to_str().ok())
         .and_then(origin_from_referer)
     {
-        if allowed_origins.contains(&referer_origin.as_str()) {
+        if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, &referer_origin))
+        {
             return "cross-origin";
         }
     }
@@ -2258,7 +2409,16 @@ async fn ws_handler(
     headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, ApiError> {
-    require_allowed_origin(&headers)?;
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if !origin_is_allowed(origin) {
+        return Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "origin not allowed".to_string(),
+            kind: None,
+        });
+    }
     let session = require_session(&state, &jar).await?;
     Ok(ws.on_upgrade(move |socket| handle_socket(socket, session)))
 }
@@ -2572,6 +2732,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    kind: Option<&'static str>,
 }
 
 impl ApiError {
@@ -2579,29 +2740,47 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            kind: None,
         }
     }
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            kind: None,
         }
     }
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            kind: None,
+        }
+    }
+    fn uia_challenge() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "UIA challenge required".to_owned(),
+            kind: Some("UiaChallenge"),
+        }
+    }
+    fn uia_other(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: Some("Other"),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let body = match self.kind {
+            Some("Other") => serde_json::json!({ "kind": "Other", "message": self.message }),
+            Some(kind) => serde_json::json!({ "kind": kind, "error": self.message }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -2678,5 +2857,54 @@ mod referer_origin_tests {
     #[test]
     fn a_malformed_value_is_rejected() {
         assert_eq!(origin_from_referer("not a url"), None);
+    }
+}
+
+#[cfg(test)]
+mod origin_allowlist_tests {
+    use super::origin_matches_allowed_entry;
+
+    #[test]
+    fn exact_origin_entries_match_only_the_same_origin() {
+        assert!(origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://charm.example.test"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://other.example.test"
+        ));
+    }
+
+    #[test]
+    fn constrained_wildcard_entries_match_dynamic_preview_origins() {
+        assert!(origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://manual-main-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-other-preview.example.workers.dev"
+        ));
+    }
+
+    #[test]
+    fn broad_or_ambiguous_wildcard_entries_do_not_match() {
+        assert!(!origin_matches_allowed_entry(
+            "*.workers.dev",
+            "https://anything.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://*.workers.dev",
+            "https://preview.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-**-preview.example.workers.dev",
+            "https://pr-112-preview.example.workers.dev"
+        ));
     }
 }

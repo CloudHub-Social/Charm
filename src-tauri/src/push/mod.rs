@@ -732,10 +732,17 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         }
         None => {
             if is_utd {
+                let room_hash = hash_room_id(&room_id);
+                tracing::warn!(
+                    pipeline = "push_decrypt",
+                    status = "utd",
+                    room_hash,
+                    "Push decrypt failed"
+                );
                 sentry::capture_message(
                     &format!(
                         "push decrypt failed: unable to decrypt event in room {}",
-                        hash_room_id(&room_id)
+                        room_hash
                     ),
                     sentry::Level::Warning,
                 );

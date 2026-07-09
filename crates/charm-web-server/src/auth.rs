@@ -1,7 +1,8 @@
-//! Login/registration against a homeserver, producing an in-memory (no
-//! sqlite store, no disk persistence) `matrix_sdk::Client` — this crate's
-//! sessions don't survive a process restart in sub-PR A. See the crate
-//! README for the sub-PR B plan to add encrypted-at-rest storage.
+//! Login/registration against a homeserver. This builds the live
+//! `matrix_sdk::Client`; `crate::routes::finish_login` is responsible for
+//! saving the resulting Matrix session through
+//! `crate::persistence::PersistenceStore` when `CHARM_WEB_SERVER_MASTER_KEY`
+//! is configured.
 
 use charm_lib::matrix::auth::{
     register_with_dummy_auth, LoginRequest, LoginResponse, RegisterRequest,

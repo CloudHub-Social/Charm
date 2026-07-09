@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { HistoryVisibilityKind, JoinRuleKind, RoomDetails } from "@/lib/matrix";
 import { useRoomAdminActions } from "./useRoomAdminActions";
@@ -72,6 +73,7 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
   const [name, setName] = useState(details.name ?? "");
   const [topic, setTopic] = useState(details.topic ?? "");
   const [confirmingEncryption, setConfirmingEncryption] = useState(false);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setName(details.name ?? "");
@@ -80,6 +82,29 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
   useEffect(() => {
     setTopic(details.topic ?? "");
   }, [details.topic]);
+
+  function handlePickAvatar() {
+    if (isWebBuild()) {
+      avatarInputRef.current?.click();
+      return;
+    }
+    openFileDialog({
+      multiple: false,
+      filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+    }).then((selected) => {
+      if (typeof selected === "string") {
+        actions.setAvatar.mutate(selected);
+      }
+    });
+  }
+
+  function handleAvatarInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) {
+      actions.setAvatar.mutate(file);
+    }
+  }
 
   return (
     <div className="flex max-w-lg flex-col gap-8 p-4">
@@ -141,22 +166,23 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
         <div className="flex flex-col gap-2">
           <Label>Avatar</Label>
           <PermissionGate allowed={details.can.set_avatar}>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={!details.can.set_avatar}
-              onClick={async () => {
-                const selected = await openFileDialog({
-                  multiple: false,
-                  filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
-                });
-                if (typeof selected === "string") {
-                  actions.setAvatar.mutate(selected);
-                }
-              }}
-            >
-              Upload new avatar
-            </Button>
+            <>
+              <input
+                ref={avatarInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                className="hidden"
+                onChange={handleAvatarInputChange}
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!details.can.set_avatar}
+                onClick={handlePickAvatar}
+              >
+                Upload new avatar
+              </Button>
+            </>
           </PermissionGate>
         </div>
       </section>

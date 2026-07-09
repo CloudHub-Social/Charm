@@ -1,8 +1,8 @@
-import type { ReactElement } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
@@ -30,7 +30,7 @@ const setRoomMuted = vi.fn().mockResolvedValue(undefined);
 const setRoomMarkedUnread = vi.fn().mockResolvedValue(undefined);
 const setRoomManualOrder = vi.fn().mockResolvedValue(undefined);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
-const listSpaceChildren = vi.fn().mockResolvedValue([]);
+const listSpaceHierarchy = vi.fn().mockResolvedValue([]);
 const joinRoom = vi.fn().mockResolvedValue(undefined);
 const knockRoom = vi.fn().mockResolvedValue(undefined);
 // Never resolves — these tests don't care about the header profile chip
@@ -45,7 +45,7 @@ vi.mock("@/lib/matrix", () => ({
   setRoomMarkedUnread: (...args: unknown[]) => setRoomMarkedUnread(...args),
   setRoomManualOrder: (...args: unknown[]) => setRoomManualOrder(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
-  listSpaceChildren: (...args: unknown[]) => listSpaceChildren(...args),
+  listSpaceHierarchy: (...args: unknown[]) => listSpaceHierarchy(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
@@ -56,13 +56,42 @@ vi.mock("@/lib/matrix", () => ({
 // these tests exercise the drag interaction itself (see roomSections.test.ts
 // for the reorder math), so bind() only needs to return an empty prop object.
 vi.mock("@use-gesture/react", () => ({
-  useDrag: () => () => ({}),
+  useDrag: (_handler: unknown, options?: { enabled?: boolean }) => () => ({
+    "data-reorder-enabled": String(options?.enabled ?? true),
+  }),
 }));
+
+function roomListProps(overrides: Partial<ComponentProps<typeof RoomList>> = {}) {
+  return {
+    rooms: [],
+    activeRoomId: null,
+    onSelectRoom: () => {},
+    onSelectSpace: () => {},
+    mode: "home" as const,
+    selectedSpace: null,
+    showAllRooms: false,
+    onShowAllRoomsChange: () => {},
+    ...overrides,
+  };
+}
+
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe("RoomList", () => {
   it("shows the empty state when there are no rooms", () => {
-    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList {...roomListProps()} />);
     expect(screen.getByText("No rooms yet")).toBeInTheDocument();
+  });
+
+  it("labels unresolved space mode as space instead of Home", () => {
+    renderRoomList(<RoomList {...roomListProps({ mode: "space", selectedSpace: null })} />);
+
+    expect(screen.getByRole("heading", { name: "Space" })).toBeInTheDocument();
+    expect(screen.getByText("Select a space.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Home" })).not.toBeInTheDocument();
   });
 
   it("renders section headers with per-section counts", () => {
@@ -72,7 +101,7 @@ describe("RoomList", () => {
       is_favourite: true,
     });
     const plain = makeRoomSummary({ room_id: "!plain:localhost", name: "Plain room" });
-    renderRoomList(<RoomList rooms={[fav, plain]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList {...roomListProps({ rooms: [fav, plain] })} />);
 
     expect(screen.getByText("Favourites")).toBeInTheDocument();
     expect(screen.getByText("Fav room")).toBeInTheDocument();
@@ -81,30 +110,61 @@ describe("RoomList", () => {
     expect(screen.queryByText("Low priority")).not.toBeInTheDocument();
   });
 
-  it("renders a clickable header for a space with grouped child rooms", () => {
+  it("keeps Home scoped to orphan rooms by default", () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     const child = makeRoomSummary({
       room_id: "!child:localhost",
       name: "Team chat",
       parent_space_ids: ["!space:localhost"],
     });
-    renderRoomList(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+    const orphan = makeRoomSummary({ room_id: "!orphan:localhost", name: "Orphan" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space, child, orphan] })} />);
 
-    expect(screen.getAllByText("Team").length).toBeGreaterThan(0);
-    expect(screen.getByText("Team chat")).toBeInTheDocument();
+    expect(screen.getByText("Orphan")).toBeInTheDocument();
+    expect(screen.queryByText("Team chat")).not.toBeInTheDocument();
+  });
+
+  it("keeps Home room rows reorderable when DMs exist outside the Home scope", () => {
+    const room = makeRoomSummary({ room_id: "!room:localhost", name: "Room" });
+    const dm = makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm] })} />);
+
+    expect(screen.getByText("Room")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+    expect(screen.getByText("Room").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
+  it("keeps Home room rows reorderable when grouped space rooms are outside the Home scope", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const child = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const orphan = makeRoomSummary({ room_id: "!orphan:localhost", name: "Orphan" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space, child, orphan] })} />);
+
+    expect(screen.queryByText("Team chat")).not.toBeInTheDocument();
+    expect(screen.getByText("Orphan").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
   });
 
   it("calls onSelectRoom when a room is clicked", () => {
     const onSelectRoom = vi.fn();
     const room = makeRoomSummary({ name: "general" });
-    renderRoomList(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={onSelectRoom} />);
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room], onSelectRoom })} />);
     screen.getByText("general").click();
     expect(onSelectRoom).toHaveBeenCalledWith(room.room_id);
   });
 
   it("wires the context menu's favourite/mute/mark actions to their IPC calls", async () => {
     const room = makeRoomSummary({ name: "general" });
-    renderRoomList(<RoomList rooms={[room]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room] })} />);
 
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Add to Favourites"));
@@ -125,38 +185,535 @@ describe("RoomList", () => {
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Mark as unread"));
     expect(setRoomMarkedUnread).toHaveBeenCalledWith(room.room_id, true);
+  }, 10_000);
+
+  it("hides the mute action in web builds while the companion lacks notification prefs", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const room = makeRoomSummary({ name: "general" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room] })} />);
+
+    fireEvent.contextMenu(screen.getByText("general"));
+
+    expect(await screen.findByText("Add to Favourites")).toBeInTheDocument();
+    expect(screen.queryByText("Mute")).not.toBeInTheDocument();
   });
 
   it("shows no badge when badgeAtom is null or total_unread is zero", () => {
-    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />);
+    renderRoomList(<RoomList {...roomListProps()} />);
     expect(screen.queryByLabelText(/unread rooms/)).not.toBeInTheDocument();
   });
 
   it("shows the total_unread count in the header badge", () => {
     const store = createStore();
-    store.set(badgeAtom, { total_unread: 3, total_highlight: 0 });
-    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
+    store.set(badgeAtom, { total_unread: 3, total_highlight: 0, spaces: {} });
+    renderRoomList(<RoomList {...roomListProps()} />, store);
     expect(screen.getByLabelText("3 unread rooms")).toHaveTextContent("3");
   });
 
   it("prefers the mention count when total_highlight is nonzero", () => {
     const store = createStore();
-    store.set(badgeAtom, { total_unread: 5, total_highlight: 2 });
-    renderRoomList(<RoomList rooms={[]} activeRoomId={null} onSelectRoom={() => {}} />, store);
+    store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
+    renderRoomList(<RoomList {...roomListProps()} />, store);
     expect(screen.getByLabelText("5 unread rooms, 2 mentions")).toHaveTextContent("2");
   });
 
-  it("opens the space browser when a space header is clicked", async () => {
+  it("renders recursive space hierarchy with indentation and inline join actions", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!public:localhost",
+              name: "Public room",
+              topic: "Open discussion",
+              num_joined_members: 8,
+              join_rule: "public",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, joinedChild],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(listSpaceHierarchy).toHaveBeenCalledWith("!space:localhost");
+    expect(await screen.findByText("Team chat")).toBeInTheDocument();
+    expect(await screen.findByText("Public room")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
+  });
+
+  it("does not start a second hierarchy join while another is pending", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    let resolveJoin!: () => void;
+    joinRoom.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveJoin = resolve;
+        }),
+    );
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!public-a:localhost",
+          name: "Public A",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+      {
+        child: {
+          room_id: "!public-b:localhost",
+          name: "Public B",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    const buttons = await screen.findAllByRole("button", { name: "Join" });
+    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[1]);
+
+    expect(joinRoom).toHaveBeenCalledOnce();
+    resolveJoin();
+  });
+
+  it("ignores hierarchy join errors after leaving the selected space", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    let rejectJoin!: (error: Error) => void;
+    joinRoom.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectJoin = reject;
+        }),
+    );
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!public:localhost",
+          name: "Public room",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createStore();
+    const renderWithProviders = (ui: ReactElement) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>{ui}</QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(
+      renderWithProviders(
+        <RoomList
+          {...roomListProps({
+            rooms: [space],
+            mode: "space",
+            selectedSpace: space,
+          })}
+        />,
+      ),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Join" }));
+    rerender(renderWithProviders(<RoomList {...roomListProps({ rooms: [] })} />));
+    await act(async () => {
+      rejectJoin(new Error("join failed"));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("join failed")).not.toBeInTheDocument();
+  });
+
+  it("opens joined hierarchy spaces and joins public hierarchy spaces", async () => {
+    const onSelectSpace = vi.fn();
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const nestedSpace = makeRoomSummary({
+      room_id: "!nested:localhost",
+      name: "Nested space",
+      is_space: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!nested:localhost",
+          name: "Nested space",
+          topic: "Joined child space",
+          num_joined_members: 3,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!public-space:localhost",
+              name: "Public nested space",
+              topic: null,
+              num_joined_members: 6,
+              join_rule: "public",
+              is_space: true,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, nestedSpace],
+          mode: "space",
+          selectedSpace: space,
+          onSelectSpace,
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Nested space/ }));
+    expect(onSelectSpace).toHaveBeenCalledWith("!nested:localhost");
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(joinRoom).toHaveBeenCalledWith("!public-space:localhost");
+  });
+
+  it("excludes direct rooms from the selected space hierarchy", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const directRoom = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!dm:localhost",
+          name: "Alice",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, directRoom],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledWith("!space:localhost"));
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state when the selected space has only hidden hierarchy rooms", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const directRoom = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!dm:localhost",
+          name: "Alice",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, directRoom],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("No rooms yet")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
+  it("keeps tagged child spaces visible in the selected space hierarchy", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteSpace = makeRoomSummary({
+      room_id: "!fav-space:localhost",
+      name: "Pinned subspace",
+      is_space: true,
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-space:localhost",
+          name: "Pinned subspace",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!child:localhost",
+              name: "Child under pinned subspace",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "public",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, favouriteSpace],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: /Pinned subspace/ })).toBeInTheDocument();
+    expect(screen.getByText("Child under pinned subspace")).toBeInTheDocument();
+  });
+
+  it("does not render children of hierarchy rooms shown in tagged sections", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteParent = makeRoomSummary({
+      room_id: "!fav-parent:localhost",
+      name: "Pinned project",
+      parent_space_ids: ["!space:localhost"],
+      is_favourite: true,
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-parent:localhost",
+          name: "Pinned project",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!child:localhost",
+              name: "Child under pinned project",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "public",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, favouriteParent],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("Pinned project")).toBeInTheDocument();
+    expect(screen.getByText("Favourites")).toBeInTheDocument();
+    expect(screen.queryByText("Space rooms")).not.toBeInTheDocument();
+    expect(screen.queryByText("Child under pinned project")).not.toBeInTheDocument();
+  });
+
+  it("does not refetch the space hierarchy when the selected space object is recreated", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValue([]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const renderWithProviders = (selectedSpace: typeof space) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(renderWithProviders(space));
+
+    expect(listSpaceHierarchy).toHaveBeenCalledWith("!space:localhost");
+    rerender(renderWithProviders({ ...space }));
+
+    expect(listSpaceHierarchy).toHaveBeenCalledOnce();
+  });
+
+  it("shows space hierarchy load errors instead of the empty state", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockRejectedValue(new Error("hierarchy unavailable"));
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("Error: hierarchy unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No rooms yet")).not.toBeInTheDocument();
+  });
+
+  it("shows all non-DM rooms from Home when Show all rooms is enabled", () => {
     const child = makeRoomSummary({
       room_id: "!child:localhost",
       name: "Team chat",
       parent_space_ids: ["!space:localhost"],
     });
-    renderRoomList(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+    const dm = makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [child, dm], showAllRooms: true })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Team" }));
-    expect(listSpaceChildren).toHaveBeenCalledWith("!space:localhost");
-    expect(await screen.findByText("Browse and join rooms in this space.")).toBeInTheDocument();
+    expect(screen.getByText("Team chat")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
+  it("renders only direct rooms in DM mode", () => {
+    const room = makeRoomSummary({ room_id: "!room:localhost", name: "Room" });
+    const dm = makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm], mode: "dms" })} />);
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Room")).not.toBeInTheDocument();
+  });
+
+  it("keeps DM favourites reorderable when non-DM favourites exist", () => {
+    const room = makeRoomSummary({
+      room_id: "!room:localhost",
+      name: "Room",
+      is_favourite: true,
+    });
+    const dm = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      is_favourite: true,
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm], mode: "dms" })} />);
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Room")).not.toBeInTheDocument();
+    expect(screen.getByText("Alice").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
+  it("keeps DM low-priority rooms reorderable when non-DM low-priority rooms exist", () => {
+    const room = makeRoomSummary({
+      room_id: "!room:localhost",
+      name: "Room",
+      is_low_priority: true,
+    });
+    const dm = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      is_low_priority: true,
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm], mode: "dms" })} />);
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Room")).not.toBeInTheDocument();
+    expect(screen.getByText("Alice").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
+  it("surfaces the Phase 4 create/join placeholder", () => {
+    const onDismiss = vi.fn();
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ createJoinNotice: true, onDismissCreateJoinNotice: onDismiss })}
+      />,
+    );
+
+    expect(
+      screen.getByText("Space creation and join-by-address are scheduled for Phase 4."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss create or join notice" }));
+    expect(onDismiss).toHaveBeenCalledOnce();
+  });
+
+  it("disables the Phase 4 create/join dismiss control without a handler", () => {
+    renderRoomList(<RoomList {...roomListProps({ createJoinNotice: true })} />);
+
+    expect(screen.getByRole("button", { name: "Dismiss create or join notice" })).toBeDisabled();
   });
 });

@@ -1,8 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useHydrateAtoms } from "jotai/utils";
+import { createStore, Provider as JotaiProvider } from "jotai";
+import { useMemo } from "react";
 import type { ReactNode } from "react";
 import type { CrossSigningStatusSummary, DeviceSummary, ProfileSummary } from "@/lib/matrix";
+import { DEFAULT_OBSERVABILITY_SETTINGS } from "@/observability/settings";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
 import { SettingsScreen } from "./SettingsScreen";
 
@@ -31,23 +33,30 @@ const CROSS_SIGNING_STATUS: CrossSigningStatusSummary = {
 };
 
 /**
- * Opens directly on `section` — `jotai`'s `Provider` (v2) has no
- * `initialValues` prop of its own, so `useHydrateAtoms` (its documented
- * replacement) seeds `settingsOpenAtom` before the tree below reads it.
+ * Opens directly on `section` with an isolated Jotai store per story so
+ * snapshot order cannot leak the previously selected settings section.
  */
-function HydrateSettingsOpen({
+function SettingsStoryStore({
   section,
   children,
 }: {
   section: SettingsSection;
   children: ReactNode;
 }) {
-  useHydrateAtoms([[settingsOpenAtom, section]]);
-  return children;
+  const store = useMemo(() => {
+    const next = createStore();
+    next.set(settingsOpenAtom, section);
+    return next;
+  }, [section]);
+  return <JotaiProvider store={store}>{children}</JotaiProvider>;
 }
 
 /** Same seeded-`QueryClient` approach as `MediaMessage.stories.tsx` — every panel's data pre-populated so switching tabs never shows a loading state. */
-function withSeededData() {
+function withSeededData({
+  observability = DEFAULT_OBSERVABILITY_SETTINGS,
+}: {
+  observability?: typeof DEFAULT_OBSERVABILITY_SETTINGS;
+} = {}) {
   const client = new QueryClient();
   client.setQueryData(["profile"], PROFILE);
   client.setQueryData(["devices"], DEVICES);
@@ -64,6 +73,7 @@ function withSeededData() {
   client.setQueryData(["settings", "ignored-users"], []);
   client.setQueryData(["settings", "autostart"], false);
   client.setQueryData(["settings", "notification-permission"], true);
+  client.setQueryData(["settings", "observability"], observability);
   return client;
 }
 
@@ -76,15 +86,32 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+async function waitForStoryText(canvasElement: HTMLElement, text: string) {
+  const root = canvasElement.ownerDocument.body;
+  await new Promise<void>((resolve, reject) => {
+    let attempt = 0;
+    const timer = window.setInterval(() => {
+      attempt += 1;
+      if (root.textContent?.includes(text)) {
+        window.clearInterval(timer);
+        resolve();
+      } else if (attempt >= 50) {
+        window.clearInterval(timer);
+        reject(new Error(`Timed out waiting for story text: ${text}`));
+      }
+    }, 20);
+  });
+}
+
 export const AccountSection: Story = {
   args: { onLoggedOut: () => {} },
   render: (args) => {
     const client = withSeededData();
     return (
       <QueryClientProvider client={client}>
-        <HydrateSettingsOpen section="account">
+        <SettingsStoryStore section="account">
           <SettingsScreen {...args} />
-        </HydrateSettingsOpen>
+        </SettingsStoryStore>
       </QueryClientProvider>
     );
   },
@@ -96,11 +123,14 @@ export const DevicesSection: Story = {
     const client = withSeededData();
     return (
       <QueryClientProvider client={client}>
-        <HydrateSettingsOpen section="devices">
+        <SettingsStoryStore section="devices">
           <SettingsScreen {...args} />
-        </HydrateSettingsOpen>
+        </SettingsStoryStore>
       </QueryClientProvider>
     );
+  },
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, "Charm on macOS");
   },
 };
 
@@ -110,9 +140,9 @@ export const AboutSection: Story = {
     const client = withSeededData();
     return (
       <QueryClientProvider client={client}>
-        <HydrateSettingsOpen section="about">
+        <SettingsStoryStore section="about">
           <SettingsScreen {...args} />
-        </HydrateSettingsOpen>
+        </SettingsStoryStore>
       </QueryClientProvider>
     );
   },
@@ -124,9 +154,44 @@ export const KeyboardShortcutsSection: Story = {
     const client = withSeededData();
     return (
       <QueryClientProvider client={client}>
-        <HydrateSettingsOpen section="keyboard-shortcuts">
+        <SettingsStoryStore section="keyboard-shortcuts">
           <SettingsScreen {...args} />
-        </HydrateSettingsOpen>
+        </SettingsStoryStore>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const ObservabilitySectionDefaultOff: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData();
+    return (
+      <QueryClientProvider client={client}>
+        <SettingsStoryStore section="observability">
+          <SettingsScreen {...args} />
+        </SettingsStoryStore>
+      </QueryClientProvider>
+    );
+  },
+};
+
+export const ObservabilitySectionOptedIn: Story = {
+  args: { onLoggedOut: () => {} },
+  render: (args) => {
+    const client = withSeededData({
+      observability: {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        replayEnabled: true,
+        anonymousUserId: "story-observability-user",
+      },
+    });
+    return (
+      <QueryClientProvider client={client}>
+        <SettingsStoryStore section="observability">
+          <SettingsScreen {...args} />
+        </SettingsStoryStore>
       </QueryClientProvider>
     );
   },

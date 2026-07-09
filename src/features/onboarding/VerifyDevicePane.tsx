@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -6,7 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCrossSigningResetUrl } from "@/features/settings/useDevices";
 import { useUiaRetry } from "@/features/settings/useUiaRetry";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { bootstrapCrossSigning } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 
 interface VerifyDevicePaneProps {
   onNext: () => void;
@@ -58,7 +59,10 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           {resetUrl ? (
-            <Button className="h-11 w-full" onClick={() => openUrl(resetUrl)}>
+            <Button
+              className="h-11 w-full"
+              onClick={() => openExternalUrl(resetUrl).catch(logAndIgnore)}
+            >
               Set up in your identity provider
             </Button>
           ) : (

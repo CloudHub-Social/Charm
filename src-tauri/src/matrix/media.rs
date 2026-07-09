@@ -186,6 +186,7 @@ impl MediaCache {
     ) -> Result<PathBuf, String> {
         let filename = Self::cache_filename(source, kind);
         let path = self.dir.join(&filename);
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
 
         let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
