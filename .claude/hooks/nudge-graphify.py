@@ -48,6 +48,10 @@ def already_nudged(session_id):
     try:
         open(marker, "w").close()
     except OSError:
+        # Fail open: if the marker can't be written (e.g. an unwritable
+        # tmpdir), worst case is the nudge repeats instead of firing once —
+        # a minor annoyance, not a correctness problem, since this hook
+        # never blocks or changes the underlying command either way.
         pass
     return False
 
