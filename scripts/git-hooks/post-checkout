@@ -16,7 +16,7 @@ esac
 [ "$branch_checkout" = "1" ] || exit 0
 
 worktree_root="$(git rev-parse --show-toplevel)" || exit 0
-main_root="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+main_root="$(git worktree list --porcelain | sed -n '/^worktree /{s/^worktree //p; q;}')"
 [ -n "$main_root" ] || exit 0
 [ "$worktree_root" = "$main_root" ] && exit 0
 
