@@ -30,14 +30,15 @@ const TRANSPORT_LABELS: Record<PusherKind, string> = {
 function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
+  const pushError = status?.last_error?.toLowerCase() ?? "";
   const pushRegistrationFailed =
-    status?.last_error?.toLowerCase().includes("unifiedpush") === true ||
-    status?.last_error?.toLowerCase().includes("fcm") === true ||
-    status?.last_error?.toLowerCase().includes("endpoint") === true;
+    pushError.includes("unifiedpush") ||
+    pushError.includes("fcm") ||
+    pushError.includes("endpoint");
   const showAndroidDistributorNotice =
     status?.available === true &&
     transport === "none" &&
-    status?.endpoint_present === false &&
+    !status.endpoint_present &&
     pushRegistrationFailed;
 
   // The homeserver can only deliver a push if the OS has also granted the
