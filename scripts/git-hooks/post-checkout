@@ -16,7 +16,16 @@ esac
 [ "$branch_checkout" = "1" ] || exit 0
 
 worktree_root="$(git rev-parse --show-toplevel)" || exit 0
-main_root="$(git worktree list --porcelain | sed -n '/^worktree /{s/^worktree //p; q;}')"
+# Find the worktree whose checked-out branch is main specifically — not just
+# whichever worktree git-worktree-list happens to print first. That first
+# entry is always the repo's *original* clone location, which could itself
+# be sitting on a feature branch (someone checked one out directly there
+# instead of a separate worktree); linking against that would pull in
+# unmerged branch state instead of main's.
+main_root="$(git worktree list --porcelain | awk '
+  /^worktree /{path=$0; sub(/^worktree /, "", path)}
+  /^branch refs\/heads\/main$/{print path; exit}
+')"
 [ -n "$main_root" ] || exit 0
 [ "$worktree_root" = "$main_root" ] && exit 0
 

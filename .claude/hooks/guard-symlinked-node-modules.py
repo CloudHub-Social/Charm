@@ -30,24 +30,42 @@ import os
 import re
 import sys
 
-INSTALL_COMMAND = re.compile(
-    r"\b(pnpm|npm|yarn)\b[^|;&]*\b(install|i|ci|add|remove|rm|update|up|prune)\b"
-)
 # Matches each package-manager invocation together with its *immediate* next
-# token (the actual subcommand) — deliberately not a lookahead over the rest
-# of the line, so a test file or flag named e.g. "config"/"list" elsewhere in
-# the command can't be mistaken for the subcommand itself and exempt it.
+# token (the actual subcommand) — deliberately not a scan over the rest of
+# the line, so a test file or flag named e.g. "install"/"config" elsewhere in
+# the command can't be mistaken for the subcommand itself.
 PKG_MANAGER_INVOCATION = re.compile(r"\b(?:pnpm|npm|yarn|npx)\b\s+(\S+)")
+
+# Subcommands that mutate the dependency tree in place (write straight
+# through the symlink into main's real node_modules) — always denied,
+# regardless of whether the lockfiles currently happen to match. Includes
+# npm's documented aliases (uninstall: un/unlink/r; install: i; ci is npm's
+# separate "clean install" verb) plus link/rebuild/dedupe, which rewrite
+# node_modules without going through the install/remove path at all.
+HARD_DENY_SUBCOMMANDS = {
+    "install", "i", "ci", "add",
+    "remove", "rm", "uninstall", "un", "unlink", "r",
+    "update", "up", "prune",
+    "link", "rebuild", "dedupe",
+}
+# Read-only/informational subcommands — never touch node_modules, so never
+# worth blocking or even lockfile-checking.
 SAFE_SUBCOMMANDS = {"--version", "-v", "list", "ls", "why", "outdated", "config", "store"}
 BIN_INVOCATION = re.compile(r"(?:^|[/\s])node_modules/\.bin/")
 LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
 
 
-def is_run_command(command):
+def classify_command(command):
+    """Returns "install" (always deny), "run" (deny only on lockfile
+    mismatch), or None (nothing risky) for the given shell command."""
+    saw_run = bool(BIN_INVOCATION.search(command))
     for m in PKG_MANAGER_INVOCATION.finditer(command):
-        if m.group(1) not in SAFE_SUBCOMMANDS:
-            return True
-    return bool(BIN_INVOCATION.search(command))
+        sub = m.group(1)
+        if sub in HARD_DENY_SUBCOMMANDS:
+            return "install"
+        if sub not in SAFE_SUBCOMMANDS:
+            saw_run = True
+    return "run" if saw_run else None
 
 
 def resolve_cwd(command, default_cwd):
@@ -107,9 +125,8 @@ def main():
         return 0
 
     command = (payload.get("tool_input") or {}).get("command") or ""
-    is_install = bool(INSTALL_COMMAND.search(command))
-    is_run = is_run_command(command)
-    if not (is_install or is_run):
+    kind = classify_command(command)
+    if kind is None:
         return 0
 
     default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
@@ -120,7 +137,7 @@ def main():
 
     main_root = os.path.dirname(os.readlink(node_modules))
 
-    if is_install:
+    if kind == "install":
         deny(
             "node_modules here is a symlink into ~/git/Charm's real "
             "node_modules (see scripts/git-hooks/post-checkout). Running "
