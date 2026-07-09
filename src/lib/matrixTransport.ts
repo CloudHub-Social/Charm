@@ -453,7 +453,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "set_display_name":
       return requestJson<T>("PUT", "/api/profile/display-name", args.displayName);
     case "get_account_deactivate_url":
-      return null as T;
+      return requestJson<T>("GET", "/api/account/deactivate-url");
     case "get_account_data":
       return requestJson<T>("GET", `/api/account-data/${encodeSegment(String(args.eventType))}`);
     case "set_account_data":

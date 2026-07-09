@@ -467,9 +467,14 @@ describe("matrix web transport", () => {
     await expect(invoke("get_local_onboarding_flag")).resolves.toBe(true);
   });
 
-  it("returns null for account deactivation links when the web companion has none", async () => {
-    await expect(invoke("get_account_deactivate_url")).resolves.toBeNull();
-    expect(fetchMock()).not.toHaveBeenCalled();
+  it("fetches account deactivation links from the web companion", async () => {
+    fetchMock().mockResolvedValueOnce(new Response(JSON.stringify("https://idp.example/account")));
+
+    await expect(invoke("get_account_deactivate_url")).resolves.toBe("https://idp.example/account");
+    expect(fetchMock()).toHaveBeenCalledWith(
+      "https://api.example/api/account/deactivate-url",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 
   it("returns web-safe values for shell-only no-op commands", async () => {

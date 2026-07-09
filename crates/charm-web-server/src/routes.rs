@@ -47,6 +47,7 @@ use charm_lib::matrix::verification::{
     confirm_sas_verification_impl, cross_signing_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -170,6 +171,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/presence/{user_id}", get(get_presence))
         .route("/api/profile/me", get(get_own_profile))
         .route("/api/profile/display-name", put(set_display_name))
+        .route(
+            "/api/account/deactivate-url",
+            get(get_account_deactivate_url),
+        )
         // -- account data --
         .route(
             "/api/account-data/{event_type}",
@@ -1229,6 +1234,33 @@ struct OwnProfileResponse {
     #[serde(flatten)]
     profile: OwnProfile,
     uses_oauth: bool,
+}
+
+async fn get_account_deactivate_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Option<String>>, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(
+        account_management_url(
+            &session.client,
+            AccountManagementActionData::AccountDeactivate,
+        )
+        .await,
+    ))
+}
+
+async fn account_management_url(
+    client: &matrix_sdk::Client,
+    action: AccountManagementActionData<'_>,
+) -> Option<String> {
+    if client.matrix_auth().logged_in() {
+        return None;
+    }
+    let metadata = client.oauth().server_metadata().await.ok()?;
+    metadata
+        .account_management_url_with_action(action)
+        .map(|url| url.to_string())
 }
 
 // ---------------------------------------------------------------------
