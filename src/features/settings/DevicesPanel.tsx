@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { bootstrapCrossSigning, type DeviceSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
@@ -195,7 +196,11 @@ export function DevicesPanel() {
               </Button>
             )}
             {resetUrl && (
-              <Button size="sm" variant="outline" onClick={() => void openExternalUrl(resetUrl)}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => openExternalUrl(resetUrl).catch(logAndIgnore)}
+              >
                 {isBootstrapped ? "Reset" : "Set up"}
               </Button>
             )}

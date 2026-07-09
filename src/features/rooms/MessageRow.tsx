@@ -5,6 +5,7 @@ import {
   AvatarGroupCount,
   AvatarImage,
 } from "@/components/ui/avatar";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { cn } from "@/lib/utils";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
@@ -66,7 +67,7 @@ function handleMessageLinkClick(event: React.MouseEvent<HTMLElement>) {
   if (!ALLOWED_LINK_PROTOCOLS.has(parsed.protocol)) return;
 
   event.preventDefault();
-  void openExternalUrl(parsed.href);
+  openExternalUrl(parsed.href).catch(logAndIgnore);
 }
 
 function formatTime(timestampMs: number): string {

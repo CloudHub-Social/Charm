@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { changePassword, deactivateAccount, logout } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { isWebBuild } from "@/lib/platform";
@@ -208,7 +209,7 @@ export function AccountPanel({ onLoggedOut }: AccountPanelProps) {
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => void openExternalUrl(deactivateUrl)}
+                  onClick={() => openExternalUrl(deactivateUrl).catch(logAndIgnore)}
                 >
                   Deactivate account
                 </Button>
