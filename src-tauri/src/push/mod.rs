@@ -56,6 +56,11 @@ pub const IOS_APP_ID: &str = "social.cloudhub.charm.ios";
 pub type PushError = String;
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const HEADLESS_NOTIFIED_EVENTS_FILE: &str = "headless_notified_events";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const MAX_HEADLESS_NOTIFIED_EVENT_IDS: usize = 200;
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 static HEADLESS_PUSH_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -704,7 +709,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
                 .clone();
             focused_room_id.as_deref() == Some(room_id.as_str())
         },
-        |event_id| app.state::<MatrixState>().mark_notified(event_id),
+        |event_id| Ok(app.state::<MatrixState>().mark_notified(event_id)),
     )
     .await?
     else {
@@ -733,14 +738,60 @@ pub(crate) async fn handle_headless_push(
         .await?
         .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
 
-    build_push_notification(&client, message, |_| false, |_| true).await
+    build_push_notification(
+        &client,
+        message,
+        |_| false,
+        |event_id| mark_headless_notified_at(store_root, event_id),
+    )
+    .await
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mark_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let notified_path = store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE);
+    let existing = match std::fs::read_to_string(&notified_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "failed to read headless push notification dedupe file: {e}"
+            ));
+        }
+    };
+
+    let mut notified_event_ids = existing
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if notified_event_ids.iter().any(|known| known == event_id) {
+        return Ok(false);
+    }
+
+    notified_event_ids.push(event_id.to_string());
+    let start = notified_event_ids
+        .len()
+        .saturating_sub(MAX_HEADLESS_NOTIFIED_EVENT_IDS);
+    let mut contents = notified_event_ids[start..].join("\n");
+    contents.push('\n');
+
+    std::fs::create_dir_all(store_root)
+        .map_err(|e| format!("failed to create headless push store root: {e}"))?;
+    std::fs::write(&notified_path, contents)
+        .map_err(|e| format!("failed to write headless push notification dedupe file: {e}"))?;
+
+    Ok(true)
 }
 
 async fn build_push_notification(
     client: &Client,
     message: PushMessage,
     should_suppress_for_room: impl FnOnce(&RoomId) -> bool,
-    mark_notified: impl FnOnce(&str) -> bool,
+    mark_notified: impl FnOnce(&str) -> Result<bool, PushError>,
 ) -> Result<Option<PushNotification>, PushError> {
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
     let event_id =
@@ -781,7 +832,7 @@ async fn build_push_notification(
     // event that was never actually shown. Still unconditional otherwise — a
     // UTD/generic-fallback notification needs the same guard a successfully
     // decrypted one gets.
-    if !mark_notified(&message.event_id) {
+    if !mark_notified(&message.event_id)? {
         return Ok(None);
     }
 
@@ -956,6 +1007,51 @@ mod tests {
 
         assert_eq!(client.homeserver().as_str(), "https://example.invalid/");
         assert!(store_path.is_dir());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn headless_notified_events_are_persistently_deduped() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(!mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(mark_headless_notified_at(&root, "$other:example.org").unwrap());
+
+        let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
+        assert_eq!(contents, "$event:example.org\n$other:example.org\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn headless_notified_events_are_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-bounded-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for index in 0..(MAX_HEADLESS_NOTIFIED_EVENT_IDS + 1) {
+            assert!(
+                mark_headless_notified_at(&root, &format!("$event-{index}:example.org")).unwrap()
+            );
+        }
+
+        let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), MAX_HEADLESS_NOTIFIED_EVENT_IDS);
+        assert_eq!(lines.first(), Some(&"$event-1:example.org"));
+        assert_eq!(
+            lines.last(),
+            Some(&format!("$event-{}:example.org", MAX_HEADLESS_NOTIFIED_EVENT_IDS).as_str())
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
