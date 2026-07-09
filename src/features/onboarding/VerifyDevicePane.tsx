@@ -45,8 +45,7 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
 
   async function handleSetUp() {
     if (await uia.submit()) {
-      invalidateDevices();
-      invalidateCrossSigning();
+      await Promise.all([invalidateDevices(), invalidateCrossSigning()]);
       setDone(true);
     }
   }
