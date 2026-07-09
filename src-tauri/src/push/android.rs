@@ -517,6 +517,10 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
                 eprintln!("handle_push failed: {e}");
             }
         });
+        // The running-app path is already owned by Tauri's process lifecycle.
+        // Keep Android's async broadcast alive only for receiver-only cold starts;
+        // holding it through Matrix fetch/decrypt work risks hitting the broadcast
+        // timeout before the spawned app task can finish.
         drop(pending_result);
         return;
     }
