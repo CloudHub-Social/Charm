@@ -11,13 +11,45 @@
 //! against another.
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderValue, Request, StatusCode};
 use axum::Router;
 use charm_web_server::{routes, session::SessionStore, AppState};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const HOMESERVER: &str = "http://localhost:8008";
+const ALLOWED_ORIGIN_ENV: &str = "CHARM_WEB_SERVER_ALLOWED_ORIGIN";
+const TEST_ALLOWED_ORIGIN: &str = "https://charm.example.test";
+static ALLOWED_ORIGIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<String>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+
+    fn remove(key: &'static str) -> Self {
+        let previous = std::env::var(key).ok();
+        std::env::remove_var(key);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous {
+            std::env::set_var(self.key, value);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
 
 fn test_username() -> String {
     std::env::var("TEST_MATRIX_USERNAME").unwrap_or_else(|_| "evie".to_string())
@@ -208,6 +240,34 @@ async fn logout_clears_the_session() {
     assert_eq!(me_response.status(), StatusCode::UNAUTHORIZED);
 }
 
+#[tokio::test]
+async fn raw_body_origin_guard_rejects_malformed_origin_header() {
+    let _env_lock = ALLOWED_ORIGIN_ENV_LOCK.lock().await;
+    let _env_guard = EnvVarGuard::set(ALLOWED_ORIGIN_ENV, TEST_ALLOWED_ORIGIN);
+
+    let app = app();
+    let cookie = login_and_get_cookie(&app).await;
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header("cookie", &cookie)
+                .header(
+                    axum::http::header::ORIGIN,
+                    HeaderValue::from_bytes(&[0xff]).unwrap(),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
 // ---------------------------------------------------------------------
 // Sub-PR B: verification / cross-signing routes
 // ---------------------------------------------------------------------
@@ -313,15 +373,61 @@ async fn serve_for_websocket_test(
     (addr, handle)
 }
 
+fn websocket_request(
+    addr: std::net::SocketAddr,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    let mut builder = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(format!("ws://{addr}/api/ws"))
+        .header("host", addr.to_string())
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-version", "13")
+        .header(
+            "sec-websocket-key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    if let Some(origin) = origin {
+        builder = builder.header("origin", origin);
+    }
+    builder.body(()).unwrap()
+}
+
 #[tokio::test]
 async fn websocket_upgrade_is_rejected_without_a_session_cookie() {
+    let _env_lock = ALLOWED_ORIGIN_ENV_LOCK.lock().await;
+    let _env_guard = EnvVarGuard::set(ALLOWED_ORIGIN_ENV, TEST_ALLOWED_ORIGIN);
+
     let app = app();
     let (addr, _server) = serve_for_websocket_test(app).await;
 
-    let result = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws")).await;
+    let request = websocket_request(addr, None, Some(TEST_ALLOWED_ORIGIN));
+    let result = tokio_tungstenite::connect_async(request).await;
     assert!(
         result.is_err(),
         "an unauthenticated WebSocket upgrade must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn websocket_upgrade_is_rejected_when_allowed_origin_is_unset() {
+    let _env_lock = ALLOWED_ORIGIN_ENV_LOCK.lock().await;
+    let _env_guard = EnvVarGuard::remove(ALLOWED_ORIGIN_ENV);
+
+    let app = app();
+    let cookie = login_and_get_cookie(&app).await;
+    let (addr, _server) = serve_for_websocket_test(app).await;
+
+    let request = websocket_request(addr, Some(&cookie), Some(TEST_ALLOWED_ORIGIN));
+    let result = tokio_tungstenite::connect_async(request).await;
+    assert!(
+        result.is_err(),
+        "an authenticated WebSocket upgrade with an Origin must be rejected when \
+         CHARM_WEB_SERVER_ALLOWED_ORIGIN is unset"
     );
 }
 
@@ -345,23 +451,14 @@ async fn websocket_upgrade_is_rejected_without_a_session_cookie() {
 async fn websocket_receives_events_after_login() {
     use futures_util::StreamExt;
 
+    let _env_lock = ALLOWED_ORIGIN_ENV_LOCK.lock().await;
+    let _env_guard = EnvVarGuard::set(ALLOWED_ORIGIN_ENV, TEST_ALLOWED_ORIGIN);
+
     let app = app();
     let cookie = login_and_get_cookie(&app).await;
     let (addr, _server) = serve_for_websocket_test(app).await;
 
-    let request = tokio_tungstenite::tungstenite::http::Request::builder()
-        .uri(format!("ws://{addr}/api/ws"))
-        .header("cookie", &cookie)
-        .header("host", addr.to_string())
-        .header("connection", "upgrade")
-        .header("upgrade", "websocket")
-        .header("sec-websocket-version", "13")
-        .header(
-            "sec-websocket-key",
-            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-        )
-        .body(())
-        .unwrap();
+    let request = websocket_request(addr, Some(&cookie), Some(TEST_ALLOWED_ORIGIN));
 
     let (mut ws, _response) = tokio_tungstenite::connect_async(request)
         .await
