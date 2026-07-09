@@ -418,6 +418,57 @@ pub async fn set_display_name(
         .map_err(|e| e.to_string())
 }
 
+/// Defense-in-depth cap on avatar uploads: comfortably above any real photo
+/// (a raw 4000x4000 RGBA frame is ~64MB) while bounding how much a bogus
+/// `file_path` could make this command read into memory and ship off to the
+/// homeserver.
+const MAX_AVATAR_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Validates that `file_path` is safe to read and upload as an avatar:
+/// resolves to a real file on disk (rejecting anything a symlink might be
+/// hiding), isn't implausibly large, and decodes as one of the image formats
+/// the picker in `RoomSettingsForm`/profile settings offers (png/jpeg/gif/
+/// webp — matches this crate's `image` feature set). Returns the canonical
+/// path and decoded bytes on success.
+///
+/// This command has no Tauri fs-plugin capability backing it (see
+/// `src-tauri/capabilities/default.json` — there is no `fs:*` permission),
+/// so `tokio::fs::read` here is a raw, unscoped filesystem read on the Rust
+/// side; nothing at the IPC/capability layer limits which paths it can
+/// touch. Today `file_path` only ever comes from a native file-picker
+/// dialog, so this isn't reachable by an attacker yet, but if some other bug
+/// (e.g. an XSS in the webview) ever let `invoke("set_avatar", { file_path })`
+/// be called with an arbitrary path, this is what stands between that call
+/// and reading arbitrary files (e.g. `~/.ssh/id_rsa`) off the user's disk and
+/// uploading them as the account avatar. Validating the *decoded* image
+/// content (not just the extension or a `mime_guess` off the file name) means
+/// a renamed non-image file is rejected too.
+async fn validate_avatar_path(file_path: &str) -> Result<(std::path::PathBuf, Vec<u8>), String> {
+    let path = tokio::fs::canonicalize(file_path)
+        .await
+        .map_err(|e| format!("invalid avatar path: {e}"))?;
+
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("invalid avatar path: {e}"))?;
+    if !metadata.is_file() {
+        return Err("avatar path is not a regular file".to_string());
+    }
+    if metadata.len() > MAX_AVATAR_BYTES {
+        return Err(format!(
+            "avatar file is too large ({} bytes, max {MAX_AVATAR_BYTES})",
+            metadata.len()
+        ));
+    }
+
+    let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    if image::guess_format(&data).is_err() {
+        return Err("avatar file is not a recognized image format".to_string());
+    }
+
+    Ok((path, data))
+}
+
 /// Reads `file_path` off disk and uploads it as the account avatar, setting
 /// it as the current `m.room` avatar url in one step — `Account::upload_avatar`
 /// does both. Same file-path-in, read-on-the-Rust-side convention as
@@ -425,9 +476,8 @@ pub async fn set_display_name(
 #[tauri::command]
 pub async fn set_avatar(state: State<'_, MatrixState>, file_path: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let path = std::path::Path::new(&file_path);
-    let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let (path, data) = validate_avatar_path(&file_path).await?;
+    let mime = mime_guess::from_path(&path).first_or_octet_stream();
 
     client
         .account()
@@ -517,6 +567,66 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn validate_avatar_path_accepts_a_real_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("avatar.png");
+        // Minimal valid 1x1 PNG.
+        let mut png_bytes = Vec::new();
+        image::RgbaImage::new(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        tokio::fs::write(&file_path, &png_bytes).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_ok(),
+            "expected a real PNG to validate, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_nonexistent_path() {
+        let result = validate_avatar_path("/nonexistent/path/to/avatar.png").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_non_image_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("id_rsa");
+        tokio::fs::write(
+            &file_path,
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot an image\n",
+        )
+        .await
+        .unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected a non-image file to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("huge.png");
+        tokio::fs::write(&file_path, vec![0u8; (MAX_AVATAR_BYTES + 1) as usize])
+            .await
+            .unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected an oversized file to be rejected, got {result:?}"
+        );
+    }
 
     /// Mounts the standard two-step UIA dance on `server` for `endpoint_path`:
     /// a password-less request gets the 401 challenge (matching real Synapse
