@@ -36,6 +36,7 @@ interface RoomListProps {
   rooms: RoomSummary[];
   activeRoomId: string | null;
   onSelectRoom: (id: string) => void;
+  onSelectSpace: (id: string) => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   showAllRooms: boolean;
@@ -59,6 +60,7 @@ export function RoomList({
   rooms,
   activeRoomId,
   onSelectRoom,
+  onSelectSpace,
   mode,
   selectedSpace,
   showAllRooms,
@@ -271,6 +273,7 @@ export function RoomList({
                   roomById,
                   activeRoomId,
                   onSelectRoom,
+                  onSelectSpace,
                   onJoin: handleJoin,
                   pendingRoomId,
                 })}
@@ -362,6 +365,7 @@ function renderHierarchy(
     roomById: Map<string, RoomSummary>;
     activeRoomId: string | null;
     onSelectRoom: (id: string) => void;
+    onSelectSpace: (id: string) => void;
     onJoin: (child: SpaceChild) => void;
     pendingRoomId: string | null;
   },
@@ -379,6 +383,7 @@ function renderHierarchy(
         active={node.child.room_id === options.activeRoomId}
         pending={options.pendingRoomId === node.child.room_id}
         onSelectRoom={options.onSelectRoom}
+        onSelectSpace={options.onSelectSpace}
         onJoin={options.onJoin}
       />,
       ...renderHierarchy(node.children, options, depth + 1),
@@ -397,6 +402,7 @@ interface HierarchyRowProps {
   active: boolean;
   pending: boolean;
   onSelectRoom: (id: string) => void;
+  onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
 }
 
@@ -407,9 +413,28 @@ function HierarchyRow({
   active,
   pending,
   onSelectRoom,
+  onSelectSpace,
   onJoin,
 }: HierarchyRowProps) {
   const indent = `${Math.min(depth, 6) * 16}px`;
+  if (joinedRoom?.is_space) {
+    return (
+      <button
+        type="button"
+        className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 py-2 text-left hover:bg-accent hover:text-accent-foreground"
+        style={{ marginLeft: indent }}
+        onClick={() => onSelectSpace(joinedRoom.room_id)}
+      >
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-foreground">
+            {displayName(joinedRoom.room_id, joinedRoom.name)}
+          </p>
+          {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
+        </div>
+        <span className="text-xs font-medium text-muted-foreground">Open</span>
+      </button>
+    );
+  }
   if (joinedRoom && !joinedRoom.is_space) {
     return (
       <div style={{ paddingLeft: indent }}>
@@ -435,11 +460,9 @@ function HierarchyRow({
         </p>
         {child.topic && <p className="truncate text-xs text-muted-foreground">{child.topic}</p>}
       </div>
-      {!child.is_space && (
-        <Button size="sm" variant="outline" disabled={pending} onClick={() => onJoin(child)}>
-          {child.join_rule === "knock" ? "Request" : "Join"}
-        </Button>
-      )}
+      <Button size="sm" variant="outline" disabled={pending} onClick={() => onJoin(child)}>
+        {child.join_rule === "knock" ? "Request" : "Join"}
+      </Button>
     </div>
   );
 }

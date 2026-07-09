@@ -64,6 +64,7 @@ function roomListProps(overrides: Partial<ComponentProps<typeof RoomList>> = {})
     rooms: [],
     activeRoomId: null,
     onSelectRoom: () => {},
+    onSelectSpace: () => {},
     mode: "home" as const,
     selectedSpace: null,
     showAllRooms: false,
@@ -223,6 +224,57 @@ describe("RoomList", () => {
     expect(await screen.findByText("Public room")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
+  });
+
+  it("opens joined hierarchy spaces and joins public hierarchy spaces", async () => {
+    const onSelectSpace = vi.fn();
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const nestedSpace = makeRoomSummary({
+      room_id: "!nested:localhost",
+      name: "Nested space",
+      is_space: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!nested:localhost",
+          name: "Nested space",
+          topic: "Joined child space",
+          num_joined_members: 3,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!public-space:localhost",
+              name: "Public nested space",
+              topic: null,
+              num_joined_members: 6,
+              join_rule: "public",
+              is_space: true,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, nestedSpace],
+          mode: "space",
+          selectedSpace: space,
+          onSelectSpace,
+        })}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Nested space/ }));
+    expect(onSelectSpace).toHaveBeenCalledWith("!nested:localhost");
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    expect(joinRoom).toHaveBeenCalledWith("!public-space:localhost");
   });
 
   it("does not render children of hierarchy rooms shown in tagged sections", async () => {

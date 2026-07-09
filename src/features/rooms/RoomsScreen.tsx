@@ -243,6 +243,7 @@ export function RoomsScreen({
             rooms={rooms}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
+            onSelectSpace={selectSpace}
             mode={roomListMode}
             selectedSpace={selectedSpace}
             showAllRooms={showAllRooms}
