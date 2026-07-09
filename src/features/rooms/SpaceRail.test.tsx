@@ -128,6 +128,29 @@ describe("SpaceRail", () => {
     );
   });
 
+  it("guards active-space ancestor expansion against cyclic parent links", () => {
+    renderRail({
+      activeMode: "space",
+      activeSpaceId: "!space-a:localhost",
+      rooms: [
+        makeRoomSummary({
+          room_id: "!space-a:localhost",
+          name: "Space A",
+          is_space: true,
+          parent_space_ids: ["!space-b:localhost"],
+        }),
+        makeRoomSummary({
+          room_id: "!space-b:localhost",
+          name: "Space B",
+          is_space: true,
+          parent_space_ids: ["!space-a:localhost"],
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
+  });
+
   it("subtracts hidden direct-room badge counts from parent spaces", () => {
     renderRail({
       badgeState: {

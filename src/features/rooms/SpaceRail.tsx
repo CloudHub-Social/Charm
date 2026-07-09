@@ -66,13 +66,14 @@ export function SpaceRail({
   useEffect(() => {
     if (!activeSpaceId) return;
     const parentsToOpen: Record<string, boolean> = {};
+    const seen = new Set<string>();
     const stack = [...(parentSpaceIdsByChild.get(activeSpaceId) ?? [])];
     while (stack.length > 0) {
       const parentId = stack.pop();
-      if (parentId) {
-        parentsToOpen[parentId] = true;
-        stack.push(...(parentSpaceIdsByChild.get(parentId) ?? []));
-      }
+      if (!parentId || seen.has(parentId)) continue;
+      seen.add(parentId);
+      parentsToOpen[parentId] = true;
+      stack.push(...(parentSpaceIdsByChild.get(parentId) ?? []));
     }
     if (Object.keys(parentsToOpen).length === 0) return;
     setOpenFolders((prev) => ({ ...prev, ...parentsToOpen }));
