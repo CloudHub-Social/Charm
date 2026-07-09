@@ -363,6 +363,11 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     defaults:
       run:
         working-directory: src-tauri
@@ -373,7 +378,7 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -496,6 +501,11 @@ jobs:
       # for the full rationale and the shared-cache-budget caveat.
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -510,7 +520,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -626,6 +636,11 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     defaults:
       run:
         working-directory: src-tauri
@@ -639,7 +654,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -760,12 +775,17 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -806,12 +826,17 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -852,6 +877,11 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -862,7 +892,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -903,6 +933,11 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -910,7 +945,7 @@ jobs:
         with:
           targets: aarch64-apple-ios-sim
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -952,6 +987,11 @@ jobs:
     env:
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
+      # Read-only everywhere except main: sccache defaults to READ_WRITE,
+      # which would reintroduce the exact branch-scoped cache duplication
+      # rust-cache/Gradle just got fixed for (every PR writing its own
+      # copy against the shared 10GB/repo budget). Only main writes.
+      SCCACHE_GHA_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -959,7 +999,7 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - uses: mozilla-actions/sccache-action@1583d6b38d7be47f593cb472781bbb21cab4321e # v0.0.10
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
