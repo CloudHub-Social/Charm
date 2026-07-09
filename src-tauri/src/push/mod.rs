@@ -714,7 +714,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
                 .clone();
             focused_room_id.as_deref() == Some(room_id.as_str())
         },
-        |event_id| mark_notified_for_app(app, event_id),
+        |event_id| async move { mark_notified_for_app(app, &event_id).await },
     )
     .await?
     else {
@@ -746,7 +746,7 @@ pub(crate) async fn handle_headless_push(
         &client,
         message,
         |_| false,
-        |event_id| mark_headless_notified_at(store_root, event_id),
+        |event_id| async move { mark_headless_notified_at(store_root, &event_id) },
     )
     .await
 }
@@ -791,9 +791,13 @@ fn mark_headless_notified_at(
     Ok(true)
 }
 
-pub(crate) fn mark_notified_for_app(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+pub(crate) async fn mark_notified_for_app(
+    app: &AppHandle,
+    event_id: &str,
+) -> Result<bool, PushError> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let store_root = persistence::matrix_store_root_at(&app_data_dir)?;
+    let _restore_store_guard = auth::restore_store_lock().lock().await;
     mark_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
 }
 
@@ -810,12 +814,15 @@ fn mark_notified_for_app_at(
     Ok(matrix_state.mark_notified(event_id))
 }
 
-async fn build_push_notification(
+async fn build_push_notification<Fut>(
     client: &Client,
     message: PushMessage,
     should_suppress_for_room: impl FnOnce(&RoomId) -> bool,
-    mark_notified: impl FnOnce(&str) -> Result<bool, PushError>,
-) -> Result<Option<PushNotification>, PushError> {
+    mark_notified: impl FnOnce(String) -> Fut,
+) -> Result<Option<PushNotification>, PushError>
+where
+    Fut: std::future::Future<Output = Result<bool, PushError>>,
+{
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
     let event_id =
         matrix_sdk::ruma::EventId::parse(&message.event_id).map_err(|e| e.to_string())?;
@@ -929,7 +936,7 @@ async fn build_push_notification(
     // check passes: marking earlier would either burn this event's dedup slot
     // on a transient fetch failure, or record a focused-room suppression as a
     // shown notification and incorrectly suppress a later redelivery.
-    if !mark_notified(&message.event_id)? {
+    if !mark_notified(message.event_id.clone()).await? {
         return Ok(None);
     }
 

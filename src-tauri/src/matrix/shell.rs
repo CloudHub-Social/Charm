@@ -343,7 +343,7 @@ pub async fn maybe_send_notification<F, Fut>(
     if own_user_id.is_some_and(|me| me.as_str() == sender) {
         return;
     }
-    match crate::push::mark_notified_for_app(app, event_id) {
+    match crate::push::mark_notified_for_app(app, event_id).await {
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
