@@ -33,6 +33,8 @@
         android:usesCleartextTraffic="${usesCleartextTraffic}"
         android:dataExtractionRules="@xml/secure_store_backup_rules"
         android:fullBackupContent="@xml/secure_store_backup_rules_legacy">
+        <!-- Keep both Sentry auto-init keys for SDK-version compatibility. -->
+        <meta-data android:name="io.sentry.auto-init" android:value="false" />
         <meta-data android:name="io.sentry.sdk.auto-init" android:value="false" />
         <!-- sentry-android-core 8.48.0 declares class-suffix authorities; keep
              io.sentry.* removal stubs too so provider auto-init stays stripped
