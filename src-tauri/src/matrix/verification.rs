@@ -151,14 +151,7 @@ pub async fn cross_signing_status_impl(
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
     match client.encryption().request_user_identity(&user_id).await {
-        Ok(Some(_)) => {
-            return Ok(CrossSigningStatusSummary {
-                has_master_key: true,
-                has_self_signing_key: true,
-                has_user_signing_key: true,
-            });
-        }
-        Ok(None) => {}
+        Ok(Some(_)) | Ok(None) => {}
         Err(error) => {
             tracing::warn!(
                 error = %error,
