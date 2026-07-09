@@ -292,6 +292,8 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           limit: args.limit as number | undefined,
         })}`,
       );
+    case "list_space_hierarchy":
+      return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.spaceId))}/hierarchy`);
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,

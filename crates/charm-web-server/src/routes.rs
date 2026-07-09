@@ -41,6 +41,7 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
+use charm_lib::matrix::spaces::list_space_hierarchy_impl;
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
@@ -89,6 +90,7 @@ pub fn router(state: AppState) -> Router {
             get(get_room_member_list),
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
+        .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
         .route("/api/rooms/{room_id}/reply", post(send_reply))
@@ -630,6 +632,18 @@ async fn get_timeline_page(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(page))
+}
+
+async fn list_space_hierarchy(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let hierarchy = list_space_hierarchy_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(hierarchy))
 }
 
 // ---------------------------------------------------------------------

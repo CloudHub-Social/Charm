@@ -113,6 +113,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "list_space_hierarchy",
+      { spaceId: "!space:example.org" },
+      "GET",
+      "/api/rooms/!space%3Aexample.org/hierarchy",
+      undefined,
+    ],
+    [
       "send_message",
       { roomId: "!r:example.org", body: "hi", formattedBody: null, mentions: null },
       "POST",
