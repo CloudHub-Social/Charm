@@ -7,7 +7,7 @@ type MobileTab = "chats";
 export type MobileView = "list" | "detail";
 
 interface AppShellProps {
-  /** The dedicated spaces rail — desktop-only. */
+  /** The dedicated spaces rail, shown beside the room list on desktop and mobile list views. */
   spaceRail: ReactNode;
   /** The rooms rail (`RoomList`) — rendered as the sidebar on desktop, and as the "Chats" tab's list on mobile. */
   roomList: ReactNode;

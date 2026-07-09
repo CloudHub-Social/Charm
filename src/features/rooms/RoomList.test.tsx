@@ -251,6 +251,23 @@ describe("RoomList", () => {
     expect(listSpaceHierarchy).toHaveBeenCalledOnce();
   });
 
+  it("shows space hierarchy load errors instead of the empty state", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockRejectedValue(new Error("hierarchy unavailable"));
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("Error: hierarchy unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No rooms yet")).not.toBeInTheDocument();
+  });
+
   it("shows all non-DM rooms from Home when Show all rooms is enabled", () => {
     const child = makeRoomSummary({
       room_id: "!child:localhost",

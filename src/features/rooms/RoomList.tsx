@@ -244,7 +244,7 @@ export function RoomList({
           <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
         ) : mode === "space" && spaceLoading ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
-        ) : allEmpty && (mode !== "space" || spaceHierarchy.length === 0) ? (
+        ) : !spaceError && allEmpty && (mode !== "space" || spaceHierarchy.length === 0) ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
           </p>
