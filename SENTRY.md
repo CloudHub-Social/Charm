@@ -108,6 +108,31 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
+Owner-side manual verification can be run from a checkout with GitHub access:
+
+```sh
+gh workflow run sentry-release-artifacts.yml \
+  --ref main \
+  -f release=manual-sentry-artifact-smoke-$(git rev-parse --short HEAD) \
+  -f environment=production
+```
+
+Before dispatching, verify the repository has `SENTRY_AUTH_TOKEN`,
+`SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN` configured as Actions
+secrets. After the run completes, verify in Sentry that:
+
+- the selected release exists and has frontend sourcemaps/artifacts uploaded;
+- an intentional frontend stack frame symbolicates to source instead of built
+  `dist` chunks;
+- Linux, macOS, Windows, and current iOS simulator debug files appear under
+  Debug Files with source context where supported;
+- Android ProGuard/R8 mapping and native symbol uploads completed for the
+  release artifact build;
+- Android Size Analysis has a build for the selected release/run, with the
+  expected base SHA comparison;
+- GitHub uploaded the frontend, Linux, Apple, Windows, and Android size-report
+  artifacts for auditability.
+
 Sentry Size Analysis currently receives Android builds only. The current iOS CI
 path builds an unsigned simulator debug app, while Sentry accepts XCArchive or
 IPA inputs for iOS size analysis; wire that upload once a signed device-release
