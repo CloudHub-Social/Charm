@@ -153,8 +153,10 @@ export function RoomList({
   }
 
   const title =
-    mode === "space" && selectedSpace
-      ? displayName(selectedSpace.room_id, selectedSpace.name)
+    mode === "space"
+      ? selectedSpace
+        ? displayName(selectedSpace.room_id, selectedSpace.name)
+        : "Space"
       : mode === "dms"
         ? "Direct messages"
         : "Home";

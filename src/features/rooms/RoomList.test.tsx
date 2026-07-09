@@ -84,6 +84,14 @@ describe("RoomList", () => {
     expect(screen.getByText("No rooms yet")).toBeInTheDocument();
   });
 
+  it("labels unresolved space mode as space instead of Home", () => {
+    renderRoomList(<RoomList {...roomListProps({ mode: "space", selectedSpace: null })} />);
+
+    expect(screen.getByRole("heading", { name: "Space" })).toBeInTheDocument();
+    expect(screen.getByText("Select a space.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Home" })).not.toBeInTheDocument();
+  });
+
   it("renders section headers with per-section counts", () => {
     const fav = makeRoomSummary({
       room_id: "!fav:localhost",
