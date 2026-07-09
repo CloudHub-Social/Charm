@@ -190,6 +190,11 @@ this in a production deployment that's actually behind TLS.
   `Origin` header fail closed until this is configured. Configure this even
   for same-origin browser deployments, because browsers send an `Origin`
   header on WebSocket handshakes.
+  - Exact origins are preferred. For dynamic preview URLs, one constrained
+    wildcard is supported per entry, with both a non-empty prefix and suffix
+    (for example,
+    `https://pr-*-charm-preview.<account>.workers.dev`). Broad host-wide
+    patterns such as `https://*.workers.dev` are intentionally rejected.
 - The same allowlist also drives the router's `CorsLayer` (credentialed —
   `Access-Control-Allow-Credentials: true`, needed for the session cookie),
   covering the rest of the HTTP API. An empty allowlist grants no

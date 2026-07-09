@@ -283,17 +283,23 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
         ])
         .allow_credentials(true);
 
-    let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
+    let origins: Vec<String> = std::env::var(ALLOWED_ORIGIN_ENV)
         .map(|allowed| {
             allowed
                 .split(',')
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .filter_map(|origin| origin.parse().ok())
+                .map(ToOwned::to_owned)
                 .collect()
         })
         .unwrap_or_default();
-    layer.allow_origin(AllowOrigin::list(origins))
+    layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+        origin.to_str().ok().is_some_and(|origin| {
+            origins
+                .iter()
+                .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        })
+    }))
 }
 
 // ---------------------------------------------------------------------
@@ -2200,7 +2206,26 @@ fn origin_is_allowed(origin: Option<&str>) -> bool {
     allowed
         .split(',')
         .map(str::trim)
-        .any(|allowed_origin| allowed_origin == origin)
+        .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+}
+
+fn origin_matches_allowed_entry(allowed_origin: &str, origin: &str) -> bool {
+    let Some(wildcard_index) = allowed_origin.find('*') else {
+        return allowed_origin == origin;
+    };
+    if allowed_origin[wildcard_index + 1..].contains('*') {
+        return false;
+    }
+
+    let (prefix, suffix_with_wildcard) = allowed_origin.split_at(wildcard_index);
+    let suffix = &suffix_with_wildcard[1..];
+    if prefix.is_empty() || suffix.is_empty() || prefix.ends_with("://") {
+        return false;
+    }
+
+    origin.starts_with(prefix)
+        && origin.ends_with(suffix)
+        && origin.len() > prefix.len() + suffix.len()
 }
 
 /// Shared guard for the state-changing routes that accept a raw (non-JSON)
@@ -2287,13 +2312,20 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
     let Ok(allowed) = std::env::var(ALLOWED_ORIGIN_ENV) else {
         return "same-origin";
     };
-    let allowed_origins: Vec<&str> = allowed.split(',').map(str::trim).collect();
+    let allowed_origins: Vec<&str> = allowed
+        .split(',')
+        .map(str::trim)
+        .filter(|origin| !origin.is_empty())
+        .collect();
 
     if let Some(origin) = headers
         .get(axum::http::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
     {
-        return if allowed_origins.contains(&origin) {
+        return if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, origin))
+        {
             "cross-origin"
         } else {
             "same-origin"
@@ -2305,7 +2337,10 @@ fn media_corp_header(headers: &axum::http::HeaderMap) -> &'static str {
         .and_then(|v| v.to_str().ok())
         .and_then(origin_from_referer)
     {
-        if allowed_origins.contains(&referer_origin.as_str()) {
+        if allowed_origins
+            .iter()
+            .any(|allowed_origin| origin_matches_allowed_entry(allowed_origin, &referer_origin))
+        {
             return "cross-origin";
         }
     }
@@ -2767,5 +2802,54 @@ mod referer_origin_tests {
     #[test]
     fn a_malformed_value_is_rejected() {
         assert_eq!(origin_from_referer("not a url"), None);
+    }
+}
+
+#[cfg(test)]
+mod origin_allowlist_tests {
+    use super::origin_matches_allowed_entry;
+
+    #[test]
+    fn exact_origin_entries_match_only_the_same_origin() {
+        assert!(origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://charm.example.test"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://charm.example.test",
+            "https://other.example.test"
+        ));
+    }
+
+    #[test]
+    fn constrained_wildcard_entries_match_dynamic_preview_origins() {
+        assert!(origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://manual-main-charm-preview.example.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-*-charm-preview.example.workers.dev",
+            "https://pr-112-other-preview.example.workers.dev"
+        ));
+    }
+
+    #[test]
+    fn broad_or_ambiguous_wildcard_entries_do_not_match() {
+        assert!(!origin_matches_allowed_entry(
+            "*.workers.dev",
+            "https://anything.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://*.workers.dev",
+            "https://preview.workers.dev"
+        ));
+        assert!(!origin_matches_allowed_entry(
+            "https://pr-**-preview.example.workers.dev",
+            "https://pr-112-preview.example.workers.dev"
+        ));
     }
 }
