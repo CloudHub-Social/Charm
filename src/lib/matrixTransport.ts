@@ -136,7 +136,8 @@ function dispatchWebEvent(event: string, payload: unknown): void {
   }
 }
 
-function handleWebSocketMessage(raw: MessageEvent<unknown>): void {
+function handleWebSocketMessage(socket: WebSocket, raw: MessageEvent<unknown>): void {
+  if (webSocket !== socket) return;
   if (typeof raw.data !== "string") return;
   let parsed: ServerEvent;
   try {
@@ -186,7 +187,7 @@ function ensureWebSocket(): void {
   }
   const socket = new WebSocket(websocketUrl());
   webSocket = socket;
-  socket.addEventListener("message", handleWebSocketMessage);
+  socket.addEventListener("message", (event) => handleWebSocketMessage(socket, event));
   socket.addEventListener("open", () => {
     if (webSocket === socket) reconnectAttempt = 0;
   });

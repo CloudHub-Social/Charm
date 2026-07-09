@@ -617,6 +617,25 @@ describe("matrix web transport", () => {
     unlistenTimeline();
   });
 
+  it("ignores stale WebSocket messages after reconnecting", async () => {
+    const roomList = vi.fn();
+
+    const unlistenRoomList = await listen("room_list:update", roomList);
+    const staleSocket = MockWebSocket.instances[0];
+    staleSocket.readyState = MockWebSocket.CLOSED;
+    const unlistenTimeline = await listen("timeline:update", vi.fn());
+    const currentSocket = MockWebSocket.instances[1];
+
+    staleSocket.emit({ event: "room_list:update", data: [{ room_id: "!stale" }] });
+    currentSocket.emit({ event: "room_list:update", data: [{ room_id: "!current" }] });
+
+    expect(roomList).toHaveBeenCalledTimes(1);
+    expect(roomList).toHaveBeenCalledWith({ payload: [{ room_id: "!current" }] });
+
+    unlistenRoomList();
+    unlistenTimeline();
+  });
+
   it("backs off WebSocket reconnect attempts while listeners remain active", async () => {
     vi.useFakeTimers();
     const unlisten = await listen("room_list:update", vi.fn());
