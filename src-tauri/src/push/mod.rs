@@ -701,6 +701,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
             (client, Some((guard, restore_store_guard)))
         }
     };
+    let restore_store_already_locked = _completion_guard.is_some();
 
     let Some(notification) = build_push_notification(
         &client,
@@ -714,7 +715,13 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
                 .clone();
             focused_room_id.as_deref() == Some(room_id.as_str())
         },
-        |event_id| async move { mark_notified_for_app(app, &event_id).await },
+        |event_id| async move {
+            if restore_store_already_locked {
+                mark_notified_for_app_unlocked(app, &event_id)
+            } else {
+                mark_notified_for_app(app, &event_id).await
+            }
+        },
     )
     .await?
     else {
@@ -813,9 +820,13 @@ pub(crate) async fn mark_notified_for_app(
     app: &AppHandle,
     event_id: &str,
 ) -> Result<bool, PushError> {
+    let _restore_store_guard = auth::restore_store_lock().lock().await;
+    mark_notified_for_app_unlocked(app, event_id)
+}
+
+fn mark_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let store_root = persistence::matrix_store_root_at(&app_data_dir)?;
-    let _restore_store_guard = auth::restore_store_lock().lock().await;
     mark_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
 }
 
