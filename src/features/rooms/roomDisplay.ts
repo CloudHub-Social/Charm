@@ -40,6 +40,12 @@ export function avatarColor(roomId: string): string {
   return AVATAR_COLORS[hash(roomId) % AVATAR_COLORS.length];
 }
 
+function webApiUrl(path: string): string {
+  const configured = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
+  const base = configured?.replace(/\/+$/, "") ?? "";
+  return `${base}${path}`;
+}
+
 /**
  * Turns a backend-resolved local avatar thumbnail path, or a web companion
  * resolver URL built from the avatar's `mxc://` URI, into a loadable image URL.
@@ -49,6 +55,6 @@ export function avatarColor(roomId: string): string {
 export function resolveAvatar(path: string | null, mxcUrl?: string | null): string | undefined {
   if (path) return toLoadableMediaUrl(path);
   return isWebBuild() && mxcUrl
-    ? toLoadableMediaUrl(`/api/media/avatar?mxc=${encodeURIComponent(mxcUrl)}`)
+    ? toLoadableMediaUrl(webApiUrl(`/api/media/avatar?mxc=${encodeURIComponent(mxcUrl)}`))
     : undefined;
 }

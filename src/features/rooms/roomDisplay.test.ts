@@ -57,6 +57,24 @@ describe("resolveAvatar", () => {
     );
   });
 
+  it("resolves web companion avatar URLs under a configured path prefix", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "/charm/");
+
+    expect(resolveAvatar(null, "mxc://example.org/abc123")).toBe(
+      "/charm/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fabc123",
+    );
+  });
+
+  it("resolves web companion avatar URLs under a configured absolute base", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://api.example/charm");
+
+    expect(resolveAvatar(null, "mxc://example.org/abc123")).toBe(
+      "https://api.example/charm/api/media/avatar?mxc=mxc%3A%2F%2Fexample.org%2Fabc123",
+    );
+  });
+
   it("falls back to initials for unresolved desktop mxc avatar URLs", () => {
     expect(resolveAvatar(null, "mxc://example.org/abc123")).toBeUndefined();
   });
