@@ -234,6 +234,57 @@ describe("RoomList", () => {
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
   });
 
+  it("does not start a second hierarchy join while another is pending", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    let resolveJoin!: () => void;
+    joinRoom.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveJoin = resolve;
+        }),
+    );
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!public-a:localhost",
+          name: "Public A",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+      {
+        child: {
+          room_id: "!public-b:localhost",
+          name: "Public B",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    const buttons = await screen.findAllByRole("button", { name: "Join" });
+    fireEvent.click(buttons[0]);
+    fireEvent.click(buttons[1]);
+
+    expect(joinRoom).toHaveBeenCalledOnce();
+    resolveJoin();
+  });
+
   it("opens joined hierarchy spaces and joins public hierarchy spaces", async () => {
     const onSelectSpace = vi.fn();
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });

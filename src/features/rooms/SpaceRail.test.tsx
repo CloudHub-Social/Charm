@@ -79,6 +79,16 @@ describe("SpaceRail", () => {
     expect(props.onSelectSpace).toHaveBeenCalledWith("!child-space:localhost");
   });
 
+  it("opens the parent folder when a child space is active", () => {
+    renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
+
+    expect(screen.getByRole("button", { name: "Product, 1 unread" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "Collapse Team" })).toBeInTheDocument();
+  });
+
   it("wires Home, DM, and create/join actions", () => {
     const props = renderRail({ activeMode: "dms" });
 

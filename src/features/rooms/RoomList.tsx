@@ -2,7 +2,7 @@ import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { SettingsIcon, X } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { PresenceDot } from "@/features/presence/PresenceDot";
@@ -73,6 +73,7 @@ export function RoomList({
   const [spaceLoading, setSpaceLoading] = useState(false);
   const [spaceError, setSpaceError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+  const pendingJoinRoomIdRef = useRef<string | null>(null);
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
@@ -141,6 +142,8 @@ export function RoomList({
     sections.lowPriority.length === 0;
 
   async function handleJoin(child: SpaceChild) {
+    if (pendingJoinRoomIdRef.current) return;
+    pendingJoinRoomIdRef.current = child.room_id;
     setPendingRoomId(child.room_id);
     setSpaceError(null);
     try {
@@ -152,6 +155,7 @@ export function RoomList({
     } catch (err) {
       setSpaceError(String(err));
     } finally {
+      pendingJoinRoomIdRef.current = null;
       setPendingRoomId(null);
     }
   }
@@ -384,13 +388,15 @@ function renderHierarchy(
     pendingRoomId: string | null;
   },
   depth = 0,
+  path = "root",
 ): ReactElement[] {
-  return nodes.flatMap((node) => {
+  return nodes.flatMap((node, index) => {
     const joinedRoom = options.roomById.get(node.child.room_id);
     if (isTaggedNonSpaceRoom(joinedRoom)) return [];
+    const nodeKey = `${path}/${index}:${node.child.room_id}`;
     return [
       <HierarchyRow
-        key={node.child.room_id}
+        key={nodeKey}
         child={node.child}
         joinedRoom={joinedRoom}
         depth={depth}
@@ -400,7 +406,7 @@ function renderHierarchy(
         onSelectSpace={options.onSelectSpace}
         onJoin={options.onJoin}
       />,
-      ...renderHierarchy(node.children, options, depth + 1),
+      ...renderHierarchy(node.children, options, depth + 1, nodeKey),
     ];
   });
 }

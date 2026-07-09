@@ -1,6 +1,6 @@
 import { ChevronDown, Home, Plus, Users } from "lucide-react";
 import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -52,6 +52,18 @@ export function SpaceRail({
       directRooms: rooms.filter((room) => room.is_direct),
     };
   }, [rooms]);
+
+  useEffect(() => {
+    if (!activeSpaceId) return;
+    const parentsToOpen: Record<string, boolean> = {};
+    for (const [parentId, children] of childSpacesByParent) {
+      if (children.some((child) => child.room_id === activeSpaceId)) {
+        parentsToOpen[parentId] = true;
+      }
+    }
+    if (Object.keys(parentsToOpen).length === 0) return;
+    setOpenFolders((prev) => ({ ...prev, ...parentsToOpen }));
+  }, [activeSpaceId, childSpacesByParent]);
 
   return (
     <TooltipProvider>
