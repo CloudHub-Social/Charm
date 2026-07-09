@@ -103,17 +103,19 @@ export async function persistObservabilitySettings(
   if (!envelope.state.logsEnabled) {
     await syncRustLogConsent(false);
   }
+  let persisted = false;
   try {
     const store = await getStore();
     await store.set(OBSERVABILITY_STORE_KEY, envelope);
     await store.save();
+    persisted = true;
   } catch (error) {
     if (isTauri()) {
       console.warn("Failed to persist observability settings to the Tauri store", error);
     }
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }
-  if (mutationId === persistMutationId && envelope.state.logsEnabled) {
+  if (persisted && mutationId === persistMutationId && envelope.state.logsEnabled) {
     await syncRustLogConsent(true);
   }
 }

@@ -109,6 +109,24 @@ describe("observability persistence", () => {
     warn.mockRestore();
   });
 
+  it("does not sync log opt-ins to Rust when durable persistence fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockRejectedValue(new Error("store failed"));
+
+    await persistObservabilitySettings(
+      {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        logsEnabled: true,
+      },
+      42,
+    );
+
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("syncs log opt-outs to Rust before awaiting durable persistence", async () => {
     let resolveStoreWrite!: () => void;
     const storeWrite = new Promise<void>((resolve) => {
