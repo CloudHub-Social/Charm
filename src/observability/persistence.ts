@@ -15,6 +15,7 @@ interface PersistedEnvelope {
 }
 
 let persistMutationId = 0;
+let durablePersistTail = Promise.resolve();
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
@@ -105,10 +106,26 @@ export async function persistObservabilitySettings(
   }
   let persisted = false;
   try {
-    const store = await getStore();
-    await store.set(OBSERVABILITY_STORE_KEY, envelope);
-    await store.save();
-    persisted = true;
+    const durablePersist = durablePersistTail.then(async () => {
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      const store = await getStore();
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.set(OBSERVABILITY_STORE_KEY, envelope);
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.save();
+      return mutationId === persistMutationId;
+    });
+    durablePersistTail = durablePersist.then(
+      () => undefined,
+      () => undefined,
+    );
+    persisted = await durablePersist;
   } catch (error) {
     if (isTauri()) {
       console.warn("Failed to persist observability settings to the Tauri store", error);

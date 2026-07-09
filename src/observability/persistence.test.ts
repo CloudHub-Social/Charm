@@ -158,7 +158,7 @@ describe("observability persistence", () => {
     await persist;
   });
 
-  it("does not let an older opt-in overwrite a newer opt-out IPC sync", async () => {
+  it("does not let an older opt-in overwrite a newer opt-out durable write or IPC sync", async () => {
     let resolveFirstWrite!: () => void;
     const firstWrite = new Promise<void>((resolve) => {
       resolveFirstWrite = resolve;
@@ -179,7 +179,7 @@ describe("observability persistence", () => {
       expect(mocks.storeSet).toHaveBeenCalledTimes(1);
     });
 
-    await persistObservabilitySettings(
+    const optOut = persistObservabilitySettings(
       {
         ...DEFAULT_OBSERVABILITY_SETTINGS,
         sentryEnabled: true,
@@ -188,8 +188,20 @@ describe("observability persistence", () => {
       101,
     );
     resolveFirstWrite();
-    await optIn;
+    await Promise.all([optIn, optOut]);
 
+    expect(mocks.storeSet).toHaveBeenNthCalledWith(2, "observability", {
+      state: {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+        logsEnabled: false,
+      },
+      updatedAt: 101,
+    });
+    expect(mocks.storeSave).toHaveBeenCalledOnce();
+    expect(mocks.storeSet.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.storeSave.mock.invocationCallOrder[0],
+    );
     expect(mocks.invoke).toHaveBeenCalledTimes(1);
     expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
       logsEnabled: false,
