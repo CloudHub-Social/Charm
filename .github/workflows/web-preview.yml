@@ -15,8 +15,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect web-affecting changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      # Shallow checkout (default depth 1) — this job only needs a two-tree
+      # `git diff base..head`, same pattern as quality-checks.yml's `changes`
+      # job (see that file for the full rationale).
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check whether the web build's inputs changed
+        id: filter
+        run: |
+          # Everything `pnpm build:web` can actually read: the app source, web
+          # entry points, and root config. Deliberately excludes src-tauri/**
+          # (native-only) and crates/charm-web-server/** (a separately
+          # deployed companion server this preview only proxies to via an
+          # already-configured URL, not something this workflow builds) —
+          # unlike quality-checks.yml's broader frontend_pattern, this one is
+          # scoped to just what a Cloudflare Worker preview deploy needs.
+          web_pattern='^(src/|public/|\.design-sync/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
+          zero_sha="0000000000000000000000000000000000000000"
+
+          diff_from() {
+            git fetch --no-tags --depth=1 --quiet origin "$1" \
+              && git diff --name-only "$1" "${{ github.sha }}"
+          }
+          # On a fetch/diff failure, deploy anyway (safe default — this can
+          # only over-run, never wrongly skip a real web change).
+          fallback() { echo "::notice::changes: could not diff against base $1; deploying anyway"; changed="src/"; }
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
+          elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
+            changed="src/"
+          else
+            base="${{ github.event.before }}"
+            changed=$(diff_from "$base") || fallback "$base"
+          fi
+
+          if echo "$changed" | grep -qE "$web_pattern"; then
+            web=true
+          else
+            web=false
+          fi
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+
   deploy:
     name: Cloudflare Worker preview
+    needs: changes
+    # workflow_dispatch has no "changed files" concept, so it always deploys.
+    # A skipped required-adjacent check here is fine — this isn't a required
+    # status check, just an informational preview link.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     environment: cloudflare-preview
     env:
