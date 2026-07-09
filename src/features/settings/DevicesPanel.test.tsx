@@ -68,6 +68,7 @@ const DEVICES: DeviceSummary[] = [
 beforeEach(() => {
   listDevices.mockReset().mockResolvedValue(DEVICES);
   crossSigningStatus.mockReset().mockResolvedValue({
+    has_identity: true,
     has_master_key: true,
     has_self_signing_key: true,
     has_user_signing_key: true,
@@ -99,6 +100,7 @@ describe("DevicesPanel", () => {
 
   it("offers Set up when cross-signing isn't bootstrapped", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -112,6 +114,7 @@ describe("DevicesPanel", () => {
 
   it("still offers Set up when only some cross-signing keys are present", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: true,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -123,6 +126,7 @@ describe("DevicesPanel", () => {
 
   it("prompts for the account password on a UIA challenge, then succeeds and refreshes the status", async () => {
     crossSigningStatus.mockResolvedValueOnce({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -146,6 +150,7 @@ describe("DevicesPanel", () => {
 
   it("surfaces a non-UIA bootstrap error on the first attempt instead of prompting for a password", async () => {
     crossSigningStatus.mockResolvedValueOnce({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -176,6 +181,7 @@ describe("DevicesPanel", () => {
 
   it("routes an un-bootstrapped OAuth account to account management instead of the in-app password flow", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,

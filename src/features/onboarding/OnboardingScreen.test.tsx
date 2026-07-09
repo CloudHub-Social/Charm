@@ -61,12 +61,14 @@ async function clickContinue() {
 }
 
 const UNVERIFIED_STATUS = {
+  has_identity: false,
   has_master_key: false,
   has_self_signing_key: false,
   has_user_signing_key: false,
 };
 
 const VERIFIED_STATUS = {
+  has_identity: true,
   has_master_key: true,
   has_self_signing_key: true,
   has_user_signing_key: true,

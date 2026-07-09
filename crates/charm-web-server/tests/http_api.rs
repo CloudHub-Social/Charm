@@ -290,6 +290,7 @@ async fn cross_signing_status_is_readable_after_login() {
     let body = body_json(response).await;
     // Just needs to be readable/well-shaped — whether this account has
     // already bootstrapped cross-signing depends on the test environment.
+    assert!(body["has_identity"].is_boolean());
     assert!(body["has_master_key"].is_boolean());
 }
 

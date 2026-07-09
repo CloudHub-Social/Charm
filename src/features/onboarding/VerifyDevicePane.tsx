@@ -33,11 +33,12 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
   const [done, setDone] = useState(false);
   const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
   const { needsPassword, password, setPassword, error, submitting } = uia;
-  const isBootstrapped = Boolean(
+  const hasLocalCrossSigningKeys = Boolean(
     crossSigningStatus?.has_master_key &&
     crossSigningStatus.has_self_signing_key &&
     crossSigningStatus.has_user_signing_key,
   );
+  const isBootstrapped = Boolean(crossSigningStatus?.has_identity || hasLocalCrossSigningKeys);
   const verifierDevices = (devices ?? []).filter(
     (device) => !device.is_current && device.is_verified,
   );

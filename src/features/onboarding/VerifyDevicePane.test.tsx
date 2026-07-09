@@ -11,12 +11,14 @@ const invalidateDevices = vi.fn();
 const invalidateCrossSigning = vi.fn();
 
 const UNBOOTSTRAPPED_STATUS = {
+  has_identity: false,
   has_master_key: false,
   has_self_signing_key: false,
   has_user_signing_key: false,
 };
 
 const BOOTSTRAPPED_STATUS = {
+  has_identity: true,
   has_master_key: true,
   has_self_signing_key: true,
   has_user_signing_key: true,
@@ -105,6 +107,40 @@ describe("VerifyDevicePane", () => {
 
   it("can request verification from another device when this session is new", async () => {
     crossSigningStatus = BOOTSTRAPPED_STATUS;
+    devices = [
+      {
+        device_id: "WEB_DEVICE",
+        display_name: "This browser",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: true,
+        is_verified: false,
+      },
+      {
+        device_id: "DESKTOP_DEVICE",
+        display_name: "Desktop",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: true,
+      },
+    ];
+    renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Verify with Desktop" }));
+
+    await waitFor(() => expect(verifyMutateAsync).toHaveBeenCalled());
+    expect(verifyMutateAsync.mock.calls[0]?.[0]).toBe("DESKTOP_DEVICE");
+    expect(bootstrapCrossSigning).not.toHaveBeenCalled();
+  });
+
+  it("offers trusted verifier devices when the account identity exists without local signing keys", async () => {
+    crossSigningStatus = {
+      has_identity: true,
+      has_master_key: false,
+      has_self_signing_key: false,
+      has_user_signing_key: false,
+    };
     devices = [
       {
         device_id: "WEB_DEVICE",

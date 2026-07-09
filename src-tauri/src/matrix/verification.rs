@@ -49,6 +49,7 @@ pub struct StartedSasVerification {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct CrossSigningStatusSummary {
+    pub has_identity: bool,
     pub has_master_key: bool,
     pub has_self_signing_key: bool,
     pub has_user_signing_key: bool,
@@ -126,7 +127,7 @@ pub async fn bootstrap_cross_signing_impl(
         .map_err(|error| UiaCommandError::Other {
             message: error.to_string(),
         })?
-        .filter(|device| !device.is_verified())
+        .filter(|device| !device.is_verified_with_cross_signing())
     {
         device
             .verify()
@@ -155,19 +156,25 @@ pub async fn cross_signing_status_impl(
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
         .to_owned();
-    match client.encryption().request_user_identity(&user_id).await {
-        Ok(Some(_)) | Ok(None) => {}
+    let has_identity = match client.encryption().request_user_identity(&user_id).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
         Err(error) => {
             tracing::warn!(
                 error = %error,
                 "failed to refresh cross-signing identity; falling back to cached status"
             );
+            false
         }
-    }
+    };
 
     let status = client.encryption().cross_signing_status().await;
+    let has_local_keys = status
+        .as_ref()
+        .is_some_and(|s| s.has_master || s.has_self_signing || s.has_user_signing);
 
     Ok(CrossSigningStatusSummary {
+        has_identity: has_identity || has_local_keys,
         has_master_key: status.as_ref().is_some_and(|s| s.has_master),
         has_self_signing_key: status.as_ref().is_some_and(|s| s.has_self_signing),
         has_user_signing_key: status.as_ref().is_some_and(|s| s.has_user_signing),
