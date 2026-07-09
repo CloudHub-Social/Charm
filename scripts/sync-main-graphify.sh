@@ -27,18 +27,33 @@ git fetch --quiet origin main
 
 local_head="$(git rev-parse HEAD)"
 remote_head="$(git rev-parse origin/main)"
-[ "$local_head" = "$remote_head" ] && exit 0
+fail_marker="/tmp/charm-graphify-update-failed"
 
-if ! git merge-base --is-ancestor "$local_head" "$remote_head"; then
-  echo "sync-main-graphify: local main has diverged from origin/main — skipping" >&2
-  exit 0
+# Retry the graph update even when main hasn't moved, if the last attempt
+# failed or never ran (missing graph) — otherwise a transient graphify
+# failure (or `graphify` landing on PATH after this job started) would leave
+# graphify-out stale/missing until origin/main happens to advance again.
+need_graphify_update=0
+if [ ! -f "$repo_root/graphify-out/graph.json" ] || [ -f "$fail_marker" ]; then
+  need_graphify_update=1
 fi
 
-git merge --quiet --ff-only origin/main
-echo "sync-main-graphify: fast-forwarded main $local_head -> $remote_head"
+if [ "$local_head" != "$remote_head" ]; then
+  if ! git merge-base --is-ancestor "$local_head" "$remote_head"; then
+    echo "sync-main-graphify: local main has diverged from origin/main — skipping" >&2
+    exit 0
+  fi
+  git merge --quiet --ff-only origin/main
+  echo "sync-main-graphify: fast-forwarded main $local_head -> $remote_head"
+  need_graphify_update=1
+fi
 
-if command -v graphify >/dev/null 2>&1; then
-  graphify update . >/tmp/charm-graphify-update.log 2>&1 \
-    && echo "sync-main-graphify: graphify updated" \
-    || echo "sync-main-graphify: graphify update failed — see /tmp/charm-graphify-update.log" >&2
+if [ "$need_graphify_update" = "1" ] && command -v graphify >/dev/null 2>&1; then
+  if graphify update . >/tmp/charm-graphify-update.log 2>&1; then
+    echo "sync-main-graphify: graphify updated"
+    rm -f "$fail_marker"
+  else
+    echo "sync-main-graphify: graphify update failed — see /tmp/charm-graphify-update.log" >&2
+    touch "$fail_marker"
+  fi
 fi

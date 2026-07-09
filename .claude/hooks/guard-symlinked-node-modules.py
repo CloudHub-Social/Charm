@@ -1,15 +1,29 @@
 #!/usr/bin/env python3
-"""Blocks dependency installs that would write through a symlinked node_modules.
+"""Blocks commands that would write through, or silently run against, a
+symlinked node_modules that no longer matches main's lockfile.
 
 scripts/git-hooks/post-checkout symlinks node_modules from main into a fresh
-worktree when the lockfiles match at creation time (see CLAUDE.md). If the
-worktree's branch later changes package.json/pnpm-lock.yaml and someone runs
-an install anyway, pnpm/npm/yarn follow the symlink and write straight into
-main's real node_modules — corrupting the shared install for main and every
-other worktree still linked to it. This is worth a hard block, not a nudge:
-there's no legitimate reason to run an install against a symlinked
-node_modules from inside a worktree (it should be `rm`'d first, per
-CLAUDE.md), and the corruption is silent and hard to notice until later.
+worktree when the lockfiles match at creation time (see CLAUDE.md). Two ways
+that can go stale:
+
+1. The worktree's own branch changes package.json/pnpm-lock.yaml after
+   creation, and someone installs anyway — pnpm/npm/yarn follow the symlink
+   and write straight into main's real node_modules, corrupting the shared
+   install for every other worktree linked to it. Always blocked, regardless
+   of whether the lockfiles currently happen to match.
+
+2. main itself advances past a dependency change (its pnpm-lock.yaml moves),
+   while this worktree's own lockfile stays where it was. The symlink still
+   resolves, so `pnpm test`/`build`/`dev`/etc. run silently against a
+   different dependency set than this worktree's lockfile declares, without
+   an install ever touching the symlink. Blocked only when the lockfiles
+   currently mismatch, since that's the actual signal something drifted.
+
+Resolves the effective working directory from a leading `cd <path> &&`/`;`
+in the command when present (e.g. `cd ~/git/Charm && pnpm install`), rather
+than trusting CLAUDE_PROJECT_DIR blindly — otherwise a command that
+deliberately cd's into main to run there would be wrongly blocked just
+because the *session* is rooted in a worktree.
 """
 import json
 import os
@@ -19,6 +33,44 @@ import sys
 INSTALL_COMMAND = re.compile(
     r"\b(pnpm|npm|yarn)\b[^|;&]*\b(install|i|add|remove|rm|update|up|prune)\b"
 )
+RUN_COMMAND = re.compile(
+    r"\b(pnpm|npm|yarn|npx)\b(?![^|;&]*\b(?:--version|-v|list|ls|why|outdated|config|store)\b)"
+    r"|(?:^|[/\s])node_modules/\.bin/"
+)
+LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
+
+
+def resolve_cwd(command, default_cwd):
+    m = LEADING_CD.match(command)
+    if not m:
+        return default_cwd
+    path = m.group(1).strip("\"'")
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(default_cwd, path)
+    return os.path.normpath(path)
+
+
+def lockfiles_match(worktree_root, main_root):
+    a = os.path.join(worktree_root, "pnpm-lock.yaml")
+    b = os.path.join(main_root, "pnpm-lock.yaml")
+    if not (os.path.isfile(a) and os.path.isfile(b)):
+        return False
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
+def deny(reason):
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
 
 
 def main():
@@ -31,29 +83,42 @@ def main():
         return 0
 
     command = (payload.get("tool_input") or {}).get("command") or ""
-    if not INSTALL_COMMAND.search(command):
+    is_install = bool(INSTALL_COMMAND.search(command))
+    is_run = bool(RUN_COMMAND.search(command))
+    if not (is_install or is_run):
         return 0
 
-    root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    root = resolve_cwd(command, default_root)
     node_modules = os.path.join(root, "node_modules")
     if not os.path.islink(node_modules):
         return 0
 
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "node_modules here is a symlink into ~/git/Charm's real "
-                "node_modules (see scripts/git-hooks/post-checkout). Running "
-                "an install through it would write into main's shared "
-                "node_modules, corrupting it for every other worktree linked "
-                "to it. If this branch changed package.json/pnpm-lock.yaml: "
-                "`rm node_modules` first, then `pnpm install "
-                "--frozen-lockfile` to get a real, isolated install."
-            ),
-        }
-    }))
+    main_root = os.path.dirname(os.readlink(node_modules))
+
+    if is_install:
+        deny(
+            "node_modules here is a symlink into ~/git/Charm's real "
+            "node_modules (see scripts/git-hooks/post-checkout). Running "
+            "an install through it would write into main's shared "
+            "node_modules, corrupting it for every other worktree linked "
+            "to it. If this branch changed package.json/pnpm-lock.yaml: "
+            "`rm node_modules` first, then `pnpm install "
+            "--frozen-lockfile` to get a real, isolated install."
+        )
+        return 0
+
+    if not lockfiles_match(root, main_root):
+        deny(
+            "node_modules here is a symlink into main's node_modules, but "
+            "this worktree's pnpm-lock.yaml no longer matches main's — main "
+            "has likely advanced past a dependency change since this "
+            "worktree was created. Running this now would use a different "
+            "dependency set than this worktree's own lockfile declares. "
+            "`rm node_modules && pnpm install --frozen-lockfile` first to "
+            "get a real, isolated install matching this branch's lockfile."
+        )
+
     return 0
 
 

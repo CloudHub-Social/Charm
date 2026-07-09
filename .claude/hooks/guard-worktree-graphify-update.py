@@ -10,6 +10,13 @@ then sees misleading nodes/paths until someone rebuilds it from main. main
 itself has a real (non-symlink) graphify-out, so this only fires for
 worktrees, and scripts/sync-main-graphify.sh remains the intended way to
 refresh the shared graph.
+
+Resolves the effective working directory from a leading `cd <path> &&`/`;` in
+the command when present (e.g. `cd ~/git/Charm && graphify update .`), rather
+than trusting CLAUDE_PROJECT_DIR blindly — a Claude session rooted in a
+worktree can still legitimately `cd` into main first to run the update there,
+and that's exactly the documented workaround this hook's own message
+suggests, so it must not itself be blocked.
 """
 import json
 import os
@@ -17,6 +24,18 @@ import re
 import sys
 
 GRAPHIFY_UPDATE = re.compile(r"\bgraphify\s+update\b")
+LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
+
+
+def resolve_cwd(command, default_cwd):
+    m = LEADING_CD.match(command)
+    if not m:
+        return default_cwd
+    path = m.group(1).strip("\"'")
+    path = os.path.expanduser(path)
+    if not os.path.isabs(path):
+        path = os.path.join(default_cwd, path)
+    return os.path.normpath(path)
 
 
 def main():
@@ -32,7 +51,8 @@ def main():
     if not GRAPHIFY_UPDATE.search(command):
         return 0
 
-    root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    root = resolve_cwd(command, default_root)
     graphify_out = os.path.join(root, "graphify-out")
     if not os.path.islink(graphify_out):
         return 0

@@ -9,6 +9,11 @@
     <string>/bin/sh</string>
     <string>__REPO_ROOT__/scripts/sync-main-graphify.sh</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CHARM_MAIN_WORKTREE</key>
+    <string>__REPO_ROOT__</string>
+  </dict>
   <key>StartInterval</key>
   <integer>900</integer>
   <key>RunAtLoad</key>
