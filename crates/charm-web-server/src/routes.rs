@@ -41,7 +41,7 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
-use charm_lib::matrix::spaces::list_space_hierarchy_impl;
+use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hierarchy_impl};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
@@ -83,6 +83,8 @@ pub fn router(state: AppState) -> Router {
         // -- rooms --
         .route("/api/rooms", get(list_rooms))
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
+        .route("/api/rooms/join", post(join_room))
+        .route("/api/rooms/knock", post(knock_room))
         .route("/api/rooms/{room_id}", get(get_room_details))
         .route("/api/rooms/{room_id}/members", get(get_room_members))
         .route(
@@ -644,6 +646,45 @@ async fn list_space_hierarchy(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(hierarchy))
+}
+
+#[derive(Debug, Deserialize)]
+struct JoinRoomRequest {
+    room_id_or_alias: String,
+}
+
+async fn join_room(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<JoinRoomRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    join_room_impl(&session.client, &request.room_id_or_alias)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct KnockRoomRequest {
+    room_id_or_alias: String,
+    reason: Option<String>,
+}
+
+async fn knock_room(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<KnockRoomRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    knock_room_impl(
+        &session.client,
+        &request.room_id_or_alias,
+        request.reason.as_deref(),
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------
