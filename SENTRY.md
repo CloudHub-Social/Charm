@@ -24,6 +24,31 @@ already-running frontend client for the current window and apply to Rust crash
 monitoring on restart. Re-enabling after a same-window opt-out flips the
 frontend client back on without calling `Sentry.init()` a second time.
 
+Android JVM setup lives in
+`src-tauri/gen/android/app/src/main/java/social/cloudhub/charm/CharmApplication.kt`.
+The app manifest removes Sentry's Android `ContentProvider` auto-init path, so
+adding the runtime SDK does not start Sentry before application code runs.
+`CharmApplication` initializes `SentryAndroid` only when all conditions are true:
+
+- `SENTRY_DSN` or `VITE_SENTRY_DSN` was present at Android build time.
+- `observability.json` in Android app storage has
+  `observability.state.sentryEnabled: true`.
+
+The Android runtime initializer watches the same store and gates `beforeSend`
+and `beforeBreadcrumb` from an in-memory consent flag, keeps `sendDefaultPii`
+off, disables Android auto-session tracking, and leaves performance tracing
+unconfigured. This initial Android coverage is therefore scoped to Sentry
+Android's JVM crash and ANR capture after opt-in. Same-session opt-out prevents
+new captures through the callback gates, but events already accepted by the SDK
+can still be retried or delivered from Sentry's queue. Opting back in during the
+same session resumes events only if Sentry was already initialized at startup. If
+Android starts with consent disabled, first opt-in still requires an app restart
+because `SentryAndroid.init` only runs from `Application.onCreate`.
+NDK/native crash capture, Android Mobile Vitals, and performance transactions
+remain disabled until Charm has the corresponding SDK integration and a native
+consent bridge that can shut down or reconfigure the SDK immediately when a user
+opts out.
+
 When Sentry consent is enabled, Rust installs a Sentry `tracing` layer after
 Sentry initialization, even if `logsEnabled` is false at startup, so
 same-session log opt-in can start native tracing without a restart. The layer is
@@ -41,7 +66,8 @@ drops debug logs outside debug builds.
 Use these variables for local or release builds:
 
 - `VITE_SENTRY_DSN`: public frontend DSN.
-- `SENTRY_DSN`: Rust/native DSN.
+- `SENTRY_DSN`: Rust/native DSN. Android also embeds this at build time for
+  JVM crash and ANR coverage.
 - `VITE_SENTRY_ENVIRONMENT` / `SENTRY_ENVIRONMENT`: Sentry environment.
 - `VITE_SENTRY_RELEASE` / `SENTRY_RELEASE`: release override.
 - `SENTRY_AUTH_TOKEN`, `SENTRY_ORG`, `SENTRY_PROJECT`: artifact upload through
@@ -89,8 +115,8 @@ archive or IPA exists. Frontend and desktop bundle sizes are reported in GitHub
 because Sentry Size Analysis is a mobile build-size product, not a generic web
 or desktop bundle analyzer.
 
-Signed iOS device-release dSYMs and native Android SDK runtime crash coverage
-are still Phase 3 follow-ups.
+Signed iOS device-release dSYMs, NDK/native Android crash capture, Android
+Mobile Vitals, and performance transactions are still Phase 3 follow-ups.
 
 ## Scrubbing Rules
 
@@ -135,8 +161,9 @@ attachment IPC, and push decrypt fallback events. It also covers opt-in user
 feedback from settings and the crash fallback, with optional SDK-provided
 screenshot capture when supported.
 
-Broader Rust tracing/log bridges, native Android SDK runtime coverage, and
-signed iOS device-release dSYMs remain separate follow-up phases from Spec 21.
+Broader Rust tracing/log bridges, NDK/native Android crash capture, Android
+Mobile Vitals, and signed iOS device-release dSYMs remain separate follow-up
+phases from Spec 21.
 Broader per-command Rust instrumentation is still intentionally incremental;
 new producers should stay Charm-targeted and avoid raw Matrix identifiers, file
 paths, and secrets.

@@ -15,6 +15,7 @@ interface PersistedEnvelope {
 }
 
 let persistMutationId = 0;
+let durablePersistTail = Promise.resolve();
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
@@ -55,7 +56,7 @@ function writeLocalEnvelope(envelope: PersistedEnvelope): void {
 
 async function getStore() {
   const { load } = await import("@tauri-apps/plugin-store");
-  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: true, defaults: {} });
+  return load(OBSERVABILITY_STORE_FILENAME, { autoSave: false, defaults: {} });
 }
 
 async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
@@ -103,13 +104,35 @@ export async function persistObservabilitySettings(
   if (!envelope.state.logsEnabled) {
     await syncRustLogConsent(false);
   }
+  let persisted = false;
   try {
-    const store = await getStore();
-    await store.set(OBSERVABILITY_STORE_KEY, envelope);
-  } catch {
+    const durablePersist = durablePersistTail.then(async () => {
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      const store = await getStore();
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.set(OBSERVABILITY_STORE_KEY, envelope);
+      if (mutationId !== persistMutationId) {
+        return false;
+      }
+      await store.save();
+      return mutationId === persistMutationId;
+    });
+    durablePersistTail = durablePersist.then(
+      () => undefined,
+      () => undefined,
+    );
+    persisted = await durablePersist;
+  } catch (error) {
+    if (isTauri()) {
+      console.warn("Failed to persist observability settings to the Tauri store", error);
+    }
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }
-  if (mutationId === persistMutationId && envelope.state.logsEnabled) {
+  if (persisted && mutationId === persistMutationId && envelope.state.logsEnabled) {
     await syncRustLogConsent(true);
   }
 }
