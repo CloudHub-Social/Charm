@@ -190,6 +190,25 @@ describe("NotificationsPanel", () => {
     expect(
       screen.queryByRole("button", { name: "Turn on push notifications" }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Install one such as ntfy/)).not.toBeInTheDocument();
+  });
+
+  it("suggests installing a UnifiedPush distributor when Android has no push endpoint yet", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "none",
+      registered: false,
+      endpoint_present: false,
+      last_error: null,
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(
+      await screen.findByText(
+        "Android push needs a UnifiedPush distributor. Install one such as ntfy, then turn push notifications on again.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Turn on push notifications" })).toBeVisible();
   });
 
   it("requests OS notification permission before registering push, on a platform where it's available", async () => {

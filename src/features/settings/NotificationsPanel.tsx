@@ -30,6 +30,8 @@ const TRANSPORT_LABELS: Record<PusherKind, string> = {
 function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
+  const showAndroidDistributorNotice =
+    status?.available === true && !status.registered && transport === "none";
 
   // The homeserver can only deliver a push if the OS has also granted the
   // notification permission — without this, `register_push` can succeed
@@ -54,6 +56,12 @@ function PushTransportTile() {
           <>
             Lets Charm notify you with a real message preview even when it's closed. Transport:{" "}
             {TRANSPORT_LABELS[transport]}.
+            {showAndroidDistributorNotice && (
+              <span className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
+                Android push needs a UnifiedPush distributor. Install one such as ntfy, then turn
+                push notifications on again.
+              </span>
+            )}
             {status?.last_error && (
               <span className="mt-1 block text-destructive">{status.last_error}</span>
             )}
