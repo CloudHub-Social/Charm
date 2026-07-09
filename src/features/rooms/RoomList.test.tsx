@@ -1,6 +1,6 @@
 import type { ComponentProps, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
@@ -343,6 +343,41 @@ describe("RoomList", () => {
     expect(onSelectSpace).toHaveBeenCalledWith("!nested:localhost");
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(joinRoom).toHaveBeenCalledWith("!public-space:localhost");
+  });
+
+  it("excludes direct rooms from the selected space hierarchy", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const directRoom = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!dm:localhost",
+          name: "Alice",
+          topic: null,
+          num_joined_members: 2,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, directRoom],
+          mode: "space",
+          selectedSpace: space,
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledWith("!space:localhost"));
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
   });
 
   it("keeps tagged child spaces visible in the selected space hierarchy", async () => {

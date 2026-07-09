@@ -353,7 +353,9 @@ function getScopedRooms({
   }
   if (mode === "space" && selectedSpace) {
     const descendantIds = new Set(flattenHierarchy(hierarchy).map((node) => node.child.room_id));
-    return rooms.filter((room) => !room.is_space && descendantIds.has(room.room_id));
+    return rooms.filter(
+      (room) => !room.is_space && !room.is_direct && descendantIds.has(room.room_id),
+    );
   }
   if (showAllRooms) {
     return rooms.filter((room) => !room.is_space && !room.is_direct);
@@ -373,7 +375,7 @@ function countVisibleHierarchyNodes(
 ): number {
   return nodes.reduce((count, node) => {
     const joinedRoom = roomById.get(node.child.room_id);
-    if (isTaggedNonSpaceRoom(joinedRoom)) return count;
+    if (isHiddenHierarchyRoom(joinedRoom)) return count;
     return count + 1 + countVisibleHierarchyNodes(node.children, roomById);
   }, 0);
 }
@@ -393,7 +395,7 @@ function renderHierarchy(
 ): ReactElement[] {
   return nodes.flatMap((node, index) => {
     const joinedRoom = options.roomById.get(node.child.room_id);
-    if (isTaggedNonSpaceRoom(joinedRoom)) return [];
+    if (isHiddenHierarchyRoom(joinedRoom)) return [];
     const nodeKey = `${path}/${index}:${node.child.room_id}`;
     return [
       <HierarchyRow
@@ -410,6 +412,10 @@ function renderHierarchy(
       ...renderHierarchy(node.children, options, depth + 1, nodeKey),
     ];
   });
+}
+
+function isHiddenHierarchyRoom(room: RoomSummary | undefined) {
+  return room?.is_direct === true || isTaggedNonSpaceRoom(room);
 }
 
 function isTaggedNonSpaceRoom(room: RoomSummary | undefined) {
