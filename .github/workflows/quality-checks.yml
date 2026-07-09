@@ -35,6 +35,7 @@ jobs:
     outputs:
       platform: ${{ steps.filter.outputs.platform }}
       integration: ${{ steps.filter.outputs.integration }}
+      frontend: ${{ steps.filter.outputs.frontend }}
     steps:
       # Shallow checkout (default depth 1). This job only needs a two-tree
       # `git diff base..head`, which compares the two commits' trees directly
@@ -68,6 +69,17 @@ jobs:
           # register-test-user.sh, mas-config.yaml, configure-mas.sh), so a change
           # there must run them even with no Rust diff.
           integration_pattern='^dev/synapse/'
+          # frontend/storybook-a11y/e2e are all pure JS/TS: a Rust-only or
+          # docs-only PR can't change any of their results, so gate them the
+          # same way rust/platform builds are already gated above. Deliberately
+          # broad (every frontend source dir + every config file that could
+          # plausibly affect lint/typecheck/build/test output) — a false
+          # negative here (wrongly skipping) is much worse than the cost of an
+          # occasional unnecessary run, so this errs toward over-matching.
+          # Mirrors sentry-snapshots.yml's own path filter, extended with the
+          # root config files that workflow doesn't need to care about but
+          # lint/typecheck/build do.
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$|\.github/workflows/quality-checks\.yml$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -84,11 +96,11 @@ jobs:
             git fetch --no-tags --depth=1 --quiet origin "$1" \
               && git diff --name-only "$1" "${{ github.sha }}"
           }
-          # On a fetch/diff failure, run the platform jobs (safe default — this
+          # On a fetch/diff failure, run every gated job (safe default — this
           # can only over-run, never wrongly skip) AND log why, so an unexpected
           # fallback (e.g. an unfetchable base) is diagnosable instead of looking
-          # like a real src-tauri change.
-          fallback() { echo "::notice::changes: could not diff against base $1; running all platform jobs"; changed="src-tauri/"; }
+          # like a real src-tauri/frontend change.
+          fallback() { echo "::notice::changes: could not diff against base $1; running all gated jobs"; changed=$'src-tauri/\nsrc/'; }
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
@@ -103,12 +115,12 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
             # infra fix) always runs them — there's no "changed files" concept.
-            changed="src-tauri/"
+            changed=$'src-tauri/\nsrc/'
           elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
             # New branch / force-push with no prior tip to diff against —
             # `git diff` against the all-zeros SHA isn't meaningful, so run
-            # the platform jobs rather than silently skip them.
-            changed="src-tauri/"
+            # every gated job rather than silently skip them.
+            changed=$'src-tauri/\nsrc/'
           else
             # push to main: diff against the pre-push tip.
             base="${{ github.event.before }}"
@@ -125,11 +137,23 @@ jobs:
           else
             integration=false
           fi
+          if echo "$changed" | grep -qE "$frontend_pattern"; then
+            frontend=true
+          else
+            frontend=false
+          fi
           echo "platform=$platform" >> "$GITHUB_OUTPUT"
           echo "integration=$integration" >> "$GITHUB_OUTPUT"
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend (lint, format, typecheck, test, build)
+    needs: changes
+    # Pure JS/TS job — a Rust-only or docs-only PR can't change its result.
+    # A skipped required check still satisfies branch protection (same
+    # mechanism already relied on for the rust/macos/windows/linux/ios/android
+    # jobs' path-based skips above).
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -171,6 +195,12 @@ jobs:
 
   storybook-a11y:
     name: Storybook (build + axe a11y)
+    needs: changes
+    # Pure JS/TS job — a Rust-only or docs-only PR can't change its result.
+    # A skipped required check still satisfies branch protection (same
+    # mechanism already relied on for the rust/macos/windows/linux/ios/android
+    # jobs' path-based skips above).
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -214,6 +244,12 @@ jobs:
 
   e2e:
     name: E2E (message actions, against the dev server)
+    needs: changes
+    # Pure JS/TS job — a Rust-only or docs-only PR can't change its result.
+    # A skipped required check still satisfies branch protection (same
+    # mechanism already relied on for the rust/macos/windows/linux/ios/android
+    # jobs' path-based skips above).
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
