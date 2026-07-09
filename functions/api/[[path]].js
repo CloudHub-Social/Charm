@@ -1,5 +1,6 @@
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
+  "host",
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
@@ -30,12 +31,21 @@ function previewApiBase(env) {
   }
 }
 
-function proxyHeaders(request) {
+function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   const headers = new Headers(request.headers);
-  for (const name of headers.keys()) {
-    if (HOP_BY_HOP_HEADERS.has(name.toLowerCase()) || name.startsWith("cf-")) {
-      headers.delete(name);
+  const namesToDelete = [];
+  for (const name of Array.from(headers.keys())) {
+    const normalizedName = name.toLowerCase();
+    if (
+      (!preserveUpgrade && HOP_BY_HOP_HEADERS.has(normalizedName)) ||
+      normalizedName === "host" ||
+      normalizedName.startsWith("cf-")
+    ) {
+      namesToDelete.push(name);
     }
+  }
+  for (const name of namesToDelete) {
+    headers.delete(name);
   }
   return headers;
 }
@@ -48,17 +58,23 @@ export async function onRequest({ env, request }) {
 
   const apiBase = result.url;
   const incomingUrl = new URL(request.url);
+  const apiBasePath = apiBase.pathname.replace(/\/+$/, "");
+  const shouldStripApiPrefix =
+    apiBasePath.endsWith("/api") &&
+    (incomingUrl.pathname === "/api" || incomingUrl.pathname.startsWith("/api/"));
   const incomingPath =
-    apiBase.pathname.replace(/\/+$/, "").endsWith("/api") &&
-    incomingUrl.pathname.startsWith("/api/")
-      ? incomingUrl.pathname.slice("/api".length)
-      : incomingUrl.pathname;
+    shouldStripApiPrefix && incomingUrl.pathname === "/api"
+      ? ""
+      : shouldStripApiPrefix
+        ? incomingUrl.pathname.slice("/api".length)
+        : incomingUrl.pathname;
   const relativePath = incomingPath.replace(/^\/+/, "");
   const targetUrl = new URL(`${relativePath}${incomingUrl.search}`, `${apiBase}/`);
+  const preserveUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
 
   return fetch(targetUrl, {
     method: request.method,
-    headers: proxyHeaders(request),
+    headers: proxyHeaders(request, { preserveUpgrade }),
     body: request.body,
     redirect: "manual",
   });

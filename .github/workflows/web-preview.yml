@@ -36,9 +36,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
+          CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CHARM_WEB_API_BASE_URL; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -83,6 +84,30 @@ jobs:
             exit 1
           fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify deployed API proxy
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          status=$(curl --silent --show-error --output /tmp/charm-preview-proxy.txt --write-out "%{http_code}" "${PREVIEW_URL}/api/profile/me")
+          case "$status" in
+            401|403|404)
+              ;;
+            502)
+              echo "::error::Preview API proxy returned 502. Ensure CHARM_WEB_API_BASE_URL is configured as a Pages runtime variable for the cloudflare-preview environment."
+              cat /tmp/charm-preview-proxy.txt
+              exit 1
+              ;;
+            5*)
+              echo "::error::Preview API proxy returned HTTP ${status}."
+              cat /tmp/charm-preview-proxy.txt
+              exit 1
+              ;;
+            *)
+              echo "Preview API proxy responded with HTTP ${status}."
+              ;;
+          esac
 
       - name: Comment preview URL
         if: steps.config.outputs.enabled == 'true' && github.event_name == 'pull_request'
