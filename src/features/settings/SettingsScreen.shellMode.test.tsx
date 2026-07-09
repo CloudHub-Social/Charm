@@ -68,6 +68,7 @@ function renderScreen(section: "account") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   isDesktopPlatform.mockResolvedValue(false);
   window.location.hash = "";
 });
@@ -122,6 +123,16 @@ describe("SettingsScreen shell mode", () => {
     expect(screen.queryByRole("tab", { name: "Desktop" })).not.toBeInTheDocument();
 
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  it("hides unsupported settings sections in web builds", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderScreen("account");
+
+    await screen.findByRole("button", { name: "Close settings" });
+    expect(screen.queryByRole("tab", { name: "Notifications" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Devices" })).not.toBeInTheDocument();
   });
 
   it("hides the Desktop section on a Tauri *mobile* build even at a desktop-width viewport", async () => {

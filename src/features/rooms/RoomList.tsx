@@ -17,6 +17,7 @@ import {
   setRoomMuted,
   type RoomSummary,
 } from "@/lib/matrix";
+import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
@@ -48,6 +49,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
+  const supportsSpaceBrowser = !isWebBuild();
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
 
@@ -81,7 +83,10 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
         {ownProfile ? (
           <div className="flex min-w-0 items-center gap-2">
             <Avatar size="sm">
-              <AvatarImage src={resolveAvatar(ownProfile.avatar_path)} alt="" />
+              <AvatarImage
+                src={resolveAvatar(ownProfile.avatar_path, ownProfile.avatar_url)}
+                alt=""
+              />
               <AvatarFallback
                 style={{ background: avatarColor(ownProfile.user_id) }}
                 className="font-bold text-white"
@@ -139,12 +144,14 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
 
             {sections.spaceGroups.map(({ space, rooms: spaceRooms }) => (
               <div key={space.room_id}>
-                <button
-                  onClick={() => setBrowsingSpace(space)}
-                  className="w-full truncate rounded-md px-3 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
-                >
-                  {displayName(space.room_id, space.name)}
-                </button>
+                {supportsSpaceBrowser && (
+                  <button
+                    onClick={() => setBrowsingSpace(space)}
+                    className="w-full truncate rounded-md px-3 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
+                  >
+                    {displayName(space.room_id, space.name)}
+                  </button>
+                )}
                 <RoomListSection
                   title={displayName(space.room_id, space.name)}
                   count={spaceRooms.length}
@@ -233,7 +240,11 @@ function DraggableRoomRow({
       onToggleLowPriority={() =>
         setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
       }
-      onToggleMuted={() => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)}
+      onToggleMuted={
+        isWebBuild()
+          ? undefined
+          : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
+      }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       dragHandleProps={bind()}

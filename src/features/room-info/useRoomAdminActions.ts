@@ -46,7 +46,9 @@ export function useRoomAdminActions(roomId: string) {
   return {
     setName: useRoomAdminMutation(roomId, (name: string) => setRoomName(roomId, name)),
     setTopic: useRoomAdminMutation(roomId, (topic: string) => setRoomTopic(roomId, topic)),
-    setAvatar: useRoomAdminMutation(roomId, (filePath: string) => setRoomAvatar(roomId, filePath)),
+    setAvatar: useRoomAdminMutation(roomId, (filePath: string | File) =>
+      setRoomAvatar(roomId, filePath),
+    ),
     removeAvatar: useRoomAdminMutation(roomId, () => removeRoomAvatar(roomId)),
     setJoinRule: useRoomAdminMutation(roomId, (joinRule: JoinRuleKind) =>
       setRoomJoinRule(roomId, joinRule),

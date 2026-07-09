@@ -1,20 +1,11 @@
 import * as Sentry from "@sentry/react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { createIpcOperationId } from "./operationId";
 import { scrubSensitiveText } from "./scrubbers";
 
 type InvokeArgs = Record<string, unknown>;
 
 export const IPC_OPERATION_ID_HEADER = "x-charm-operation-id";
-
-let fallbackOperationCounter = 0;
-
-function operationId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `ipc-${globalThis.crypto.randomUUID()}`;
-  }
-  fallbackOperationCounter += 1;
-  return `ipc-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;
-}
 
 function summarizeString(value: string): string {
   const scrubbed = scrubSensitiveText(value);
@@ -78,7 +69,7 @@ function addIpcBreadcrumb(
 }
 
 export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
-  const id = operationId();
+  const id = createIpcOperationId();
   const startedAt = performance.now();
   const argsSummary = summarizeArgs(args);
 

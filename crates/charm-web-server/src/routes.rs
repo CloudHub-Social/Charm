@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
 
+use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
     can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
@@ -25,7 +26,7 @@ use charm_lib::matrix::commands::SlashCommand;
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
-use charm_lib::matrix::profiles::get_own_profile_impl;
+use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
 use charm_lib::matrix::room_admin::{
     ban_member_impl, build_room_details, enable_room_encryption_impl, get_room_member_list_impl,
     invite_member_impl, kick_member_impl, remove_room_avatar_impl, set_member_power_level_impl,
@@ -46,6 +47,7 @@ use charm_lib::matrix::verification::{
     confirm_sas_verification_impl, cross_signing_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
+use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
@@ -98,10 +100,7 @@ pub fn router(state: AppState) -> Router {
             "/api/rooms/{room_id}/events/{event_id}/redact",
             post(redact_event),
         )
-        .route(
-            "/api/rooms/{room_id}/events/{event_id}/can-redact",
-            get(can_redact),
-        )
+        .route("/api/rooms/{room_id}/can-redact", get(can_redact))
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
@@ -171,6 +170,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/presence", put(set_presence))
         .route("/api/presence/{user_id}", get(get_presence))
         .route("/api/profile/me", get(get_own_profile))
+        .route("/api/profile/display-name", put(set_display_name))
+        .route(
+            "/api/account/deactivate-url",
+            get(get_account_deactivate_url),
+        )
         // -- account data --
         .route(
             "/api/account-data/{event_type}",
@@ -276,12 +280,16 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
     // `POST` with `Content-Type: application/json`) instead of erroring
     // loudly. Listing exactly what this API actually uses avoids the
     // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
-    // and the only non-default header any request needs to set is
+    // and the only non-default headers requests need to set are
     // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
-    // browsers set that one themselves, but it still needs to be allowed).
+    // browsers set that one themselves, but it still needs to be allowed) and
+    // `x-charm-operation-id` (used to correlate upload progress).
     let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::CONTENT_TYPE])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            axum::http::HeaderName::from_static("x-charm-operation-id"),
+        ])
         .allow_credentials(true);
 
     let origins: Vec<axum::http::HeaderValue> = std::env::var(ALLOWED_ORIGIN_ENV)
@@ -476,12 +484,19 @@ async fn logout(
 #[derive(Serialize)]
 struct MeResponse {
     user_id: String,
+    device_id: String,
 }
 
 async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
+    let device_id = session
+        .client
+        .device_id()
+        .ok_or_else(|| ApiError::unauthorized("session has no device id"))?
+        .to_string();
     Ok(Json(MeResponse {
         user_id: session.user_id.clone(),
+        device_id,
     }))
 }
 
@@ -748,7 +763,7 @@ struct CanRedactQuery {
 async fn can_redact(
     State(state): State<AppState>,
     jar: CookieJar,
-    Path((room_id, _event_id)): Path<(String, String)>,
+    Path(room_id): Path<String>,
     Query(query): Query<CanRedactQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
@@ -1208,7 +1223,44 @@ async fn get_own_profile(
     let profile = get_own_profile_impl(&session.client, None, presence)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(Json(profile))
+    Ok(Json(OwnProfileResponse {
+        profile,
+        uses_oauth: session.client.oauth().user_session().is_some(),
+    }))
+}
+
+#[derive(Serialize)]
+struct OwnProfileResponse {
+    #[serde(flatten)]
+    profile: OwnProfile,
+    uses_oauth: bool,
+}
+
+async fn get_account_deactivate_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<Json<Option<String>>, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(
+        account_management_url(
+            &session.client,
+            AccountManagementActionData::AccountDeactivate,
+        )
+        .await,
+    ))
+}
+
+async fn account_management_url(
+    client: &matrix_sdk::Client,
+    action: AccountManagementActionData<'_>,
+) -> Option<String> {
+    if client.matrix_auth().logged_in() {
+        return None;
+    }
+    let metadata = client.oauth().server_metadata().await.ok()?;
+    metadata
+        .account_management_url_with_action(action)
+        .map(|url| url.to_string())
 }
 
 // ---------------------------------------------------------------------
@@ -1835,6 +1887,21 @@ async fn set_avatar(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn set_display_name(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(display_name): Json<Option<String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    session
+        .client
+        .account()
+        .set_display_name(display_name.as_deref())
+        .await
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Sniffs the real content type from the image bytes themselves (the `image`
 /// crate's own format-detection, not a hand-rolled magic-byte match — this
 /// crate already depends on it for `attachment_info_for`'s dimension
@@ -2004,7 +2071,10 @@ async fn bootstrap_cross_signing(
     let request: BootstrapCrossSigningRequest = parse_optional_json(&body)?;
     bootstrap_cross_signing_impl(&session.client, request.password)
         .await
-        .map_err(ApiError::bad_request)?;
+        .map_err(|error| match error {
+            UiaCommandError::UiaChallenge => ApiError::uia_challenge(),
+            UiaCommandError::Other { message } => ApiError::uia_other(message),
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2158,6 +2228,7 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
         Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: "origin not allowed".to_string(),
+            kind: None,
         })
     }
 }
@@ -2572,6 +2643,7 @@ async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    kind: Option<&'static str>,
 }
 
 impl ApiError {
@@ -2579,29 +2651,47 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: message.into(),
+            kind: None,
         }
     }
     fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: message.into(),
+            kind: None,
         }
     }
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
             message: message.into(),
+            kind: None,
+        }
+    }
+    fn uia_challenge() -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: "UIA challenge required".to_owned(),
+            kind: Some("UiaChallenge"),
+        }
+    }
+    fn uia_other(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: Some("Other"),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let body = match self.kind {
+            Some("Other") => serde_json::json!({ "kind": "Other", "message": self.message }),
+            Some(kind) => serde_json::json!({ "kind": kind, "error": self.message }),
+            None => serde_json::json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 

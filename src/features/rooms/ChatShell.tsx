@@ -6,6 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
+import { isWebBuild } from "@/lib/platform";
 import {
   canRedact,
   editMessage,
@@ -53,6 +54,13 @@ interface ChatShellProps {
 
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
+
+function attachmentUploadPayload(file: File & { path?: string }): string | File | null {
+  if (isWebBuild()) {
+    return file;
+  }
+  return file.path ?? null;
+}
 
 function typingLabel(userIds: string[]): string {
   if (userIds.length === 0) return "";
@@ -137,6 +145,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const lastMarkedReadEventId = useRef<string | null>(null);
   const lastTypingSentAt = useRef(0);
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -432,13 +441,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     }
   }
 
-  async function handleAttachFile(filePath: string) {
+  async function handleAttachFile(file: string | File) {
     if (!room) return;
-    const filename = filePath.split(/[/\\]/).pop() ?? filePath;
+    const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
     const txnId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setUploads((prev) => [...prev, { txnId, filename, sent: 0, total: 0, failed: false }]);
     try {
-      await sendAttachment(room.room_id, filePath, txnId);
+      await sendAttachment(room.room_id, file, txnId);
       setUploads((prev) => prev.filter((u) => u.txnId !== txnId));
     } catch (err) {
       console.error(err);
@@ -447,31 +456,41 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   }
 
   async function handleAttachClick() {
+    if (isWebBuild()) {
+      attachmentInputRef.current?.click();
+      return;
+    }
     const selected = await openFileDialog({ multiple: false });
     if (typeof selected === "string") {
       await handleAttachFile(selected);
     }
   }
 
+  function handleAttachmentInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) {
+      handleAttachFile(file);
+    }
+  }
+
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    // Tauri's webview exposes dropped files' real filesystem paths via
-    // `webkitGetAsEntry`-less File objects that still carry a `path` on
-    // desktop; browsers' plain `File` has no path, so this only actually
-    // triggers a send inside the Tauri webview, same as production runs in.
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
-    if (file?.path) {
-      handleAttachFile(file.path);
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
+      handleAttachFile(upload);
     }
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
     const files = Array.from(event.clipboardData.files) as (File & { path?: string })[];
     const file = files.find((f) => f.type.startsWith("image/"));
-    if (file?.path) {
+    const upload = file ? attachmentUploadPayload(file) : null;
+    if (upload) {
       event.preventDefault();
-      handleAttachFile(file.path);
+      handleAttachFile(upload);
     }
   }
 
@@ -484,7 +503,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       <div className="flex items-center justify-between gap-2 border-b border-border p-4">
         <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
           <Avatar size="sm">
-            <AvatarImage src={resolveAvatar(room.avatar_path)} alt="" />
+            <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(room.room_id) }}
               className="font-bold text-white"
@@ -624,6 +643,12 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       )}
 
       <div className="p-3">
+        <input
+          ref={attachmentInputRef}
+          type="file"
+          className="hidden"
+          onChange={handleAttachmentInputChange}
+        />
         <div
           className="flex items-end gap-2 rounded-lg border border-border bg-card p-2"
           onPaste={handlePaste}
