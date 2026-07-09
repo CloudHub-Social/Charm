@@ -12,6 +12,7 @@ class CharmApplication : Application() {
     @Volatile
     private var sentryConsentEnabled: Boolean = false
     private val sentryConsentObservers = mutableListOf<FileObserver>()
+    private val observabilityStoreFilename = "observability.json"
 
     override fun onCreate() {
         super.onCreate()
@@ -53,7 +54,7 @@ class CharmApplication : Application() {
                 @Suppress("DEPRECATION")
                 val observer = object : FileObserver(directory.absolutePath, mask) {
                     override fun onEvent(event: Int, path: String?) {
-                        if (path == "observability.json") {
+                        if (isObservabilityStoreEvent(path)) {
                             sentryConsentEnabled = readSentryEnabledFromStore()
                         }
                     }
@@ -63,12 +64,17 @@ class CharmApplication : Application() {
             }
     }
 
+    private fun isObservabilityStoreEvent(path: String?): Boolean =
+        path == null ||
+            path == observabilityStoreFilename ||
+            path.endsWith("/$observabilityStoreFilename")
+
     private fun readSentryEnabledFromStore(): Boolean {
-        val appDataFile = File(applicationInfo.dataDir, "observability.json")
+        val appDataFile = File(applicationInfo.dataDir, observabilityStoreFilename)
         val file = if (appDataFile.isFile) {
             appDataFile
         } else {
-            File(filesDir, "observability.json").takeIf { it.isFile }
+            File(filesDir, observabilityStoreFilename).takeIf { it.isFile }
         }
         if (file == null) return false
 
