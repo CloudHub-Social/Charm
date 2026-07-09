@@ -69,6 +69,10 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
 
   const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
 
+  useEffect(() => {
+    lastMarkedReadEventId.current = null;
+  }, [room?.room_id]);
+
   // Mark the room read as soon as it becomes active — deduped on room id
   // (not event id) so this still fires the first time even before any
   // messages have loaded. Reset the dedup key when navigating away so
