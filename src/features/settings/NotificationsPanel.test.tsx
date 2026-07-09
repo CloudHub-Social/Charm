@@ -1,9 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationsPanel } from "./NotificationsPanel";
 import { makeRoomSummary } from "@/features/rooms/testFixtures";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getNotificationSettings = vi.fn();
 const listRooms = vi.fn();
@@ -37,11 +36,6 @@ vi.mock("@/lib/matrix", () => ({
 vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: (...args: unknown[]) => requestPermission(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 beforeEach(() => {
   getNotificationSettings.mockReset().mockResolvedValue({

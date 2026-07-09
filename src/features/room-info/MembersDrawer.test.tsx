@@ -1,7 +1,8 @@
 import { screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MembersDrawer } from "./MembersDrawer";
-import { renderWithProviders, makeRoomDetails } from "./testUtils";
+import { makeRoomDetails } from "./testUtils";
+import { renderWithProviders } from "@/test/renderWithProviders";
 import type { RoomMemberSummary } from "@/lib/matrix";
 
 const getRoomDetails = vi.fn();
