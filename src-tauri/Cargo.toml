@@ -45,6 +45,14 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
 lru = "0.12"
+# Direct dep so timeline.rs can pass matrix-sdk-ui's returned
+# `imbl::Vector<Arc<TimelineItem>>` straight into our own functions — Cargo
+# treats two semver-incompatible `imbl` versions as distinct types even with
+# the same crate name, so stay on imbl 6.x until matrix-sdk-ui (currently
+# pinned to `imbl = "6.1.0"` itself) moves past 6.x — don't jump to the
+# latest imbl release independently. Bumping the major version breaks that
+# type match (see PR #42); dependabot is configured to ignore major-version
+# imbl bumps (.github/dependabot.yml) until matrix-sdk-ui moves.
 imbl = "6.1.0"
 regex = "1"
 async-trait = "0.1"
