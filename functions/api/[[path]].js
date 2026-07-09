@@ -12,17 +12,21 @@ const HOP_BY_HOP_HEADERS = new Set([
 function previewApiBase(env) {
   const configured = env.CHARM_WEB_API_BASE_URL;
   if (typeof configured !== "string" || configured.trim() === "") {
-    throw new Response("CHARM_WEB_API_BASE_URL is not configured", {
-      status: 502,
-    });
+    return {
+      response: new Response("CHARM_WEB_API_BASE_URL is not configured", {
+        status: 502,
+      }),
+    };
   }
 
   try {
-    return new URL(configured.replace(/\/+$/, ""));
+    return { url: new URL(configured.replace(/\/+$/, "")) };
   } catch {
-    throw new Response("CHARM_WEB_API_BASE_URL must be an absolute URL", {
-      status: 502,
-    });
+    return {
+      response: new Response("CHARM_WEB_API_BASE_URL must be an absolute URL", {
+        status: 502,
+      }),
+    };
   }
 }
 
@@ -37,14 +41,20 @@ function proxyHeaders(request) {
 }
 
 export async function onRequest({ env, request }) {
-  const apiBase = previewApiBase(env);
+  const result = previewApiBase(env);
+  if (result.response) {
+    return result.response;
+  }
+
+  const apiBase = result.url;
   const incomingUrl = new URL(request.url);
   const incomingPath =
     apiBase.pathname.replace(/\/+$/, "").endsWith("/api") &&
     incomingUrl.pathname.startsWith("/api/")
       ? incomingUrl.pathname.slice("/api".length)
       : incomingUrl.pathname;
-  const targetUrl = new URL(`${incomingPath}${incomingUrl.search}`, `${apiBase}/`);
+  const relativePath = incomingPath.replace(/^\/+/, "");
+  const targetUrl = new URL(`${relativePath}${incomingUrl.search}`, `${apiBase}/`);
 
   return fetch(targetUrl, {
     method: request.method,
