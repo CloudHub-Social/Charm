@@ -349,24 +349,23 @@ fn spawn_headless_push(
         // Android gives async broadcasts a short timeout; the headless restore
         // continues as detached process work after the receiver is released.
         drop(pending_result);
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(e) => {
-                eprintln!("failed to create headless push runtime: {e}");
-                return;
-            }
-        };
-
         let result = super::with_headless_push_lock(|| {
+            let runtime = match tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(e) => return Err(format!("failed to create headless push runtime: {e}")),
+            };
             let _secret_store_context =
                 crate::matrix::secret_store::install_android_context_override(
                     vm_for_secret_store,
                     secret_store_context,
                 );
-            runtime.block_on(super::handle_headless_push(&store_root, message))
+            runtime.block_on(async {
+                let _restore_store_guard = crate::matrix::auth::restore_store_lock().lock().await;
+                super::handle_headless_push(&store_root, message).await
+            })
         });
         match result {
             Ok(Some(notification)) => {

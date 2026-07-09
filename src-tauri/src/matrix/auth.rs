@@ -23,6 +23,16 @@ use super::{persistence, sync, MatrixState};
 /// completed against the wrong attempt.
 const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
 
+static RESTORE_STORE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// Serializes fresh client restores that open and use the persisted Matrix
+/// store before a live app client owns it. App startup and Android's
+/// receiver-only push path can otherwise overlap on the same SQLCipher store
+/// during the cold-start-to-launch race.
+pub(crate) fn restore_store_lock() -> &'static tokio::sync::Mutex<()> {
+    RESTORE_STORE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 /// A client with an SSO login URL in flight but not yet completed, plus the
 /// random per-attempt token embedded in that URL's `state` param —
 /// `complete_sso_login` checks the callback's `state` against this before
@@ -204,6 +214,7 @@ pub async fn try_restore_session(
     // client backed by a store that's since been superseded. See
     // `MatrixState::login_completion_lock`'s doc comment.
     let _completion_guard = state.login_completion_lock.lock().await;
+    let _restore_store_guard = restore_store_lock().lock().await;
 
     // Which account (if any) has a session worth restoring isn't known
     // up front — iterate every account this install has a store for and

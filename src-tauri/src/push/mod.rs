@@ -694,10 +694,11 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         Some(client) => (client, None),
         None => {
             let guard = matrix_state.login_completion_lock.lock().await;
+            let restore_store_guard = auth::restore_store_lock().lock().await;
             let client = restore_any_client(app)
                 .await?
                 .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
-            (client, Some(guard))
+            (client, Some((guard, restore_store_guard)))
         }
     };
 
