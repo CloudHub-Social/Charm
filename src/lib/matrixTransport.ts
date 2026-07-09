@@ -76,7 +76,7 @@ function shouldUseWebTransport(): boolean {
 
 function apiBase(): string {
   const configured = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
-  return configured?.replace(/\/$/, "") ?? "";
+  return configured?.replace(/\/+$/, "") ?? "";
 }
 
 function websocketUrl(): string {

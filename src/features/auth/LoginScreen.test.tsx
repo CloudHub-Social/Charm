@@ -48,6 +48,7 @@ function fakeSession(): LoginResponse {
 
 describe("LoginScreen SSO callback handling", () => {
   beforeEach(() => {
+    vi.unstubAllEnvs();
     getCurrentUrls = null;
     openUrlCallback = undefined;
     getCurrent.mockClear();
@@ -76,6 +77,15 @@ describe("LoginScreen SSO callback handling", () => {
 
     expect(completeSsoLogin).toHaveBeenCalledWith("charm://sso-callback?loginToken=abc&state=xyz");
     expect(onSignedIn).toHaveBeenCalledWith(fakeSession());
+  });
+
+  it("does not register Tauri deep-link handlers in web builds", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    expect(getCurrent).not.toHaveBeenCalled();
+    expect(onOpenUrl).not.toHaveBeenCalled();
   });
 
   it("ignores a spoofed deep link whose scheme merely starts with the callback prefix", async () => {

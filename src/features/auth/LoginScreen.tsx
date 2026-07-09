@@ -17,6 +17,7 @@ import { QrLoginScreen } from "./QrLoginScreen";
 import { useHomeserverDiscovery } from "./useHomeserverDiscovery";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { openExternalUrl } from "@/lib/openExternalUrl";
+import { isWebBuild } from "@/lib/platform";
 
 // Anchored so "charm://sso-callback-evil" or "charm://sso-callback.evil.com"
 // can't slip past a plain `startsWith` check.
@@ -58,6 +59,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   const ssoInProgressRef = useRef(false);
 
   useEffect(() => {
+    if (isWebBuild()) return undefined;
+
     // Shared by both the cold-launch check and the warm onOpenUrl listener
     // below. On a cold launch (app was fully closed during the browser step,
     // then relaunched by the OS via the redirect), there's no in-memory

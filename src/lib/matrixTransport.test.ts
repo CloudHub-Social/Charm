@@ -418,7 +418,7 @@ describe("matrix web transport", () => {
   });
 
   it("preserves path prefixes in configured WebSocket API base URLs", async () => {
-    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://example.com/charm");
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://example.com/charm///");
 
     const unlisten = await listen("room_list:update", vi.fn());
 
