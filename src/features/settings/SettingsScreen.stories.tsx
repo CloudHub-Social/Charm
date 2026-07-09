@@ -86,6 +86,23 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+async function waitForStoryText(canvasElement: HTMLElement, text: string) {
+  const root = canvasElement.ownerDocument.body;
+  await new Promise<void>((resolve, reject) => {
+    let attempt = 0;
+    const timer = window.setInterval(() => {
+      attempt += 1;
+      if (root.textContent?.includes(text)) {
+        window.clearInterval(timer);
+        resolve();
+      } else if (attempt >= 50) {
+        window.clearInterval(timer);
+        reject(new Error(`Timed out waiting for story text: ${text}`));
+      }
+    }, 20);
+  });
+}
+
 export const AccountSection: Story = {
   args: { onLoggedOut: () => {} },
   render: (args) => {
@@ -111,6 +128,9 @@ export const DevicesSection: Story = {
         </SettingsStoryStore>
       </QueryClientProvider>
     );
+  },
+  play: async ({ canvasElement }) => {
+    await waitForStoryText(canvasElement, "Charm on macOS");
   },
 };
 
