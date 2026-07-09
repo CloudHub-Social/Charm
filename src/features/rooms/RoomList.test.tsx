@@ -56,7 +56,9 @@ vi.mock("@/lib/matrix", () => ({
 // these tests exercise the drag interaction itself (see roomSections.test.ts
 // for the reorder math), so bind() only needs to return an empty prop object.
 vi.mock("@use-gesture/react", () => ({
-  useDrag: () => () => ({}),
+  useDrag: (_handler: unknown, options?: { enabled?: boolean }) => () => ({
+    "data-reorder-enabled": String(options?.enabled ?? true),
+  }),
 }));
 
 function roomListProps(overrides: Partial<ComponentProps<typeof RoomList>> = {}) {
@@ -129,6 +131,27 @@ describe("RoomList", () => {
 
     expect(screen.getByText("Room")).toBeInTheDocument();
     expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+    expect(screen.getByText("Room").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
+  it("keeps Home room rows reorderable when non-orphan rooms are outside the Home scope", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const child = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const orphan = makeRoomSummary({ room_id: "!orphan:localhost", name: "Orphan" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space, child, orphan] })} />);
+
+    expect(screen.queryByText("Team chat")).not.toBeInTheDocument();
+    expect(screen.getByText("Orphan").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
   });
 
   it("calls onSelectRoom when a room is clicked", () => {

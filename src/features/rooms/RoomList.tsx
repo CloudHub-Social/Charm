@@ -87,8 +87,6 @@ export function RoomList({
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
-  const fullRoomSectionRooms =
-    mode === "dms" ? roomSectionRooms : fullSections.rooms.filter((room) => !room.is_direct);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
@@ -317,7 +315,7 @@ export function RoomList({
               expanded={isExpanded("rooms")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, rooms: v }))}
             >
-              {renderSectionRooms(roomSectionRooms, fullRoomSectionRooms)}
+              {renderSectionRooms(roomSectionRooms)}
             </RoomListSection>
 
             <RoomListSection
