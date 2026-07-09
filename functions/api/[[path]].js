@@ -60,7 +60,7 @@ function containsDotSegment(path) {
   return false;
 }
 
-function proxyHeaders(request, { preserveUpgrade = false } = {}) {
+function proxyHeaders(request, { preserveUpgrade = false, upstreamOrigin } = {}) {
   const headers = new Headers(request.headers);
   const namesToDelete = [];
   for (const name of Array.from(headers.keys())) {
@@ -69,7 +69,6 @@ function proxyHeaders(request, { preserveUpgrade = false } = {}) {
       (HOP_BY_HOP_HEADERS.has(normalizedName) &&
         (!preserveUpgrade || (normalizedName !== "connection" && normalizedName !== "upgrade"))) ||
       normalizedName === "host" ||
-      normalizedName === "origin" ||
       normalizedName.startsWith("cf-")
     ) {
       namesToDelete.push(name);
@@ -77,6 +76,9 @@ function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   }
   for (const name of namesToDelete) {
     headers.delete(name);
+  }
+  if (headers.has("origin")) {
+    headers.set("origin", upstreamOrigin);
   }
   return headers;
 }
@@ -118,7 +120,10 @@ export async function onRequest({ env, request }) {
   const body = request.method === "GET" || request.method === "HEAD" ? null : request.body;
   const fetchOptions = {
     method: request.method,
-    headers: proxyHeaders(request, { preserveUpgrade }),
+    headers: proxyHeaders(request, {
+      preserveUpgrade,
+      upstreamOrigin: apiBase.origin,
+    }),
     body,
     redirect: "manual",
   };
