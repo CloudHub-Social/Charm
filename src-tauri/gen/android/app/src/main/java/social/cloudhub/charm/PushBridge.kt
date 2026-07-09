@@ -112,7 +112,9 @@ object PushBridge {
     /**
      * App data directory matching Tauri's Android `app_data_dir`; used by
      * Rust's cold-start receiver path, which has a `Context` but no
-     * `AppHandle` to ask for paths.
+     * `AppHandle` to ask for paths. Tauri 2's Android `app_data_dir()` calls
+     * `PathPlugin.getDataDir`, which returns `activity.dataDir` /
+     * `applicationInfo.dataDir` directly on Android.
      */
     @JvmStatic
     fun appDataDir(context: Context): String = context.applicationInfo.dataDir
@@ -156,7 +158,7 @@ object PushBridge {
             Notification.Builder(appContext)
         }
         val notification = builder
-            .setSmallIcon(appContext.applicationInfo.icon)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(Notification.BigTextStyle().bigText(body))
