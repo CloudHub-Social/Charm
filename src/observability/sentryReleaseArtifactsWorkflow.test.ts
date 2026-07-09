@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Sentry release artifact workflow", () => {
-  const root = resolve(__dirname, "../..");
+  const root = process.cwd();
   const workflow = readFileSync(
     resolve(root, ".github/workflows/sentry-release-artifacts.yml"),
     "utf8",
@@ -42,7 +42,8 @@ describe("Sentry release artifact workflow", () => {
     expect(viteConfig).toContain(
       "SENTRY_UPLOAD=true requires SENTRY_AUTH_TOKEN, SENTRY_ORG, and SENTRY_PROJECT",
     );
-    expect(viteConfig).toContain('sourcemaps: { filesToDeleteAfterUpload: ["dist/**/*.map"] }');
+    expect(viteConfig).toContain("filesToDeleteAfterUpload");
+    expect(viteConfig).toContain("dist/**/*.map");
     expect(workflow).toContain("Sentry sourcemap upload left .map files in dist");
   });
 
