@@ -14,6 +14,7 @@
 //! channel that the JNI callback entrypoints
 //! ([`native_on_new_endpoint`]/[`native_on_registration_failed`]) complete.
 
+use std::ffi::{c_char, CString};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -25,6 +26,8 @@ use tokio::sync::oneshot;
 use super::{PushEndpoint, PushError, PusherKind, ANDROID_FCM_APP_ID, ANDROID_UNIFIED_PUSH_APP_ID};
 
 const PUSH_BRIDGE_CLASS: &str = "social/cloudhub/charm/PushBridge";
+const ANDROID_LOG_WARN: i32 = 5;
+const ANDROID_LOG_TAG: &str = "CharmPush";
 
 /// How long `register()` waits for a `MessagingReceiver` callback before
 /// giving up — UnifiedPush registration against a local distributor is
@@ -52,6 +55,11 @@ static PENDING_REGISTRATION: Mutex<Option<oneshot::Sender<Result<PushEndpoint, P
 /// callbacks as the source of truth, since registration genuinely happens on
 /// the Kotlin side, not in this struct.
 static CURRENT_ENDPOINT: Mutex<Option<PushEndpoint>> = Mutex::new(None);
+
+#[link(name = "log")]
+extern "C" {
+    fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+}
 
 pub struct UnifiedPushTransport;
 
@@ -247,6 +255,21 @@ fn jstring_to_string(env: &mut JNIEnv, s: &JString) -> String {
     env.get_string(s).map(|s| s.into()).unwrap_or_default()
 }
 
+fn warn_before_tracing_setup(message: &str) {
+    let Ok(tag) = CString::new(ANDROID_LOG_TAG) else {
+        return;
+    };
+    let Ok(text) = CString::new(message) else {
+        return;
+    };
+
+    // This JNI path can run before Tauri `setup()` installs Rust tracing, so
+    // write directly to Android's log buffer instead of relying on a subscriber.
+    unsafe {
+        let _ = __android_log_write(ANDROID_LOG_WARN, tag.as_ptr(), text.as_ptr());
+    }
+}
+
 /// Called from `PushMessagingReceiver.onNewEndpoint` once UnifiedPush (or the
 /// embedded FCM fallback distributor) has an endpoint for `instance`. `via_fcm`
 /// distinguishes which Sygnal `app_id` this endpoint should be registered
@@ -365,17 +388,8 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(app) = super::global_app_handle() else {
-        // On a true cold start (process spawned solely to deliver this JNI
-        // callback, before `lib.rs`'s `setup()` — and thus
-        // `install_sentry_tracing()` — has run), this `warn!` has no global
-        // `tracing` subscriber to reach and is a no-op. It's still useful for
-        // the common case where the app process is already alive (subscriber
-        // installed) and only the handle lookup itself raced; see the
-        // doc comment above this function for the cold-start gap itself.
-        tracing::warn!(
-            command = "android_push",
-            status = "no_app_handle",
-            "Push received before the app handle was initialized; dropping"
+        warn_before_tracing_setup(
+            "android_push no_app_handle: push received before the app handle was initialized; dropping",
         );
         return;
     };
