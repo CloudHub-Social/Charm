@@ -41,6 +41,11 @@ pub enum SasUpdateEvent {
     },
 }
 
+pub struct StartedSasVerification {
+    pub sas: matrix_sdk::encryption::verification::SasVerification,
+    pub accept_after_subscribe: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct CrossSigningStatusSummary {
@@ -221,33 +226,25 @@ pub async fn start_sas_verification(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let sas = start_sas_verification_impl(&client, &other_user_id, &flow_id).await?;
+    let StartedSasVerification {
+        sas,
+        accept_after_subscribe,
+    } = start_sas_verification_impl(&client, &other_user_id, &flow_id).await?;
+
+    let watcher_sas = sas.clone();
+    let mut changes = watcher_sas.changes();
+    if accept_after_subscribe {
+        sas.accept().await.map_err(|e| e.to_string())?;
+    }
 
     let flow_id = flow_id.clone();
     tokio::spawn(async move {
-        let mut changes = sas.changes();
+        if emit_sas_update(&app, &flow_id, watcher_sas.state()) {
+            return;
+        }
+
         while let Some(sas_state) = changes.next().await {
-            let event = match sas_state {
-                SasState::Started { .. } => SasUpdateEvent::Started,
-                SasState::Accepted { .. } => SasUpdateEvent::Accepted,
-                SasState::KeysExchanged { emojis, .. } => SasUpdateEvent::KeysExchanged {
-                    emojis: emojis
-                        .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
-                        .unwrap_or_default(),
-                },
-                SasState::Confirmed => SasUpdateEvent::Confirmed,
-                SasState::Done { .. } => SasUpdateEvent::Done,
-                SasState::Cancelled(info) => SasUpdateEvent::Cancelled {
-                    reason: info.reason().to_string(),
-                },
-                SasState::Created { .. } => continue,
-            };
-            let is_terminal = matches!(
-                event,
-                SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
-            );
-            let _ = app.emit(&format!("verification:sas_update:{flow_id}"), event);
-            if is_terminal {
+            if emit_sas_update(&app, &flow_id, sas_state) {
                 break;
             }
         }
@@ -256,34 +253,40 @@ pub async fn start_sas_verification(
     Ok(())
 }
 
-/// Core logic behind [`start_sas_verification`]: accepts an already-accepted
-/// request into the SAS flow and returns the resulting `SasVerification` so
-/// the caller can drive/watch it. The state-change watcher loop itself stays
-/// in the command wrapper above since pushing each state as an event is
-/// transport-specific (`app.emit` today; a WebSocket push in the companion
-/// server later).
+/// Core logic behind [`start_sas_verification`]: starts or finds the SAS flow
+/// and tells the command whether it must accept after subscribing to changes.
+/// The state-change watcher loop itself stays in the command wrapper above
+/// since pushing each state as an event is transport-specific (`app.emit`
+/// today; a WebSocket push in the companion server later).
 pub async fn start_sas_verification_impl(
     client: &Client,
     other_user_id: &str,
     flow_id: &str,
-) -> Result<matrix_sdk::encryption::verification::SasVerification, String> {
+) -> Result<StartedSasVerification, String> {
     let user_id = matrix_sdk::ruma::UserId::parse(other_user_id).map_err(|e| e.to_string())?;
     if let Some(Verification::SasV1(sas)) = client
         .encryption()
         .get_verification(&user_id, flow_id)
         .await
     {
-        sas.accept().await.map_err(|e| e.to_string())?;
-        return Ok(sas);
+        return Ok(StartedSasVerification {
+            sas,
+            accept_after_subscribe: true,
+        });
     }
 
     let request = get_request(client, other_user_id, flow_id).await?;
 
-    request
+    let sas = request
         .start_sas()
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "the other side does not support SAS verification".to_string())
+        .ok_or_else(|| "the other side does not support SAS verification".to_string())?;
+
+    Ok(StartedSasVerification {
+        sas,
+        accept_after_subscribe: false,
+    })
 }
 
 #[tauri::command]
@@ -341,5 +344,35 @@ fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
     EmojiPair {
         symbol: emoji.symbol.to_string(),
         description: emoji.description.to_string(),
+    }
+}
+
+fn emit_sas_update(app: &AppHandle, flow_id: &str, sas_state: SasState) -> bool {
+    let Some(event) = sas_state_to_update(sas_state) else {
+        return false;
+    };
+    let is_terminal = matches!(
+        event,
+        SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
+    );
+    let _ = app.emit(&format!("verification:sas_update:{flow_id}"), event);
+    is_terminal
+}
+
+pub fn sas_state_to_update(sas_state: SasState) -> Option<SasUpdateEvent> {
+    match sas_state {
+        SasState::Started { .. } => Some(SasUpdateEvent::Started),
+        SasState::Accepted { .. } => Some(SasUpdateEvent::Accepted),
+        SasState::KeysExchanged { emojis, .. } => Some(SasUpdateEvent::KeysExchanged {
+            emojis: emojis
+                .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
+                .unwrap_or_default(),
+        }),
+        SasState::Confirmed => Some(SasUpdateEvent::Confirmed),
+        SasState::Done { .. } => Some(SasUpdateEvent::Done),
+        SasState::Cancelled(info) => Some(SasUpdateEvent::Cancelled {
+            reason: info.reason().to_string(),
+        }),
+        SasState::Created { .. } => None,
     }
 }
