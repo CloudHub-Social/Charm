@@ -365,6 +365,13 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(app) = super::global_app_handle() else {
+        // On a true cold start (process spawned solely to deliver this JNI
+        // callback, before `lib.rs`'s `setup()` — and thus
+        // `install_sentry_tracing()` — has run), this `warn!` has no global
+        // `tracing` subscriber to reach and is a no-op. It's still useful for
+        // the common case where the app process is already alive (subscriber
+        // installed) and only the handle lookup itself raced; see the
+        // doc comment above this function for the cold-start gap itself.
         tracing::warn!(
             command = "android_push",
             status = "no_app_handle",
