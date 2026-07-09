@@ -318,16 +318,20 @@ impl BroadcastPendingResult {
     }
 }
 
+fn finish_pending_result(env: &mut JNIEnv, pending_result: &JObject) {
+    let result = env.call_method(pending_result, "finish", "()V", &[]);
+    if let Err(e) = jni_result(env, "BroadcastReceiver.PendingResult.finish", result) {
+        eprintln!("failed to finish push broadcast: {e}");
+    }
+}
+
 impl Drop for BroadcastPendingResult {
     fn drop(&mut self) {
         let Ok(mut env) = self.vm.attach_current_thread() else {
             eprintln!("failed to attach JVM thread to finish push broadcast");
             return;
         };
-        let result = env.call_method(self.pending_result.as_obj(), "finish", "()V", &[]);
-        if let Err(e) = jni_result(&mut env, "BroadcastReceiver.PendingResult.finish", result) {
-            eprintln!("failed to finish push broadcast: {e}");
-        }
+        finish_pending_result(&mut env, self.pending_result.as_obj());
     }
 }
 
@@ -495,6 +499,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
         Ok(pending_result) => pending_result,
         Err(e) => {
             eprintln!("{e}");
+            finish_pending_result(&mut env, &pending_result);
             return;
         }
     };

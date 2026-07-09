@@ -128,8 +128,8 @@ mod android {
     use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
     use jni::JavaVM;
     use std::sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
     };
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
@@ -143,6 +143,7 @@ mod android {
         id: u64,
         vm: JavaVM,
         context: GlobalRef,
+        active: Arc<AtomicBool>,
     }
 
     static CONTEXT_OVERRIDE: Mutex<Option<ContextOverride>> = Mutex::new(None);
@@ -150,25 +151,42 @@ mod android {
 
     pub(crate) struct ContextOverrideGuard {
         id: u64,
+        active: Arc<AtomicBool>,
+        previous: Option<ContextOverride>,
     }
 
     impl Drop for ContextOverrideGuard {
         fn drop(&mut self) {
+            self.active.store(false, Ordering::Relaxed);
             let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
             if current
                 .as_ref()
                 .is_some_and(|context| context.id == self.id)
             {
-                *current = None;
+                *current = self
+                    .previous
+                    .take()
+                    .filter(|context| context.active.load(Ordering::Relaxed));
             }
         }
     }
 
     pub(crate) fn install_context_override(vm: JavaVM, context: GlobalRef) -> ContextOverrideGuard {
         let id = NEXT_CONTEXT_OVERRIDE_ID.fetch_add(1, Ordering::Relaxed);
-        *CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(ContextOverride { id, vm, context });
-        ContextOverrideGuard { id }
+        let active = Arc::new(AtomicBool::new(true));
+        let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = current.take();
+        *current = Some(ContextOverride {
+            id,
+            vm,
+            context,
+            active: Arc::clone(&active),
+        });
+        ContextOverrideGuard {
+            id,
+            active,
+            previous,
+        }
     }
 
     /// Maps a JNI call's result to `SecretStoreError`, and — if it failed —
