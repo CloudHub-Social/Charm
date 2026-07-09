@@ -57,7 +57,7 @@ def main():
         return 0
 
     root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    if not os.path.isfile(os.path.join(root, "graphify-out", "manifest.json")):
+    if not os.path.isfile(os.path.join(root, "graphify-out", "graph.json")):
         return 0
 
     tool_name = payload.get("tool_name") or ""

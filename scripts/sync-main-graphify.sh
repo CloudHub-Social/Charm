@@ -23,7 +23,7 @@ if [ -n "$(git status --porcelain -uall)" ]; then
   exit 0
 fi
 
-git fetch origin main --quiet
+git fetch --quiet origin main
 
 local_head="$(git rev-parse HEAD)"
 remote_head="$(git rev-parse origin/main)"
@@ -34,7 +34,7 @@ if ! git merge-base --is-ancestor "$local_head" "$remote_head"; then
   exit 0
 fi
 
-git merge --ff-only origin/main --quiet
+git merge --quiet --ff-only origin/main
 echo "sync-main-graphify: fast-forwarded main $local_head -> $remote_head"
 
 if command -v graphify >/dev/null 2>&1; then

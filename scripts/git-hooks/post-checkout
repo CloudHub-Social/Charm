@@ -22,12 +22,14 @@ main_root="$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
 
 cd "$worktree_root" || exit 0
 
-if [ ! -e node_modules ] && [ -f "$main_root/pnpm-lock.yaml" ] && [ -f pnpm-lock.yaml ] \
+if [ ! -e node_modules ] && [ ! -L node_modules ] \
+   && [ -d "$main_root/node_modules" ] \
+   && [ -f "$main_root/pnpm-lock.yaml" ] && [ -f pnpm-lock.yaml ] \
    && diff -q "$main_root/pnpm-lock.yaml" pnpm-lock.yaml >/dev/null 2>&1; then
   ln -s "$main_root/node_modules" node_modules
 fi
 
-if [ ! -e graphify-out ] && [ -d "$main_root/graphify-out" ]; then
+if [ ! -e graphify-out ] && [ ! -L graphify-out ] && [ -d "$main_root/graphify-out" ]; then
   ln -s "$main_root/graphify-out" graphify-out
 fi
 
