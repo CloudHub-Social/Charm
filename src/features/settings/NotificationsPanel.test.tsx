@@ -190,10 +190,28 @@ describe("NotificationsPanel", () => {
     expect(
       screen.queryByRole("button", { name: "Turn on push notifications" }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText(/Install one such as ntfy/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/requires a UnifiedPush distributor/)).not.toBeInTheDocument();
   });
 
-  it("suggests installing a UnifiedPush distributor when Android has no push endpoint yet", async () => {
+  it("suggests installing a UnifiedPush distributor when Android push registration fails", async () => {
+    getPushStatus.mockResolvedValue({
+      transport: "none",
+      registered: false,
+      endpoint_present: false,
+      last_error: "timed out waiting for a UnifiedPush/FCM endpoint",
+      available: true,
+    });
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(
+      await screen.findByText(
+        "Android push requires a UnifiedPush distributor (for example, ntfy). Install one, then turn on push notifications.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Turn on push notifications" })).toBeVisible();
+  });
+
+  it("does not prompt for a distributor after push is intentionally turned off", async () => {
     getPushStatus.mockResolvedValue({
       transport: "none",
       registered: false,
@@ -203,11 +221,8 @@ describe("NotificationsPanel", () => {
     });
     renderWithProviders(<NotificationsPanel />);
 
-    expect(
-      await screen.findByText(
-        "Android push needs a UnifiedPush distributor. Install one such as ntfy, then turn push notifications on again.",
-      ),
-    ).toBeVisible();
+    await screen.findByText(/Transport: Not registered yet/);
+    expect(screen.queryByText(/requires a UnifiedPush distributor/)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Turn on push notifications" })).toBeVisible();
   });
 

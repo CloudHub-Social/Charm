@@ -30,8 +30,15 @@ const TRANSPORT_LABELS: Record<PusherKind, string> = {
 function PushTransportTile() {
   const { status, register, unregister } = usePush();
   const transport = status?.transport ?? "none";
+  const pushRegistrationFailed =
+    status?.last_error?.toLowerCase().includes("unifiedpush") === true ||
+    status?.last_error?.toLowerCase().includes("fcm") === true ||
+    status?.last_error?.toLowerCase().includes("endpoint") === true;
   const showAndroidDistributorNotice =
-    status?.available === true && transport === "none" && status?.endpoint_present === false;
+    status?.available === true &&
+    transport === "none" &&
+    status?.endpoint_present === false &&
+    pushRegistrationFailed;
 
   // The homeserver can only deliver a push if the OS has also granted the
   // notification permission — without this, `register_push` can succeed
@@ -58,7 +65,8 @@ function PushTransportTile() {
             {TRANSPORT_LABELS[transport]}.
             {showAndroidDistributorNotice && (
               <span className="mt-2 block rounded-md border border-border bg-muted/40 px-3 py-2 text-foreground">
-                Android push requires a UnifiedPush distributor (for example, ntfy). Install one, then turn on push notifications.
+                Android push requires a UnifiedPush distributor (for example, ntfy). Install one,
+                then turn on push notifications.
               </span>
             )}
             {status?.last_error && (
