@@ -49,6 +49,19 @@ jobs:
           build-mode: none
 
       - name: Perform CodeQL Analysis
+        # continue-on-error scoped to merge_group only: the SARIF upload this
+        # step does internally can 404 ("ref ... not found") when a busy merge
+        # queue supersedes this entry's ephemeral gh-readonly-queue/... ref
+        # before the upload completes — the scan itself already succeeded by
+        # that point, only the upload lost the race. That's a known
+        # codeql-action/merge_group limitation, not a real analysis failure,
+        # and was intermittently failing every merge_group entry (blocking the
+        # whole queue) before this was scoped. pull_request/push runs still
+        # fail loudly on a genuine CodeQL error — only merge_group tolerates
+        # this specific race. The PR's own pull_request-triggered run (a
+        # prerequisite for queue entry) already provides the real coverage;
+        # this merge_group run is a secondary gate.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:${{ matrix.language }}"
