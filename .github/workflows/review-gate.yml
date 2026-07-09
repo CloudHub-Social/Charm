@@ -43,9 +43,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Wait for review bots to finish on the current head
-        # No-op pass on merge_group (see header) and on draft PRs (which can't
-        # merge and which the bots skip anyway). Marking a PR ready re-triggers.
-        if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+        # No-op pass on merge_group (see header), on draft PRs (which can't merge
+        # and which the bots skip anyway; marking ready re-triggers), and on
+        # bot-authored PRs (e.g. dependabot) — Seer and Codex don't review those,
+        # so waiting would fail-closed and block every automated dependency bump.
+        if: >-
+          github.event_name == 'pull_request'
+          && github.event.pull_request.draft == false
+          && github.event.pull_request.user.type != 'Bot'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
