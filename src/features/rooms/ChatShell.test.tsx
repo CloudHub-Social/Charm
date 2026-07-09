@@ -768,6 +768,32 @@ describe("ChatShell", () => {
     vi.restoreAllMocks();
   });
 
+  it("clears in-flight upload rows when switching rooms", async () => {
+    sendAttachment.mockImplementation(() => new Promise(() => {})); // keep the upload in-flight
+    openFileDialog.mockResolvedValue("/Users/me/room-a.mp4");
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+
+    await waitFor(() => expect(screen.getByText("room-a.mp4")).toBeInTheDocument());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(screen.queryByText("room-a.mp4")).not.toBeInTheDocument());
+    expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
+  });
+
   it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
     sendAttachment.mockRejectedValue(new Error("network error"));
     openFileDialog.mockResolvedValue("/Users/me/broken.mp4");
