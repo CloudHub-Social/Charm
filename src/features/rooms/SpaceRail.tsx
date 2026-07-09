@@ -68,6 +68,7 @@ export function SpaceRail({
     }, [rooms]);
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
+  const homeBadge = useMemo(() => getHomeBadge(rooms), [rooms]);
   const hiddenDirectBadgesBySpace = useMemo(
     () => getHiddenDirectBadgesBySpace(directRooms, parentSpaceIdsByChild),
     [directRooms, parentSpaceIdsByChild],
@@ -148,8 +149,8 @@ export function SpaceRail({
           <RailIconButton
             label="Home"
             active={activeMode === "home"}
-            unread={badge?.total_unread ?? 0}
-            highlight={badge?.total_highlight ?? 0}
+            unread={homeBadge.unread}
+            highlight={homeBadge.highlight}
             onClick={onSelectHome}
           >
             <Home aria-hidden="true" />
@@ -298,6 +299,21 @@ function labelWithBadge(label: string, unread: number, highlight: number) {
     highlight > 0 ? `${highlight} mentions` : null,
   ].filter(Boolean);
   return counts.length > 0 ? `${label}, ${counts.join(", ")}` : label;
+}
+
+function getHomeBadge(rooms: RoomSummary[]) {
+  return rooms
+    .filter(
+      (room) =>
+        !room.is_space && !room.is_direct && room.parent_space_ids.length === 0 && room.has_unread,
+    )
+    .reduce(
+      (counts, room) => ({
+        unread: counts.unread + 1,
+        highlight: counts.highlight + room.unread_count,
+      }),
+      { unread: 0, highlight: 0 },
+    );
 }
 
 function getHiddenDirectBadgesBySpace(

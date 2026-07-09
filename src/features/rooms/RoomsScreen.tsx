@@ -80,6 +80,10 @@ export function RoomsScreen({
   }
 
   function selectRoomInVisibleMode(room: RoomSummary) {
+    if (room.is_space) {
+      selectSpace(room.room_id);
+      return;
+    }
     if (room.is_direct) {
       selectDms();
     } else if (room.parent_space_ids.length > 0) {

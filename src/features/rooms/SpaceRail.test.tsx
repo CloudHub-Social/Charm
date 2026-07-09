@@ -68,16 +68,46 @@ describe("SpaceRail", () => {
     renderRail();
 
     expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Home, 2 unread" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
     expect(
       screen.getByRole("button", { name: "Direct messages, 1 unread, 1 mentions" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create or join space" })).toBeInTheDocument();
+  });
+
+  it("scopes the Home badge to rooms visible in Home mode", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({
+          room_id: "!home:localhost",
+          name: "Home room",
+          has_unread: true,
+          unread_count: 2,
+        }),
+        makeRoomSummary({
+          room_id: "!dm:localhost",
+          name: "Alice",
+          is_direct: true,
+          has_unread: true,
+          unread_count: 3,
+        }),
+        makeRoomSummary({ room_id: "!space:localhost", name: "Team", is_space: true }),
+        makeRoomSummary({
+          room_id: "!child:localhost",
+          name: "Team chat",
+          has_unread: true,
+          unread_count: 4,
+          parent_space_ids: ["!space:localhost"],
+        }),
+      ],
+    });
+
+    expect(screen.getByRole("button", { name: "Home, 1 unread, 2 mentions" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Direct messages, 1 unread, 3 mentions" }),
+    ).toBeInTheDocument();
   });
 
   it("expands child spaces as a collapsible folder and selects them", () => {
@@ -234,7 +264,7 @@ describe("SpaceRail", () => {
   it("wires Home, DM, and create/join actions", () => {
     const props = renderRail({ activeMode: "dms" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Home, 2 unread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Home" }));
     fireEvent.click(screen.getByRole("button", { name: "Direct messages, 1 unread, 1 mentions" }));
     fireEvent.click(screen.getByRole("button", { name: "Create or join space" }));
 
