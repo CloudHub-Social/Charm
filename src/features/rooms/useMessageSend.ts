@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { editMessage, runCommand, sendMessage, sendReply } from "@/lib/matrix";
-import type { RoomSummary } from "@/lib/matrix";
+import type { ReplyRef, RoomSummary } from "@/lib/matrix";
 import type { ParsedSlashCommand } from "./slashCommands";
 
 interface ComposerContent {
@@ -9,16 +9,12 @@ interface ComposerContent {
   mentions: string[] | null;
 }
 
-interface ReplyTarget {
-  event_id: string;
-}
-
 interface UseMessageSendOptions {
   room: RoomSummary | null;
   editingEventId: string | null;
-  replyTarget: ReplyTarget | null;
+  replyTarget: ReplyRef | null;
   setEditingEventId: (eventId: string | null) => void;
-  setReplyTarget: (reply: null) => void;
+  setReplyTarget: (reply: ReplyRef | null) => void;
   stopTyping: () => void;
 }
 
