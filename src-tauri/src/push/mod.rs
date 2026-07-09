@@ -684,18 +684,21 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         }
     };
 
-    let focused_room_id = app
-        .state::<MatrixState>()
-        .focused_room_id
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-
-    let Some(notification) =
-        build_push_notification(&client, message, focused_room_id.as_deref(), |event_id| {
-            app.state::<MatrixState>().mark_notified(event_id)
-        })
-        .await?
+    let Some(notification) = build_push_notification(
+        &client,
+        message,
+        |room_id| {
+            let focused_room_id = app
+                .state::<MatrixState>()
+                .focused_room_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            focused_room_id.as_deref() == Some(room_id.as_str())
+        },
+        |event_id| app.state::<MatrixState>().mark_notified(event_id),
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -720,13 +723,13 @@ pub(crate) async fn handle_headless_push(
         .await?
         .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
 
-    build_push_notification(&client, message, None, |_| true).await
+    build_push_notification(&client, message, |_| false, |_| true).await
 }
 
 async fn build_push_notification(
     client: &Client,
     message: PushMessage,
-    focused_room_id: Option<&str>,
+    should_suppress_for_room: impl FnOnce(&RoomId) -> bool,
     mark_notified: impl FnOnce(&str) -> bool,
 ) -> Result<Option<PushNotification>, PushError> {
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
@@ -806,13 +809,6 @@ async fn build_push_notification(
         }
     };
 
-    // Suppress only for whichever room the user is already looking at right
-    // now — the same signal `shell::should_notify` uses for Spec 10's local
-    // notifications (a push can still arrive while the app is foregrounded).
-    if focused_room_id == Some(room_id.as_str()) {
-        return Ok(None);
-    }
-
     let sender_display_name = if sender.is_empty() {
         None
     } else {
@@ -846,6 +842,16 @@ async fn build_push_notification(
         sender_label,
         &body,
     );
+
+    // Suppress only for whichever room the user is already looking at right
+    // now — the same signal `shell::should_notify` uses for Spec 10's local
+    // notifications (a push can still arrive while the app is foregrounded).
+    // Read this at the final decision point so a user who opens the room
+    // while fetch/decrypt/display-name work is pending does not still get
+    // notified for the now-focused room.
+    if should_suppress_for_room(&room_id) {
+        return Ok(None);
+    }
 
     Ok(Some(PushNotification {
         event_id: message.event_id,

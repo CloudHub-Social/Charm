@@ -301,7 +301,38 @@ fn show_headless_notification(
     Ok(())
 }
 
+struct BroadcastPendingResult {
+    vm: JavaVM,
+    pending_result: GlobalRef,
+}
+
+impl BroadcastPendingResult {
+    fn new(env: &mut JNIEnv, pending_result: &JObject) -> Result<Self, PushError> {
+        let vm = env
+            .get_java_vm()
+            .map_err(|e| format!("cannot read JavaVM for pending broadcast result: {e}"))?;
+        let pending_result = env
+            .new_global_ref(pending_result)
+            .map_err(|e| format!("cannot retain pending broadcast result: {e}"))?;
+        Ok(Self { vm, pending_result })
+    }
+}
+
+impl Drop for BroadcastPendingResult {
+    fn drop(&mut self) {
+        let Ok(mut env) = self.vm.attach_current_thread() else {
+            eprintln!("failed to attach JVM thread to finish push broadcast");
+            return;
+        };
+        let result = env.call_method(self.pending_result.as_obj(), "finish", "()V", &[]);
+        if let Err(e) = jni_result(&mut env, "BroadcastReceiver.PendingResult.finish", result) {
+            eprintln!("failed to finish push broadcast: {e}");
+        }
+    }
+}
+
 fn spawn_headless_push(
+    pending_result: BroadcastPendingResult,
     vm_for_secret_store: JavaVM,
     secret_store_context: GlobalRef,
     vm_for_notification: JavaVM,
@@ -310,6 +341,7 @@ fn spawn_headless_push(
     message: super::PushMessage,
 ) {
     std::thread::spawn(move || {
+        let _pending_result = pending_result;
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -456,8 +488,16 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     mut env: JNIEnv<'local>,
     _this: JObject<'local>,
     context: JObject<'local>,
+    pending_result: JObject<'local>,
     payload_json: JString<'local>,
 ) {
+    let pending_result = match BroadcastPendingResult::new(&mut env, &pending_result) {
+        Ok(pending_result) => pending_result,
+        Err(e) => {
+            eprintln!("{e}");
+            return;
+        }
+    };
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(message) = parse_event_id_only_payload(&payload) else {
         eprintln!("push payload missing room_id/event_id; dropping");
@@ -466,6 +506,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 
     if let Some(app) = super::global_app_handle() {
         tauri::async_runtime::spawn(async move {
+            let _pending_result = pending_result;
             if let Err(e) = super::handle_push(&app, message).await {
                 eprintln!("handle_push failed: {e}");
             }
@@ -519,6 +560,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     };
 
     spawn_headless_push(
+        pending_result,
         vm_for_secret_store,
         secret_store_context,
         vm_for_notification,
