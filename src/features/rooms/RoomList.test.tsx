@@ -60,6 +60,7 @@ vi.mock("@use-gesture/react", () => ({
 }));
 
 afterEach(() => {
+  vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -173,5 +174,21 @@ describe("RoomList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Team" }));
     expect(listSpaceChildren).toHaveBeenCalledWith("!space:localhost");
     expect(await screen.findByText("Browse and join rooms in this space.")).toBeInTheDocument();
+  });
+
+  it("hides the space browser affordance in web builds", () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const child = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    renderRoomList(<RoomList rooms={[space, child]} activeRoomId={null} onSelectRoom={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Team1" }));
+
+    expect(listSpaceChildren).not.toHaveBeenCalled();
+    expect(screen.queryByText("Browse and join rooms in this space.")).not.toBeInTheDocument();
   });
 });

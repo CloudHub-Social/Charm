@@ -86,6 +86,8 @@ describe("LoginScreen SSO callback handling", () => {
 
     expect(getCurrent).not.toHaveBeenCalled();
     expect(onOpenUrl).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Continue with SSO" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in with QR code" })).not.toBeInTheDocument();
   });
 
   it("ignores a spoofed deep link whose scheme merely starts with the callback prefix", async () => {

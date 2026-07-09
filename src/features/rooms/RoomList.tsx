@@ -49,6 +49,7 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
+  const supportsSpaceBrowser = !isWebBuild();
 
   const sections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
 
@@ -143,12 +144,14 @@ export function RoomList({ rooms, activeRoomId, onSelectRoom }: RoomListProps) {
 
             {sections.spaceGroups.map(({ space, rooms: spaceRooms }) => (
               <div key={space.room_id}>
-                <button
-                  onClick={() => setBrowsingSpace(space)}
-                  className="w-full truncate rounded-md px-3 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
-                >
-                  {displayName(space.room_id, space.name)}
-                </button>
+                {supportsSpaceBrowser && (
+                  <button
+                    onClick={() => setBrowsingSpace(space)}
+                    className="w-full truncate rounded-md px-3 py-1 text-left text-xs font-semibold text-muted-foreground hover:text-foreground"
+                  >
+                    {displayName(space.room_id, space.name)}
+                  </button>
+                )}
                 <RoomListSection
                   title={displayName(space.room_id, space.name)}
                   count={spaceRooms.length}

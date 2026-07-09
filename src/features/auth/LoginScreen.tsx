@@ -49,6 +49,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // multi-stage lifecycle (generating, waiting for scan, check code,
   // approval, syncing secrets) that doesn't fit the sign-in/register form.
   const [showQrLogin, setShowQrLogin] = useState(false);
+  const showNativeSignInOptions = !isWebBuild();
 
   const discovery = useHomeserverDiscovery(homeserverUrl);
 
@@ -231,7 +232,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
                       : "Create account"}
                 </Button>
 
-                {mode === "sign-in" && (
+                {mode === "sign-in" && showNativeSignInOptions && (
                   <>
                     <div className="flex items-center gap-3 text-xs text-muted-foreground">
                       <div className="h-px flex-1 bg-border" />

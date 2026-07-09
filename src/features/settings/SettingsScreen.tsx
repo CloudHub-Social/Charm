@@ -15,16 +15,22 @@ import { ObservabilityPanel } from "./ObservabilityPanel";
 import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
+import { isWebBuild } from "@/lib/platform";
 
 interface SettingsScreenProps {
   onLoggedOut: () => void;
 }
 
-const SECTIONS: { value: SettingsSection; label: string; desktopOnly?: boolean }[] = [
+const SECTIONS: {
+  value: SettingsSection;
+  label: string;
+  desktopOnly?: boolean;
+  webUnsupported?: boolean;
+}[] = [
   { value: "account", label: "Account" },
   { value: "general", label: "General" },
-  { value: "notifications", label: "Notifications" },
-  { value: "devices", label: "Devices" },
+  { value: "notifications", label: "Notifications", webUnsupported: true },
+  { value: "devices", label: "Devices", webUnsupported: true },
   { value: "appearance", label: "Appearance" },
   { value: "observability", label: "Observability" },
   { value: "desktop", label: "Desktop", desktopOnly: true },
@@ -44,7 +50,10 @@ function SettingsBody({
   mobile: boolean;
 }) {
   const showDesktopSection = useIsDesktopPlatform();
-  const sections = SECTIONS.filter((s) => !s.desktopOnly || showDesktopSection);
+  const webBuild = isWebBuild();
+  const sections = SECTIONS.filter(
+    (s) => (!s.desktopOnly || showDesktopSection) && (!s.webUnsupported || !webBuild),
+  );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from
   // desktop to mobile width, or Tauri to a plain browser, without closing
@@ -94,12 +103,16 @@ function SettingsBody({
         <TabsContent value="general">
           <GeneralPanel />
         </TabsContent>
-        <TabsContent value="notifications">
-          <NotificationsPanel />
-        </TabsContent>
-        <TabsContent value="devices">
-          <DevicesPanel />
-        </TabsContent>
+        {!webBuild && (
+          <>
+            <TabsContent value="notifications">
+              <NotificationsPanel />
+            </TabsContent>
+            <TabsContent value="devices">
+              <DevicesPanel />
+            </TabsContent>
+          </>
+        )}
         <TabsContent value="appearance">
           <AppearancePanel />
         </TabsContent>
