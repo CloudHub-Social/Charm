@@ -364,20 +364,22 @@ fn spawn_headless_push(
                 );
             runtime.block_on(async {
                 let _restore_store_guard = crate::matrix::auth::restore_store_lock().lock().await;
-                super::handle_headless_push(&store_root, message).await
-            })
-        });
-        match result {
-            Ok(Some(notification)) => {
-                if let Err(e) = show_headless_notification(
+                let Some(notification) = super::handle_headless_push(&store_root, message).await?
+                else {
+                    return Ok(());
+                };
+                let event_id = notification.event_id.clone();
+                show_headless_notification(
                     vm_for_notification,
                     notification_context,
                     notification,
-                ) {
-                    eprintln!("failed to show headless push notification: {e}");
-                }
-            }
-            Ok(None) => {}
+                )?;
+                super::mark_headless_notified_at(&store_root, &event_id)?;
+                Ok(())
+            })
+        });
+        match result {
+            Ok(()) => {}
             Err(e) => eprintln!("handle_headless_push failed: {e}"),
         }
     });

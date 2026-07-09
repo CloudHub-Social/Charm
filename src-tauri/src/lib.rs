@@ -454,7 +454,11 @@ pub fn run() {
             }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
-            if let Err(e) = matrix::persistence::sweep_orphan_temp_stores(&handle) {
+            let sweep_result = tauri::async_runtime::block_on(async {
+                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                matrix::persistence::sweep_orphan_temp_stores(&handle)
+            });
+            if let Err(e) = sweep_result {
                 eprintln!("orphan temp-store sweep failed: {e}");
             }
             #[cfg(desktop)]

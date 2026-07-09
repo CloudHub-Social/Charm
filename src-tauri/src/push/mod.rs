@@ -746,16 +746,15 @@ pub(crate) async fn handle_headless_push(
         &client,
         message,
         |_| false,
-        |event_id| async move { mark_headless_notified_at(store_root, &event_id) },
+        |event_id| async move { Ok(!has_headless_notified_at(store_root, &event_id)?) },
     )
     .await
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn mark_headless_notified_at(
+fn read_headless_notified_event_ids_at(
     store_root: &std::path::Path,
-    event_id: &str,
-) -> Result<bool, PushError> {
+) -> Result<Vec<String>, PushError> {
     let notified_path = store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE);
     let existing = match std::fs::read_to_string(&notified_path) {
         Ok(contents) => contents,
@@ -767,11 +766,30 @@ fn mark_headless_notified_at(
         }
     };
 
-    let mut notified_event_ids = existing
+    Ok(existing
         .lines()
         .filter(|line| !line.is_empty())
         .map(str::to_string)
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn has_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    Ok(read_headless_notified_event_ids_at(store_root)?
+        .iter()
+        .any(|known| known == event_id))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) fn mark_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let notified_path = store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE);
+    let mut notified_event_ids = read_headless_notified_event_ids_at(store_root)?;
     if notified_event_ids.iter().any(|known| known == event_id) {
         return Ok(false);
     }
