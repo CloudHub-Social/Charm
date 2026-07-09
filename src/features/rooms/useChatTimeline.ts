@@ -39,9 +39,10 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   }, [room?.room_id]);
 
   useEffect(() => {
-    if (!room) return undefined;
+    const timelineRoomId = room?.room_id;
+    if (!timelineRoomId) return undefined;
     const unlisten = onTimelineUpdate((update) => {
-      if (update.room_id !== room.room_id) return;
+      if (update.room_id !== timelineRoomId) return;
       // `update.messages` is a full re-snapshot of the room's live Timeline
       // (Spec 14) — every call to `timeline:update` carries the complete
       // current item list, not a delta to merge onto existing state. Merging
@@ -56,7 +57,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     return () => {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
-  }, [room]);
+  }, [room?.room_id]);
 
   const latestEventId = messages.length > 0 ? messages[messages.length - 1].event_id : null;
 
