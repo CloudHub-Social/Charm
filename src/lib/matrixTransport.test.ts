@@ -505,6 +505,10 @@ describe("matrix web transport", () => {
         txnId: "t",
       }),
     ).rejects.toThrow("requires a browser File for 'send_attachment'");
+    await expect(invoke("set_avatar", { filePath: "/tmp/file.png" })).rejects.toMatchObject({
+      kind: "InvalidCommandArgs",
+      message: "set_avatar: requires a browser File for 'filePath'",
+    });
   });
 
   it("surfaces HTTP error response text", async () => {

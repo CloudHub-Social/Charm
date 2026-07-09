@@ -1,6 +1,7 @@
 import { listen as tauriListen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { IPC_OPERATION_ID_HEADER, invoke as tauriInvoke } from "@/observability/ipc";
+import { createIpcOperationId } from "@/observability/operationId";
 import { isWebBuild } from "./platform";
 
 type InvokeArgs = Record<string, unknown>;
@@ -15,7 +16,6 @@ const webEventListeners = new Map<string, Set<EventCallback<unknown>>>();
 let webSocket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
-let fallbackOperationCounter = 0;
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
@@ -95,18 +95,10 @@ function encodeSegment(value: string): string {
   return encodeURIComponent(value);
 }
 
-function operationId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `ipc-${globalThis.crypto.randomUUID()}`;
-  }
-  fallbackOperationCounter += 1;
-  return `ipc-${Date.now().toString(36)}-${fallbackOperationCounter.toString(36)}`;
-}
-
 function jsonHeaders(): HeadersInit {
   return {
     "content-type": "application/json",
-    [IPC_OPERATION_ID_HEADER]: operationId(),
+    [IPC_OPERATION_ID_HEADER]: createIpcOperationId(),
   };
 }
 
@@ -115,6 +107,10 @@ function unsupported(command: string): never {
     "UnsupportedCommand",
     `The web companion transport does not support '${command}' yet.`,
   );
+}
+
+function invalidCommandArgs(command: string, message: string): never {
+  throw new WebCommandError("InvalidCommandArgs", `${command}: ${message}`);
 }
 
 function onboardingStorageKey(userId: unknown): string | null {
@@ -209,7 +205,8 @@ async function requestJson<T>(
   const options: RequestInit = {
     method,
     credentials: "include",
-    headers: body === undefined ? { [IPC_OPERATION_ID_HEADER]: operationId() } : jsonHeaders(),
+    headers:
+      body === undefined ? { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() } : jsonHeaders(),
   };
   if (body !== undefined) {
     options.body = JSON.stringify(body);
@@ -228,7 +225,7 @@ async function requestBytes<T>(
   body?: BodyInit,
   contentType?: string,
 ): Promise<T> {
-  const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: operationId() };
+  const headers: Record<string, string> = { [IPC_OPERATION_ID_HEADER]: createIpcOperationId() };
   if (contentType) headers["content-type"] = contentType;
   const response = await fetch(`${apiBase()}${path}`, {
     method,
@@ -501,7 +498,7 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     case "set_avatar":
     case "set_room_avatar": {
       const file = maybeFile(args.filePath);
-      if (!file) unsupported(command);
+      if (!file) invalidCommandArgs(command, "requires a browser File for 'filePath'");
       const path =
         command === "set_avatar"
           ? "/api/profile/avatar"
