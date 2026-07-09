@@ -120,7 +120,7 @@ describe("VerifyDevicePane", () => {
         last_seen_ip: null,
         last_seen_ts: null,
         is_current: false,
-        is_verified: false,
+        is_verified: true,
       },
     ];
     renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
@@ -181,6 +181,41 @@ describe("VerifyDevicePane", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Verify this device" })).not.toBeInTheDocument();
+    expect(bootstrapCrossSigning).not.toHaveBeenCalled();
+  });
+
+  it("does not offer untrusted sessions as verifier choices", () => {
+    crossSigningStatus = BOOTSTRAPPED_STATUS;
+    devices = [
+      {
+        device_id: "WEB_DEVICE",
+        display_name: "This browser",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: true,
+        is_verified: false,
+      },
+      {
+        device_id: "UNTRUSTED_DEVICE",
+        display_name: "Old browser",
+        last_seen_ip: null,
+        last_seen_ts: null,
+        is_current: false,
+        is_verified: false,
+      },
+    ];
+
+    renderWithProviders(<VerifyDevicePane onNext={vi.fn()} onSkip={vi.fn()} />);
+
+    expect(
+      screen.queryByRole("button", { name: "Verify with Old browser" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Open Charm on a trusted session, then come back here to start verification.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
     expect(bootstrapCrossSigning).not.toHaveBeenCalled();
   });
 

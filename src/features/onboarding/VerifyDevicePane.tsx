@@ -38,7 +38,9 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
     crossSigningStatus.has_self_signing_key &&
     crossSigningStatus.has_user_signing_key,
   );
-  const verifierDevices = (devices ?? []).filter((device) => !device.is_current);
+  const verifierDevices = (devices ?? []).filter(
+    (device) => !device.is_current && device.is_verified,
+  );
 
   async function handleSetUp() {
     if (await uia.submit()) {
