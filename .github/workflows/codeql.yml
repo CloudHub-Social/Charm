@@ -50,6 +50,11 @@ jobs:
           build-mode: none
 
       - name: Perform CodeQL Analysis
+        # Merge queue refs are ephemeral; the analyze action can finish the scan
+        # and then lose a SARIF-upload race if GitHub supersedes the queue ref.
+        # Keep pull_request/push/schedule strict, but do not let that known
+        # merge_group upload race fail the queue.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:${{ matrix.language }}"
@@ -76,6 +81,8 @@ jobs:
           build-mode: none
 
       - name: Perform CodeQL Analysis
+        # Same merge_group SARIF-upload race as the matrix job above.
+        continue-on-error: ${{ github.event_name == 'merge_group' }}
         uses: github/codeql-action/analyze@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
         with:
           category: "/language:rust"
