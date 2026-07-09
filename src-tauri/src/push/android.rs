@@ -365,16 +365,29 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(app) = super::global_app_handle() else {
-        eprintln!("push received before the app handle was initialized; dropping");
+        tracing::warn!(
+            command = "android_push",
+            status = "no_app_handle",
+            "Push received before the app handle was initialized; dropping"
+        );
         return;
     };
     let Some(message) = parse_event_id_only_payload(&payload) else {
-        eprintln!("push payload missing room_id/event_id; dropping");
+        tracing::warn!(
+            command = "android_push",
+            status = "missing_fields",
+            "Push payload missing room_id/event_id; dropping"
+        );
         return;
     };
     tauri::async_runtime::spawn(async move {
         if let Err(e) = super::handle_push(&app, message).await {
-            eprintln!("handle_push failed: {e}");
+            tracing::error!(
+                command = "android_push",
+                status = "failed",
+                error = %e,
+                "handle_push failed"
+            );
         }
     });
 }
