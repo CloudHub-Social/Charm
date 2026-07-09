@@ -369,12 +369,17 @@ fn spawn_headless_push(
                     return Ok(());
                 };
                 let event_id = notification.event_id.clone();
+                let Some(pending_dedupe) =
+                    super::prepare_headless_notified_at(&store_root, &event_id)?
+                else {
+                    return Ok(());
+                };
                 show_headless_notification(
                     vm_for_notification,
                     notification_context,
                     notification,
                 )?;
-                super::mark_headless_notified_at(&store_root, &event_id)?;
+                pending_dedupe.commit()?;
                 Ok(())
             })
         });

@@ -809,10 +809,46 @@ pub(super) fn mark_headless_notified_at(
     store_root: &std::path::Path,
     event_id: &str,
 ) -> Result<bool, PushError> {
-    let notified_path = store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE);
+    let Some(pending) = prepare_headless_notified_at(store_root, event_id)? else {
+        return Ok(false);
+    };
+    pending.commit()?;
+    Ok(true)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) struct PendingHeadlessNotifiedEvent {
+    pending_path: std::path::PathBuf,
+    notified_path: std::path::PathBuf,
+    committed: bool,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+impl PendingHeadlessNotifiedEvent {
+    pub(super) fn commit(mut self) -> Result<(), PushError> {
+        std::fs::rename(&self.pending_path, &self.notified_path)
+            .map_err(|e| format!("failed to commit headless push notification dedupe file: {e}"))?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingHeadlessNotifiedEvent {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.pending_path);
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) fn prepare_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<Option<PendingHeadlessNotifiedEvent>, PushError> {
     let mut notified_event_ids = read_headless_notified_event_ids_at(store_root)?;
     if notified_event_ids.iter().any(|known| known == event_id) {
-        return Ok(false);
+        return Ok(None);
     }
 
     notified_event_ids.push(event_id.to_string());
@@ -824,10 +860,15 @@ pub(super) fn mark_headless_notified_at(
 
     std::fs::create_dir_all(store_root)
         .map_err(|e| format!("failed to create headless push store root: {e}"))?;
-    std::fs::write(&notified_path, contents)
-        .map_err(|e| format!("failed to write headless push notification dedupe file: {e}"))?;
+    let pending_path = store_root.join(format!("{HEADLESS_NOTIFIED_EVENTS_FILE}.pending"));
+    std::fs::write(&pending_path, contents)
+        .map_err(|e| format!("failed to stage headless push notification dedupe file: {e}"))?;
 
-    Ok(true)
+    Ok(Some(PendingHeadlessNotifiedEvent {
+        pending_path,
+        notified_path: store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE),
+        committed: false,
+    }))
 }
 
 pub(crate) async fn reserve_notified_for_app(
@@ -1127,6 +1168,33 @@ mod tests {
 
         let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
         assert_eq!(contents, "$event:example.org\n$other:example.org\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_headless_notified_event_commits_after_success() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-staged-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        {
+            let pending = prepare_headless_notified_at(&root, "$event:example.org")
+                .unwrap()
+                .expect("new event stages a dedupe update");
+            assert!(!has_headless_notified_at(&root, "$event:example.org").unwrap());
+            drop(pending);
+        }
+        assert!(!has_headless_notified_at(&root, "$event:example.org").unwrap());
+
+        let pending = prepare_headless_notified_at(&root, "$event:example.org")
+            .unwrap()
+            .expect("dropped pending update did not burn dedupe");
+        pending.commit().unwrap();
+        assert!(has_headless_notified_at(&root, "$event:example.org").unwrap());
 
         let _ = std::fs::remove_dir_all(root);
     }
