@@ -61,7 +61,17 @@ vi.mock("./ChatShell", () => ({
 }));
 
 vi.mock("./SpaceRail", () => ({
-  SpaceRail: () => <div>space-rail</div>,
+  SpaceRail: ({
+    activeMode,
+    activeSpaceId,
+  }: {
+    activeMode: string;
+    activeSpaceId: string | null;
+  }) => (
+    <div>
+      space-rail:{activeMode}:{activeSpaceId ?? "none"}
+    </div>
+  ),
 }));
 
 vi.mock("./RoomList", () => ({
@@ -174,6 +184,30 @@ describe("RoomsScreen", () => {
     );
 
     await screen.findByText("chat-content:!dm:example.org");
+  });
+
+  it("selects the lexicographically lowest joined parent space for multi-parent rooms", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!z-space:example.org", is_space: true }),
+      room({ room_id: "!a-space:example.org", is_space: true }),
+      room({
+        room_id: "!child:example.org",
+        name: "Child",
+        parent_space_ids: ["!z-space:example.org", "!a-space:example.org"],
+      }),
+    ]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!child:example.org");
+    expect(screen.getByText("space-rail:space:!a-space:example.org")).toBeInTheDocument();
   });
 
   it("clears focus when the window loses focus", async () => {

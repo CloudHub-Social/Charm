@@ -83,9 +83,12 @@ export function RoomsScreen({
     if (room.is_direct) {
       selectDms();
     } else if (room.parent_space_ids.length > 0) {
-      const parentSpaceId = room.parent_space_ids.find((spaceId) =>
-        rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
-      );
+      const joinedParentSpaceIds = room.parent_space_ids
+        .filter((spaceId) =>
+          rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+        )
+        .toSorted();
+      const parentSpaceId = joinedParentSpaceIds[0];
       if (parentSpaceId) {
         selectSpace(parentSpaceId);
       } else {
