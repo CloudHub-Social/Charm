@@ -917,11 +917,23 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          # Caches ~/.gradle/caches and ~/.gradle/wrapper (AndroidX/Kotlin
-          # stdlib downloads + the Gradle distribution itself), keyed on the
-          # wrapper/build files — this build was downloading all of it fresh
-          # every run with no caching at all.
-          cache: gradle
+          # NOT setup-java's own `cache: gradle` input — it has no save-if
+          # equivalent, so it would reintroduce the same branch-multiplication
+          # problem the Swatinem/rust-cache change above just fixed (every
+          # branch saving its own copy, not shared, blowing past the 10GB/repo
+          # cache cap). Restore/save split manually below instead, with saving
+          # scoped to main only. Paths/patterns replicate setup-java's own
+          # gradle cache config (src/cache.ts) exactly.
+
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Set up Android SDK/NDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
@@ -954,3 +966,13 @@ jobs:
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           pnpm tauri android build --target aarch64 --ci
+
+      # Only main saves — see the Restore Gradle cache step's comment above.
+      - name: Save Gradle cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
