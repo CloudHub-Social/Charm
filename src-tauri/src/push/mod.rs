@@ -717,9 +717,9 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         },
         |event_id| async move {
             if restore_store_already_locked {
-                mark_notified_for_app_unlocked(app, &event_id)
+                reserve_notified_for_app_unlocked(app, &event_id)
             } else {
-                mark_notified_for_app(app, &event_id).await
+                reserve_notified_for_app(app, &event_id).await
             }
         },
     )
@@ -729,12 +729,26 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     };
 
     use tauri_plugin_notification::NotificationExt;
-    let _ = app
+    let show_result = app
         .notification()
         .builder()
-        .title(notification.title)
-        .body(notification.body)
+        .title(&notification.title)
+        .body(&notification.body)
         .show();
+    if let Err(e) = show_result {
+        app.state::<MatrixState>()
+            .forget_notified(&notification.event_id);
+        return Err(format!("failed to show push notification: {e}"));
+    }
+
+    let persisted = if restore_store_already_locked {
+        mark_notified_for_app_unlocked(app, &notification.event_id)
+    } else {
+        mark_notified_for_app(app, &notification.event_id).await
+    };
+    if let Err(e) = persisted {
+        eprintln!("failed to persist shown push notification dedupe: {e}");
+    }
 
     Ok(())
 }
@@ -816,6 +830,14 @@ pub(super) fn mark_headless_notified_at(
     Ok(true)
 }
 
+pub(crate) async fn reserve_notified_for_app(
+    app: &AppHandle,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let _restore_store_guard = auth::restore_store_lock().lock().await;
+    reserve_notified_for_app_unlocked(app, event_id)
+}
+
 pub(crate) async fn mark_notified_for_app(
     app: &AppHandle,
     event_id: &str,
@@ -824,29 +846,46 @@ pub(crate) async fn mark_notified_for_app(
     mark_notified_for_app_unlocked(app, event_id)
 }
 
-fn mark_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+fn app_store_root(app: &AppHandle) -> Result<std::path::PathBuf, PushError> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let store_root = persistence::matrix_store_root_at(&app_data_dir)?;
-    mark_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
+    persistence::matrix_store_root_at(&app_data_dir)
+}
+
+fn reserve_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+    let store_root = app_store_root(app)?;
+    reserve_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
+}
+
+fn mark_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+    let store_root = app_store_root(app)?;
+    mark_notified_for_app_at(&store_root, event_id)
 }
 
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn mark_notified_for_app_at(
+fn reserve_notified_for_app_at(
     store_root: &std::path::Path,
     matrix_state: &MatrixState,
     event_id: &str,
 ) -> Result<bool, PushError> {
-    if !mark_headless_notified_at(store_root, event_id)? {
+    if has_headless_notified_at(store_root, event_id)? {
         return Ok(false);
     }
 
     Ok(matrix_state.mark_notified(event_id))
 }
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mark_notified_for_app_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    mark_headless_notified_at(store_root, event_id)
+}
+
 async fn build_push_notification<Fut>(
     client: &Client,
     message: PushMessage,
-    should_suppress_for_room: impl FnOnce(&RoomId) -> bool,
+    should_suppress_for_room: impl Fn(&RoomId) -> bool,
     mark_notified: impl FnOnce(String) -> Fut,
 ) -> Result<Option<PushNotification>, PushError>
 where
@@ -961,11 +1000,18 @@ where
         return Ok(None);
     }
 
-    // Dedup only after the fetch succeeds and the final focus suppression
-    // check passes: marking earlier would either burn this event's dedup slot
-    // on a transient fetch failure, or record a focused-room suppression as a
-    // shown notification and incorrectly suppress a later redelivery.
+    // Reserve only after the fetch succeeds and the first focus suppression
+    // check passes: marking earlier would burn this event's in-process dedup
+    // slot on a transient fetch failure. The app path persists the shared
+    // headless/live dedupe file only after notification posting succeeds.
     if !mark_notified(message.event_id.clone()).await? {
+        return Ok(None);
+    }
+
+    // The reservation above may await on the shared store lock/dedupe file.
+    // Re-read focus after that final await so a user who opened the room while
+    // we waited does not still get a notification for the now-focused room.
+    if should_suppress_for_room(&room_id) {
         return Ok(None);
     }
 
@@ -1096,9 +1142,11 @@ mod tests {
         let state = MatrixState::default();
 
         assert!(mark_headless_notified_at(&root, "$event:example.org").unwrap());
-        assert!(!mark_notified_for_app_at(&root, &state, "$event:example.org").unwrap());
-        assert!(mark_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
-        assert!(!mark_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(!reserve_notified_for_app_at(&root, &state, "$event:example.org").unwrap());
+        assert!(reserve_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(!reserve_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(mark_notified_for_app_at(&root, "$other:example.org").unwrap());
+        assert!(!mark_notified_for_app_at(&root, "$other:example.org").unwrap());
 
         let _ = std::fs::remove_dir_all(root);
     }

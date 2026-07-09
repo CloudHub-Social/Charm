@@ -308,11 +308,12 @@ pub struct NewMessageNotification<'a> {
 /// it. Also the natural place for Spec 11 to plug in a push-decrypted
 /// message later.
 ///
-/// `event_id` gates on `MatrixState::mark_notified` before doing anything
-/// else — a room can transition between the opened/unopened-room paths
-/// while a notification for it is in flight (see `notified_event_ids`'s doc
-/// comment), so this is the one place both agree not to double-fire for the
-/// same event.
+/// `event_id` is reserved after local mute/mentions/focus suppression but
+/// before posting — a room can transition between the opened/unopened-room
+/// paths while a notification for it is in flight (see
+/// `notified_event_ids`'s doc comment), so this is the one place both agree
+/// not to double-fire for the same event. The persisted push dedupe entry is
+/// written only after the notification post succeeds.
 ///
 /// `fetch_mentions` is a lazy callback rather than a plain `Option` so
 /// `room.notification_mode()` is only ever read once, here: reading it once
@@ -343,17 +344,6 @@ pub async fn maybe_send_notification<F, Fut>(
     if own_user_id.is_some_and(|me| me.as_str() == sender) {
         return;
     }
-    match crate::push::mark_notified_for_app(app, event_id).await {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(e) => {
-            eprintln!("failed to check persisted notification dedupe: {e}");
-            if !app.state::<MatrixState>().mark_notified(event_id) {
-                return;
-            }
-        }
-    }
-
     let mode = room.notification_mode().await;
     let is_muted = matches!(
         mode,
@@ -386,6 +376,33 @@ pub async fn maybe_send_notification<F, Fut>(
     ) {
         return;
     }
+    match crate::push::reserve_notified_for_app(app, event_id).await {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(e) => {
+            eprintln!("failed to check persisted notification dedupe: {e}");
+            if !app.state::<MatrixState>().mark_notified(event_id) {
+                return;
+            }
+        }
+    }
+
+    let focused_room_id = app
+        .state::<MatrixState>()
+        .focused_room_id
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !should_notify(
+        focused_room_id.as_deref(),
+        room.room_id().as_str(),
+        is_muted,
+        mentions_only,
+        is_highlighted,
+    ) {
+        app.state::<MatrixState>().forget_notified(event_id);
+        return;
+    }
 
     let display_name = match room.cached_display_name() {
         Some(name) => name,
@@ -401,12 +418,21 @@ pub async fn maybe_send_notification<F, Fut>(
 
     let (title, notif_body) =
         build_notification(room_name.as_deref(), sender_display_name, sender, body);
-    let _ = app
+    let show_result = app
         .notification()
         .builder()
         .title(title)
         .body(notif_body)
         .show();
+    if let Err(e) = show_result {
+        eprintln!("failed to show local notification: {e}");
+        app.state::<MatrixState>().forget_notified(event_id);
+        return;
+    }
+
+    if let Err(e) = crate::push::mark_notified_for_app(app, event_id).await {
+        eprintln!("failed to persist shown local notification dedupe: {e}");
+    }
 }
 
 /// Whether this build targets a desktop OS (macOS/Windows/Linux) as opposed
