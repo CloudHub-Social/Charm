@@ -67,7 +67,7 @@ function containsDotSegment(path) {
   return false;
 }
 
-function proxyHeaders(request, { preserveUpgrade = false, previewOrigin } = {}) {
+function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   const headers = new Headers(request.headers);
   const namesToDelete = [];
   for (const name of Array.from(headers.keys())) {
@@ -83,9 +83,6 @@ function proxyHeaders(request, { preserveUpgrade = false, previewOrigin } = {}) 
   }
   for (const name of namesToDelete) {
     headers.delete(name);
-  }
-  if (headers.has("origin")) {
-    headers.set("origin", previewOrigin);
   }
   return headers;
 }
@@ -135,7 +132,6 @@ export async function onRequest({ env, request }) {
     method: request.method,
     headers: proxyHeaders(request, {
       preserveUpgrade,
-      previewOrigin: incomingUrl.origin,
     }),
     body,
     redirect: "manual",
