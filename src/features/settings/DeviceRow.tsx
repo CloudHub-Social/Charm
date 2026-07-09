@@ -1,4 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +16,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { DeviceSummary } from "@/lib/matrix";
+import { openExternalUrl } from "@/lib/openExternalUrl";
 import { useDeviceDeleteUrl } from "./useDevices";
 import { useUiaRetry } from "./useUiaRetry";
 
@@ -124,7 +125,7 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: 
             </DropdownMenuItem>
           )}
           {!device.is_current && usesOAuth && deleteUrl && (
-            <DropdownMenuItem onClick={() => openUrl(deleteUrl)}>
+            <DropdownMenuItem onClick={() => openExternalUrl(deleteUrl).catch(logAndIgnore)}>
               Manage in account settings
             </DropdownMenuItem>
           )}

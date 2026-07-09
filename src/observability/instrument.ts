@@ -8,13 +8,40 @@ const MAX_ERRORS_PER_SESSION = 50;
 
 let initialized = false;
 let sentErrorCount = 0;
+type FeedbackDialog = Awaited<
+  ReturnType<NonNullable<ReturnType<typeof Sentry.getFeedback>>["createForm"]>
+>;
+let feedbackDialog: FeedbackDialog | null = null;
+let feedbackDialogPromise: Promise<FeedbackDialog | null> | null = null;
+let feedbackDialogPromiseKey: string | null = null;
+let feedbackDialogGeneration = 0;
+let feedbackSubmissionContext: SentryFeedbackDialogOptions = {};
+
+export interface SentryFeedbackDialogOptions {
+  associatedEventId?: string;
+  surface?: "crash-fallback" | "manual" | "settings";
+}
+
+function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undefined): void {
+  if (!dialog || typeof dialog.removeFromDom !== "function") return;
+  try {
+    dialog.removeFromDom();
+  } catch {
+    // Closing observability should not fail the settings flow.
+  }
+}
+
+function feedbackOptionsKey(options: SentryFeedbackDialogOptions): string {
+  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}`;
+}
 
 type SentryIntegration =
   | ReturnType<typeof Sentry.browserTracingIntegration>
   | ReturnType<typeof Sentry.replayIntegration>
   | ReturnType<typeof Sentry.replayCanvasIntegration>
   | ReturnType<typeof Sentry.browserProfilingIntegration>
-  | ReturnType<typeof Sentry.consoleLoggingIntegration>;
+  | ReturnType<typeof Sentry.consoleLoggingIntegration>
+  | ReturnType<typeof Sentry.feedbackIntegration>;
 
 function environment(): string {
   return import.meta.env.VITE_SENTRY_ENVIRONMENT || import.meta.env.MODE || "production";
@@ -48,6 +75,21 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
   if (settings.logsEnabled) {
     enabledIntegrations.push(Sentry.consoleLoggingIntegration({ levels: ["error", "warn"] }));
   }
+  enabledIntegrations.push(
+    Sentry.feedbackIntegration({
+      autoInject: false,
+      enableScreenshot: true,
+      showEmail: false,
+      showName: false,
+      showBranding: false,
+      triggerLabel: "Send feedback",
+      triggerAriaLabel: "Send feedback to Charm",
+      formTitle: "Send feedback",
+      messagePlaceholder:
+        "What happened? Avoid Matrix IDs, room names, recovery keys, or other private details.",
+      submitButtonLabel: "Send",
+    }),
+  );
   return enabledIntegrations;
 }
 
@@ -100,6 +142,18 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
       return scrubSentryValue(log);
     },
   });
+  Sentry.getClient()?.on("beforeSendFeedback", (event) => {
+    const surface = feedbackSubmissionContext.surface ?? "manual";
+    event.tags = {
+      ...event.tags,
+      "charm.feedback.surface": surface,
+      "charm.feedback.screenshot": "optional",
+    };
+    if (feedbackSubmissionContext.associatedEventId && event.contexts?.feedback) {
+      event.contexts.feedback.associated_event_id = feedbackSubmissionContext.associatedEventId;
+    }
+    Object.assign(event, scrubSentryValue(event));
+  });
   Sentry.setTag("platform", "webview");
   initialized = true;
   return true;
@@ -120,13 +174,119 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
 export async function closeSentry(): Promise<void> {
   if (!initialized) return;
   sentErrorCount = 0;
+  feedbackDialogGeneration += 1;
   setSentryClientEnabled(false);
+  feedbackDialogPromise = null;
+  feedbackDialogPromiseKey = null;
+  const dialog = feedbackDialog;
+  feedbackDialog = null;
+  removeFeedbackDialog(dialog);
+}
+
+export async function openSentryFeedbackDialog(
+  options: SentryFeedbackDialogOptions = {},
+): Promise<boolean> {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return false;
+
+  const feedback = Sentry.getFeedback();
+  if (!feedback || typeof feedback.createForm !== "function") return false;
+
+  const generation = feedbackDialogGeneration;
+  const optionsKey = feedbackOptionsKey(options);
+  if (feedbackDialogPromise && feedbackDialogPromiseKey !== optionsKey) {
+    return false;
+  }
+  if (feedbackDialog && !feedbackDialogPromise) {
+    const dialog = feedbackDialog;
+    feedbackDialog = null;
+    removeFeedbackDialog(dialog);
+  }
+  if (!feedbackDialog && !feedbackDialogPromise) {
+    try {
+      feedbackDialogPromise = Promise.resolve(
+        feedback.createForm({
+          tags: {
+            "charm.feedback.surface": options.surface ?? "manual",
+            "charm.feedback.screenshot": "optional",
+          },
+        }),
+      )
+        .then((dialog) => {
+          if (
+            generation !== feedbackDialogGeneration ||
+            !Sentry.getClient()?.getOptions().enabled
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          if (
+            !dialog ||
+            typeof dialog.appendToDom !== "function" ||
+            typeof dialog.open !== "function" ||
+            typeof dialog.removeFromDom !== "function"
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          if (
+            generation !== feedbackDialogGeneration ||
+            !Sentry.getClient()?.getOptions().enabled
+          ) {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          try {
+            dialog.appendToDom();
+          } catch {
+            removeFeedbackDialog(dialog);
+            return null;
+          }
+          return dialog;
+        })
+        .catch(() => null)
+        .finally(() => {
+          if (generation === feedbackDialogGeneration) {
+            feedbackDialogPromise = null;
+            feedbackDialogPromiseKey = null;
+          }
+        });
+      feedbackDialogPromiseKey = optionsKey;
+    } catch {
+      feedbackDialogPromise = null;
+      feedbackDialogPromiseKey = null;
+      return false;
+    }
+  }
+
+  const dialog = feedbackDialog ?? (await feedbackDialogPromise);
+  if (generation !== feedbackDialogGeneration || !client.getOptions().enabled) {
+    removeFeedbackDialog(dialog);
+    return false;
+  }
+  feedbackDialog = dialog;
+  if (!feedbackDialog) return false;
+
+  try {
+    feedbackSubmissionContext = { ...options };
+    feedbackDialog.open();
+  } catch {
+    removeFeedbackDialog(feedbackDialog);
+    feedbackDialog = null;
+    return false;
+  }
+  return true;
 }
 
 export const observabilityTestHooks = {
   reset() {
     initialized = false;
     sentErrorCount = 0;
+    feedbackDialog = null;
+    feedbackDialogPromise = null;
+    feedbackDialogPromiseKey = null;
+    feedbackDialogGeneration = 0;
+    feedbackSubmissionContext = {};
   },
   scrubSensitiveText,
   defaultSettings: DEFAULT_OBSERVABILITY_SETTINGS,

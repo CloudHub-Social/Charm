@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountPanel } from "./AccountPanel";
 
 const getProfile = vi.fn();
@@ -50,6 +50,11 @@ function renderWithProviders(children: ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 beforeEach(() => {
   getProfile.mockReset().mockResolvedValue({
@@ -175,6 +180,29 @@ describe("AccountPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Change avatar" }));
 
     await waitFor(() => expect(setAvatar).toHaveBeenCalledWith("/tmp/avatar.png"));
+  });
+
+  it("opens OAuth account deactivation URLs with the browser in web builds", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    const openWindow = vi.spyOn(window, "open").mockImplementation(() => null);
+    getProfile.mockResolvedValue({
+      user_id: "@me:localhost",
+      display_name: "Me",
+      avatar_url: null,
+      uses_oauth: true,
+    });
+    getAccountDeactivateUrl.mockResolvedValue("https://idp.example/deactivate");
+    renderWithProviders(<AccountPanel onLoggedOut={vi.fn()} />);
+
+    await screen.findByText(/its password is managed there/);
+    fireEvent.click(await screen.findByRole("button", { name: "Deactivate account" }));
+
+    expect(openWindow).toHaveBeenCalledWith(
+      "https://idp.example/deactivate",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(openUrl).not.toHaveBeenCalled();
   });
 
   it("resolves the profile's mxc:// avatar url rather than rendering it raw", async () => {

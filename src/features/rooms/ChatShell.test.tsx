@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { forwardRef, useImperativeHandle, useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
 import type {
   ReactionToggleResult,
@@ -175,6 +175,10 @@ function sendDraft(text: string) {
 }
 
 describe("ChatShell", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   beforeEach(() => {
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
     sendMessage.mockReset().mockResolvedValue("txn-1");
@@ -764,6 +768,32 @@ describe("ChatShell", () => {
     vi.restoreAllMocks();
   });
 
+  it("clears in-flight upload rows when switching rooms", async () => {
+    sendAttachment.mockImplementation(() => new Promise(() => {})); // keep the upload in-flight
+    openFileDialog.mockResolvedValue("/Users/me/room-a.mp4");
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+
+    await waitFor(() => expect(screen.getByText("room-a.mp4")).toBeInTheDocument());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(screen.queryByText("room-a.mp4")).not.toBeInTheDocument());
+    expect(await screen.findByPlaceholderText("Message Room B")).toBeInTheDocument();
+  });
+
   it("lets a failed upload be dismissed instead of persisting indefinitely", async () => {
     sendAttachment.mockRejectedValue(new Error("network error"));
     openFileDialog.mockResolvedValue("/Users/me/broken.mp4");
@@ -796,6 +826,47 @@ describe("ChatShell", () => {
         "/Users/me/pasted.png",
         expect.any(String),
       ),
+    );
+  });
+
+  it("does not pass pathless drop files to desktop attachment upload", async () => {
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "drop.png", { type: "image/png" });
+
+    fireEvent.drop(textarea, {
+      dataTransfer: { files: [file] },
+    });
+
+    await Promise.resolve();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
+  it("does not pass pathless pasted files to desktop attachment upload", async () => {
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "pasted.png", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: { files: [file] },
+    });
+
+    await Promise.resolve();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
+  it("passes browser File uploads through in web builds", async () => {
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+    renderChatShell();
+    const textarea = await screen.findByPlaceholderText("Message general");
+    const file = new File(["fake"], "drop.png", { type: "image/png" });
+
+    fireEvent.drop(textarea, {
+      dataTransfer: { files: [file] },
+    });
+
+    await waitFor(() =>
+      expect(sendAttachment).toHaveBeenCalledWith(room.room_id, file, expect.any(String)),
     );
   });
 

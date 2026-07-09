@@ -1,4 +1,3 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { BadgeState } from "@bindings/BadgeState";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
@@ -40,14 +39,17 @@ import type { SasUpdateEvent } from "@bindings/SasUpdateEvent";
 import type { SelfProfileUpdate } from "@bindings/SelfProfileUpdate";
 import type { SendState } from "@bindings/SendState";
 import type { SlashCommand } from "@bindings/SlashCommand";
+import type { SpaceBadgeState } from "@bindings/SpaceBadgeState";
 import type { SpaceChild } from "@bindings/SpaceChild";
+import type { SpaceHierarchyNode } from "@bindings/SpaceHierarchyNode";
 import type { SpaceJoinRule } from "@bindings/SpaceJoinRule";
 import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
-import { invoke } from "@/observability/ipc";
+import { invoke, listen, type UnlistenFn } from "./matrixTransport";
+import { isWebBuild } from "./platform";
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see
@@ -97,7 +99,9 @@ export type {
   SelfProfileUpdate,
   SendState,
   SlashCommand,
+  SpaceBadgeState,
   SpaceChild,
+  SpaceHierarchyNode,
   SpaceJoinRule,
   SyncStateEvent,
   TimelinePage,
@@ -316,7 +320,7 @@ export function onSasUpdate(
  */
 export function sendAttachment(
   roomId: string,
-  filePath: string,
+  filePath: string | File,
   txnId: string,
   caption?: string,
 ): Promise<void> {
@@ -324,13 +328,13 @@ export function sendAttachment(
 }
 
 /**
- * Resolves the media attached to `eventId` in `roomId` to a local filesystem
- * path — fetching, decrypting, and caching on a miss. No handle crosses IPC:
- * the frontend just passes back the plain `(roomId, eventId)` pair it
- * already has from `RoomMessageSummary`'s `media` field ({@link MediaContent}
- * carries display metadata only). Load the returned path in an
- * `<img>`/`<video>`/`<audio>` tag via `convertFileSrc` from
- * `@tauri-apps/api/core`; never expected to be a remote URL.
+ * Resolves the media attached to `eventId` in `roomId`, fetching,
+ * decrypting, and caching on a miss. No handle crosses IPC: the frontend just
+ * passes back the plain `(roomId, eventId)` pair it already has from
+ * `RoomMessageSummary`'s `media` field ({@link MediaContent} carries display
+ * metadata only). Desktop builds return a local path or asset URL; web builds
+ * can return a companion `/api/...` or absolute URL. Pass the result through
+ * `toLoadableMediaUrl` before assigning it to media elements.
  */
 export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean): Promise<string> {
   return invoke("resolve_media", { roomId, eventId, thumbnail });
@@ -407,12 +411,16 @@ export function setAccountData(eventType: string, content: unknown): Promise<voi
 }
 
 /** Local (non-account-data) fast-path onboarding flag — see Spec 12's gate precedence. */
-export function getLocalOnboardingFlag(): Promise<boolean> {
-  return invoke("get_local_onboarding_flag");
+export function getLocalOnboardingFlag(userId?: string): Promise<boolean> {
+  return isWebBuild()
+    ? invoke("get_local_onboarding_flag", { userId })
+    : invoke("get_local_onboarding_flag");
 }
 
-export function setLocalOnboardingFlag(): Promise<void> {
-  return invoke("set_local_onboarding_flag");
+export function setLocalOnboardingFlag(userId?: string): Promise<void> {
+  return isWebBuild()
+    ? invoke("set_local_onboarding_flag", { userId })
+    : invoke("set_local_onboarding_flag");
 }
 
 export function setRoomLowPriority(roomId: string, lowPriority: boolean): Promise<void> {
@@ -436,6 +444,10 @@ export function listSpaceChildren(spaceId: string): Promise<SpaceChild[]> {
   return invoke("list_space_children", { spaceId });
 }
 
+export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[]> {
+  return invoke("list_space_hierarchy", { spaceId });
+}
+
 export function joinRoom(roomIdOrAlias: string): Promise<void> {
   return invoke("join_room", { roomIdOrAlias });
 }
@@ -454,9 +466,10 @@ export function getProfile(): Promise<ProfileSummary> {
 
 /**
  * Resolves `ProfileSummary.avatar_url` (a bare `mxc://` URI, not
- * webview-loadable directly) to a local filesystem path — `null` on any
- * resolution failure. Load the returned path via `convertFileSrc` from
- * `@tauri-apps/api/core`, same convention as {@link resolveMedia}.
+ * webview-loadable directly) to a loadable source candidate, or `null` on any
+ * resolution failure. Desktop builds return a local path or asset URL; web
+ * builds can return a companion `/api/...` or absolute URL. Pass the result
+ * through `toLoadableMediaUrl`, same convention as {@link resolveMedia}.
  */
 export function resolveAvatar(mxcUrl: string): Promise<string | null> {
   return invoke("resolve_avatar", { mxcUrl });
@@ -466,8 +479,8 @@ export function setDisplayName(displayName: string | null): Promise<void> {
   return invoke("set_display_name", { displayName });
 }
 
-/** `filePath` is read on the Rust side — same convention as {@link sendAttachment}. */
-export function setAvatar(filePath: string): Promise<void> {
+/** Tauri uploads read a filesystem path in Rust; web uploads pass a browser `File`. */
+export function setAvatar(filePath: string | File): Promise<void> {
   return invoke("set_avatar", { filePath });
 }
 
@@ -590,8 +603,8 @@ export function setRoomTopic(roomId: string, topic: string): Promise<void> {
   return invoke("set_room_topic", { roomId, topic });
 }
 
-/** `filePath` comes from the avatar file picker — Rust reads and MIME-sniffs it, same convention as `sendAttachment`. */
-export function setRoomAvatar(roomId: string, filePath: string): Promise<void> {
+/** Tauri uploads read a filesystem path in Rust; web uploads pass a browser `File`. */
+export function setRoomAvatar(roomId: string, filePath: string | File): Promise<void> {
   return invoke("set_room_avatar", { roomId, filePath });
 }
 

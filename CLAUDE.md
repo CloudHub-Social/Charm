@@ -152,6 +152,105 @@ it only exists in the machine's own keychain that created it, so CI's macOS/iOS
 platform-build jobs (and any other contributor's machine) would fail to find it.
 Keep this override local-only, via the env var.
 
+## Real-device Apple testing with a free Apple Account
+
+Free Apple Account / Xcode Personal Team signing is enough for local
+real-device smoke testing, but it is not the same thing as the self-signed
+macOS certificate above:
+
+- The self-signed `APPLE_SIGNING_IDENTITY` flow is only for local macOS rebuild
+  stability, especially Keychain ACL prompts. It is not suitable for installing
+  an app on an iPhone.
+- iOS device deployment uses Xcode automatic signing with the owner's Apple
+  Account selected as a **Personal Team**. Xcode creates the local development
+  certificate and provisioning profile for that Apple ID.
+- Apple's current Personal Team limits are tight: up to 10 App IDs, up to 3
+  devices per platform, up to 3 installed apps per device, and 7-day App
+  ID/device/profile validity. After the profile expires, rebuild and reinstall.
+- Personal Team builds are for personal on-device testing only. They cannot use
+  TestFlight/App Store distribution, Developer ID/notarized Mac distribution, or
+  paid-program-only capabilities — including end-to-end APNs push testing,
+  which needs a paid-program push key/certificate. (Current per-spec testing
+  status under this signing tier — e.g. Spec 11 push, Spec 10 desktop shell —
+  lives in the Charm 2.0 vault spec notes, not here; this section is build/
+  install mechanics only.)
+- The generated iOS entitlements currently include `aps-environment` and
+  `com.apple.security.application-groups` for Spec 11. If Xcode refuses to sign
+  a Personal Team build because those capabilities are unavailable, remove them
+  only in a local throwaway working copy for launch/manual UI smoke testing; do
+  not commit that downgrade.
+
+Useful sources for the current Apple boundary:
+
+- https://developer.apple.com/support/compare-memberships/
+- https://developer.apple.com/help/account/basics/about-your-developer-account/
+- https://developer.apple.com/help/account/reference/supported-capabilities-ios/
+- https://developer.apple.com/help/account/identifiers/enable-app-capabilities/
+
+### macOS local run
+
+For a local macOS native build:
+
+```sh
+pnpm install
+pnpm tauri dev
+```
+
+If Keychain access prompts repeat across rebuilds, create the self-signed Code
+Signing certificate described above and run:
+
+```sh
+export APPLE_SIGNING_IDENTITY="Charm Dev Self-Signed"
+pnpm tauri dev
+```
+
+For a distributable local macOS bundle, use:
+
+```sh
+pnpm tauri build
+```
+
+That bundle is useful for local smoke testing. It is not a notarized Developer
+ID distribution unless signed with a paid Apple Developer Program identity.
+
+### iPhone install with a free Apple ID
+
+Do not try to script certificate/profile creation. Let Xcode manage the
+account-bound signing material:
+
+1. Install full Xcode, open it once, and sign in under **Xcode → Settings… →
+   Accounts** with the owner's Apple ID.
+2. Add the iOS Rust targets if they are missing:
+
+   ```sh
+   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+   ```
+
+3. Open the generated iOS project from this repo:
+
+   ```sh
+   pnpm tauri ios dev --open
+   ```
+
+   For a release-style archive/build flow instead:
+
+   ```sh
+   pnpm tauri ios build --open
+   ```
+
+4. In Xcode, select the `charm_iOS` target, then **Signing & Capabilities**.
+   Enable **Automatically manage signing** and choose the owner's Personal Team.
+5. Connect the iPhone, select it as the run destination, unlock it, and press
+   **Run** in Xcode. If iOS blocks the developer app on first launch, approve the
+   developer under the device's VPN & Device Management / Developer App settings,
+   then run again.
+6. Expect to repeat the Xcode run/reinstall after the 7-day Personal Team
+   provisioning period expires.
+
+What's actually testable on this signing tier per current spec — day-one basics
+(launch, login, sync, local storage) vs. specific gaps like Spec 11 push — is
+tracked in the Charm 2.0 vault (`15.12 Charm 2.0/specs/`), not here.
+
 ## Code navigation (graphify)
 
 Build a local graphify graph with `graphify update .` (it lands in `graphify-out/`,

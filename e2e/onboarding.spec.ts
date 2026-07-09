@@ -25,6 +25,7 @@ test("register a fresh account: onboarding appears, and skipping lands on the ro
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Welcome to Charm" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
   await captureSnapshot(page, "onboarding-welcome-screen");
 
   await page.getByRole("button", { name: "Skip" }).click();

@@ -126,6 +126,7 @@ test("a presence dot renders for a DM room's peer", async ({ page }) => {
     room,
   });
   await page.goto("/");
+  await page.getByRole("button", { name: "Direct messages" }).click();
 
   // Wait for the room list (and with it, the root-mounted `usePresenceListener`
   // subscription) to actually render before emitting — firing right after

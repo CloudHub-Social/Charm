@@ -13,25 +13,28 @@ const DEVICES_QUERY_KEY = ["devices"] as const;
 const CROSS_SIGNING_STATUS_QUERY_KEY = ["crossSigningStatus"] as const;
 const CROSS_SIGNING_RESET_URL_QUERY_KEY = ["crossSigningResetUrl"] as const;
 
-export function useDevices() {
+export function useDevices(enabled = true) {
   return useQuery({
     queryKey: DEVICES_QUERY_KEY,
     queryFn: listDevices,
+    enabled,
   });
 }
 
-export function useCrossSigningStatus() {
+export function useCrossSigningStatus(enabled = true) {
   return useQuery({
     queryKey: CROSS_SIGNING_STATUS_QUERY_KEY,
     queryFn: crossSigningStatus,
+    enabled,
   });
 }
 
 /** `null` when there's no OIDC account-management URL to offer a "Reset" link for. */
-export function useCrossSigningResetUrl() {
+export function useCrossSigningResetUrl(enabled = true) {
   return useQuery({
     queryKey: CROSS_SIGNING_RESET_URL_QUERY_KEY,
     queryFn: getCrossSigningResetUrl,
+    enabled,
   });
 }
 

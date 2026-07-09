@@ -12,9 +12,18 @@ permissions: {}
 
 # Cancel a PR's in-flight run when a new push supersedes it — see
 # quality-checks.yml's identical block for the full rationale.
+#
+# The `|| github.ref` fallback is load-bearing: on a merge_group event,
+# github.event.pull_request.number doesn't exist, so without it every PR's
+# merge_group run collapsed to the same group (just the workflow name) —
+# meaning any PR entering the queue could cancel a DIFFERENT PR's in-flight
+# check-base run. cancel-in-progress is scoped to pull_request only, matching
+# quality-checks.yml/codeql.yml/review-gate.yml, so merge_group runs (each
+# keyed on their own ephemeral gh-readonly-queue/... ref via the fallback)
+# are never cancelled by an unrelated event.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check-base:

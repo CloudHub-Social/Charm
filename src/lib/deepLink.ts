@@ -1,4 +1,5 @@
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { isWebBuild } from "./platform";
 
 /**
  * Extracts a target room id/alias from a deep-link URL.
@@ -39,6 +40,8 @@ export function parseRoomTarget(url: string): string | null {
  * unsubscribe function.
  */
 export async function watchDeepLinks(onRoomTarget: (target: string) => void): Promise<() => void> {
+  if (isWebBuild()) return () => {};
+
   const current = await getCurrent().catch(() => null);
   for (const url of current ?? []) {
     const target = parseRoomTarget(url);
