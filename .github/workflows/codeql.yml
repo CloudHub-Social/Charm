@@ -8,16 +8,10 @@ name: CodeQL
 # All languages use CodeQL's buildless extractor (build-mode: none), so none of
 # these jobs need a compile step.
 #
-# As of 2026-07-09, the `analyze` matrix (and `analyze-rust`) no longer run on
-# merge_group: CodeQL is pure per-file static analysis, so its result can't
-# change based on what else merged into main since the PR's own pull_request
-# run already scanned the identical commit content. Re-running it on every
-# merge-queue requeue was pure cost with no gating value, and its SARIF-upload
-# step racing against a busy queue (an ephemeral gh-readonly-queue/... ref
-# getting superseded mid-upload) was a direct contributor to a merge-queue
-# stall incident (see git history around 2026-07-09). `codeql-required` still
-# runs on merge_group and passes trivially (skipped dependencies don't count
-# as failure) — see its own comment below.
+# CodeQL still runs on merge_group so the required gate covers the synthetic
+# queue tree, not only the PR head. The alert query below is the stable required
+# check because GitHub's code-scanning protection does not apply to merge queue
+# groups.
 on:
   push:
     branches: [main, "release/**"]
@@ -36,10 +30,6 @@ concurrency:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # NOT merge_group — see the top-of-file comment. Runs on pull_request/push/
-    # schedule/workflow_dispatch (i.e. every event this workflow listens for
-    # except merge_group).
-    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -66,14 +56,10 @@ jobs:
 
   analyze-rust:
     name: Analyze (rust)
-    # pull_request + push + schedule — NOT merge_group (kept out of the queue by
-    # choice). Push is included so main/release branches get a fresh Rust baseline
-    # on every merge, not just weekly: code-scanning compares a PR's Rust alerts
-    # against the target branch's last analysis, so a stale baseline would hide
-    # newly-introduced alerts. Kept a separate job (not a matrix entry) because a
-    # job-level `if:` can read github.event_name but not matrix. Rust uses the same
-    # buildless extractor as the others (build-mode: none) — no build step needed.
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'schedule'
+    # Pull request, merge queue, push, and schedule all get a fresh Rust scan.
+    # Push keeps main/release baselines current; merge_group covers the synthetic
+    # queue tree. Rust is separate from the matrix because CodeQL's buildless Rust
+    # extractor uses distinct setup from the other languages.
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -102,9 +88,7 @@ jobs:
   #  - the analyze matrix emits per-language "Analyze (…)" contexts, not a single
   #    one, so there is no stable "CodeQL" workflow context to require.
   # This job runs on every event (including merge_group), needs `analyze` and
-  # `analyze-rust` (as of 2026-07-09, NEITHER runs on merge_group — see the
-  # top-of-file comment), and turns red only if one actually failed or was
-  # cancelled — a skipped dependency on merge_group passes. Mirrors
+  # `analyze-rust`, and turns red if either failed or was cancelled. Mirrors
   # `rust-required` in quality-checks.yml; `if: always()` is load-bearing for
   # the same reason.
   codeql-required:
@@ -132,14 +116,11 @@ jobs:
       # An accepted finding (e.g. a test-only hard-coded secret) must still be
       # *dismissed* in Security > Code scanning to clear it. The analyze jobs wait
       # for SARIF processing (codeql-action default), so alerts are queryable now.
-      # Scoped to pull_request only (as of 2026-07-09, `analyze` no longer runs
-      # on merge_group at all, so there's no new analysis for a merge_group ref
-      # to query alerts against — the PR's own pull_request-triggered check
-      # already gated this before the PR could enter the queue). push/schedule
-      # just refresh the baseline. To gate only on serious findings, filter the
-      # jq on `.rule.security_severity_level`.
+      # Scoped to PR and merge-queue refs; push/schedule just refresh the
+      # baseline. To gate only on serious findings, filter the jq on
+      # `.rule.security_severity_level`.
       - name: Fail if CodeQL reported open alerts on this ref
-        if: github.event_name == 'pull_request' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group') && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref }}
