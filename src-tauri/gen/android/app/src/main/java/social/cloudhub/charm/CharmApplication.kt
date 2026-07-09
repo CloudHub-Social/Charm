@@ -54,6 +54,10 @@ class CharmApplication : Application() {
                 @Suppress("DEPRECATION")
                 val observer = object : FileObserver(directory.absolutePath, mask) {
                     override fun onEvent(event: Int, path: String?) {
+                        if (path == null) {
+                            sentryConsentEnabled = false
+                            return
+                        }
                         if (isObservabilityStoreEvent(path)) {
                             sentryConsentEnabled = readSentryEnabledFromStore()
                         }
@@ -64,9 +68,8 @@ class CharmApplication : Application() {
             }
     }
 
-    private fun isObservabilityStoreEvent(path: String?): Boolean =
-        path == null ||
-            path == observabilityStoreFilename ||
+    private fun isObservabilityStoreEvent(path: String): Boolean =
+        path == observabilityStoreFilename ||
             path.endsWith("/$observabilityStoreFilename")
 
     private fun readSentryEnabledFromStore(): Boolean {
