@@ -15,7 +15,7 @@ name: Review gate
 # Each bot exposes a different reliable done-signal (verified empirically):
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
 #   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
-#              (for the current head) when it has findings.
+#              when it has findings (not reliably head-anchored; see below).
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
