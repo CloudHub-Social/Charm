@@ -18,13 +18,10 @@ jobs:
     name: Cloudflare Pages preview
     runs-on: ubuntu-latest
     environment: cloudflare-preview
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
-      CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -35,9 +32,13 @@ jobs:
 
       - name: Check preview configuration
         id: config
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT CHARM_WEB_API_BASE_URL; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -55,27 +56,13 @@ jobs:
       - if: steps.config.outputs.enabled == 'true'
         run: pnpm build:web
 
-      - name: Configure same-origin API proxy
-        if: steps.config.outputs.enabled == 'true'
-        run: |
-          api_base="${CHARM_WEB_API_BASE_URL%/}"
-          case "$api_base" in
-            http://*|https://*) ;;
-            *)
-              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API origin for preview proxying"
-              exit 1
-              ;;
-          esac
-          case "$api_base" in
-            */api) api_target="${api_base}/:splat" ;;
-            *) api_target="${api_base}/api/:splat" ;;
-          esac
-          printf '/api/* %s 200\n' "$api_target" > dist/_redirects
-
       - name: Deploy to Cloudflare Pages
         if: steps.config.outputs.enabled == 'true'
         id: deploy
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT: ${{ secrets.CLOUDFLARE_PAGES_PROJECT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REF_NAME: ${{ github.ref_name }}
           COMMIT_MESSAGE: ${{ github.event.pull_request.title || github.event.head_commit.message || 'Manual web preview' }}
@@ -105,12 +92,13 @@ jobs:
           PREVIEW_URL: ${{ steps.deploy.outputs.url }}
         run: |
           marker="<!-- charm-web-preview -->"
-          body="${marker}
-          Web preview: ${PREVIEW_URL}
-
-          Built with \`VITE_CHARM_BUILD_TARGET=web\` and a same-origin \`/api/*\` Pages proxy so Strict session cookies work in authenticated preview flows."
+          body=$(printf "%s\nWeb preview: %s\n\nBuilt with \`%s\` and a same-origin \`%s\` Pages Function proxy so Strict session cookies work in authenticated preview flows." \
+            "$marker" \
+            "$PREVIEW_URL" \
+            "VITE_CHARM_BUILD_TARGET=web" \
+            "/api/*")
           existing=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
-            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\"))) | .id" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- charm-web-preview -->"))) | .id' \
             | tail -n 1)
           if [ -n "$existing" ]; then
             gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${existing}" -f body="$body"
