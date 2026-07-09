@@ -847,18 +847,6 @@ async fn build_push_notification(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Dedup *after* the fetch succeeds, not before: marking earlier (an
-    // earlier version of this function did, right after the mute check)
-    // would burn this event's dedup slot even on a transient fetch failure
-    // (`?` above returns before we ever got anything to react to), wrongly
-    // suppressing a later retry or the normal sync-path notification for an
-    // event that was never actually shown. Still unconditional otherwise — a
-    // UTD/generic-fallback notification needs the same guard a successfully
-    // decrypted one gets.
-    if !mark_notified(&message.event_id)? {
-        return Ok(None);
-    }
-
     let is_utd = timeline_event.kind.is_utd();
     let own_user_id = client.user_id().map(|id| id.as_str().to_string());
 
@@ -934,6 +922,14 @@ async fn build_push_notification(
     // while fetch/decrypt/display-name work is pending does not still get
     // notified for the now-focused room.
     if should_suppress_for_room(&room_id) {
+        return Ok(None);
+    }
+
+    // Dedup only after the fetch succeeds and the final focus suppression
+    // check passes: marking earlier would either burn this event's dedup slot
+    // on a transient fetch failure, or record a focused-room suppression as a
+    // shown notification and incorrectly suppress a later redelivery.
+    if !mark_notified(&message.event_id)? {
         return Ok(None);
     }
 
