@@ -48,6 +48,21 @@
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/nudge-graphify.py"]
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-symlinked-node-modules.py"]
+          },
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/guard-worktree-graphify-update.py"]
+          }
+        ]
       }
     ],
     "PostToolUse": [

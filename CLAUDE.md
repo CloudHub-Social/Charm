@@ -56,19 +56,29 @@ into the shared hooks dir by `pnpm install`'s `prepare` step — see
 
 If your task's branch changes `package.json`/`pnpm-lock.yaml`, the hook won't create
 the `node_modules` symlink (lockfiles no longer match) and you still need
-`pnpm install --frozen-lockfile` — do **not** manually symlink over a mismatched
-lockfile, that corrupts main's `node_modules`. If the hook didn't fire for some other
-reason (e.g. hooks installed after the worktree already existed), you can always fall
-back to running the same two `ln -s` commands yourself, or just `pnpm install
---frozen-lockfile`.
+`pnpm install --frozen-lockfile`. If it changes *after* the worktree was created
+(lockfiles matched at creation, then diverged), `rm node_modules` before installing —
+installing straight through the stale symlink writes into main's real
+`node_modules`, corrupting it for every worktree linked to it. A Claude Code hook
+(`.claude/hooks/guard-symlinked-node-modules.py`) blocks install-like commands
+(`pnpm install`/`add`/`remove`/`update`/`prune`, `npm`/`yarn` equivalents) from
+running through a symlinked `node_modules` at all, specifically to catch this. If
+the `post-checkout` hook didn't fire for some other reason (e.g. hooks installed
+after the worktree already existed), fall back to the same two `ln -s` commands
+yourself, or just `pnpm install --frozen-lockfile`.
 
-The `graphify-out` symlink points at main's graph, so it's only as fresh as main's
-last `graphify update .`. A local launchd job
-(`scripts/sync-main-graphify.sh` + `scripts/social.cloudhub.charm.sync-main-graphify.plist`)
-polls `origin/main` every 15 minutes, fast-forwards the main worktree when it's
-moved (never touches main if it has uncommitted changes or has diverged), and reruns
-`graphify update .` there — so worktrees generally see a graph that's at most ~15
-minutes stale, without anyone needing to remember to refresh it by hand.
+The `graphify-out` symlink points at main's graph, so **never run `graphify
+update .` from inside a worktree** — it writes through the symlink into main's
+real graph, overwriting it with a snapshot of this branch's unmerged code and
+misleading every other worktree reading that same symlink. (Another Claude Code
+hook, `.claude/hooks/guard-worktree-graphify-update.py`, blocks this.) Instead, a
+local launchd job — install once with `sh scripts/install-launchd-agent.sh`, it's
+opt-in and not run automatically by `pnpm install` — polls `origin/main` every 15
+minutes via `scripts/sync-main-graphify.sh`, fast-forwards the *main* worktree when
+it's moved (never touching main if it has uncommitted changes or has diverged), and
+reruns `graphify update .` there. Worktrees generally see a graph that's at most
+~15 minutes stale without anyone needing to refresh it by hand; if you need it
+fresher right now, run `graphify update .` from `~/git/Charm` (main) directly.
 
 For a release backport, branch from `origin/release/X.Y.Z` instead of `origin/main`,
 matching the branch rules above.

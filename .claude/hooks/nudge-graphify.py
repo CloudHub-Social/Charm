@@ -7,8 +7,10 @@ cross-file questions, but that's a soft instruction easy to forget mid-task.
 This surfaces it right at the point of decision instead: fires just before a
 Bash grep-family command or an unscoped Grep tool call, and — only when a
 graphify graph actually exists to fall back on — attaches a suggestion via
-additionalContext. It never blocks or denies; a narrow, deliberate grep for an
-exact string/symbol should proceed exactly as asked (CLAUDE.md's own stated
+additionalContext, with no `permissionDecision` set — the normal permission
+flow for the underlying command is untouched, this only attaches a message
+alongside whatever that flow decides. A narrow, deliberate grep for an exact
+string/symbol should proceed exactly as asked (CLAUDE.md's own stated
 exception), this just makes the faster option visible alongside it.
 
 Deduplicated per session (one nudge per session, not one per matching call) so
@@ -75,7 +77,6 @@ def main():
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
             "additionalContext": (
                 "This repo has a graphify graph (graphify-out/). For "
                 "architecture/cross-file questions ('how does X work', "
