@@ -143,12 +143,25 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm audit --audit-level=high
-      - run: pnpm lint
-      - run: pnpm fmt:check
-      - run: pnpm typecheck
+      # These steps are pure per-file static analysis — their result can't
+      # change based on what else merged into main since the PR's own
+      # pull_request run last checked them, so they're skipped on merge_group
+      # to cut CI load during merge-queue churn (a busy queue re-testing the
+      # same static-analysis facts on every requeue was a real contributor to
+      # a merge-queue stall incident, 2026-07-09). The build+test:coverage
+      # steps below stay unconditional: a build/test result genuinely can
+      # differ once combined with whatever else just merged.
+      - if: github.event_name != 'merge_group'
+        run: pnpm audit --audit-level=high
+      - if: github.event_name != 'merge_group'
+        run: pnpm lint
+      - if: github.event_name != 'merge_group'
+        run: pnpm fmt:check
+      - if: github.event_name != 'merge_group'
+        run: pnpm typecheck
       - run: pnpm test:coverage
-      - run: pnpm knip
+      - if: github.event_name != 'merge_group'
+        run: pnpm knip
       - run: pnpm build
 
       # Charm 2.0 Spec 09: tokens.css's primitive+semantic tiers are generated
@@ -156,14 +169,23 @@ jobs:
       # contract's interim system of record — see scripts/tokens-pull.mjs).
       # Re-running the pull on a clean checkout must produce zero diff; a
       # mismatch means either the JSON source or the generated CSS was
-      # hand-edited out of sync with the other.
+      # hand-edited out of sync with the other. Also skipped on merge_group
+      # for the same reason as the static-analysis steps above.
       - name: Design tokens are in sync (drift check)
+        if: github.event_name != 'merge_group'
         run: |
           pnpm tokens:pull
           git diff --exit-code src/styles/tokens.css
 
   storybook-a11y:
     name: Storybook (build + axe a11y)
+    # Skipped on merge_group: a11y/component-level results can't change based
+    # on what else merged into main since the PR's own pull_request run
+    # already validated the exact same commit — see the frontend job's
+    # comment above for the full rationale. A skipped required check still
+    # satisfies branch protection (same mechanism already relied on for the
+    # rust/macos/windows/linux/ios/android jobs' path-based skips above).
+    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -291,8 +313,13 @@ jobs:
           echo "${NEXTEST_SHA256}  $RUNNER_TEMP/nextest.tar.gz" | shasum -a 256 -c -
           tar zxf "$RUNNER_TEMP/nextest.tar.gz" -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      # Skipped on merge_group: same rationale as the frontend job's
+      # static-analysis steps above — formatting/lint results can't change
+      # based on what else merged into main.
+      - if: github.event_name != 'merge_group'
+        run: cargo fmt --check
+      - if: github.event_name != 'merge_group'
+        run: cargo clippy --all-targets -- -D warnings
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
       # Rust IPC type changed without the generated bindings being regenerated and
       # committed, the working tree now differs — fail so bindings never drift.
