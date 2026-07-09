@@ -31,13 +31,23 @@ import re
 import sys
 
 INSTALL_COMMAND = re.compile(
-    r"\b(pnpm|npm|yarn)\b[^|;&]*\b(install|i|add|remove|rm|update|up|prune)\b"
+    r"\b(pnpm|npm|yarn)\b[^|;&]*\b(install|i|ci|add|remove|rm|update|up|prune)\b"
 )
-RUN_COMMAND = re.compile(
-    r"\b(pnpm|npm|yarn|npx)\b(?![^|;&]*\b(?:--version|-v|list|ls|why|outdated|config|store)\b)"
-    r"|(?:^|[/\s])node_modules/\.bin/"
-)
+# Matches each package-manager invocation together with its *immediate* next
+# token (the actual subcommand) — deliberately not a lookahead over the rest
+# of the line, so a test file or flag named e.g. "config"/"list" elsewhere in
+# the command can't be mistaken for the subcommand itself and exempt it.
+PKG_MANAGER_INVOCATION = re.compile(r"\b(?:pnpm|npm|yarn|npx)\b\s+(\S+)")
+SAFE_SUBCOMMANDS = {"--version", "-v", "list", "ls", "why", "outdated", "config", "store"}
+BIN_INVOCATION = re.compile(r"(?:^|[/\s])node_modules/\.bin/")
 LEADING_CD = re.compile(r'^\s*cd\s+("[^"]+"|\'[^\']+\'|\S+)\s*(?:&&|;)')
+
+
+def is_run_command(command):
+    for m in PKG_MANAGER_INVOCATION.finditer(command):
+        if m.group(1) not in SAFE_SUBCOMMANDS:
+            return True
+    return bool(BIN_INVOCATION.search(command))
 
 
 def resolve_cwd(command, default_cwd):
@@ -49,6 +59,20 @@ def resolve_cwd(command, default_cwd):
     if not os.path.isabs(path):
         path = os.path.join(default_cwd, path)
     return os.path.normpath(path)
+
+
+def find_package_root(start_dir):
+    """Walk up to the nearest package.json, mirroring how npm/pnpm resolve
+    the package root from a nested cwd (e.g. `cd src && npm install` still
+    operates on the repo root's node_modules, not a nonexistent src/one)."""
+    d = start_dir
+    while True:
+        if os.path.isfile(os.path.join(d, "package.json")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return start_dir
+        d = parent
 
 
 def lockfiles_match(worktree_root, main_root):
@@ -84,12 +108,12 @@ def main():
 
     command = (payload.get("tool_input") or {}).get("command") or ""
     is_install = bool(INSTALL_COMMAND.search(command))
-    is_run = bool(RUN_COMMAND.search(command))
+    is_run = is_run_command(command)
     if not (is_install or is_run):
         return 0
 
     default_root = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    root = resolve_cwd(command, default_root)
+    root = find_package_root(resolve_cwd(command, default_root))
     node_modules = os.path.join(root, "node_modules")
     if not os.path.islink(node_modules):
         return 0

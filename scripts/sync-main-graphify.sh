@@ -48,12 +48,32 @@ if [ "$local_head" != "$remote_head" ]; then
   need_graphify_update=1
 fi
 
-if [ "$need_graphify_update" = "1" ] && command -v graphify >/dev/null 2>&1; then
-  if graphify update . >/tmp/charm-graphify-update.log 2>&1; then
-    echo "sync-main-graphify: graphify updated"
-    rm -f "$fail_marker"
+if [ "$need_graphify_update" = "1" ]; then
+  if command -v graphify >/dev/null 2>&1; then
+    if graphify update . >/tmp/charm-graphify-update.log 2>&1; then
+      echo "sync-main-graphify: graphify updated"
+      rm -f "$fail_marker"
+    else
+      echo "sync-main-graphify: graphify update failed — see /tmp/charm-graphify-update.log" >&2
+      touch "$fail_marker"
+    fi
   else
-    echo "sync-main-graphify: graphify update failed — see /tmp/charm-graphify-update.log" >&2
+    # graphify isn't resolvable right now (e.g. launchd's PATH doesn't
+    # include it yet) — mark this a failure too, not just a silent no-op,
+    # so the *next* run retries even though main didn't move meanwhile.
+    echo "sync-main-graphify: graphify not found on PATH — will retry next run" >&2
     touch "$fail_marker"
   fi
+fi
+
+# Backfill graphify-out into worktrees that didn't get the symlink at
+# creation time — e.g. created before main had ever built a graph, so
+# scripts/git-hooks/post-checkout had nothing to link to yet.
+if [ -d "$repo_root/graphify-out" ]; then
+  git worktree list --porcelain | sed -n 's/^worktree //p' | while IFS= read -r wt; do
+    [ "$wt" = "$repo_root" ] && continue
+    [ -e "$wt/graphify-out" ] && continue
+    [ -L "$wt/graphify-out" ] && continue
+    ln -s "$repo_root/graphify-out" "$wt/graphify-out" 2>/dev/null || true
+  done
 fi

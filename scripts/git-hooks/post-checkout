@@ -29,7 +29,16 @@ if [ ! -e node_modules ] && [ ! -L node_modules ] \
   ln -s "$main_root/node_modules" node_modules
 fi
 
-if [ ! -e graphify-out ] && [ ! -L graphify-out ] && [ -d "$main_root/graphify-out" ]; then
+# No -d check on main_root/graphify-out here (unlike node_modules above):
+# link it in even if main hasn't built a graph yet. A symlink to a
+# not-yet-existing directory is harmless — graphify/the nudge hook already
+# treat "no graph.json" as "no graph" regardless of whether the path exists
+# at all — and it means this worktree picks up the graph automatically once
+# main's exists, instead of staying without one forever. (Worktrees created
+# before this existence check was removed get backfilled by
+# scripts/sync-main-graphify.sh instead, since this hook only runs at
+# worktree-creation time.)
+if [ ! -e graphify-out ] && [ ! -L graphify-out ]; then
   ln -s "$main_root/graphify-out" graphify-out
 fi
 
