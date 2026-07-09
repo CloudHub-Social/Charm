@@ -225,6 +225,32 @@ describe("RoomList", () => {
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
   });
 
+  it("does not refetch the space hierarchy when the selected space object is recreated", async () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValue([]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const renderWithProviders = (selectedSpace: typeof space) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(renderWithProviders(space));
+
+    expect(listSpaceHierarchy).toHaveBeenCalledWith("!space:localhost");
+    rerender(renderWithProviders({ ...space }));
+
+    expect(listSpaceHierarchy).toHaveBeenCalledOnce();
+  });
+
   it("shows all non-DM rooms from Home when Show all rooms is enabled", () => {
     const child = makeRoomSummary({
       room_id: "!child:localhost",

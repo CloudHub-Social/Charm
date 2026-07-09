@@ -74,6 +74,7 @@ export function RoomList({
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
+  const selectedSpaceId = selectedSpace?.room_id ?? null;
 
   const roomById = useMemo(() => new Map(rooms.map((room) => [room.room_id, room])), [rooms]);
   const scopedRooms = useMemo(
@@ -84,7 +85,7 @@ export function RoomList({
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
 
   useEffect(() => {
-    if (mode !== "space" || !selectedSpace) {
+    if (mode !== "space" || !selectedSpaceId) {
       setSpaceHierarchy([]);
       setSpaceError(null);
       setSpaceLoading(false);
@@ -94,7 +95,7 @@ export function RoomList({
     setSpaceLoading(true);
     setSpaceError(null);
     setSpaceHierarchy([]);
-    listSpaceHierarchy(selectedSpace.room_id)
+    listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
         if (!stale) setSpaceHierarchy(result);
       })
@@ -107,7 +108,7 @@ export function RoomList({
     return () => {
       stale = true;
     };
-  }, [mode, selectedSpace]);
+  }, [mode, selectedSpaceId]);
 
   function isExpanded(key: string): boolean {
     return expanded[key] ?? true;
