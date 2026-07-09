@@ -34,16 +34,20 @@ export function SpaceRail({
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, directRooms } = useMemo(() => {
     const spaces = rooms.filter((room) => room.is_space);
+    const knownSpaceIds = new Set(spaces.map((space) => space.room_id));
     const children = new Map<string, RoomSummary[]>();
     for (const space of spaces) {
       for (const parentId of space.parent_space_ids) {
+        if (!knownSpaceIds.has(parentId)) continue;
         const list = children.get(parentId) ?? [];
         list.push(space);
         children.set(parentId, list);
       }
     }
     return {
-      topLevelSpaces: spaces.filter((space) => space.parent_space_ids.length === 0),
+      topLevelSpaces: spaces.filter((space) =>
+        space.parent_space_ids.every((parentId) => !knownSpaceIds.has(parentId)),
+      ),
       childSpacesByParent: children,
       directRooms: rooms.filter((room) => room.is_direct),
     };
@@ -68,7 +72,6 @@ export function SpaceRail({
               label="Direct messages"
               active={activeMode === "dms"}
               unread={directRooms.filter((room) => room.has_unread).length}
-              highlight={directRooms.reduce((sum, room) => sum + room.unread_count, 0)}
               onClick={onSelectDms}
             >
               <Users aria-hidden="true" />
@@ -180,12 +183,13 @@ function RailIconButton({
   onClick,
   children,
 }: RailIconButtonProps) {
+  const accessibleLabel = labelWithBadge(label, unread, highlight);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={label}
+          aria-label={accessibleLabel}
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
@@ -214,12 +218,13 @@ interface SpaceButtonProps {
 
 function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonProps) {
   const label = displayName(space.room_id, space.name);
+  const accessibleLabel = labelWithBadge(label, unread, highlight);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label={label}
+          aria-label={accessibleLabel}
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
@@ -244,6 +249,11 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
       <TooltipContent side="right">{label}</TooltipContent>
     </Tooltip>
   );
+}
+
+function labelWithBadge(label: string, unread: number, highlight: number) {
+  if (unread <= 0 && highlight <= 0) return label;
+  return `${label}, ${unread} unread${highlight > 0 ? `, ${highlight} mentions` : ""}`;
 }
 
 function BadgeDot({ unread, highlight }: { unread: number; highlight: number }) {

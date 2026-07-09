@@ -26,6 +26,12 @@ function renderRail(overrides: Partial<ComponentProps<typeof SpaceRail>> = {}) {
         parent_space_ids: ["!space:localhost"],
       }),
       makeRoomSummary({
+        room_id: "!orphaned-child-space:localhost",
+        name: "Loose child",
+        is_space: true,
+        parent_space_ids: ["!missing-space:localhost"],
+      }),
+      makeRoomSummary({
         room_id: "!dm:localhost",
         name: "Alice",
         is_direct: true,
@@ -54,9 +60,13 @@ describe("SpaceRail", () => {
     renderRail();
 
     expect(screen.getByRole("navigation", { name: "Spaces" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Home" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("button", { name: "Direct messages" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Team" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Home, 2 unread" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "Direct messages, 1 unread" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create or join space" })).toBeInTheDocument();
   });
 
@@ -64,7 +74,7 @@ describe("SpaceRail", () => {
     const props = renderRail();
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
-    fireEvent.click(screen.getByRole("button", { name: "Product" }));
+    fireEvent.click(screen.getByRole("button", { name: "Product, 1 unread" }));
 
     expect(props.onSelectSpace).toHaveBeenCalledWith("!child-space:localhost");
   });
@@ -72,8 +82,8 @@ describe("SpaceRail", () => {
   it("wires Home, DM, and create/join actions", () => {
     const props = renderRail({ activeMode: "dms" });
 
-    fireEvent.click(screen.getByRole("button", { name: "Home" }));
-    fireEvent.click(screen.getByRole("button", { name: "Direct messages" }));
+    fireEvent.click(screen.getByRole("button", { name: "Home, 2 unread" }));
+    fireEvent.click(screen.getByRole("button", { name: "Direct messages, 1 unread" }));
     fireEvent.click(screen.getByRole("button", { name: "Create or join space" }));
 
     expect(props.onSelectHome).toHaveBeenCalledOnce();

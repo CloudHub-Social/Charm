@@ -33,7 +33,7 @@ interface AppShellProps {
 
 /**
  * Switches between the desktop sidebar layout (rooms rail + content side by
- * side) and a mobile bottom-nav layout (Chats / People / Settings tabs, one
+ * side) and a mobile bottom-nav layout (Chats / Settings destinations, one
  * full-screen view at a time) at the `useAdaptiveLayout` breakpoint — Spec 10.
  * Bottom-nav is Day-1; swipe gestures and haptics are Day-2 (see the spec's
  * non-goals).
