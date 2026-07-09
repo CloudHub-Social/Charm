@@ -1,5 +1,7 @@
 import { expect, type APIRequestContext, type Page, test } from "@playwright/test";
 
+// snapshot-exempt: live-gated Matrix E2EE round trip against Synapse/charm-web-server;
+// the deterministic visual states are covered by component and normal e2e specs.
 const enabled = process.env.CHARM_LIVE_WEB_E2EE === "1";
 const homeserver = process.env.CHARM_LIVE_HOMESERVER ?? "http://localhost:8008";
 const apiBase = process.env.VITE_CHARM_WEB_API_BASE_URL ?? "";
