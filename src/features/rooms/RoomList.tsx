@@ -92,11 +92,17 @@ export function RoomList({
   );
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
+  const fullFavouriteSectionRooms = getFullSectionRooms(
+    sections.favourites,
+    fullSections.favourites,
+  );
+  const fullLowPrioritySectionRooms = getFullSectionRooms(
+    sections.lowPriority,
+    fullSections.lowPriority,
+  );
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
   const fullRoomSectionRooms =
-    mode === "dms"
-      ? roomSectionRooms
-      : getFullRoomSectionRooms(roomSectionRooms, fullSections.rooms);
+    mode === "dms" ? roomSectionRooms : getFullSectionRooms(roomSectionRooms, fullSections.rooms);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
@@ -286,7 +292,7 @@ export function RoomList({
               expanded={isExpanded("favourites")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, favourites: v }))}
             >
-              {renderSectionRooms(sections.favourites, fullSections.favourites)}
+              {renderSectionRooms(sections.favourites, fullFavouriteSectionRooms)}
             </RoomListSection>
 
             {mode === "space" && selectedSpace ? (
@@ -341,7 +347,7 @@ export function RoomList({
               expanded={isExpanded("lowPriority")}
               onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, lowPriority: v }))}
             >
-              {renderSectionRooms(sections.lowPriority, fullSections.lowPriority)}
+              {renderSectionRooms(sections.lowPriority, fullLowPrioritySectionRooms)}
             </RoomListSection>
           </div>
         )}
@@ -384,12 +390,9 @@ function flattenHierarchy(nodes: SpaceHierarchyNode[]): SpaceHierarchyNode[] {
   return nodes.flatMap((node) => [node, ...flattenHierarchy(node.children)]);
 }
 
-function getFullRoomSectionRooms(
-  visibleRoomSectionRooms: RoomSummary[],
-  fullRoomSectionRooms: RoomSummary[],
-) {
-  const visibleRoomIds = new Set(visibleRoomSectionRooms.map((room) => room.room_id));
-  return fullRoomSectionRooms.filter((room) => visibleRoomIds.has(room.room_id));
+function getFullSectionRooms(visibleSectionRooms: RoomSummary[], fullSectionRooms: RoomSummary[]) {
+  const visibleRoomIds = new Set(visibleSectionRooms.map((room) => room.room_id));
+  return fullSectionRooms.filter((room) => visibleRoomIds.has(room.room_id));
 }
 
 function countVisibleHierarchyNodes(

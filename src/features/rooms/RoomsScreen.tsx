@@ -273,7 +273,7 @@ export function RoomsScreen({
               setSelectedSpaceId(null);
               setCreateJoinNotice(true);
               if (activeRoomId === null) {
-                const firstSelectableRoom = getInitialSelectableRoom(rooms);
+                const firstSelectableRoom = getInitialHomeRoom(rooms);
                 if (firstSelectableRoom) {
                   selectRoomInVisibleMode(firstSelectableRoom);
                   setCreateJoinNotice(true);
@@ -320,8 +320,11 @@ export function RoomsScreen({
 }
 
 function getInitialSelectableRoom(rooms: RoomSummary[]) {
-  const firstHomeRoom = rooms.find(
+  return getInitialHomeRoom(rooms) ?? rooms.find((room) => !room.is_space);
+}
+
+function getInitialHomeRoom(rooms: RoomSummary[]) {
+  return rooms.find(
     (room) => !room.is_space && !room.is_direct && room.parent_space_ids.length === 0,
   );
-  return firstHomeRoom ?? rooms.find((room) => !room.is_space);
 }

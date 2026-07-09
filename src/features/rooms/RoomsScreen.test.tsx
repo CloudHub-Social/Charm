@@ -304,7 +304,7 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("chat-content:!room:example.org")).toBeInTheDocument();
   });
 
-  it("keeps create/join fallback mode consistent when only DMs are selectable", async () => {
+  it("keeps create/join in Home when only DMs are selectable", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!space:example.org", name: "Team", is_space: true }),
       room({ room_id: "!dm:example.org", name: "Alice", is_direct: true }),
@@ -332,8 +332,8 @@ describe("RoomsScreen", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "create-join" }));
 
-    await screen.findByText("space-rail:dms:none");
-    expect(screen.getByText("chat-content:!dm:example.org")).toBeInTheDocument();
+    await screen.findByText("space-rail:home:none");
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
   it("clears the space deep-link guard when another space is selected", async () => {

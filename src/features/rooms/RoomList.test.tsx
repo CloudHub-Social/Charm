@@ -652,6 +652,50 @@ describe("RoomList", () => {
     expect(screen.queryByText("Room")).not.toBeInTheDocument();
   });
 
+  it("keeps DM favourites reorderable when non-DM favourites exist", () => {
+    const room = makeRoomSummary({
+      room_id: "!room:localhost",
+      name: "Room",
+      is_favourite: true,
+    });
+    const dm = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      is_favourite: true,
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm], mode: "dms" })} />);
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Room")).not.toBeInTheDocument();
+    expect(screen.getByText("Alice").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
+  it("keeps DM low-priority rooms reorderable when non-DM low-priority rooms exist", () => {
+    const room = makeRoomSummary({
+      room_id: "!room:localhost",
+      name: "Room",
+      is_low_priority: true,
+    });
+    const dm = makeRoomSummary({
+      room_id: "!dm:localhost",
+      name: "Alice",
+      is_direct: true,
+      is_low_priority: true,
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm], mode: "dms" })} />);
+
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+    expect(screen.queryByText("Room")).not.toBeInTheDocument();
+    expect(screen.getByText("Alice").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
+  });
+
   it("surfaces the Phase 4 create/join placeholder", () => {
     const onDismiss = vi.fn();
     renderRoomList(
