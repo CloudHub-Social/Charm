@@ -513,11 +513,11 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 
     if let Some(app) = super::global_app_handle() {
         tauri::async_runtime::spawn(async move {
-            let _pending_result = pending_result;
             if let Err(e) = super::handle_push(&app, message).await {
                 eprintln!("handle_push failed: {e}");
             }
         });
+        drop(pending_result);
         return;
     }
 
