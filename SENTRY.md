@@ -108,6 +108,43 @@ bundle shape as shipped releases. Manual runs can override the Sentry release
 name and environment; tag runs default the release name to the tag, and manual
 runs without a release input default to the commit SHA.
 
+Manual dispatch is safe only after the repository owner has configured the four
+required secrets above. A dry repo-side check can validate workflow syntax,
+release/env propagation, and build wiring, but it cannot prove Sentry accepted
+the sourcemaps, debug files, Android mappings/native symbols, or Size Analysis
+build without those secrets and a real workflow run.
+
+Suggested owner-side dispatch for a release candidate:
+
+```sh
+gh workflow run sentry-release-artifacts.yml \
+  --ref main \
+  -f release=charm@2.0.0-rc.1 \
+  -f environment=production
+```
+
+For a tag release, prefer running from the tag ref and omit `release` so the
+workflow uses the tag name:
+
+```sh
+gh workflow run sentry-release-artifacts.yml \
+  --ref v2.0.0 \
+  -f environment=production
+```
+
+Sentry-side verification after the workflow finishes:
+
+- Releases: the selected release exists and has frontend artifacts with debug
+  IDs/source maps for the built JavaScript chunks.
+- Debug files: Linux, macOS, Windows, and iOS simulator debug files appear under
+  the `charm` project and are processed without unresolved upload errors.
+- Android: ProGuard/R8 mapping and native symbols are associated with the
+  release build uploaded by the Gradle plugin.
+- Size Analysis: the Android APK/AAB appears in Sentry Size Analysis with the
+  configured `Release` build configuration and base SHA.
+- Workflow artifacts: GitHub contains the frontend, Linux, Apple, Windows, and
+  Android size report artifacts for the run.
+
 Sentry Size Analysis currently receives Android builds only. The current iOS CI
 path builds an unsigned simulator debug app, while Sentry accepts XCArchive or
 IPA inputs for iOS size analysis; wire that upload once a signed device-release
