@@ -45,6 +45,21 @@ function previewApiBase(env) {
   }
 }
 
+function containsDotSegment(path) {
+  for (const segment of path.split("/")) {
+    let decodedSegment = segment;
+    try {
+      decodedSegment = decodeURIComponent(segment);
+    } catch {
+      return true;
+    }
+    if (decodedSegment === "." || decodedSegment === "..") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function proxyHeaders(request, { preserveUpgrade = false } = {}) {
   const headers = new Headers(request.headers);
   const namesToDelete = [];
@@ -54,6 +69,7 @@ function proxyHeaders(request, { preserveUpgrade = false } = {}) {
       (HOP_BY_HOP_HEADERS.has(normalizedName) &&
         (!preserveUpgrade || (normalizedName !== "connection" && normalizedName !== "upgrade"))) ||
       normalizedName === "host" ||
+      normalizedName === "origin" ||
       normalizedName.startsWith("cf-")
     ) {
       namesToDelete.push(name);
@@ -73,6 +89,11 @@ export async function onRequest({ env, request }) {
 
   const apiBase = result.url;
   const incomingUrl = new URL(request.url);
+  if (incomingUrl.pathname !== "/api" && !incomingUrl.pathname.startsWith("/api/")) {
+    return new Response("Preview API proxy only accepts /api requests", {
+      status: 400,
+    });
+  }
   const apiBasePath = apiBase.pathname.replace(/\/+$/, "");
   const shouldStripApiPrefix =
     apiBasePath.endsWith("/api") &&
@@ -84,16 +105,26 @@ export async function onRequest({ env, request }) {
         ? incomingUrl.pathname.slice("/api".length)
         : incomingUrl.pathname;
   const relativePath = incomingPath.replace(/^\/+/, "");
+  if (containsDotSegment(relativePath)) {
+    return new Response("Preview API proxy path must not include dot segments", {
+      status: 400,
+    });
+  }
   const targetUrl = new URL(apiBase);
   const basePath = targetUrl.pathname.replace(/\/+$/, "");
   targetUrl.pathname = `${basePath}/${relativePath}`;
   targetUrl.search = incomingUrl.search;
   const preserveUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
-
-  return fetch(targetUrl, {
+  const body = request.method === "GET" || request.method === "HEAD" ? null : request.body;
+  const fetchOptions = {
     method: request.method,
     headers: proxyHeaders(request, { preserveUpgrade }),
-    body: request.method === "GET" || request.method === "HEAD" ? null : request.body,
+    body,
     redirect: "manual",
-  });
+  };
+  if (body !== null) {
+    fetchOptions.duplex = "half";
+  }
+
+  return fetch(targetUrl, fetchOptions);
 }
