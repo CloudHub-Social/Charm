@@ -44,7 +44,6 @@ jobs:
           # broader frontend_pattern, this one is scoped to just what a
           # Cloudflare Worker preview deploy needs.
           web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
-          zero_sha="0000000000000000000000000000000000000000"
 
           diff_from() {
             # --no-renames: default rename detection can report ONLY the
@@ -63,11 +62,13 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             base="${{ github.event.pull_request.base.sha }}"
             changed=$(diff_from "$base") || fallback "$base"
-          elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
-            changed="src/"
           else
-            base="${{ github.event.before }}"
-            changed=$(diff_from "$base") || fallback "$base"
+            # workflow_dispatch — the only other event this workflow listens
+            # to (see the `on:` block; there's no push trigger here). No
+            # "changed files" concept for a manual run, and no
+            # github.event.before to diff against, so always deploy rather
+            # than attempting a pointless `git fetch origin ""`.
+            changed="src/"
           fi
 
           if echo "$changed" | grep -qE "$web_pattern"; then
