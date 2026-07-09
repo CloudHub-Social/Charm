@@ -60,7 +60,7 @@ function containsDotSegment(path) {
   return false;
 }
 
-function proxyHeaders(request, { preserveUpgrade = false, upstreamOrigin } = {}) {
+function proxyHeaders(request, { preserveUpgrade = false, previewOrigin } = {}) {
   const headers = new Headers(request.headers);
   const namesToDelete = [];
   for (const name of Array.from(headers.keys())) {
@@ -78,7 +78,7 @@ function proxyHeaders(request, { preserveUpgrade = false, upstreamOrigin } = {})
     headers.delete(name);
   }
   if (headers.has("origin")) {
-    headers.set("origin", upstreamOrigin);
+    headers.set("origin", previewOrigin);
   }
   return headers;
 }
@@ -114,7 +114,7 @@ export async function onRequest({ env, request }) {
   }
   const targetUrl = new URL(apiBase);
   const basePath = targetUrl.pathname.replace(/\/+$/, "");
-  targetUrl.pathname = `${basePath}/${relativePath}`;
+  targetUrl.pathname = relativePath === "" ? basePath || "/" : `${basePath}/${relativePath}`;
   targetUrl.search = incomingUrl.search;
   const preserveUpgrade = request.headers.get("upgrade")?.toLowerCase() === "websocket";
   const body = request.method === "GET" || request.method === "HEAD" ? null : request.body;
@@ -122,7 +122,7 @@ export async function onRequest({ env, request }) {
     method: request.method,
     headers: proxyHeaders(request, {
       preserveUpgrade,
-      upstreamOrigin: apiBase.origin,
+      previewOrigin: incomingUrl.origin,
     }),
     body,
     redirect: "manual",
