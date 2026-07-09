@@ -87,7 +87,8 @@ export function RoomList({
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
-  const fullRoomSectionRooms = mode === "dms" ? roomSectionRooms : fullSections.rooms;
+  const fullRoomSectionRooms =
+    mode === "dms" ? roomSectionRooms : fullSections.rooms.filter((room) => !room.is_direct);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {

@@ -122,6 +122,15 @@ describe("RoomList", () => {
     expect(screen.queryByText("Team chat")).not.toBeInTheDocument();
   });
 
+  it("keeps Home room rows reorderable when DMs exist outside the Home scope", () => {
+    const room = makeRoomSummary({ room_id: "!room:localhost", name: "Room" });
+    const dm = makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room, dm] })} />);
+
+    expect(screen.getByText("Room")).toBeInTheDocument();
+    expect(screen.queryByText("Alice")).not.toBeInTheDocument();
+  });
+
   it("calls onSelectRoom when a room is clicked", () => {
     const onSelectRoom = vi.fn();
     const room = makeRoomSummary({ name: "general" });
