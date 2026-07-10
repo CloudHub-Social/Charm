@@ -518,6 +518,11 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(message) = parse_event_id_only_payload(&payload) else {
         eprintln!("push payload missing room_id/event_id; dropping");
+        tracing::warn!(
+            command = "android_push",
+            status = "missing_fields",
+            "Push payload missing room_id/event_id; dropping"
+        );
         return;
     };
 
@@ -525,6 +530,12 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
         tauri::async_runtime::spawn(async move {
             if let Err(e) = super::handle_push(&app, message).await {
                 eprintln!("handle_push failed: {e}");
+                tracing::error!(
+                    command = "android_push",
+                    status = "failed",
+                    error = %e,
+                    "handle_push failed"
+                );
             }
         });
         // The running-app path is already owned by Tauri's process lifecycle.

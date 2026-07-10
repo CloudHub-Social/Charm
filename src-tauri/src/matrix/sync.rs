@@ -373,6 +373,13 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                 Err(e) => {
                     consecutive_failures += 1;
                     if consecutive_failures >= MAX_CONSECUTIVE_SYNC_FAILURES {
+                        tracing::error!(
+                            command = "sync_loop",
+                            status = "failed",
+                            consecutive_failures,
+                            error = %e,
+                            "Sync loop giving up after repeated failures"
+                        );
                         let _ = app.emit(
                             "sync:state",
                             SyncStateEvent::Error {
@@ -381,6 +388,13 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                         );
                         break;
                     }
+                    tracing::warn!(
+                        command = "sync_loop",
+                        status = "failed",
+                        consecutive_failures,
+                        error = %e,
+                        "Sync iteration failed, retrying with backoff"
+                    );
                     // Exponential backoff (1s, 2s, 4s, ... capped at 30s) before
                     // retrying, rather than hammering a struggling homeserver.
                     let backoff_secs = 1u64 << (consecutive_failures - 1).min(4);
