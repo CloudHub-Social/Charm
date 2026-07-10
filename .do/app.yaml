@@ -46,18 +46,18 @@ services:
       # proxy forwards the browser's real Origin unchanged, so this must be
       # the frontend's actual origin(s), not the companion API's own.
       #
-      # Known gap: this only covers the stable charm-2-dev origin. PR preview
-      # deploys (web-preview.yml's charm-preview Worker, ephemeral
-      # *.workers.dev preview-alias URLs) proxy to this same backend but
-      # their exact origin isn't included here yet — the account's
-      # workers.dev subdomain wasn't confirmed at the time this was written,
-      # and origin_matches_allowed_entry only supports one wildcard per
-      # entry, so guessing wrong here would either wrongly reject or (worse)
-      # wrongly allow origins. Add the confirmed preview-origin pattern once
-      # known.
+      # Two entries: the stable charm-2-dev origin, and PR preview deploys
+      # (web-preview.yml's charm-preview Worker) — confirmed from PR #141's
+      # own preview comment that its actual URL shape is
+      # https://pr-<N>-charm-preview.justin-tech.workers.dev, matching
+      # routes.rs's origin_matches_allowed_entry test fixture for exactly
+      # this case. The wildcard only covers pr-* (not manual-* aliases,
+      # which web-preview.yml also mints for non-PR workflow_dispatch runs)
+      # — deliberately narrower than "every preview this Worker ever
+      # deploys," matching origin_matches_allowed_entry's own test intent.
       - key: CHARM_WEB_SERVER_ALLOWED_ORIGIN
         scope: RUN_TIME
-        value: https://charm-2-dev.cloudhub.social
+        value: https://charm-2-dev.cloudhub.social,https://pr-*-charm-preview.justin-tech.workers.dev
       - key: CHARM_WEB_SERVER_MASTER_KEY
         type: SECRET
       - key: CHARM_WEB_SERVER_SPACES_BUCKET
