@@ -320,29 +320,59 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # NOT a step-level `env:` on the build command below, unlike every
+      # other platform job in this workflow. `pnpm tauri ios build` shells
+      # out to `xcodebuild`, and the actual `cargo build` runs inside a
+      # generated Xcode "Run Script" build phase (`tauri ios xcode-script` —
+      # see src-tauri/gen/apple/project.yml's preBuildScripts). Verified
+      # empirically (run 29099700960, job 86385107125): with RUSTC_WRAPPER
+      # set as step env exactly like this, `sccache --show-stats` reported
+      # compile_requests: 0 even though dozens of crates visibly compiled —
+      # the step's env never reached the actual rustc invocation inside that
+      # script phase, so every iOS nightly build had silently been compiling
+      # uncached this whole time. Writing rustc-wrapper plus the (non-secret)
+      # sccache config into cargo's own config file sidesteps the env-
+      # forwarding question entirely: cargo reads $CARGO_HOME/config.toml
+      # itself and forwards its `[env]` table to every rustc/build-script it
+      # spawns, regardless of what env the parent xcodebuild process handed
+      # it. Credentials go through the same file (not committed — generated
+      # fresh on the runner each job) since env-var passthrough is exactly
+      # what's unreliable here; see the AWS_* comment below for the same
+      # main-only gating every other platform job in this workflow uses.
+      - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          config="$cargo_home/config.toml"
+          # Individual `echo` appends rather than a heredoc — a heredoc's
+          # closing delimiter can't be indented to match this step's YAML
+          # block-scalar indentation without breaking the parse, and
+          # dedenting just the delimiter to column 0 would itself end the
+          # YAML block scalar early.
+          {
+            echo '[build]'
+            echo 'rustc-wrapper = "sccache"'
+            echo ''
+            echo '[env]'
+            echo 'SCCACHE_BUCKET = "charm-sccache-storage"'
+            echo 'SCCACHE_REGION = "tor1"'
+            echo 'SCCACHE_ENDPOINT = "https://tor1.digitaloceanspaces.com"'
+            echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
+            echo 'SCCACHE_S3_USE_SSL = "true"'
+            echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
+            echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
+            echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+          } >> "$config"
+
       # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
       # Silicon) rather than a device. This repo has no Apple Developer
       # signing identity configured for CI, and simulator builds don't need
-      # one — compile verification only, not a distributable IPA. sccache
-      # credentials scoped to just this step — see the macOS job.
+      # one — compile verification only, not a distributable IPA.
       - run: pnpm tauri ios build --target aarch64-sim --debug --ci
-        env:
-          RUSTC_WRAPPER: sccache
-          SCCACHE_BUCKET: charm-sccache-storage
-          SCCACHE_REGION: tor1
-          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-          SCCACHE_S3_USE_SSL: "true"
-          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty for workflow_dispatch runs against anything other than
-          # main: the caller can select an arbitrary branch/ref to dispatch
-          # against, and that branch's build.rs/JS build scripts run with
-          # whatever's injected here — same reasoning as quality-checks.yml's
-          # main-only gate. schedule always runs against main, so this only
-          # actually withholds credentials for a manual dispatch on a
-          # feature branch.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
 
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a

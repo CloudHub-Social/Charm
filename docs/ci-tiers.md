@@ -24,6 +24,17 @@ whole categories of checks when nothing relevant changed (e.g. a Rust-only
 PR skips `Frontend`/`Storybook`/`E2E`; a docs-only PR skips almost
 everything).
 
+`quality-checks.yml` also runs on a daily schedule (08:00 UTC, an hour ahead
+of Tier 3's nightly cron) against the current tip of main, unconditionally
+running every gated check (same as `workflow_dispatch` — there's no diff
+base for a schedule trigger). Two reasons: it catches drift a gated/skipped
+check on the last merged PR could have missed (e.g. a freshly published
+`cargo audit` advisory, or a toolchain/environment change with no
+corresponding diff), and it keeps sccache/Swatinem rust-cache/Playwright
+browser caches warm daily instead of only whenever someone happens to push
+to main. Non-blocking on this trigger (no PR exists to gate) — a failure
+instead opens/comments a tracking GitHub issue, same pattern as Tier 3.
+
 ## Tier 2 — Merge queue
 
 Same checks as Tier 1, re-run against the synthetic tree GitHub's merge
