@@ -90,7 +90,7 @@ jobs:
         # onto it, leaving every SECRET env's real value completely
         # untouched.
         run: |
-          pip install --quiet pyyaml
+          python3 -m pip install --quiet pyyaml
           doctl apps spec get "$DO_APP_ID" > /tmp/live-spec.yaml
           python3 scripts/merge-do-app-spec.py /tmp/live-spec.yaml .do/app.yaml /tmp/merged-spec.yaml
           doctl apps update "$DO_APP_ID" --spec /tmp/merged-spec.yaml
