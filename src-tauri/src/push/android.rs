@@ -349,7 +349,7 @@ fn spawn_headless_push(
         // Android gives async broadcasts a short timeout; the headless restore
         // continues as detached process work after the receiver is released.
         drop(pending_result);
-        let result = super::with_headless_push_lock(|| {
+        let result = super::with_headless_push_lock(&store_root, || {
             let runtime = match tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
