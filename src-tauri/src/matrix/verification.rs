@@ -241,14 +241,21 @@ pub async fn recover_from_key(
     recover_from_key_impl(&client, &recovery_key).await
 }
 
-/// Core logic behind [`recover_from_key`].
+/// Core logic behind [`recover_from_key`]. Never logs `recovery_key` itself —
+/// only whether the attempt succeeded and, on failure, the SDK's error
+/// display — matching the redaction `src/observability/ipc.ts` already
+/// applies to this same argument on the frontend side of this same call.
 pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Result<(), String> {
-    client
-        .encryption()
-        .recovery()
-        .recover(recovery_key)
-        .await
-        .map_err(|error| error.to_string())
+    let result = client.encryption().recovery().recover(recovery_key).await;
+    match &result {
+        Ok(()) => tracing::info!("recovery-key restore succeeded"),
+        // A wrong key is an expected, common user-input error (like a wrong
+        // password) rather than a bug — `warn`, not `error`, so the Sentry
+        // tracing layer (see SENTRY.md) files this as a breadcrumb, not an
+        // issue that could page anyone.
+        Err(error) => tracing::warn!(error = %error, "recovery-key restore failed"),
+    }
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]

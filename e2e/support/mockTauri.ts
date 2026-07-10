@@ -64,6 +64,12 @@ export function installMockTauri(seed: {
   spaceChildren?: Record<string, Record<string, unknown>[]>;
   /** `list_space_hierarchy` results, keyed by the root space's `room_id`. */
   spaceHierarchy?: Record<string, Record<string, unknown>[]>;
+  /**
+   * Initial `recovery_status` state — defaults to `"enabled"` so every other
+   * spec's Devices panel never shows the recovery-key prompt. Set to
+   * `"incomplete"` to drive settings.spec.ts's recovery-restore flow.
+   */
+  recoveryState?: "unknown" | "enabled" | "disabled" | "incomplete";
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -158,6 +164,7 @@ export function installMockTauri(seed: {
     ...(seed.otherDevices ?? []),
   ];
   let crossSigningBootstrapped = true;
+  let recoveryState = seed.recoveryState ?? "enabled";
   let autostartEnabled = false;
   const ignoredUsers: string[] = [...(seed.ignoredUsers ?? [])];
   const notificationSettings = {
@@ -472,6 +479,19 @@ export function installMockTauri(seed: {
       has_user_signing_key: crossSigningBootstrapped,
     }),
     bootstrap_cross_signing: () => {
+      crossSigningBootstrapped = true;
+      return undefined;
+    },
+    recovery_status: () => recoveryState,
+    // Real matrix-sdk recovery has no fixed "the" correct key to check
+    // against — this fake just needs a way to distinguish success from
+    // failure, so "correct-key" always succeeds and anything else simulates
+    // a wrong recovery key the same way a real invalid one would surface.
+    recover_from_key: (args) => {
+      if (args.recoveryKey !== "correct-key") {
+        throw new Error("invalid recovery key");
+      }
+      recoveryState = "enabled";
       crossSigningBootstrapped = true;
       return undefined;
     },

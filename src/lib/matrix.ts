@@ -311,9 +311,13 @@ export function recoveryStatus(): Promise<RecoveryStatusSummary> {
   return invoke("recovery_status");
 }
 
-/** Rejects with a plain error message on a wrong/invalid recovery key — no UIA involved. */
+// captureOnError: false — a wrong/invalid recovery key is an expected user-input
+// error (same class as a wrong password), not a bug report; DevicesPanel already
+// surfaces it inline via the mutation's own error state. `recoveryKey` itself never
+// reaches Sentry either way: `observability/ipc.ts`'s arg-redaction pattern already
+// matches `recovery_key`/`recoveryKey` field names.
 export function recoverFromKey(recoveryKey: string): Promise<void> {
-  return invoke("recover_from_key", { recoveryKey });
+  return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
 }
 
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
