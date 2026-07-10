@@ -93,8 +93,15 @@ jobs:
             # (not redirected to /dev/null) so a genuine fetch failure is visible
             # in the job log rather than silently triggering the fallback below.
             # stdout carries only the changed-file list, for capture.
+            #
+            # --no-renames: default rename detection can report ONLY the
+            # destination path for a moved file (e.g. src/Foo.tsx ->
+            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
+            # that a gated-path file left the tree entirely. Verified
+            # empirically — plain `git diff --name-only` omits the source
+            # side of a rename; --no-renames reports both.
             git fetch --no-tags --depth=1 --quiet origin "$1" \
-              && git diff --name-only "$1" "${{ github.sha }}"
+              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
           }
           # On a fetch/diff failure, run every gated job (safe default — this
           # can only over-run, never wrongly skip) AND log why, so an unexpected
