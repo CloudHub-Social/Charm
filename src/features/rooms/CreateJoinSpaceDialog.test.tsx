@@ -171,7 +171,8 @@ describe("CreateJoinSpaceDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Join space" }));
 
     await waitFor(
-      () => expect(screen.getByText("That address is a room, not a space.")).toBeInTheDocument(),
+      () =>
+        expect(screen.getByText("You joined that room, but it's not a space.")).toBeInTheDocument(),
       { timeout: 3000 },
     );
     expect(onSpaceJoined).not.toHaveBeenCalled();

@@ -128,7 +128,12 @@ export function CreateJoinSpaceDialog({
       }
       if (requestIdRef.current !== requestId) return;
       if (!joined.is_space) {
-        setError("That address is a room, not a space.");
+        // The join itself already succeeded (and isn't undone here) — the
+        // account is now a member of that room regardless of what this
+        // dialog does next, so the message says so rather than reading like
+        // the action failed. It'll show up in the room list on the next
+        // sync; this dialog just doesn't navigate into "space" mode for it.
+        setError("You joined that room, but it's not a space.");
         setPending(false);
         return;
       }
