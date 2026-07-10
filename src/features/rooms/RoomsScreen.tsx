@@ -290,6 +290,7 @@ export function RoomsScreen({
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
+            onSelectSearchResult={selectRoomInVisibleMode}
             mode={roomListMode}
             selectedSpace={selectedSpace}
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}

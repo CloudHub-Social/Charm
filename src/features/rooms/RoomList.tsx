@@ -1,10 +1,11 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { SettingsIcon } from "lucide-react";
+import { SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
+import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomListMode } from "./SpaceRail";
@@ -37,6 +39,15 @@ interface RoomListProps {
   activeRoomId: string | null;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
+  /**
+   * Selecting a search result found via "Search everywhere" (or one that's
+   * otherwise outside the current scope) needs to switch context — mode,
+   * selected space, `showAllRooms` — not just set the active room, the way
+   * an already-in-scope row's `onSelectRoom` does. Falls back to
+   * `onSelectRoom` if omitted, for callers that don't care about
+   * cross-scope search (e.g. tests).
+   */
+  onSelectSearchResult?: (room: RoomSummary) => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   /**
@@ -69,6 +80,7 @@ export function RoomList({
   activeRoomId,
   onSelectRoom,
   onSelectSpace,
+  onSelectSearchResult,
   mode,
   selectedSpace,
   intendedSpaceId = null,
@@ -76,9 +88,23 @@ export function RoomList({
   onShowAllRoomsChange,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [searchQuery, setSearchQuery] = useState("");
+  // Off by default: search is scoped to the current Home/space/DMs context,
+  // matching Charm 1.0's Search.tsx pattern — this is the escape hatch to
+  // search every joined room instead.
+  const [searchEverywhere, setSearchEverywhere] = useState(false);
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
   const [spaceLoading, setSpaceLoading] = useState(false);
+  // Kept separate from `joinError`: this is specifically "the hierarchy
+  // fetch itself failed", which is the only case that should block a scoped
+  // search from showing results (see the render guard below) — a room the
+  // user failed to *join* doesn't mean the already-loaded hierarchy can't be
+  // searched.
   const [spaceError, setSpaceError] = useState<string | null>(null);
+  // A join/knock failure from `handleJoin`, surfaced as a banner but — unlike
+  // `spaceError` — never blocking scoped search results, since the hierarchy
+  // itself loaded fine.
+  const [joinError, setJoinError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
@@ -97,6 +123,14 @@ export function RoomList({
     () => getScopedRooms({ rooms, mode, selectedSpace, showAllRooms, hierarchy: spaceHierarchy }),
     [rooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
   );
+  // Used to decide whether a search result is already visible in the current
+  // scope (just select it) or requires switching context first (mode,
+  // selected space, showAllRooms) via onSelectSearchResult — otherwise every
+  // hit, even ones already on screen, would over-eagerly switch scope.
+  const scopedRoomIds = useMemo(
+    () => new Set(scopedRooms.map((room) => room.room_id)),
+    [scopedRooms],
+  );
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
   const fullFavouriteSectionRooms = getFullSectionRooms(
@@ -111,16 +145,44 @@ export function RoomList({
   const fullRoomSectionRooms =
     mode === "dms" ? roomSectionRooms : getFullSectionRooms(roomSectionRooms, fullSections.rooms);
 
+  const isSearching = searchQuery.trim().length > 0;
+  const searchResults = useMemo(() => {
+    if (!isSearching) return [];
+    // Spaces aren't a destination search should surface — selecting one
+    // isn't a single unambiguous action the way a room/DM row is (see
+    // HierarchyRow's separate "Open" affordance for that).
+    const pool = (searchEverywhere ? rooms : scopedRooms).filter((room) => !room.is_space);
+    return filterRoomsByQuery(pool, searchQuery);
+  }, [isSearching, searchEverywhere, rooms, scopedRooms, searchQuery]);
+  // Unjoined children of the currently selected space's hierarchy: `rooms`
+  // (and therefore `scopedRooms`) only ever contains rooms the account has
+  // joined, so a public/knock child the user can see in the unsearched
+  // hierarchy view (rendered straight from `spaceHierarchy` below) would
+  // otherwise silently vanish from search — reported as a real bug (PR #150
+  // review thread on this file). Scoped to the selected space's own
+  // hierarchy regardless of "Search everywhere", since that toggle only
+  // widens the *joined-room* pool above; unjoined children of other spaces
+  // aren't loaded here to search in the first place.
+  const unjoinedHierarchyMatches = useMemo(() => {
+    if (!isSearching || mode !== "space" || !selectedSpaceId) return [];
+    const unjoinedChildren = flattenHierarchy(spaceHierarchy)
+      .map((node) => node.child)
+      .filter((child) => !child.is_space && !roomById.has(child.room_id));
+    return filterSpaceChildrenByQuery(unjoinedChildren, searchQuery);
+  }, [isSearching, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
+
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
       setSpaceHierarchy([]);
       setSpaceError(null);
+      setJoinError(null);
       setSpaceLoading(false);
       return undefined;
     }
     let stale = false;
     setSpaceLoading(true);
     setSpaceError(null);
+    setJoinError(null);
     setSpaceHierarchy([]);
     listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
@@ -136,6 +198,23 @@ export function RoomList({
       stale = true;
     };
   }, [mode, selectedSpaceId]);
+
+  // A query typed in one context (Home, DMs, a specific space) shouldn't
+  // silently keep filtering an unrelated one after the user switches scope —
+  // `RoomList` isn't remounted on a mode/space change, so its local search
+  // state would otherwise persist across it.
+  useEffect(() => {
+    setSearchQuery("");
+    setSearchEverywhere(false);
+  }, [mode, selectedSpaceId]);
+
+  // "Search everywhere" is meant to be re-opted-into per search session, not
+  // remembered across an emptied box — otherwise reopening the search field
+  // after clearing it silently defaults back to a global search the user
+  // never re-selected.
+  useEffect(() => {
+    if (!isSearching) setSearchEverywhere(false);
+  }, [isSearching]);
 
   function isExpanded(key: string): boolean {
     return expanded[key] ?? true;
@@ -157,6 +236,52 @@ export function RoomList({
     ));
   }
 
+  // Deliberately not renderSectionRooms/DraggableRoomRow: search results are
+  // a filtered view, not a real section — dragging one would compute a
+  // manual_order target against the *filtered* list's positions rather than
+  // the room's true section, silently corrupting its order once the search
+  // is cleared.
+  function renderSearchResults(results: RoomSummary[]) {
+    return results.map((room) => (
+      <RoomListItem
+        key={room.room_id}
+        room={room}
+        active={room.room_id === activeRoomId}
+        onSelect={() => {
+          const inScope = scopedRoomIds.has(room.room_id);
+          if (!inScope && onSelectSearchResult) {
+            onSelectSearchResult(room);
+          } else {
+            onSelectRoom(room.room_id);
+          }
+          // Clear search state directly here rather than relying solely on
+          // the mode/selectedSpaceId reset effect below: `onSelectSearchResult`
+          // can land back on the *same* mode/space (e.g. a space still
+          // loading its hierarchy misjudges an in-scope room as an
+          // out-of-scope result, so `selectRoomInVisibleMode` re-selects the
+          // same space id), which is a no-op state update that never
+          // triggers that effect, leaving the search box and "Search
+          // everywhere" stuck on.
+          setSearchQuery("");
+          setSearchEverywhere(false);
+        }}
+        onToggleFavourite={() =>
+          setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
+        }
+        onToggleLowPriority={() =>
+          setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
+        }
+        onToggleMuted={
+          isWebBuild()
+            ? undefined
+            : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
+        }
+        onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+        onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
+      />
+    ));
+  }
+
   const allEmpty =
     sections.favourites.length === 0 &&
     sections.spaceGroups.length === 0 &&
@@ -168,7 +293,7 @@ export function RoomList({
     const requestScope = { mode, selectedSpaceId };
     pendingJoinRoomIdRef.current = child.room_id;
     setPendingRoomId(child.room_id);
-    setSpaceError(null);
+    setJoinError(null);
     try {
       if (child.join_rule === "knock") {
         await knockRoom(child.room_id);
@@ -181,7 +306,7 @@ export function RoomList({
         currentScope.mode === requestScope.mode &&
         currentScope.selectedSpaceId === requestScope.selectedSpaceId
       ) {
-        setSpaceError(String(err));
+        setJoinError(String(err));
       }
     } finally {
       pendingJoinRoomIdRef.current = null;
@@ -264,21 +389,89 @@ export function RoomList({
             </label>
           )}
         </div>
+        <div className="mt-2 flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon
+              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              placeholder="Search rooms"
+              aria-label="Search rooms"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="h-8 pl-8 text-sm"
+            />
+          </div>
+        </div>
+        {isSearching && (
+          <label className="mt-2 flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5 accent-primary"
+              checked={searchEverywhere}
+              onChange={(event) => setSearchEverywhere(event.target.checked)}
+            />
+            Search everywhere
+          </label>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {mode === "space" && !selectedSpace ? (
+          // Space mode with nothing selected has nothing to search *in* —
+          // this guard wins over an active query rather than showing search
+          // results (or "No matching rooms") for an undefined scope.
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {intendedSpaceId ? "Loading space…" : "Select a space."}
           </p>
-        ) : mode === "space" && spaceLoading ? (
+        ) : mode === "space" && spaceLoading && !(isSearching && searchEverywhere) ? (
+          // Same reasoning: a search over an as-yet-empty `scopedRooms` while
+          // the space is still loading would otherwise misreport "No
+          // matching rooms" for a query that hasn't actually been evaluated
+          // against the space's real contents yet. Exempted when "Search
+          // everywhere" is on: that pool is `rooms`, not the space's
+          // hierarchy, so it doesn't depend on this load finishing.
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
+        ) : mode === "space" && spaceError && !(isSearching && searchEverywhere) ? (
+          // A failed hierarchy fetch should stay visible instead of a scoped
+          // search silently reporting "No matching rooms" against contents
+          // that were never actually loaded. Global search is unaffected —
+          // it doesn't read the hierarchy either. Deliberately checks
+          // `spaceError` (the hierarchy fetch) only, not `joinError` — a
+          // failed join/knock doesn't mean the hierarchy that already loaded
+          // can't be searched, so it must not hide scoped search results.
+          <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
+        ) : isSearching ? (
+          searchResults.length === 0 && unjoinedHierarchyMatches.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              {renderSearchResults(searchResults)}
+              {unjoinedHierarchyMatches.map((child) => (
+                <HierarchyRow
+                  key={child.room_id}
+                  child={child}
+                  joinedRoom={undefined}
+                  depth={0}
+                  active={false}
+                  pending={pendingRoomId === child.room_id}
+                  onSelectRoom={onSelectRoom}
+                  onSelectSpace={onSelectSpace}
+                  onJoin={handleJoin}
+                />
+              ))}
+            </div>
+          )
         ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
           </p>
         ) : (
           <div className="flex flex-col gap-2">
-            {spaceError && <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>}
+            {(spaceError || joinError) && (
+              <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
+            )}
             <RoomListSection
               title="Favourites"
               count={sections.favourites.length}
