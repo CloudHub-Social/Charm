@@ -3,8 +3,9 @@
 //! DTO for the space rail/scoped-room-list work without changing the
 //! existing direct-child `list_space_children` contract.
 
+use matrix_sdk::ruma::api::client::room::create_room;
 use matrix_sdk::ruma::api::client::space::get_hierarchy;
-use matrix_sdk::ruma::room::JoinRuleSummary;
+use matrix_sdk::ruma::room::{JoinRuleSummary, RoomType};
 use matrix_sdk::ruma::{uint, OwnedRoomOrAliasId, RoomId};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
@@ -266,25 +267,89 @@ fn parse_room_or_alias(input: &str) -> Result<OwnedRoomOrAliasId, String> {
 }
 
 /// Joins a public/invited/restricted-and-allowed child room from a space
-/// browser. Uses [`Client::join_room_by_id_or_alias`] rather than knocking —
-/// this is for rooms the user can join outright.
+/// browser, or a space by address/ID from the create/join dialog. Uses
+/// [`Client::join_room_by_id_or_alias`] rather than knocking — this is for
+/// rooms the user can join outright. Returns the resolved room id so a
+/// caller that only has an alias (e.g. the create/join dialog) can still
+/// navigate to the joined room/space afterward.
 #[tauri::command]
 pub async fn join_room(
     state: State<'_, MatrixState>,
     room_id_or_alias: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let client = state.require_client().await?;
     join_room_impl(&client, &room_id_or_alias).await
 }
 
 /// Core logic behind [`join_room`].
-pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<(), String> {
+pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<String, String> {
     let parsed = parse_room_or_alias(room_id_or_alias)?;
-    client
+    let room = client
         .join_room_by_id_or_alias(&parsed, &[])
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(room.room_id().to_string())
+}
+
+/// Creates a new space room (an `m.room.create` with `type: m.space` per
+/// MSC1772), optionally under a parent space. Parenting (adding the
+/// resulting `m.space.child` state event on `parent_space_id`, if given) is
+/// a follow-up call from the frontend, not done here — this command's job
+/// is only to create the room itself.
+#[tauri::command]
+pub async fn create_space(
+    state: State<'_, MatrixState>,
+    name: String,
+    topic: Option<String>,
+    room_alias_name: Option<String>,
+    public: bool,
+) -> Result<String, String> {
+    let client = state.require_client().await?;
+    create_space_impl(
+        &client,
+        &name,
+        topic.as_deref(),
+        room_alias_name.as_deref(),
+        public,
+    )
+    .await
+}
+
+/// Core logic behind [`create_space`].
+pub async fn create_space_impl(
+    client: &Client,
+    name: &str,
+    topic: Option<&str>,
+    room_alias_name: Option<&str>,
+    public: bool,
+) -> Result<String, String> {
+    use matrix_sdk::ruma::serde::Raw;
+
+    let mut content = create_room::v3::CreationContent::new();
+    content.room_type = Some(RoomType::Space);
+    let creation_content = Raw::new(&content).map_err(|e| e.to_string())?;
+
+    let mut request = create_room::v3::Request::new();
+    request.name = Some(name.to_owned());
+    request.topic = topic.map(ToOwned::to_owned);
+    request.room_alias_name = room_alias_name.map(ToOwned::to_owned);
+    request.visibility = if public {
+        matrix_sdk::ruma::api::client::room::Visibility::Public
+    } else {
+        matrix_sdk::ruma::api::client::room::Visibility::Private
+    };
+    request.preset = Some(if public {
+        create_room::v3::RoomPreset::PublicChat
+    } else {
+        create_room::v3::RoomPreset::PrivateChat
+    });
+    request.creation_content = Some(creation_content);
+
+    let room = client
+        .create_room(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(room.room_id().to_string())
 }
 
 /// Sends a knock request for a `join_rule: knock` child room — offered by

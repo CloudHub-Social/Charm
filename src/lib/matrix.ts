@@ -469,12 +469,28 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
   return invoke("list_space_hierarchy", { spaceId });
 }
 
-export function joinRoom(roomIdOrAlias: string): Promise<void> {
+/** Returns the resolved room id, since `roomIdOrAlias` may be an alias. */
+export function joinRoom(roomIdOrAlias: string): Promise<string> {
   return invoke("join_room", { roomIdOrAlias });
 }
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
+}
+
+/** Creates a new space room and returns its room id. */
+export function createSpace(
+  name: string,
+  topic?: string,
+  roomAliasName?: string,
+  isPublic = false,
+): Promise<string> {
+  return invoke("create_space", {
+    name,
+    topic: topic ?? null,
+    roomAliasName: roomAliasName ?? null,
+    public: isPublic,
+  });
 }
 
 export function logout(): Promise<void> {

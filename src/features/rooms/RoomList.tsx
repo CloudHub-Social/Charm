@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { SettingsIcon, X } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -41,8 +41,6 @@ interface RoomListProps {
   selectedSpace: RoomSummary | null;
   showAllRooms: boolean;
   onShowAllRoomsChange: (showAll: boolean) => void;
-  createJoinNotice?: boolean;
-  onDismissCreateJoinNotice?: () => void;
 }
 
 // Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
@@ -65,8 +63,6 @@ export function RoomList({
   selectedSpace,
   showAllRooms,
   onShowAllRoomsChange,
-  createJoinNotice = false,
-  onDismissCreateJoinNotice,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
@@ -257,22 +253,6 @@ export function RoomList({
             </label>
           )}
         </div>
-        {createJoinNotice && (
-          <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <p className="min-w-0 flex-1">
-              Space creation and join-by-address are scheduled for Phase 4.
-            </p>
-            <button
-              type="button"
-              aria-label="Dismiss create or join notice"
-              className="rounded-sm p-0.5 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!onDismissCreateJoinNotice}
-              onClick={() => onDismissCreateJoinNotice?.()}
-            >
-              <X className="size-3" aria-hidden="true" />
-            </button>
-          </div>
-        )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {mode === "space" && !selectedSpace ? (

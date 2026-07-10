@@ -530,6 +530,7 @@ pub fn run() {
             matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
             matrix::spaces::knock_room,
+            matrix::spaces::create_space,
             matrix::room_admin::get_room_details,
             matrix::room_admin::get_room_member_list,
             matrix::room_admin::set_room_name,
