@@ -927,6 +927,100 @@ describe("RoomList", () => {
     expect(onSelectSearchResult).not.toHaveBeenCalled();
   });
 
+  it("clears search state after selecting an in-scope result misjudged as out-of-scope while the space is loading", async () => {
+    // Regression test: while the selected space's hierarchy is still
+    // loading, `scopedRoomIds` is empty, so a room that actually belongs to
+    // this space gets treated as an out-of-scope search result and routed
+    // through `onSelectSearchResult`. If that callback lands back on the
+    // *same* mode/space (as the real `selectRoomInVisibleMode` does for a
+    // room whose parent space is already selected), the mode/selectedSpaceId
+    // reset effect never fires because neither value changed — the search
+    // box and "Search everywhere" checkbox must still clear via the
+    // selection handler itself.
+    listSpaceHierarchy.mockReturnValue(new Promise(() => {})); // never resolves
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const onSelectSearchResult = vi.fn(); // no-op stand-in for selectRoomInVisibleMode
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, spaceChildMatch],
+          mode: "space",
+          selectedSpace: space,
+          onSelectSearchResult,
+        })}
+      />,
+    );
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search rooms" });
+    fireEvent.change(searchBox, { target: { value: "alpha" } });
+    await waitFor(() => expect(screen.getByText("Loading space…")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+    fireEvent.click(screen.getByText("Alpha in space"));
+
+    expect(onSelectSearchResult).toHaveBeenCalledWith(spaceChildMatch);
+    expect(searchBox).toHaveValue("");
+    expect(screen.queryByRole("checkbox", { name: "Search everywhere" })).not.toBeInTheDocument();
+  });
+
+  it("does not let a join failure hide already-loaded scoped search results", async () => {
+    // Regression test: `handleJoin`'s catch previously wrote into the same
+    // `spaceError` state as a failed hierarchy fetch, so a join/knock
+    // failure — which happens *after* the hierarchy already loaded fine —
+    // would incorrectly block scoped search from showing results.
+    const joinedMatch = makeRoomSummary({
+      room_id: "!joined:localhost",
+      name: "Alpha room",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!joined:localhost",
+          name: "Alpha room",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+      {
+        child: {
+          room_id: "!public:localhost",
+          name: "Public room",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    joinRoom.mockRejectedValueOnce(new Error("join failed"));
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedMatch], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    await screen.findByText("Public room");
+    fireEvent.click(screen.getByRole("button", { name: "Join" }));
+    await waitFor(() => expect(screen.getByText("Error: join failed")).toBeInTheDocument());
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    expect(await screen.findByText("Alpha room")).toBeInTheDocument();
+    expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
+  });
+
   it("shows the hierarchy error instead of a stale no-match message while searching", async () => {
     listSpaceHierarchy.mockRejectedValue(new Error("hierarchy fetch failed"));
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });

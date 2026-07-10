@@ -88,7 +88,16 @@ export function RoomList({
   const [searchEverywhere, setSearchEverywhere] = useState(false);
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
   const [spaceLoading, setSpaceLoading] = useState(false);
+  // Kept separate from `joinError`: this is specifically "the hierarchy
+  // fetch itself failed", which is the only case that should block a scoped
+  // search from showing results (see the render guard below) — a room the
+  // user failed to *join* doesn't mean the already-loaded hierarchy can't be
+  // searched.
   const [spaceError, setSpaceError] = useState<string | null>(null);
+  // A join/knock failure from `handleJoin`, surfaced as a banner but — unlike
+  // `spaceError` — never blocking scoped search results, since the hierarchy
+  // itself loaded fine.
+  const [joinError, setJoinError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
@@ -143,12 +152,14 @@ export function RoomList({
     if (mode !== "space" || !selectedSpaceId) {
       setSpaceHierarchy([]);
       setSpaceError(null);
+      setJoinError(null);
       setSpaceLoading(false);
       return undefined;
     }
     let stale = false;
     setSpaceLoading(true);
     setSpaceError(null);
+    setJoinError(null);
     setSpaceHierarchy([]);
     listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
@@ -220,6 +231,16 @@ export function RoomList({
           } else {
             onSelectRoom(room.room_id);
           }
+          // Clear search state directly here rather than relying solely on
+          // the mode/selectedSpaceId reset effect below: `onSelectSearchResult`
+          // can land back on the *same* mode/space (e.g. a space still
+          // loading its hierarchy misjudges an in-scope room as an
+          // out-of-scope result, so `selectRoomInVisibleMode` re-selects the
+          // same space id), which is a no-op state update that never
+          // triggers that effect, leaving the search box and "Search
+          // everywhere" stuck on.
+          setSearchQuery("");
+          setSearchEverywhere(false);
         }}
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
@@ -249,7 +270,7 @@ export function RoomList({
     const requestScope = { mode, selectedSpaceId };
     pendingJoinRoomIdRef.current = child.room_id;
     setPendingRoomId(child.room_id);
-    setSpaceError(null);
+    setJoinError(null);
     try {
       if (child.join_rule === "knock") {
         await knockRoom(child.room_id);
@@ -262,7 +283,7 @@ export function RoomList({
         currentScope.mode === requestScope.mode &&
         currentScope.selectedSpaceId === requestScope.selectedSpaceId
       ) {
-        setSpaceError(String(err));
+        setJoinError(String(err));
       }
     } finally {
       pendingJoinRoomIdRef.current = null;
@@ -407,7 +428,10 @@ export function RoomList({
           // A failed hierarchy fetch should stay visible instead of a scoped
           // search silently reporting "No matching rooms" against contents
           // that were never actually loaded. Global search is unaffected —
-          // it doesn't read the hierarchy either.
+          // it doesn't read the hierarchy either. Deliberately checks
+          // `spaceError` (the hierarchy fetch) only, not `joinError` — a
+          // failed join/knock doesn't mean the hierarchy that already loaded
+          // can't be searched, so it must not hide scoped search results.
           <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
         ) : isSearching ? (
           searchResults.length === 0 ? (
@@ -421,7 +445,9 @@ export function RoomList({
           </p>
         ) : (
           <div className="flex flex-col gap-2">
-            {spaceError && <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>}
+            {(spaceError || joinError) && (
+              <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
+            )}
             <RoomListSection
               title="Favourites"
               count={sections.favourites.length}
