@@ -138,6 +138,7 @@ export function installMockTauri(seed: {
 
   let nextTxnId = 1;
   let nextEventId = 1;
+  let nextCreatedRoomId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
   for (const r of allRooms) {
     messagesByRoom.set(r.room_id as string, []);
@@ -429,7 +430,39 @@ export function installMockTauri(seed: {
     },
     list_space_children: (args) => spaceChildren.get(args.spaceId as string) ?? [],
     list_space_hierarchy: (args) => spaceHierarchy.get(args.spaceId as string) ?? [],
-    join_room: () => undefined,
+    // Spec 19 Phase 4: create/join-by-address. Mirrors the real Rust
+    // commands' contract closely enough to exercise `CreateJoinSpaceDialog`
+    // end to end — `create_space` returns the new room's id and adds it to
+    // the live room list (like a real `m.room.create` would surface via the
+    // next sync), and `join_room` resolves an alias to a synthetic room id
+    // rather than actually contacting a homeserver.
+    create_space: (args) => {
+      const roomId = `!created-space-${nextCreatedRoomId++}:e2e`;
+      allRooms.push({
+        ...defaultRoomShape,
+        room_id: roomId,
+        name: args.name,
+        is_space: true,
+      });
+      messagesByRoom.set(roomId, []);
+      pushRoomListUpdate();
+      return roomId;
+    },
+    join_room: (args) => {
+      const target = args.roomIdOrAlias as string;
+      const existing = findRoom(target);
+      if (existing) return existing.room_id;
+      const roomId = target.startsWith("!") ? target : `!resolved-${nextCreatedRoomId++}:e2e`;
+      allRooms.push({
+        ...defaultRoomShape,
+        room_id: roomId,
+        name: target,
+        is_space: true,
+      });
+      messagesByRoom.set(roomId, []);
+      pushRoomListUpdate();
+      return roomId;
+    },
     knock_room: () => undefined,
 
     // Spec 08: account/devices/notifications settings commands.
