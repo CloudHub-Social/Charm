@@ -64,7 +64,13 @@ runs:
             const url = new URL(request.url);
             if (url.pathname.startsWith("/api/")) {
               const apiBase = new URL(API_BASE);
-              const basePath = apiBase.pathname.replace(/\/$/, "");
+              // If API_BASE already ends in /api (e.g. a companion origin
+              // mounted under /api), don't double it up with the incoming
+              // /api/* request path.
+              let basePath = apiBase.pathname.replace(/\/$/, "");
+              if (basePath === "/api" || basePath.endsWith("/api")) {
+                basePath = basePath.slice(0, -"/api".length);
+              }
               const upstream = new URL(apiBase);
               upstream.pathname = \`\${basePath}\${url.pathname}\`;
               upstream.search = url.search;
@@ -84,10 +90,17 @@ runs:
         };
         EOF
 
-        dev_fields=""
+        # Always emit workers_dev explicitly, true or false — Cloudflare's
+        # config is the source of truth on deploy, so omitting it defaults
+        # to true and silently re-enables the *.workers.dev route (and
+        # would fight a dashboard-managed Custom Domain) on the next deploy.
+        # https://developers.cloudflare.com/workers/configuration/routing/workers-dev/
         if [ "$WORKERS_DEV" = "true" ]; then
           dev_fields='"workers_dev": true,
           "preview_urls": true,
+          '
+        else
+          dev_fields='"workers_dev": false,
           '
         fi
         cat > "$BUNDLE_DIR/wrangler.jsonc" <<EOF
