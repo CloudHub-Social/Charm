@@ -118,6 +118,11 @@ jobs:
 
       - name: Build Tauri Linux app with release debuginfo
         run: pnpm tauri build
+        env:
+          # ubuntu-latest (24.04) dropped libfuse2, so linuxdeploy/appimagetool
+          # can't self-mount as a FUSE AppImage during bundling and hang
+          # indefinitely instead of failing. This makes them extract-and-run.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Resolve Cargo target directory
         id: cargo-target
