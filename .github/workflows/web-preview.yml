@@ -165,10 +165,15 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             preview_alias="pr-${PR_NUMBER}"
           fi
-          if ! pnpm dlx wrangler@4.107.1 versions list --name charm-preview >/dev/null 2>&1; then
-            pnpm dlx wrangler@4.107.1 deploy --config preview-worker/wrangler.jsonc >/dev/null
+          # npx, not pnpm dlx: pnpm 10 blocks dependency build/postinstall
+          # scripts by default, and wrangler's own deps (esbuild, sharp,
+          # workerd) need theirs to actually function — `pnpm dlx wrangler`
+          # fails with ERR_PNPM_IGNORED_BUILDS before wrangler even runs.
+          # Confirmed empirically (see PR #136 CI run 29100250953).
+          if ! npx --yes wrangler@4.107.1 versions list --name charm-preview >/dev/null 2>&1; then
+            npx --yes wrangler@4.107.1 deploy --config preview-worker/wrangler.jsonc >/dev/null
           fi
-          pnpm dlx wrangler@4.107.1 versions upload \
+          npx --yes wrangler@4.107.1 versions upload \
             --config preview-worker/wrangler.jsonc \
             --preview-alias "$preview_alias" \
             | tee wrangler-output.txt

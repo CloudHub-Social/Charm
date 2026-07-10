@@ -77,7 +77,12 @@ jobs:
           charm-web-api-base-url: ${{ env.CHARM_WEB_API_BASE_URL }}
 
       - name: Deploy to Cloudflare Workers
-        run: pnpm dlx wrangler@4.107.1 deploy --config deploy-worker/wrangler.jsonc
+        # npx, not pnpm dlx: pnpm 10 blocks dependency build/postinstall
+        # scripts by default, and wrangler's own deps (esbuild, sharp,
+        # workerd) need theirs to actually function — `pnpm dlx wrangler`
+        # fails with ERR_PNPM_IGNORED_BUILDS before wrangler even runs.
+        # Confirmed empirically (see PR #136 CI run 29100250953).
+        run: npx --yes wrangler@4.107.1 deploy --config deploy-worker/wrangler.jsonc
 
       - name: Verify deployed API proxy
         run: |
