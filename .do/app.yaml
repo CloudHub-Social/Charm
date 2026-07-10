@@ -1,0 +1,75 @@
+# DigitalOcean App Platform spec for charm-web-server (the companion API the
+# web client talks to — see crates/charm-web-server/README.md). Replaces the
+# hand-run VPS deploy (systemd + Docker on matrix-cloudhub-1.cloudhub.social)
+# that drifted out of date and caused the /api/devices + cross-signing
+# reset-url 404 bug.
+#
+# One-time provisioning (not automated by this file or any workflow):
+#   1. Create the DO Spaces bucket this app's session persistence writes to
+#      (see crates/charm-web-server/src/persistence.rs's SPACES_* env vars) —
+#      e.g. `charm-web-server-sessions` in the tor1 region, matching this
+#      repo's existing sccache Spaces bucket.
+#   2. `doctl apps create --spec .do/app.yaml` once to provision the app and
+#      get its app ID; store that ID as the DO_APP_ID repo secret consumed by
+#      .github/workflows/web-server-deploy.yml.
+#   3. Set the SECRET-typed env vars below via `doctl apps update <id> --spec
+#      .do/app.yaml` with real values, or the DO dashboard — never commit
+#      real secret values here.
+#
+# Deploys after initial provisioning are triggered explicitly by
+# web-server-deploy.yml (doctl apps create-deployment --wait), not DO's own
+# auto-deploy-on-push, so the sequencing/verification stays visible in
+# Actions the same way web-deploy-dev.yml already works for the frontend
+# Worker.
+name: charm-web-server
+services:
+  - name: api
+    github:
+      repo: CloudHub-Social/Charm
+      branch: main
+      # Explicit, not DO's own auto-deploy-on-push: deploys are triggered by
+      # web-server-deploy.yml's `doctl apps create-deployment --wait` instead,
+      # so a push to main gets built+verified through Actions rather than an
+      # untracked deploy firing the moment DO's GitHub webhook lands.
+      deploy_on_push: false
+    dockerfile_path: crates/charm-web-server/Dockerfile
+    source_dir: /
+    http_port: 8787
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /api/health
+    envs:
+      # Required for /api/ws and every raw-body/browser-origin-guarded route
+      # (see routes.rs's require_allowed_origin) — without it, the server
+      # fails closed on any request carrying an Origin header. The Worker
+      # proxy forwards the browser's real Origin unchanged, so this must be
+      # the frontend's actual origin(s), not the companion API's own.
+      #
+      # Two entries: the stable charm-2-dev origin, and PR preview deploys
+      # (web-preview.yml's charm-preview Worker) — confirmed from PR #141's
+      # own preview comment that its actual URL shape is
+      # https://pr-<N>-charm-preview.justin-tech.workers.dev, matching
+      # routes.rs's origin_matches_allowed_entry test fixture for exactly
+      # this case. The wildcard only covers pr-* (not manual-* aliases,
+      # which web-preview.yml also mints for non-PR workflow_dispatch runs)
+      # — deliberately narrower than "every preview this Worker ever
+      # deploys," matching origin_matches_allowed_entry's own test intent.
+      - key: CHARM_WEB_SERVER_ALLOWED_ORIGIN
+        scope: RUN_TIME
+        value: https://charm-2-dev.cloudhub.social,https://pr-*-charm-preview.justin-tech.workers.dev
+      - key: CHARM_WEB_SERVER_MASTER_KEY
+        type: SECRET
+      - key: CHARM_WEB_SERVER_SPACES_BUCKET
+        scope: RUN_TIME
+        value: charm-web-server-sessions
+      - key: CHARM_WEB_SERVER_SPACES_REGION
+        scope: RUN_TIME
+        value: tor1
+      - key: CHARM_WEB_SERVER_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://tor1.digitaloceanspaces.com
+      - key: CHARM_WEB_SERVER_SPACES_ACCESS_KEY_ID
+        type: SECRET
+      - key: CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY
+        type: SECRET

@@ -77,6 +77,12 @@ const MULTIPART_ATTACHMENT_BODY_LIMIT: usize =
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // -- unauthenticated: platform health check --
+        // No session/homeserver reachability implied by a 200 here — just
+        // "this process is up and routing requests" — so a deploy platform's
+        // health check (which needs a plain 200, unlike `/api/auth/me`'s
+        // deliberate 401-when-logged-out) can hit it with zero setup.
+        .route("/api/health", get(health))
         // -- unauthenticated: discovery, login/registration --
         .route("/api/auth/discover", post(discover_homeserver))
         .route("/api/auth/login", post(login))
@@ -494,6 +500,10 @@ async fn logout(
     // leave some clients holding onto the (now server-side-invalid) cookie.
     let jar = jar.remove(Cookie::build(SESSION_COOKIE).path("/"));
     Ok((jar, StatusCode::NO_CONTENT))
+}
+
+async fn health() -> StatusCode {
+    StatusCode::OK
 }
 
 #[derive(Serialize)]
@@ -2149,7 +2159,9 @@ async fn get_cross_signing_reset_url(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    Ok(Json(get_cross_signing_reset_url_impl(&session.client).await))
+    Ok(Json(
+        get_cross_signing_reset_url_impl(&session.client).await,
+    ))
 }
 
 async fn accept_verification(
@@ -2278,7 +2290,9 @@ async fn get_device_delete_url(
     Path(device_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    Ok(Json(get_device_delete_url_impl(&session.client, device_id).await))
+    Ok(Json(
+        get_device_delete_url_impl(&session.client, device_id).await,
+    ))
 }
 
 // ---------------------------------------------------------------------
