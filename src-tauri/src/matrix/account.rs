@@ -418,6 +418,141 @@ pub async fn set_display_name(
         .map_err(|e| e.to_string())
 }
 
+/// Defense-in-depth cap on avatar uploads: comfortably above any real photo
+/// (a raw 4000x4000 RGBA frame is ~64MB) while bounding how much a bogus
+/// `file_path` could make this command read into memory and ship off to the
+/// homeserver.
+const MAX_AVATAR_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Sane per-side pixel ceiling checked against the *decoded* dimensions
+/// before the full decode happens. A compressed file well under
+/// `MAX_AVATAR_BYTES` can still decode to a huge `DynamicImage` (a
+/// decompression bomb) — e.g. a tiny, highly-compressible PNG that unpacks
+/// to tens of thousands of pixels per side. No UI anywhere in this app
+/// (`src/components/ui/avatar.tsx`'s largest size, or the room/profile
+/// settings avatar previews) ever displays an avatar above a few hundred
+/// pixels per side, so 2048px per side is already a generous multiple of
+/// any real use case while bounding worst-case decoded memory to roughly
+/// 2048*2048*4 bytes (~16MB) — small enough to not be a meaningful DoS
+/// risk even on memory-constrained builds (this is a Tauri app with
+/// Android/iOS targets), unlike the previous 8192px cap (~256MB worst
+/// case).
+const MAX_AVATAR_DIMENSION: u32 = 2048;
+
+/// Formats the avatar picker in `RoomSettingsForm`/profile settings actually
+/// offers. Kept as an explicit allowlist — rather than just checking
+/// "does this decode at all" — as a hedge against `image`'s enabled-decoder
+/// set changing out from under this check. Verified empirically that in
+/// this crate's own build (`cargo build`/`test`/`clippy` from `src-tauri/`,
+/// matching what CI runs) only `gif,jpeg,png,webp` are compiled in per
+/// `cargo tree -f "{p} {f}" -i image`, since Cargo only unifies features
+/// among crates in the same build invocation's resolved graph and
+/// `crates/charm-web-server` (which depends on plain `image = "0.25"`,
+/// pulling in its much larger `default-formats` set) isn't a dependency of
+/// this package. That isolation is a property of how these two crates are
+/// built today, not a language guarantee — a future change that builds them
+/// together (e.g. `cargo build --workspace`) could unify features and widen
+/// what `image::guess_format`/`load_from_memory_with_format` accept here.
+/// Without this allowlist, a file in one of those other formats (TIFF/BMP/
+/// ICO/AVIF/QOI/...) would then decode successfully yet not be renderable by
+/// every Matrix client that fetches the resulting `mxc://` avatar.
+const ALLOWED_AVATAR_FORMATS: [image::ImageFormat; 4] = [
+    image::ImageFormat::Png,
+    image::ImageFormat::Jpeg,
+    image::ImageFormat::Gif,
+    image::ImageFormat::WebP,
+];
+
+/// Validates that `file_path` is safe to read and upload as an avatar:
+/// resolves symlinks to a real file on disk, isn't implausibly large either
+/// on disk or decoded, and decodes as one of the image formats the picker in
+/// `RoomSettingsForm`/profile settings offers (png/jpeg/gif/webp). Returns
+/// the canonical path, original bytes, and detected MIME type on success.
+///
+/// This command has no Tauri fs-plugin capability backing it (see
+/// `src-tauri/capabilities/default.json` — there is no `fs:*` permission),
+/// so the filesystem read here is raw and unscoped on the Rust side;
+/// nothing at the IPC/capability layer limits which paths it can touch.
+/// Today `file_path` only ever comes from a native file-picker dialog, so
+/// this isn't reachable by an attacker yet, but if some other bug (e.g. an
+/// XSS in the webview) ever let `invoke("set_avatar", { file_path })` be
+/// called with an arbitrary path, this is what stands between that call and
+/// reading arbitrary files (e.g. `~/.ssh/id_rsa`) off the user's disk and
+/// uploading them as the account avatar. Validating the *decoded* image
+/// content (not just the extension or a `mime_guess` off the file name)
+/// means a renamed non-image file is rejected too.
+///
+/// Shared with `room_admin::set_room_avatar_impl`, which uploads a room
+/// avatar from the same kind of frontend-supplied file-picker path — same
+/// validation needs to apply there too, not just to the account avatar.
+pub(crate) async fn validate_avatar_path(
+    file_path: &str,
+) -> Result<(std::path::PathBuf, Vec<u8>, mime_guess::Mime), String> {
+    use tokio::io::AsyncReadExt;
+
+    let path = tokio::fs::canonicalize(file_path)
+        .await
+        .map_err(|e| format!("invalid avatar path: {e}"))?;
+
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("invalid avatar path: {e}"))?;
+    if !metadata.is_file() {
+        return Err("avatar path is not a regular file".to_string());
+    }
+    if metadata.len() > MAX_AVATAR_BYTES {
+        return Err(format!(
+            "avatar file is too large ({} bytes, max {MAX_AVATAR_BYTES})",
+            metadata.len()
+        ));
+    }
+
+    // Re-check the cap against what's actually read rather than trusting the
+    // `metadata.len()` check above alone: the file on disk could change
+    // between that stat and this read (TOCTOU), so cap the read itself at
+    // one byte over the limit and reject if it's hit.
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut data = Vec::new();
+    file.take(MAX_AVATAR_BYTES + 1)
+        .read_to_end(&mut data)
+        .await
+        .map_err(|e| e.to_string())?;
+    if data.len() as u64 > MAX_AVATAR_BYTES {
+        return Err(format!(
+            "avatar file is too large (max {MAX_AVATAR_BYTES} bytes)"
+        ));
+    }
+
+    let format = image::guess_format(&data)
+        .map_err(|_| "avatar file is not a recognized image format".to_string())?;
+    if !ALLOWED_AVATAR_FORMATS.contains(&format) {
+        return Err("avatar file is not a supported image format".to_string());
+    }
+
+    // Peek dimensions before the full decode below: a small, highly
+    // compressible file can still decode into a huge `DynamicImage`, so
+    // reject implausible dimensions before paying for that allocation.
+    let (width, height) = image::ImageReader::with_format(std::io::Cursor::new(&data), format)
+        .into_dimensions()
+        .map_err(|_| "avatar file is not a valid image".to_string())?;
+    if width > MAX_AVATAR_DIMENSION || height > MAX_AVATAR_DIMENSION {
+        return Err(format!(
+            "avatar image dimensions are too large ({width}x{height}, max {MAX_AVATAR_DIMENSION}px per side)"
+        ));
+    }
+
+    image::load_from_memory_with_format(&data, format)
+        .map_err(|_| "avatar file is not a valid image".to_string())?;
+    let mime: mime_guess::Mime = format
+        .to_mime_type()
+        .parse()
+        .map_err(|_| "avatar file has an unsupported image format".to_string())?;
+
+    Ok((path, data, mime))
+}
+
 /// Reads `file_path` off disk and uploads it as the account avatar, setting
 /// it as the current `m.room` avatar url in one step — `Account::upload_avatar`
 /// does both. Same file-path-in, read-on-the-Rust-side convention as
@@ -425,9 +560,7 @@ pub async fn set_display_name(
 #[tauri::command]
 pub async fn set_avatar(state: State<'_, MatrixState>, file_path: String) -> Result<(), String> {
     let client = state.require_client().await?;
-    let path = std::path::Path::new(&file_path);
-    let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    let (_path, data, mime) = validate_avatar_path(&file_path).await?;
 
     client
         .account()
@@ -517,6 +650,154 @@ mod tests {
     use wiremock::{Mock, ResponseTemplate};
 
     use super::*;
+
+    #[tokio::test]
+    async fn validate_avatar_path_accepts_a_real_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("avatar.png");
+        // Minimal valid 1x1 PNG.
+        let mut png_bytes = Vec::new();
+        image::RgbaImage::new(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        tokio::fs::write(&file_path, &png_bytes).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        let (_path, _data, mime) =
+            result.unwrap_or_else(|err| panic!("expected a real PNG to validate, got {err}"));
+        assert_eq!(mime, mime_guess::mime::IMAGE_PNG);
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_uses_detected_content_type() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("avatar.png");
+        let mut jpeg_bytes = Vec::new();
+        image::RgbImage::new(1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg_bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        tokio::fs::write(&file_path, &jpeg_bytes).await.unwrap();
+
+        let (_path, _data, mime) = validate_avatar_path(file_path.to_str().unwrap())
+            .await
+            .unwrap_or_else(|err| {
+                panic!("expected JPEG bytes with a PNG extension to validate, got {err}")
+            });
+        assert_eq!(mime, mime_guess::mime::IMAGE_JPEG);
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_nonexistent_path() {
+        let result = validate_avatar_path("/nonexistent/path/to/avatar.png").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_non_image_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("id_rsa");
+        tokio::fs::write(
+            &file_path,
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot an image\n",
+        )
+        .await
+        .unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected a non-image file to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_an_image_header_without_image_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("fake.png");
+        let mut fake_png = b"\x89PNG\r\n\x1a\n".to_vec();
+        fake_png.extend_from_slice(b"-----BEGIN OPENSSH PRIVATE KEY-----\nnot an image\n");
+        tokio::fs::write(&file_path, fake_png).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected a fake PNG header to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_an_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("huge.png");
+        tokio::fs::write(&file_path, vec![0u8; (MAX_AVATAR_BYTES + 1) as usize])
+            .await
+            .unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected an oversized file to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_decompression_bomb() {
+        // A 1px-tall, very-wide solid-color image: compresses to a tiny file
+        // on disk but would decode to far more than `MAX_AVATAR_DIMENSION`
+        // pixels along one side. The size-on-disk check alone would let this
+        // through; the dimension peek before the full decode should not.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("bomb.png");
+        let mut png_bytes = Vec::new();
+        image::RgbImage::new(MAX_AVATAR_DIMENSION + 1, 1)
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        assert!(
+            (png_bytes.len() as u64) < MAX_AVATAR_BYTES,
+            "expected the solid-color PNG to compress well under the byte cap"
+        );
+        tokio::fs::write(&file_path, &png_bytes).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected an oversized-dimension image to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_avatar_path_rejects_a_format_outside_the_allowlist() {
+        // BMP is a format `image::guess_format` recognizes by magic bytes
+        // (`"BM"`) but that the avatar picker never offers and that isn't in
+        // `ALLOWED_AVATAR_FORMATS`. This crate's own `Cargo.toml` doesn't
+        // enable the `bmp` feature, so this also guards against Cargo
+        // feature unification (e.g. with another workspace crate's `image`
+        // dependency) silently widening which formats get accepted here —
+        // decodability alone must not be the gate. Built by hand (rather
+        // than via `image`'s BMP encoder, which isn't compiled into this
+        // binary either) since only enough of a real BMP header is needed
+        // for the magic-byte sniff to recognize the format.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("avatar.bmp");
+        let mut bmp_bytes = b"BM".to_vec();
+        bmp_bytes.extend_from_slice(&[0u8; 62]); // pad past a minimal BMP header
+        tokio::fs::write(&file_path, &bmp_bytes).await.unwrap();
+
+        let result = validate_avatar_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_err(),
+            "expected a BMP file to be rejected as outside the avatar format allowlist, got {result:?}"
+        );
+    }
 
     /// Mounts the standard two-step UIA dance on `server` for `endpoint_path`:
     /// a password-less request gets the 401 challenge (matching real Synapse
