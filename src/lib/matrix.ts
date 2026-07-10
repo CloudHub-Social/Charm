@@ -26,6 +26,7 @@ import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
+import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
@@ -86,6 +87,7 @@ export type {
   ReactionToggleResult,
   ReceiptTypeDto,
   ReceiptUpdate,
+  RecoveryStatusSummary,
   RegisterRequest,
   ReplyRef,
   RoomDetails,
@@ -303,6 +305,15 @@ export function bootstrapCrossSigning(password?: string): Promise<void> {
 
 export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
   return invoke("cross_signing_status");
+}
+
+export function recoveryStatus(): Promise<RecoveryStatusSummary> {
+  return invoke("recovery_status");
+}
+
+/** Rejects with a plain error message on a wrong/invalid recovery key — no UIA involved. */
+export function recoverFromKey(recoveryKey: string): Promise<void> {
+  return invoke("recover_from_key", { recoveryKey });
 }
 
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {

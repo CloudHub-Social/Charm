@@ -13,6 +13,8 @@ const getDeviceDeleteUrl = vi.fn();
 const requestDeviceVerification = vi.fn();
 const onSasUpdate = vi.fn();
 const getProfile = vi.fn();
+const recoveryStatus = vi.fn();
+const recoverFromKey = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   listDevices: (...args: unknown[]) => listDevices(...args),
@@ -24,6 +26,8 @@ vi.mock("@/lib/matrix", () => ({
   requestDeviceVerification: (...args: unknown[]) => requestDeviceVerification(...args),
   onSasUpdate: (...args: unknown[]) => onSasUpdate(...args),
   getProfile: (...args: unknown[]) => getProfile(...args),
+  recoveryStatus: (...args: unknown[]) => recoveryStatus(...args),
+  recoverFromKey: (...args: unknown[]) => recoverFromKey(...args),
 }));
 
 const openUrl = vi.fn();
@@ -80,6 +84,8 @@ beforeEach(() => {
     avatar_url: null,
     uses_oauth: false,
   });
+  recoveryStatus.mockReset().mockResolvedValue("enabled");
+  recoverFromKey.mockReset().mockResolvedValue(undefined);
 });
 
 describe("DevicesPanel", () => {
@@ -171,6 +177,39 @@ describe("DevicesPanel", () => {
     renderWithProviders(<DevicesPanel />);
     await screen.findByText("This laptop");
     expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
+  });
+
+  it("does not show the recovery-key prompt when recovery is enabled", async () => {
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("This laptop");
+    expect(screen.queryByLabelText("Recovery key")).not.toBeInTheDocument();
+  });
+
+  it("prompts for a recovery key when this session is missing secrets, and restores on submit", async () => {
+    recoveryStatus.mockResolvedValue("incomplete");
+    renderWithProviders(<DevicesPanel />);
+
+    const input = await screen.findByLabelText("Recovery key");
+    fireEvent.change(input, { target: { value: "EsTx some-recovery-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    await waitFor(() => expect(recoverFromKey).toHaveBeenCalledWith("EsTx some-recovery-key"));
+    // Clears the input and re-fetches status on success — with the mock
+    // still returning "incomplete", the card stays up rather than vanishing,
+    // but the field itself should be blank again.
+    await waitFor(() => expect(input).toHaveValue(""));
+  });
+
+  it("surfaces a recovery error instead of silently failing on a wrong key", async () => {
+    recoveryStatus.mockResolvedValue("incomplete");
+    recoverFromKey.mockRejectedValue(new Error("invalid recovery key"));
+    renderWithProviders(<DevicesPanel />);
+
+    const input = await screen.findByLabelText("Recovery key");
+    fireEvent.change(input, { target: { value: "wrong-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(await screen.findByText("Error: invalid recovery key")).toBeInTheDocument();
   });
 
   it("routes an un-bootstrapped OAuth account to account management instead of the in-app password flow", async () => {

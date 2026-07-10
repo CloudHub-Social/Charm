@@ -6,12 +6,15 @@ import {
   getDeviceDeleteUrl,
   listDevices,
   onSasUpdate,
+  recoverFromKey,
+  recoveryStatus,
   requestDeviceVerification,
 } from "@/lib/matrix";
 
 export const DEVICES_QUERY_KEY = ["devices"] as const;
 export const CROSS_SIGNING_STATUS_QUERY_KEY = ["crossSigningStatus"] as const;
 const CROSS_SIGNING_RESET_URL_QUERY_KEY = ["crossSigningResetUrl"] as const;
+export const RECOVERY_STATUS_QUERY_KEY = ["recoveryStatus"] as const;
 
 export function useDevices(enabled = true) {
   return useQuery({
@@ -35,6 +38,22 @@ export function useCrossSigningResetUrl(enabled = true) {
     queryKey: CROSS_SIGNING_RESET_URL_QUERY_KEY,
     queryFn: getCrossSigningResetUrl,
     enabled,
+  });
+}
+
+export function useRecoveryStatus(enabled = true) {
+  return useQuery({
+    queryKey: RECOVERY_STATUS_QUERY_KEY,
+    queryFn: recoveryStatus,
+    enabled,
+  });
+}
+
+export function useRecoverFromKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (recoveryKey: string) => recoverFromKey(recoveryKey),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY }),
   });
 }
 
