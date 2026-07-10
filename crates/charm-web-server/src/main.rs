@@ -207,6 +207,14 @@ fn spawn_idle_session_sweeper(
                                 "resumed syncing a session whose pre-eviction persistence \
                                  save failed, keeping it in memory instead of evicting"
                             );
+                            // This session was never actually evicted end
+                            // to-end — clear its `evicted_presence` entry
+                            // now rather than leaving it to sit unclaimed
+                            // until `EVICTED_PRESENCE_MAX_AGE` prunes it;
+                            // nothing will ever call `take`/`peek` for a
+                            // token that was reinserted straight back into
+                            // `SessionStore` like this.
+                            sessions.forget_evicted_presence(&token);
                             sessions.reinsert(token, session).await;
                         }
                         Err(sync_err) => {
