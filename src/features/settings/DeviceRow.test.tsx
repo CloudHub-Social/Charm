@@ -1,15 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  waitForElementToBeRemoved,
-} from "@testing-library/react";
-import type { ReactElement } from "react";
+import { fireEvent, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DeviceRow } from "./DeviceRow";
 import type { DeviceSummary } from "@/lib/matrix";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getDeviceDeleteUrl = vi.fn();
 
@@ -33,11 +26,6 @@ function makeDevice(overrides: Partial<DeviceSummary> = {}): DeviceSummary {
     is_verified: false,
     ...overrides,
   };
-}
-
-function renderWithProviders(ui: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */

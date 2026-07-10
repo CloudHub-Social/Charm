@@ -1,8 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingScreen } from "./OnboardingScreen";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const crossSigningStatus = vi.fn();
 const getCrossSigningResetUrl = vi.fn();
@@ -35,11 +34,6 @@ const VERIFIED_CURRENT_DEVICE = {
 };
 
 const UNVERIFIED_CURRENT_DEVICE = { ...VERIFIED_CURRENT_DEVICE, is_verified: false };
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 /**
  * The orientation pane's "Continue" is disabled until `crossSigningStatus`

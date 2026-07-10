@@ -1,8 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DesktopPanel } from "./DesktopPanel";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getAutostart = vi.fn();
 const setAutostart = vi.fn();
@@ -11,11 +10,6 @@ vi.mock("@/lib/matrix", () => ({
   getAutostart: (...args: unknown[]) => getAutostart(...args),
   setAutostart: (...args: unknown[]) => setAutostart(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 beforeEach(() => {
   getAutostart.mockReset().mockResolvedValue(false);

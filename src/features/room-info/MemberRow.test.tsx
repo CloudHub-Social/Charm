@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberRow } from "./MemberRow";
-import { openDropdownMenu, renderWithProviders } from "./testUtils";
+import { openDropdownMenu } from "./testUtils";
+import { renderWithProviders } from "@/test/renderWithProviders";
 import type { RoomMemberSummary, RoomPermissions } from "@/lib/matrix";
 
 const kickMember = vi.fn().mockResolvedValue(undefined);
