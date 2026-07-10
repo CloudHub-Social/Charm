@@ -365,13 +365,17 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 ) {
     let payload = jstring_to_string(&mut env, &payload_json);
     let Some(app) = super::global_app_handle() else {
-        // On a true cold start (process spawned solely to deliver this JNI
-        // callback, before `lib.rs`'s `setup()` — and thus
-        // `install_sentry_tracing()` — has run), this `warn!` has no global
-        // `tracing` subscriber to reach and is a no-op. It's still useful for
-        // the common case where the app process is already alive (subscriber
-        // installed) and only the handle lookup itself raced; see the
-        // doc comment above this function for the cold-start gap itself.
+        // Kept alongside tracing::warn!, not instead of it: on a true cold
+        // start (process spawned solely to deliver this JNI callback, before
+        // `lib.rs`'s `setup()` — and thus `install_sentry_tracing()` — has
+        // run) there's no global `tracing` subscriber, so the warn! below is
+        // a no-op. And even once a subscriber is installed, the Sentry event
+        // filter (`sentry_event_filter_for_level_target` in lib.rs) drops
+        // everything when there's no DSN configured or structured logs are
+        // disabled — this eprintln! is what still shows up in local
+        // dev/logcat in either case. See the doc comment above this function
+        // for the cold-start gap itself.
+        eprintln!("push received before the app handle was initialized; dropping");
         tracing::warn!(
             command = "android_push",
             status = "no_app_handle",
@@ -380,6 +384,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
         return;
     };
     let Some(message) = parse_event_id_only_payload(&payload) else {
+        eprintln!("push payload missing room_id/event_id; dropping");
         tracing::warn!(
             command = "android_push",
             status = "missing_fields",
@@ -389,6 +394,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
     };
     tauri::async_runtime::spawn(async move {
         if let Err(e) = super::handle_push(&app, message).await {
+            eprintln!("handle_push failed: {e}");
             tracing::error!(
                 command = "android_push",
                 status = "failed",
