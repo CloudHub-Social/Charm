@@ -92,7 +92,7 @@ runs:
         fi
         cat > "$BUNDLE_DIR/wrangler.jsonc" <<EOF
         {
-          "name": ${WORKER_NAME@Q},
+          "name": "${WORKER_NAME}",
           "compatibility_date": "2026-07-09",
           "main": "./worker.mjs",
           ${dev_fields}"assets": {
