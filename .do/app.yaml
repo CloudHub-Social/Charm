@@ -36,7 +36,7 @@ services:
     source_dir: /
     http_port: 8787
     instance_count: 1
-    instance_size_slug: apps-s-1vcpu-1gb
+    instance_size_slug: apps-s-1vcpu-0.5gb
     health_check:
       http_path: /api/health
     envs:
