@@ -141,7 +141,11 @@ mod android {
 
     struct ContextOverride {
         id: u64,
-        vm: JavaVM,
+        // `jni::JavaVM` doesn't implement `Clone`, but `with_env` needs to
+        // pull a copy of it out from under `CONTEXT_OVERRIDE`'s mutex guard
+        // before attaching a thread with it — wrapping in `Arc` makes that a
+        // cheap refcount bump instead of an (impossible) value clone.
+        vm: Arc<JavaVM>,
         context: GlobalRef,
         active: Arc<AtomicBool>,
     }
@@ -178,7 +182,7 @@ mod android {
         let previous = current.take();
         *current = Some(ContextOverride {
             id,
-            vm,
+            vm: Arc::new(vm),
             context,
             active: Arc::clone(&active),
         });
