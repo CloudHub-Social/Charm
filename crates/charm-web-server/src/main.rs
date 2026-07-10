@@ -165,74 +165,28 @@ fn spawn_idle_session_sweeper(
                     .save(&token, &homeserver_url, &matrix_session)
                     .await
                 {
-                    // The just-saved (or not-yet-saved) persisted object may
-                    // not reflect this client's actual current token —
-                    // evicting anyway here would risk losing this session
-                    // for good behind a stale/missing persisted copy. But
-                    // `sweep_idle` already aborted its sync loop, so simply
-                    // reinserting it (an earlier version of this did
-                    // exactly that) would leave it reachable with no live
-                    // sync loop until logout or a restart — WebSockets
-                    // would attach to an event channel with nothing left to
-                    // produce on it. Try to resume syncing before deciding
-                    // reinserting is actually worthwhile.
-                    tracing::error!("failed to re-persist session before idle eviction: {e}");
-                    match session
-                        .client
-                        .sync_once(matrix_sdk::config::SyncSettings::default())
-                        .await
-                    {
-                        Ok(initial_response) => {
-                            let persist = Some(sync_loop::PersistHandle {
-                                store: Arc::clone(&persistence),
-                                token: token.clone(),
-                                homeserver_url,
-                                initial_access_token: Some(
-                                    matrix_session.tokens.access_token.clone(),
-                                ),
-                            });
-                            let handle = sync_loop::spawn(
-                                session.client.clone(),
-                                session.events.clone(),
-                                session.sync_presence.clone(),
-                                persist,
-                                initial_response,
-                                session.sync_snapshots(),
-                            );
-                            *session
-                                .sync_handle
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner()) = Some(handle);
-                            tracing::warn!(
-                                "resumed syncing a session whose pre-eviction persistence \
-                                 save failed, keeping it in memory instead of evicting"
-                            );
-                            // This session was never actually evicted end
-                            // to-end — clear its `evicted_presence` entry
-                            // now rather than leaving it to sit unclaimed
-                            // until `EVICTED_PRESENCE_MAX_AGE` prunes it;
-                            // nothing will ever call `take`/`peek` for a
-                            // token that was reinserted straight back into
-                            // `SessionStore` like this.
-                            sessions.forget_evicted_presence(&token);
-                            sessions.reinsert(token, session).await;
-                        }
-                        Err(sync_err) => {
-                            // Can't persist *and* can't resume syncing —
-                            // reinserting a session with a dead sync loop
-                            // and no realistic path to a fresh one is worse
-                            // than just evicting it: the persisted copy may
-                            // be stale, but a later on-demand restore at
-                            // least gets a real chance to rebuild a working
-                            // client, instead of this one sitting inert
-                            // until someone logs out or the process
-                            // restarts.
-                            tracing::error!(
-                                "also failed to resume syncing this session ({sync_err}) — \
-                                 evicting it despite the failed persistence save"
-                            );
-                        }
-                    }
+                    // Evicted anyway — an earlier version of this tried to
+                    // resume syncing and reinsert the session in place
+                    // rather than evict it on a failed save, but that
+                    // "recovery" path accumulated its own pile of distinct
+                    // races on review (retry-suppressing token seeding, a
+                    // leaked sync task when a concurrent restore won the
+                    // reinsert race, a presence flash from a bare
+                    // `SyncSettings::default()`, and — most seriously — a
+                    // logged-out session getting resurrected if the reinsert
+                    // landed after `routes::logout` had already removed it).
+                    // Untangling all of that for what should be a rare,
+                    // transient object-store failure wasn't worth it: a
+                    // failed save here just means the *next* on-demand
+                    // restore might see a token pair that predates whatever
+                    // refresh happened right before this eviction, which —
+                    // same as several other already-accepted edge cases in
+                    // this file — degrades to nothing worse than a forced
+                    // re-login, not data loss or a security issue.
+                    tracing::error!(
+                        "failed to re-persist session before idle eviction, evicting it \
+                         anyway: {e}"
+                    );
                 }
             }
         }
