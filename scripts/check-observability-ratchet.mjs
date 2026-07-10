@@ -90,9 +90,15 @@ const actual = {
   // tests` in the same file rather than separate *.test.rs files (unlike the
   // frontend convention above), so this can't file-level exclude them the
   // same way; a test asserting on a real emitting call still counts.
+  //
+  // Scans both src-tauri/src (the Tauri app) and crates/ (the other Cargo
+  // workspace member — currently just charm-web-server, but any future
+  // crate lands under the same dir) — src-tauri/src alone missed 17 real
+  // call sites in crates/charm-web-server/src entirely (found by Sentry's
+  // PR bot review).
   rustSentryCallSites: countMatches(
     "tracing::(info|warn|error|debug)!|capture_event|add_breadcrumb|capture_message",
-    "src-tauri/src --include='*.rs'",
+    "src-tauri/src crates --include='*.rs'",
   ),
 };
 
