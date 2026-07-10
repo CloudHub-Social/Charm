@@ -26,7 +26,7 @@ jobs:
       # Shallow checkout (default depth 1) — this job only needs a two-tree
       # `git diff base..head`, same pattern as quality-checks.yml's `changes`
       # job (see that file for the full rationale).
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Check whether the web build's inputs changed
         id: filter
@@ -121,7 +121,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
