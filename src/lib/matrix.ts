@@ -110,36 +110,52 @@ export type {
   VerificationRequestSummary,
 };
 
+// captureOnError: false — a failed login/register (wrong password,
+// unreachable homeserver, etc.) is expected user-facing UX handled inline by
+// LoginScreen, not a bug to report to Sentry.
 export function login(request: LoginRequest): Promise<LoginResponse> {
-  return invoke("login", { request });
+  return invoke("login", { request }, { captureOnError: false });
 }
 
 export function register(request: RegisterRequest): Promise<LoginResponse> {
-  return invoke("register", { request });
+  return invoke("register", { request }, { captureOnError: false });
 }
 
+// captureOnError: false — this fires on every keystroke via
+// useHomeserverDiscovery while the user is still typing a server name, so an
+// unresolvable address is the common case, not an error worth reporting.
 export function discoverHomeserver(input: string): Promise<DiscoverHomeserverResponse> {
-  return invoke("discover_homeserver", { input });
+  return invoke("discover_homeserver", { input }, { captureOnError: false });
 }
 
+// captureOnError: false — LoginScreen catches this to render the SSO error
+// inline (e.g. the homeserver doesn't support SSO), the same expected-UX
+// pattern as login/register above.
 export function startSsoLogin(homeserverUrl: string): Promise<string> {
-  return invoke("start_sso_login", { homeserverUrl });
+  return invoke("start_sso_login", { homeserverUrl }, { captureOnError: false });
 }
 
+// captureOnError: false — LoginScreen catches this too, including the
+// expected "no SSO login is in progress" failure on a cold-launch deep link
+// with a stale/duplicate callback.
 export function completeSsoLogin(callbackUrl: string): Promise<LoginResponse> {
-  return invoke("complete_sso_login", { callbackUrl });
+  return invoke("complete_sso_login", { callbackUrl }, { captureOnError: false });
 }
 
 export function cancelSsoLogin(): Promise<void> {
   return invoke("cancel_sso_login");
 }
 
+// captureOnError: false — QrLoginScreen renders this inline as its "error"
+// stage (e.g. the homeserver doesn't support MSC4108 QR login).
 export function startQrLogin(homeserverUrl: string): Promise<void> {
-  return invoke("start_qr_login", { homeserverUrl });
+  return invoke("start_qr_login", { homeserverUrl }, { captureOnError: false });
 }
 
+// captureOnError: false — QrLoginScreen renders a wrong check code inline as
+// its "error" stage, the same expected-UX pattern as a wrong password.
 export function submitQrCheckCode(code: number): Promise<void> {
-  return invoke("submit_qr_check_code", { code });
+  return invoke("submit_qr_check_code", { code }, { captureOnError: false });
 }
 
 export function cancelQrLogin(): Promise<void> {
@@ -276,8 +292,13 @@ export function sendReply(roomId: string, inReplyToEventId: string, body: string
   return invoke("send_reply", { roomId, inReplyToEventId, body });
 }
 
+// captureOnError: false — UIA-gated. useUiaRetry treats both the initial
+// UiaChallenge (already filtered) and any subsequent `Other` failure (wrong
+// password on retry, or a real backend error the Rust side can't further
+// distinguish per UiaCommandError's doc comment) the same way: surface it
+// inline via `error`, not a bug report.
 export function bootstrapCrossSigning(password?: string): Promise<void> {
-  return invoke("bootstrap_cross_signing", { password });
+  return invoke("bootstrap_cross_signing", { password }, { captureOnError: false });
 }
 
 export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
@@ -493,12 +514,12 @@ export function removeAvatar(): Promise<void> {
  * account password and retry with it — mirrors {@link bootstrapCrossSigning}.
  */
 export function changePassword(newPassword: string, password?: string): Promise<void> {
-  return invoke("change_password", { newPassword, password });
+  return invoke("change_password", { newPassword, password }, { captureOnError: false });
 }
 
 /** Same UIA retry convention as {@link changePassword}. */
 export function deactivateAccount(password?: string): Promise<void> {
-  return invoke("deactivate_account", { password });
+  return invoke("deactivate_account", { password }, { captureOnError: false });
 }
 
 /** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
@@ -530,7 +551,7 @@ export function unignoreUser(userId: string): Promise<void> {
 
 /** Same UIA retry convention as {@link changePassword}. */
 export function deleteDevice(deviceId: string, password?: string): Promise<void> {
-  return invoke("delete_device", { deviceId, password });
+  return invoke("delete_device", { deviceId, password }, { captureOnError: false });
 }
 
 /** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */

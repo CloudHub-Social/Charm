@@ -26,6 +26,13 @@ use super::media;
 use super::presence::PresenceStateDto;
 use super::MatrixState;
 
+fn recover_poisoned_presence_lock(
+    poison: std::sync::PoisonError<std::sync::MutexGuard<'_, PresenceStateDto>>,
+) -> std::sync::MutexGuard<'_, PresenceStateDto> {
+    tracing::warn!("sync presence mutex was poisoned; recovering last known presence");
+    poison.into_inner()
+}
+
 /// Square thumbnail size (px) requested for every avatar this module
 /// resolves — sender avatars, room avatars, and the signed-in user's own.
 pub(crate) const AVATAR_THUMBNAIL_SIZE: u32 = 96;
@@ -82,7 +89,10 @@ pub async fn get_own_profile(
 ) -> Result<OwnProfile, String> {
     let client = state.require_client().await?;
     let media_cache = state.require_media_cache(&app).await.ok();
-    let presence = *state.sync_presence.lock().unwrap();
+    let presence = *state
+        .sync_presence
+        .lock()
+        .unwrap_or_else(recover_poisoned_presence_lock);
     get_own_profile_impl(&client, media_cache, presence).await
 }
 
