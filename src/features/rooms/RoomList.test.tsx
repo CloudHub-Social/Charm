@@ -795,4 +795,103 @@ describe("RoomList", () => {
 
     expect(screen.getByRole("checkbox", { name: "Search everywhere" })).toBeInTheDocument();
   });
+
+  it("requires a space selection even with an active search query", () => {
+    renderRoomList(<RoomList {...roomListProps({ mode: "space", selectedSpace: null })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    expect(screen.getByText("Select a space.")).toBeInTheDocument();
+    expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
+  });
+
+  it("shows the space-loading state instead of a stale no-match message while searching", async () => {
+    listSpaceHierarchy.mockReturnValue(new Promise(() => {})); // never resolves
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    renderRoomList(
+      <RoomList {...roomListProps({ rooms: [space], mode: "space", selectedSpace: space })} />,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    await waitFor(() => expect(screen.getByText("Loading space…")).toBeInTheDocument());
+    expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
+  });
+
+  it("resets the search when switching modes", () => {
+    const orphan = makeRoomSummary({ room_id: "!orphan:localhost", name: "Orphan" });
+    const dm = makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const store = createStore();
+    function renderWithMode(mode: "home" | "dms") {
+      return (
+        <Provider store={store}>
+          <QueryClientProvider client={client}>
+            <RoomList {...roomListProps({ rooms: [orphan, dm], mode })} />
+          </QueryClientProvider>
+        </Provider>
+      );
+    }
+    const { rerender } = render(renderWithMode("home"));
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "orphan" },
+    });
+    expect(screen.getByRole("checkbox", { name: "Search everywhere" })).toBeInTheDocument();
+
+    rerender(renderWithMode("dms"));
+
+    expect(screen.getByRole("searchbox", { name: "Search rooms" })).toHaveValue("");
+    expect(screen.queryByRole("checkbox", { name: "Search everywhere" })).not.toBeInTheDocument();
+    expect(screen.getByText("Alice")).toBeInTheDocument();
+  });
+
+  it("resets Search everywhere when the search query is cleared", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space, spaceChildMatch] })} />);
+
+    const searchBox = screen.getByRole("searchbox", { name: "Search rooms" });
+    fireEvent.change(searchBox, { target: { value: "alpha" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+    expect(screen.getByText("Alpha in space")).toBeInTheDocument();
+
+    fireEvent.change(searchBox, { target: { value: "" } });
+    fireEvent.change(searchBox, { target: { value: "alpha" } });
+
+    // Re-entering a query after clearing must not silently reopen already
+    // scoped to "everywhere" — the out-of-scope match should be hidden again
+    // until the user re-checks the box.
+    expect(screen.queryByText("Alpha in space")).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Search everywhere" })).not.toBeChecked();
+  });
+
+  it("switches context when selecting a search result outside the current scope", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const onSelectSearchResult = vi.fn();
+    renderRoomList(
+      <RoomList {...roomListProps({ rooms: [space, spaceChildMatch], onSelectSearchResult })} />,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+    screen.getByText("Alpha in space").click();
+
+    expect(onSelectSearchResult).toHaveBeenCalledWith(spaceChildMatch);
+  });
 });

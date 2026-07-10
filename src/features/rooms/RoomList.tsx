@@ -39,6 +39,15 @@ interface RoomListProps {
   activeRoomId: string | null;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
+  /**
+   * Selecting a search result found via "Search everywhere" (or one that's
+   * otherwise outside the current scope) needs to switch context — mode,
+   * selected space, `showAllRooms` — not just set the active room, the way
+   * an already-in-scope row's `onSelectRoom` does. Falls back to
+   * `onSelectRoom` if omitted, for callers that don't care about
+   * cross-scope search (e.g. tests).
+   */
+  onSelectSearchResult?: (room: RoomSummary) => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
   showAllRooms: boolean;
@@ -63,6 +72,7 @@ export function RoomList({
   activeRoomId,
   onSelectRoom,
   onSelectSpace,
+  onSelectSearchResult,
   mode,
   selectedSpace,
   showAllRooms,
@@ -147,6 +157,23 @@ export function RoomList({
     };
   }, [mode, selectedSpaceId]);
 
+  // A query typed in one context (Home, DMs, a specific space) shouldn't
+  // silently keep filtering an unrelated one after the user switches scope —
+  // `RoomList` isn't remounted on a mode/space change, so its local search
+  // state would otherwise persist across it.
+  useEffect(() => {
+    setSearchQuery("");
+    setSearchEverywhere(false);
+  }, [mode, selectedSpaceId]);
+
+  // "Search everywhere" is meant to be re-opted-into per search session, not
+  // remembered across an emptied box — otherwise reopening the search field
+  // after clearing it silently defaults back to a global search the user
+  // never re-selected.
+  useEffect(() => {
+    if (!isSearching) setSearchEverywhere(false);
+  }, [isSearching]);
+
   function isExpanded(key: string): boolean {
     return expanded[key] ?? true;
   }
@@ -178,7 +205,9 @@ export function RoomList({
         key={room.room_id}
         room={room}
         active={room.room_id === activeRoomId}
-        onSelect={() => onSelectRoom(room.room_id)}
+        onSelect={() =>
+          onSelectSearchResult ? onSelectSearchResult(room) : onSelectRoom(room.room_id)
+        }
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
         }
@@ -348,16 +377,23 @@ export function RoomList({
         )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {isSearching ? (
+        {mode === "space" && !selectedSpace ? (
+          // Space mode with nothing selected has nothing to search *in* —
+          // this guard wins over an active query rather than showing search
+          // results (or "No matching rooms") for an undefined scope.
+          <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
+        ) : mode === "space" && spaceLoading ? (
+          // Same reasoning: a search over an as-yet-empty `scopedRooms` while
+          // the space is still loading would otherwise misreport "No
+          // matching rooms" for a query that hasn't actually been evaluated
+          // against the space's real contents yet.
+          <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
+        ) : isSearching ? (
           searchResults.length === 0 ? (
             <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
           ) : (
             <div className="flex flex-col gap-0.5">{renderSearchResults(searchResults)}</div>
           )
-        ) : mode === "space" && !selectedSpace ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
-        ) : mode === "space" && spaceLoading ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
         ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">
             {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
