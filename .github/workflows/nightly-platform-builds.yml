@@ -250,6 +250,10 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # ubuntu-latest (24.04) dropped libfuse2, so linuxdeploy/appimagetool
+          # can't self-mount as a FUSE AppImage during bundling and hang
+          # indefinitely instead of failing. This makes them extract-and-run.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           # Empty for workflow_dispatch runs against anything other than
           # main: the caller can select an arbitrary branch/ref to dispatch
           # against, and that branch's build.rs/JS build scripts run with
