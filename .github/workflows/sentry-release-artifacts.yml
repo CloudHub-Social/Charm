@@ -116,52 +116,23 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # tauri-bundler's AppImage step (crates/tauri-bundler/src/bundle/linux/
-      # appimage/linuxdeploy.rs `prepare_tools`) fetches AppRun/linuxdeploy/
-      # the GTK+gstreamer plugins/the AppImage plugin from GitHub via its own
-      # `http_utils::download` — a ureq::Agent built with no read/connect
-      # timeout configured at all. A stalled connection there hangs forever
-      # with zero log output — see nightly-platform-builds.yml's Linux job
-      # for the observed 40+ min hangs this caused there (a prior fix
-      # targeting `wget` didn't help: the bundler never shells out to wget,
-      # it's pure Rust/ureq). `prepare_tools` only downloads a tool if it
-      # isn't already present at `~/.cache/tauri/<file>`, so pre-fetch those
-      # exact files with a properly bounded `curl` to short-circuit it.
-      - name: Pre-fetch Tauri's AppImage tooling with a bounded curl
-        # Each curl call retries up to 5x with its own timeout, so the step
-        # as a whole could still take ~30min in the worst case (all 5 files
-        # stalling) without an outer cap of its own.
-        timeout-minutes: 15
-        run: |
-          mkdir -p "$HOME/.cache/tauri"
-          cd "$HOME/.cache/tauri"
-          curl_opts="--fail --location --connect-timeout 10 --max-time 60 --retry 5 --retry-delay 5 --retry-connrefused"
-          curl $curl_opts -o AppRun-x86_64 \
-            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64"
-          curl $curl_opts -o linuxdeploy-x86_64.AppImage \
-            "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
-          curl $curl_opts -o linuxdeploy-plugin-gtk.sh \
-            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
-          curl $curl_opts -o linuxdeploy-plugin-gstreamer.sh \
-            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh"
-          # Optional in prepare_tools (falls back to linuxdeploy's built-in
-          # copy on failure) — don't fail the step if this one doesn't come
-          # through.
-          curl $curl_opts -o linuxdeploy-plugin-appimage-x86_64.AppImage \
-            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" || true
-          chmod +x AppRun-x86_64 linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh \
-            linuxdeploy-plugin-gstreamer.sh linuxdeploy-plugin-appimage-x86_64.AppImage 2>/dev/null || true
-
+      # AppImage is deliberately excluded via --bundles: it reproducibly
+      # hangs forever (zero CPU, zero log output) right after rpm bundling
+      # finishes. Two earlier fixes targeting plausible causes (FUSE
+      # mounting, an untimed network download inside tauri-bundler) both
+      # failed to reproduce-then-fix it — a background build + `tmate`/
+      # /proc snapshot on the actual hung runner (see the now-closed
+      # debug-linux-appimage-hang branch) showed no linuxdeploy/appimagetool
+      # subprocess ever gets spawned at all, and every thread of the Tauri
+      # CLI's own node process sits idle in epoll_pwait/futex_wait — a
+      # genuine internal deadlock in @tauri-apps/cli 2.11.4 / tauri-bundler
+      # 2.9.4's AppImage codepath itself, not an external timing issue.
+      # Revisit once upstream has a fix; deb+rpm both bundle fine.
       - name: Build Tauri Linux app with release debuginfo
-        run: pnpm tauri build
-        # Backstop if some other hang path exists that the pre-fetch above
-        # doesn't cover.
+        run: pnpm tauri build --bundles deb,rpm
+        # Backstop in case some other hang path exists beyond the one
+        # --bundles deb,rpm avoids.
         timeout-minutes: 20
-        env:
-          # ubuntu-latest (24.04) dropped libfuse2, so linuxdeploy/appimagetool
-          # can't self-mount as a FUSE AppImage during bundling and hang
-          # indefinitely instead of failing. This makes them extract-and-run.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
 
       - name: Resolve Cargo target directory
         id: cargo-target
