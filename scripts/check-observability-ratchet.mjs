@@ -97,7 +97,9 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("Observability ratchet OK:");
+// console.error, not console.log: oxlint's no-console rule only allows
+// warn/error (see oxlint.config.ts), and this script itself is linted.
+console.error("Observability ratchet OK:");
 for (const [key, floor] of Object.entries(floors)) {
-  console.log(`  ${key}: ${actual[key]} (floor ${floor})`);
+  console.error(`  ${key}: ${actual[key]} (floor ${floor})`);
 }

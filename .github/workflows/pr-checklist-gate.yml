@@ -38,7 +38,15 @@ jobs:
         with:
           script: |
             const body = context.payload.pull_request.body || "";
-            const lines = body.split("\n");
+            // Only consider actual checklist-item lines ("- [ ] ..." / "- [x]
+            // ..."), not prose elsewhere in the description that happens to
+            // contain the same words (e.g. this PR's own description
+            // discussing "Playwright e2e coverage" before reaching the real
+            // checklist line) — Array.find took the first textual match
+            // regardless of line shape, which is exactly that bug.
+            const lines = body
+              .split("\n")
+              .filter((l) => /^\s*-\s*\[[ xX]\]/.test(l));
 
             const REQUIRED = [
               {
