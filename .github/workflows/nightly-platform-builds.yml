@@ -236,12 +236,53 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # tauri-bundler's AppImage step (crates/tauri-bundler/src/bundle/linux/
+      # appimage/linuxdeploy.rs `prepare_tools`) fetches AppRun/linuxdeploy/
+      # the GTK+gstreamer plugins/the AppImage plugin from GitHub via its own
+      # `http_utils::download` — a ureq::Agent built with no read/connect
+      # timeout configured at all. A stalled connection there hangs forever
+      # with zero log output, as seen for 40+ min in run 29103517673 and
+      # again in 29107820618 (a prior fix targeting `wget` didn't help: the
+      # bundler never shells out to wget, it's pure Rust/ureq).
+      # `prepare_tools` only downloads a tool if it isn't already present at
+      # `~/.cache/tauri/<file>`, so pre-fetching those exact files ourselves
+      # with a properly bounded `curl` short-circuits the untimed download
+      # entirely instead of trying to bound ureq's behavior indirectly.
+      - name: Pre-fetch Tauri's AppImage tooling with a bounded curl
+        # Each curl call retries up to 5x with its own timeout, so the step
+        # as a whole could still take ~30min in the worst case (all 5 files
+        # stalling) without an outer cap of its own.
+        timeout-minutes: 15
+        run: |
+          mkdir -p "$HOME/.cache/tauri"
+          cd "$HOME/.cache/tauri"
+          curl_opts="--fail --location --connect-timeout 10 --max-time 60 --retry 5 --retry-delay 5 --retry-connrefused"
+          curl $curl_opts -o AppRun-x86_64 \
+            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64"
+          curl $curl_opts -o linuxdeploy-x86_64.AppImage \
+            "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
+          curl $curl_opts -o linuxdeploy-plugin-gtk.sh \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
+          curl $curl_opts -o linuxdeploy-plugin-gstreamer.sh \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/master/linuxdeploy-plugin-gstreamer.sh"
+          # Optional in prepare_tools (falls back to linuxdeploy's built-in
+          # copy on failure) — don't fail the step if this one download
+          # doesn't come through.
+          curl $curl_opts -o linuxdeploy-plugin-appimage-x86_64.AppImage \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" || true
+          chmod +x AppRun-x86_64 linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh \
+            linuxdeploy-plugin-gstreamer.sh linuxdeploy-plugin-appimage-x86_64.AppImage 2>/dev/null || true
+
       # rust-integration (quality-checks.yml) already covers `cargo test` on
       # Linux; this is the full app bundle (AppImage/deb via the Tauri
       # bundler plus frontend asset embedding), a build path nothing else
       # exercises. sccache credentials scoped to just this step — see the
       # macOS job.
       - run: pnpm tauri build --debug
+        # Backstop: if some other hang path exists that the pre-fetch above
+        # doesn't cover, fail the job instead of occupying a runner
+        # indefinitely.
+        timeout-minutes: 15
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
