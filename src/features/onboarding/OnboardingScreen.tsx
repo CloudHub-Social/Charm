@@ -36,10 +36,16 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
     useCrossSigningStatus();
   const { data: devices, isPending: devicesPending } = useDevices();
   const currentDevice = devices?.find((device) => device.is_current);
+  // `has_identity` covers the case where cross-signing was already bootstrapped
+  // on another device: this session doesn't hold the local signing keys, but
+  // completing SAS verification here still makes `currentDevice.is_verified`
+  // true — without the `has_identity` fallback, that combination could never
+  // satisfy the local-keys check and the verify pane would never dismiss.
   const isVerified = Boolean(
-    crossSigningStatus?.has_master_key &&
-    crossSigningStatus.has_self_signing_key &&
-    crossSigningStatus.has_user_signing_key &&
+    (crossSigningStatus?.has_identity ||
+      (crossSigningStatus?.has_master_key &&
+        crossSigningStatus.has_self_signing_key &&
+        crossSigningStatus.has_user_signing_key)) &&
     currentDevice?.is_verified,
   );
   const verificationStatusPending = crossSigningStatusPending || devicesPending;
