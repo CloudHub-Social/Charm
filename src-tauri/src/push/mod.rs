@@ -16,7 +16,7 @@ pub mod android;
 #[cfg(target_os = "ios")]
 pub mod ios;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use matrix_sdk::ruma::api::client::push::{Pusher, PusherIds, PusherInit};
 use matrix_sdk::ruma::events::room::message::MessageType;
@@ -55,6 +55,67 @@ pub const IOS_APP_ID: &str = "social.cloudhub.charm.ios";
 /// (`Result<_, String>` throughout), not a dedicated error enum.
 pub type PushError = String;
 
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const HEADLESS_NOTIFIED_EVENTS_FILE: &str = "headless_notified_events";
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const MAX_HEADLESS_NOTIFIED_EVENT_IDS: usize = 200;
+
+/// Sibling lock file the headless push process and the main app process both
+/// flock/`LockFileEx` (via `fs4`) before touching `headless_notified_events`.
+/// `std::sync::Mutex` only synchronizes threads within one process — the
+/// headless push handler runs in a separate short-lived process from the
+/// main app on Android cold start, so a process-local mutex alone can't stop
+/// the two from racing on the dedupe file and double-notifying. The OS file
+/// lock is released automatically if the holding process dies (crash or
+/// kill) without an explicit unlock, so a crashed holder can't wedge this
+/// permanently.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+const HEADLESS_PUSH_LOCK_FILE: &str = "headless_notified_events.lock";
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+static HEADLESS_PUSH_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+
+/// Serializes headless push handling both within this process (the
+/// in-process `Mutex`) and across processes (an advisory `flock`/
+/// `LockFileEx` on a sibling file in `store_root`, via `fs4`), since the
+/// dedupe file at `store_root` can be read/written concurrently by the
+/// headless push process and the main app process.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn with_headless_push_lock<T>(
+    store_root: &std::path::Path,
+    run: impl FnOnce() -> T,
+) -> T {
+    let _guard = HEADLESS_PUSH_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+
+    let _cross_process_guard = match std::fs::create_dir_all(store_root).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(store_root.join(HEADLESS_PUSH_LOCK_FILE))
+    }) {
+        Ok(lock_file) => {
+            use fs4::FileExt;
+            // Blocks until acquired. If the previous holder crashed without
+            // unlocking, the OS releases the lock when that process's file
+            // handle is torn down, so this can't wedge on a dead process.
+            if let Err(e) = FileExt::lock(&lock_file) {
+                eprintln!("failed to acquire cross-process headless push lock: {e}");
+            }
+            Some(lock_file)
+        }
+        Err(e) => {
+            eprintln!("failed to open cross-process headless push lock file: {e}");
+            None
+        }
+    };
+
+    run()
+}
+
 /// Which transport (if any) currently backs push delivery — the ts-rs IPC
 /// enum the frontend uses to render transport-specific settings UI (e.g. the
 /// Android distributor picker).
@@ -89,6 +150,13 @@ pub struct PushEndpoint {
 pub struct PushMessage {
     pub room_id: String,
     pub event_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PushNotification {
+    pub event_id: String,
+    pub title: String,
+    pub body: String,
 }
 
 /// A pluggable push transport: obtain an endpoint/token from the platform's
@@ -670,13 +738,271 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         Some(client) => (client, None),
         None => {
             let guard = matrix_state.login_completion_lock.lock().await;
+            let restore_store_guard = auth::restore_store_lock().lock().await;
             let client = restore_any_client(app)
                 .await?
                 .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
-            (client, Some(guard))
+            (client, Some((guard, restore_store_guard)))
+        }
+    };
+    let restore_store_already_locked = _completion_guard.is_some();
+
+    let Some(notification) = build_push_notification(
+        &client,
+        message,
+        |room_id| {
+            let focused_room_id = app
+                .state::<MatrixState>()
+                .focused_room_id
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            focused_room_id.as_deref() == Some(room_id.as_str())
+        },
+        |event_id| async move {
+            if restore_store_already_locked {
+                reserve_notified_for_app_unlocked(app, &event_id)
+            } else {
+                reserve_notified_for_app(app, &event_id).await
+            }
+        },
+        |event_id| {
+            app.state::<MatrixState>().forget_notified(&event_id);
+        },
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+
+    use tauri_plugin_notification::NotificationExt;
+    let show_result = app
+        .notification()
+        .builder()
+        .title(&notification.title)
+        .body(&notification.body)
+        .show();
+    if let Err(e) = show_result {
+        app.state::<MatrixState>()
+            .forget_notified(&notification.event_id);
+        return Err(format!("failed to show push notification: {e}"));
+    }
+
+    let persisted = if restore_store_already_locked {
+        mark_notified_for_app_unlocked(app, &notification.event_id)
+    } else {
+        mark_notified_for_app(app, &notification.event_id).await
+    };
+    if let Err(e) = persisted {
+        eprintln!("failed to persist shown push notification dedupe: {e}");
+    }
+
+    Ok(())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) async fn handle_headless_push(
+    store_root: &std::path::Path,
+    message: PushMessage,
+) -> Result<Option<PushNotification>, PushError> {
+    persistence::sweep_orphan_temp_stores_at(store_root)?;
+    let client = restore_any_client_at(store_root)
+        .await?
+        .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
+
+    build_push_notification(
+        &client,
+        message,
+        |_| false,
+        |event_id| async move { Ok(!has_headless_notified_at(store_root, &event_id)?) },
+        |_| {},
+    )
+    .await
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn read_headless_notified_event_ids_at(
+    store_root: &std::path::Path,
+) -> Result<Vec<String>, PushError> {
+    let notified_path = store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE);
+    let existing = match std::fs::read_to_string(&notified_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(format!(
+                "failed to read headless push notification dedupe file: {e}"
+            ));
         }
     };
 
+    Ok(existing
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>())
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn has_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    Ok(read_headless_notified_event_ids_at(store_root)?
+        .iter()
+        .any(|known| known == event_id))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) fn mark_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let Some(pending) = prepare_headless_notified_at(store_root, event_id)? else {
+        return Ok(false);
+    };
+    pending.commit()?;
+    Ok(true)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) struct PendingHeadlessNotifiedEvent {
+    pending_path: std::path::PathBuf,
+    notified_path: std::path::PathBuf,
+    committed: bool,
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+impl PendingHeadlessNotifiedEvent {
+    pub(super) fn commit(mut self) -> Result<(), PushError> {
+        // Modern Windows (10 1607+, where `FileRenameInfoEx` is supported)
+        // replaces an existing destination the same as Unix `rename(2)`, but
+        // older Windows/filesystems reject `fs::rename` onto an existing
+        // destination with `AlreadyExists` instead. Fall back to a
+        // remove-then-rename in that case. This isn't atomic, but it's safe
+        // here: every writer of this file goes through
+        // `with_headless_push_lock`'s cross-process file lock, so there's
+        // never a concurrent writer to race against during the gap.
+        match std::fs::rename(&self.pending_path, &self.notified_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(&self.notified_path).map_err(|e| {
+                    format!("failed to replace headless push notification dedupe file: {e}")
+                })?;
+                std::fs::rename(&self.pending_path, &self.notified_path).map_err(|e| {
+                    format!("failed to commit headless push notification dedupe file: {e}")
+                })?;
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to commit headless push notification dedupe file: {e}"
+                ));
+            }
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for PendingHeadlessNotifiedEvent {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_file(&self.pending_path);
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(super) fn prepare_headless_notified_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<Option<PendingHeadlessNotifiedEvent>, PushError> {
+    let mut notified_event_ids = read_headless_notified_event_ids_at(store_root)?;
+    if notified_event_ids.iter().any(|known| known == event_id) {
+        return Ok(None);
+    }
+
+    notified_event_ids.push(event_id.to_string());
+    let start = notified_event_ids
+        .len()
+        .saturating_sub(MAX_HEADLESS_NOTIFIED_EVENT_IDS);
+    let mut contents = notified_event_ids[start..].join("\n");
+    contents.push('\n');
+
+    std::fs::create_dir_all(store_root)
+        .map_err(|e| format!("failed to create headless push store root: {e}"))?;
+    let pending_path = store_root.join(format!("{HEADLESS_NOTIFIED_EVENTS_FILE}.pending"));
+    std::fs::write(&pending_path, contents)
+        .map_err(|e| format!("failed to stage headless push notification dedupe file: {e}"))?;
+
+    Ok(Some(PendingHeadlessNotifiedEvent {
+        pending_path,
+        notified_path: store_root.join(HEADLESS_NOTIFIED_EVENTS_FILE),
+        committed: false,
+    }))
+}
+
+pub(crate) async fn reserve_notified_for_app(
+    app: &AppHandle,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let _restore_store_guard = auth::restore_store_lock().lock().await;
+    reserve_notified_for_app_unlocked(app, event_id)
+}
+
+pub(crate) async fn mark_notified_for_app(
+    app: &AppHandle,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    let _restore_store_guard = auth::restore_store_lock().lock().await;
+    mark_notified_for_app_unlocked(app, event_id)
+}
+
+fn app_store_root(app: &AppHandle) -> Result<std::path::PathBuf, PushError> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    persistence::matrix_store_root_at(&app_data_dir)
+}
+
+fn reserve_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+    let store_root = app_store_root(app)?;
+    reserve_notified_for_app_at(&store_root, &app.state::<MatrixState>(), event_id)
+}
+
+fn mark_notified_for_app_unlocked(app: &AppHandle, event_id: &str) -> Result<bool, PushError> {
+    let store_root = app_store_root(app)?;
+    mark_notified_for_app_at(&store_root, event_id)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn reserve_notified_for_app_at(
+    store_root: &std::path::Path,
+    matrix_state: &MatrixState,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    if has_headless_notified_at(store_root, event_id)? {
+        return Ok(false);
+    }
+
+    Ok(matrix_state.mark_notified(event_id))
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn mark_notified_for_app_at(
+    store_root: &std::path::Path,
+    event_id: &str,
+) -> Result<bool, PushError> {
+    mark_headless_notified_at(store_root, event_id)
+}
+
+async fn build_push_notification<Fut>(
+    client: &Client,
+    message: PushMessage,
+    should_suppress_for_room: impl Fn(&RoomId) -> bool,
+    mark_notified: impl FnOnce(String) -> Fut,
+    forget_notified: impl FnOnce(String),
+) -> Result<Option<PushNotification>, PushError>
+where
+    Fut: std::future::Future<Output = Result<bool, PushError>>,
+{
     let room_id = RoomId::parse(&message.room_id).map_err(|e| e.to_string())?;
     let event_id =
         matrix_sdk::ruma::EventId::parse(&message.event_id).map_err(|e| e.to_string())?;
@@ -690,7 +1016,7 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         mode,
         Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
     ) {
-        return Ok(());
+        return Ok(None);
     }
 
     // No further notify/suppress re-derivation here beyond the mute check
@@ -708,25 +1034,13 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         .await
         .map_err(|e| e.to_string())?;
 
-    // Dedup *after* the fetch succeeds, not before: marking earlier (an
-    // earlier version of this function did, right after the mute check)
-    // would burn this event's dedup slot even on a transient fetch failure
-    // (`?` above returns before we ever got anything to react to), wrongly
-    // suppressing a later retry or the normal sync-path notification for an
-    // event that was never actually shown. Still unconditional otherwise — a
-    // UTD/generic-fallback notification needs the same guard a successfully
-    // decrypted one gets.
-    if !app.state::<MatrixState>().mark_notified(&message.event_id) {
-        return Ok(());
-    }
-
     let is_utd = timeline_event.kind.is_utd();
     let own_user_id = client.user_id().map(|id| id.as_str().to_string());
 
     let (sender, body) = match message_preview(timeline_event.kind.raw()) {
         Some((sender, body)) => {
             if own_user_id.as_deref() == Some(sender.as_str()) {
-                return Ok(());
+                return Ok(None);
             }
             (sender, body)
         }
@@ -753,19 +1067,6 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
             (String::new(), "New message".to_string())
         }
     };
-
-    // Suppress only for whichever room the user is already looking at right
-    // now — the same signal `shell::should_notify` uses for Spec 10's local
-    // notifications (a push can still arrive while the app is foregrounded).
-    let focused_room_id = app
-        .state::<MatrixState>()
-        .focused_room_id
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    if focused_room_id.as_deref() == Some(room_id.as_str()) {
-        return Ok(());
-    }
 
     let sender_display_name = if sender.is_empty() {
         None
@@ -801,15 +1102,37 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         &body,
     );
 
-    use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(notif_body)
-        .show();
+    // Suppress only for whichever room the user is already looking at right
+    // now — the same signal `shell::should_notify` uses for Spec 10's local
+    // notifications (a push can still arrive while the app is foregrounded).
+    // Read this at the final decision point so a user who opens the room
+    // while fetch/decrypt/display-name work is pending does not still get
+    // notified for the now-focused room.
+    if should_suppress_for_room(&room_id) {
+        return Ok(None);
+    }
 
-    Ok(())
+    // Reserve only after the fetch succeeds and the first focus suppression
+    // check passes: marking earlier would burn this event's in-process dedup
+    // slot on a transient fetch failure. The app path persists the shared
+    // headless/live dedupe file only after notification posting succeeds.
+    if !mark_notified(message.event_id.clone()).await? {
+        return Ok(None);
+    }
+
+    // The reservation above may await on the shared store lock/dedupe file.
+    // Re-read focus after that final await so a user who opened the room while
+    // we waited does not still get a notification for the now-focused room.
+    if should_suppress_for_room(&room_id) {
+        forget_notified(message.event_id);
+        return Ok(None);
+    }
+
+    Ok(Some(PushNotification {
+        event_id: message.event_id,
+        title,
+        body: notif_body,
+    }))
 }
 
 /// Tries every known account's saved session (headlessly — no `MatrixState`
@@ -820,6 +1143,16 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
 async fn restore_any_client(app: &AppHandle) -> Result<Option<Client>, PushError> {
     for account_key in persistence::known_account_keys(app)? {
         if let Some(client) = auth::restore_session_for_push(app, &account_key).await? {
+            return Ok(Some(client));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+async fn restore_any_client_at(store_root: &std::path::Path) -> Result<Option<Client>, PushError> {
+    for account_key in persistence::known_account_keys_at(store_root)? {
+        if let Some(client) = auth::restore_session_for_push_at(store_root, &account_key).await? {
             return Ok(Some(client));
         }
     }
@@ -868,6 +1201,120 @@ mod tests {
         let (sender, body) = message_preview(&raw).expect("a text message has a preview");
         assert_eq!(sender, ALICE.to_string());
         assert_eq!(body, "see you at 6");
+    }
+
+    #[tokio::test]
+    async fn headless_client_construction_uses_explicit_store_root() {
+        let root =
+            std::env::temp_dir().join(format!("charm-headless-push-store-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store_key = "headless-client-construction";
+        let store_path = persistence::store_path_at(&root, store_key).unwrap();
+
+        let client = auth::build_persisted_client_with_store_passphrase(
+            "https://example.invalid",
+            &store_path,
+            "headless-push-test-passphrase",
+        )
+        .await
+        .expect("client builds directly against the explicit SQLCipher store path");
+
+        assert_eq!(client.homeserver().as_str(), "https://example.invalid/");
+        assert!(store_path.is_dir());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn headless_notified_events_are_persistently_deduped() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(!mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(mark_headless_notified_at(&root, "$other:example.org").unwrap());
+
+        let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
+        assert_eq!(contents, "$event:example.org\n$other:example.org\n");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn staged_headless_notified_event_commits_after_success() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-staged-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        {
+            let pending = prepare_headless_notified_at(&root, "$event:example.org")
+                .unwrap()
+                .expect("new event stages a dedupe update");
+            assert!(!has_headless_notified_at(&root, "$event:example.org").unwrap());
+            drop(pending);
+        }
+        assert!(!has_headless_notified_at(&root, "$event:example.org").unwrap());
+
+        let pending = prepare_headless_notified_at(&root, "$event:example.org")
+            .unwrap()
+            .expect("dropped pending update did not burn dedupe");
+        pending.commit().unwrap();
+        assert!(has_headless_notified_at(&root, "$event:example.org").unwrap());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_notified_events_consult_headless_dedupe() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-app-push-dedupe-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let state = MatrixState::default();
+
+        assert!(mark_headless_notified_at(&root, "$event:example.org").unwrap());
+        assert!(!reserve_notified_for_app_at(&root, &state, "$event:example.org").unwrap());
+        assert!(reserve_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(!reserve_notified_for_app_at(&root, &state, "$other:example.org").unwrap());
+        assert!(mark_notified_for_app_at(&root, "$other:example.org").unwrap());
+        assert!(!mark_notified_for_app_at(&root, "$other:example.org").unwrap());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn headless_notified_events_are_bounded() {
+        let root = std::env::temp_dir().join(format!(
+            "charm-headless-push-dedupe-bounded-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+
+        for index in 0..(MAX_HEADLESS_NOTIFIED_EVENT_IDS + 1) {
+            assert!(
+                mark_headless_notified_at(&root, &format!("$event-{index}:example.org")).unwrap()
+            );
+        }
+
+        let contents = std::fs::read_to_string(root.join(HEADLESS_NOTIFIED_EVENTS_FILE)).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), MAX_HEADLESS_NOTIFIED_EVENT_IDS);
+        assert_eq!(lines.first(), Some(&"$event-1:example.org"));
+        assert_eq!(
+            lines.last(),
+            Some(&format!("$event-{}:example.org", MAX_HEADLESS_NOTIFIED_EVENT_IDS).as_str())
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

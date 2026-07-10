@@ -10,7 +10,7 @@ use matrix_sdk::Client;
 use rand::distr::Alphanumeric;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::{persistence, sync, MatrixState};
@@ -22,6 +22,16 @@ use super::{persistence, sync, MatrixState};
 /// its own `state` param (see [`PendingSso`]) so a callback can't be
 /// completed against the wrong attempt.
 const SSO_REDIRECT_BASE_URL: &str = "charm://sso-callback";
+
+static RESTORE_STORE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+/// Serializes fresh client restores that open and use the persisted Matrix
+/// store before a live app client owns it. App startup and Android's
+/// receiver-only push path can otherwise overlap on the same SQLCipher store
+/// during the cold-start-to-launch race.
+pub(crate) fn restore_store_lock() -> &'static tokio::sync::Mutex<()> {
+    RESTORE_STORE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 /// A client with an SSO login URL in flight but not yet completed, plus the
 /// random per-attempt token embedded in that URL's `state` param —
@@ -204,6 +214,7 @@ pub async fn try_restore_session(
     // client backed by a store that's since been superseded. See
     // `MatrixState::login_completion_lock`'s doc comment.
     let _completion_guard = state.login_completion_lock.lock().await;
+    let _restore_store_guard = restore_store_lock().lock().await;
 
     // Which account (if any) has a session worth restoring isn't known
     // up front — iterate every account this install has a store for and
@@ -354,8 +365,22 @@ pub(crate) async fn restore_session_for_push(
     app: &AppHandle,
     account_key: &str,
 ) -> Result<Option<Client>, String> {
+    restore_session_for_push_at(
+        &persistence::matrix_store_root_at(&app.path().app_data_dir().map_err(|e| e.to_string())?)?,
+        account_key,
+    )
+    .await
+}
+
+/// AppHandle-free counterpart to [`restore_session_for_push`], used by
+/// Android's cold-start push receiver where Tauri setup never ran.
+pub(crate) async fn restore_session_for_push_at(
+    store_root: &std::path::Path,
+    account_key: &str,
+) -> Result<Option<Client>, String> {
     if let Some(saved) = persistence::load_oauth_session(account_key)? {
-        let client = build_client(app, &saved.homeserver_url, account_key).await?;
+        let client =
+            build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
         let session = saved.into_oauth_session();
         if client
             .oauth()
@@ -374,7 +399,7 @@ pub(crate) async fn restore_session_for_push(
     let Some(saved) = persistence::load_session(account_key)? else {
         return Ok(None);
     };
-    let client = build_client(app, &saved.homeserver_url, account_key).await?;
+    let client = build_persisted_client_at(store_root, &saved.homeserver_url, account_key).await?;
     if client
         .matrix_auth()
         .restore_session(saved.session, RoomLoadSettings::default())
@@ -394,12 +419,54 @@ pub(crate) async fn build_client(
     homeserver_url: &str,
     store_key: &str,
 ) -> Result<Client, String> {
-    let store_path = persistence::store_path(app, store_key)?;
+    let store_root =
+        persistence::matrix_store_root_at(&app.path().app_data_dir().map_err(|e| e.to_string())?)?;
+    build_client_at(&store_root, homeserver_url, store_key).await
+}
+
+pub(crate) async fn build_client_at(
+    store_root: &std::path::Path,
+    homeserver_url: &str,
+    store_key: &str,
+) -> Result<Client, String> {
+    let store_path = persistence::store_path_at(store_root, store_key)?;
     let passphrase = persistence::get_or_create_passphrase(store_key)?;
 
+    build_client_with_store_passphrase(homeserver_url, &store_path, &passphrase).await
+}
+
+async fn build_persisted_client_at(
+    store_root: &std::path::Path,
+    homeserver_url: &str,
+    store_key: &str,
+) -> Result<Client, String> {
+    let store_path = persistence::store_path_at(store_root, store_key)?;
+    let passphrase = persistence::get_or_create_passphrase(store_key)?;
+
+    build_persisted_client_with_store_passphrase(homeserver_url, &store_path, &passphrase).await
+}
+
+pub(crate) async fn build_client_with_store_passphrase(
+    homeserver_url: &str,
+    store_path: &std::path::Path,
+    passphrase: &str,
+) -> Result<Client, String> {
     Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
-        .sqlite_store(&store_path, Some(&passphrase))
+        .sqlite_store(store_path, Some(passphrase))
+        .build()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn build_persisted_client_with_store_passphrase(
+    homeserver_url: &str,
+    store_path: &std::path::Path,
+    passphrase: &str,
+) -> Result<Client, String> {
+    Client::builder()
+        .homeserver_url(homeserver_url)
+        .sqlite_store(store_path, Some(passphrase))
         .build()
         .await
         .map_err(|e| e.to_string())

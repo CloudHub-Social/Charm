@@ -20,6 +20,11 @@
 
 use std::fmt;
 
+#[cfg(target_os = "android")]
+use jni::objects::GlobalRef;
+#[cfg(target_os = "android")]
+use jni::JavaVM;
+
 #[derive(Debug)]
 pub(crate) enum SecretStoreError {
     /// No entry exists for this service/account — stands in for
@@ -122,7 +127,10 @@ mod android {
     use super::SecretStoreError;
     use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
     use jni::JavaVM;
-    use std::sync::OnceLock;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, OnceLock,
+    };
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
 
@@ -130,6 +138,60 @@ mod android {
     /// once via the Activity's own classloader (see [`secure_storage_class`])
     /// rather than looked up by name on every call.
     static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
+
+    struct ContextOverride {
+        id: u64,
+        // `jni::JavaVM` doesn't implement `Clone`, but `with_env` needs to
+        // pull a copy of it out from under `CONTEXT_OVERRIDE`'s mutex guard
+        // before attaching a thread with it — wrapping in `Arc` makes that a
+        // cheap refcount bump instead of an (impossible) value clone.
+        vm: Arc<JavaVM>,
+        context: GlobalRef,
+        active: Arc<AtomicBool>,
+    }
+
+    static CONTEXT_OVERRIDE: Mutex<Option<ContextOverride>> = Mutex::new(None);
+    static NEXT_CONTEXT_OVERRIDE_ID: AtomicU64 = AtomicU64::new(1);
+
+    pub(crate) struct ContextOverrideGuard {
+        id: u64,
+        active: Arc<AtomicBool>,
+        previous: Option<ContextOverride>,
+    }
+
+    impl Drop for ContextOverrideGuard {
+        fn drop(&mut self) {
+            self.active.store(false, Ordering::Relaxed);
+            let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+            if current
+                .as_ref()
+                .is_some_and(|context| context.id == self.id)
+            {
+                *current = self
+                    .previous
+                    .take()
+                    .filter(|context| context.active.load(Ordering::Relaxed));
+            }
+        }
+    }
+
+    pub(crate) fn install_context_override(vm: JavaVM, context: GlobalRef) -> ContextOverrideGuard {
+        let id = NEXT_CONTEXT_OVERRIDE_ID.fetch_add(1, Ordering::Relaxed);
+        let active = Arc::new(AtomicBool::new(true));
+        let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = current.take();
+        *current = Some(ContextOverride {
+            id,
+            vm: Arc::new(vm),
+            context,
+            active: Arc::clone(&active),
+        });
+        ContextOverrideGuard {
+            id,
+            active,
+            previous,
+        }
+    }
 
     /// Maps a JNI call's result to `SecretStoreError`, and — if it failed —
     /// clears any pending Java exception first.
@@ -159,6 +221,21 @@ mod android {
     fn with_env<T>(
         f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> Result<T, SecretStoreError>,
     ) -> Result<T, SecretStoreError> {
+        let override_context = {
+            let override_guard = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+            override_guard
+                .as_ref()
+                .map(|context| (context.vm.clone(), context.context.clone()))
+        };
+        if let Some((vm, context_ref)) = override_context {
+            let mut env = vm
+                .attach_current_thread()
+                .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
+            let result = env.new_local_ref(context_ref.as_obj());
+            let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
+            return f(&mut env, &context);
+        }
+
         let ctx = ndk_context::android_context();
         // SAFETY: `ctx.vm()`/`ctx.context()` are raw JNI pointers Tauri's own
         // Android runtime already established and keeps alive for the life
@@ -309,4 +386,15 @@ mod android {
             Ok(())
         })
     }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) type AndroidContextOverrideGuard = android::ContextOverrideGuard;
+
+#[cfg(target_os = "android")]
+pub(crate) fn install_android_context_override(
+    vm: JavaVM,
+    context: GlobalRef,
+) -> AndroidContextOverrideGuard {
+    android::install_context_override(vm, context)
 }

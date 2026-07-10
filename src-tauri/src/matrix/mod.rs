@@ -309,6 +309,13 @@ impl MatrixState {
         true
     }
 
+    pub(crate) fn forget_notified(&self, event_id: &str) {
+        self.notified_event_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop(event_id);
+    }
+
     /// Aborts and *awaits* every live timeline listener before dropping the
     /// cache's own `Arc<Timeline>` references — not just `clear()`, which
     /// would drop this method's own references but leave each listener task

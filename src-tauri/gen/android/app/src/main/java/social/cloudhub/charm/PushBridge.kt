@@ -1,6 +1,11 @@
 package social.cloudhub.charm
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.os.Build
 import androidx.annotation.Keep
 import org.unifiedpush.android.connector.UnifiedPush
 
@@ -35,6 +40,10 @@ import org.unifiedpush.android.connector.UnifiedPush
  */
 @Keep
 object PushBridge {
+    private const val MESSAGE_CHANNEL_ID = "messages"
+
+    private fun notificationId(eventId: String): Int = eventId.hashCode() and Int.MAX_VALUE
+
     /**
      * Picks a distributor (whatever the user already has saved, else the
      * external default if exactly one is installed) and requests a new
@@ -98,5 +107,66 @@ object PushBridge {
     ) {
         UnifiedPush.saveDistributor(context, distributor)
         UnifiedPush.register(context, instance)
+    }
+
+    /**
+     * App data directory matching Tauri's Android `app_data_dir`; used by
+     * Rust's cold-start receiver path, which has a `Context` but no
+     * `AppHandle` to ask for paths. Tauri 2's Android `app_data_dir()` calls
+     * `PathPlugin.getDataDir`, which returns `activity.dataDir` /
+     * `applicationInfo.dataDir` directly on Android.
+     */
+    @JvmStatic
+    fun appDataDir(context: Context): String = context.applicationInfo.dataDir
+
+    /**
+     * Direct notification path for Android cold-start pushes. This bypasses
+     * `tauri_plugin_notification`, which is unavailable when Android started
+     * only the `BroadcastReceiver` and Tauri setup never ran.
+     */
+    @JvmStatic
+    fun showMessageNotification(
+        context: Context,
+        title: String,
+        body: String,
+        eventId: String,
+    ) {
+        val appContext = context.applicationContext
+        val manager = appContext.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                MESSAGE_CHANNEL_ID,
+                "Messages",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            )
+            manager.createNotificationChannel(channel)
+        }
+
+        val launchIntent = appContext.packageManager.getLaunchIntentForPackage(appContext.packageName)
+        val pendingIntent = launchIntent?.let {
+            PendingIntent.getActivity(
+                appContext,
+                0,
+                it,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        }
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(appContext, MESSAGE_CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(appContext)
+        }
+        val notification = builder
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        manager.notify(notificationId(eventId), notification)
     }
 }

@@ -88,11 +88,14 @@ pub fn temp_store_key() -> String {
 }
 
 fn matrix_store_root(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("matrix_store");
+    matrix_store_root_at(&app.path().app_data_dir().map_err(|e| e.to_string())?)
+}
+
+/// Pure, `AppHandle`-free variant of [`matrix_store_root`] — used by the
+/// Android cold-start push receiver, which has an Android `Context` but no
+/// running Tauri app lifecycle.
+pub fn matrix_store_root_at(app_data_dir: &Path) -> Result<PathBuf, String> {
+    let dir = app_data_dir.join("matrix_store");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
