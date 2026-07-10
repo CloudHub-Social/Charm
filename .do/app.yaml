@@ -40,6 +40,24 @@ services:
     health_check:
       http_path: /api/health
     envs:
+      # Required for /api/ws and every raw-body/browser-origin-guarded route
+      # (see routes.rs's require_allowed_origin) — without it, the server
+      # fails closed on any request carrying an Origin header. The Worker
+      # proxy forwards the browser's real Origin unchanged, so this must be
+      # the frontend's actual origin(s), not the companion API's own.
+      #
+      # Known gap: this only covers the stable charm-2-dev origin. PR preview
+      # deploys (web-preview.yml's charm-preview Worker, ephemeral
+      # *.workers.dev preview-alias URLs) proxy to this same backend but
+      # their exact origin isn't included here yet — the account's
+      # workers.dev subdomain wasn't confirmed at the time this was written,
+      # and origin_matches_allowed_entry only supports one wildcard per
+      # entry, so guessing wrong here would either wrongly reject or (worse)
+      # wrongly allow origins. Add the confirmed preview-origin pattern once
+      # known.
+      - key: CHARM_WEB_SERVER_ALLOWED_ORIGIN
+        scope: RUN_TIME
+        value: https://charm-2-dev.cloudhub.social
       - key: CHARM_WEB_SERVER_MASTER_KEY
         type: SECRET
       - key: CHARM_WEB_SERVER_SPACES_BUCKET

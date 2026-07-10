@@ -24,6 +24,7 @@ on:
       - "crates/charm-web-server/**"
       - "src-tauri/src/matrix/**"
       - "src-tauri/src/bindings/**"
+      - "src-tauri/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".do/app.yaml"
@@ -67,6 +68,15 @@ jobs:
       - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Apply the current app spec
+        # `create-deployment` alone only rebuilds from the *existing* app
+        # config — it never submits .do/app.yaml itself, so a change to
+        # envs, the health check path, instance size, or dockerfile_path
+        # could merge and run this workflow while App Platform keeps
+        # deploying with its old, unrelated config. Applying the spec every
+        # run (a no-op when it hasn't changed) keeps that impossible.
+        run: doctl apps update "$DO_APP_ID" --spec .do/app.yaml
 
       - name: Trigger and wait for App Platform deployment
         run: doctl apps create-deployment "$DO_APP_ID" --wait
