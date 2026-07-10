@@ -451,7 +451,7 @@ export function installMockTauri(seed: {
     join_room: (args) => {
       const target = args.roomIdOrAlias as string;
       const existing = findRoom(target);
-      if (existing) return existing.room_id;
+      if (existing) return { room_id: existing.room_id, is_space: existing.is_space };
       const roomId = target.startsWith("!") ? target : `!resolved-${nextCreatedRoomId++}:e2e`;
       allRooms.push({
         ...defaultRoomShape,
@@ -461,7 +461,7 @@ export function installMockTauri(seed: {
       });
       messagesByRoom.set(roomId, []);
       pushRoomListUpdate();
-      return roomId;
+      return { room_id: roomId, is_space: true };
     },
     knock_room: () => undefined,
 

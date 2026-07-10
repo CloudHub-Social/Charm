@@ -257,11 +257,12 @@ async fn create_space_returns_the_new_room_id() {
     assert!(room_id.starts_with('!'), "got {room_id:?}");
 }
 
-/// Spec 19 Phase 4: `join_room` must return the resolved room id (not
-/// `204 No Content`) so the frontend can navigate to it even when the
-/// caller only supplied an alias — joins the space this test itself just
-/// created, by its own room id, since that's guaranteed joinable without
-/// depending on any fixture room/alias existing in the test environment.
+/// Spec 19 Phase 4: `join_room` must return the resolved room id and
+/// whether it's a space (not `204 No Content`) so the frontend can
+/// navigate to it even when the caller only supplied an alias — joins the
+/// space this test itself just created, by its own room id, since that's
+/// guaranteed joinable without depending on any fixture room/alias
+/// existing in the test environment.
 #[tokio::test]
 async fn join_room_returns_the_resolved_room_id() {
     let app = app();
@@ -285,18 +286,33 @@ async fn join_room_returns_the_resolved_room_id() {
     .await;
     let created_room_id = created.as_str().expect("create-space should return an id");
 
-    let response = request(
-        &app,
-        "POST",
-        "/api/rooms/join",
-        Some(&cookie),
-        Some(json!({ "room_id_or_alias": created_room_id })),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body.as_str(), Some(created_room_id));
+    // `is_space` reads the client's local sync state (the `m.room.create`
+    // event's `type` field), which can lag a moment behind the room having
+    // just been created in this same test run — unlike `room_id`, which the
+    // join response always has immediately. Retry the (idempotent, since
+    // we're already joined) join a few times rather than asserting on the
+    // first response.
+    let mut body = None;
+    for _ in 0..10 {
+        let response = request(
+            &app,
+            "POST",
+            "/api/rooms/join",
+            Some(&cookie),
+            Some(json!({ "room_id_or_alias": created_room_id })),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let candidate = body_json(response).await;
+        if candidate["is_space"].as_bool() == Some(true) {
+            body = Some(candidate);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let body = body.expect("room should sync as a space within the retry window");
+    assert_eq!(body["room_id"].as_str(), Some(created_room_id));
+    assert_eq!(body["is_space"].as_bool(), Some(true));
 }
 
 #[tokio::test]

@@ -266,29 +266,44 @@ fn parse_room_or_alias(input: &str) -> Result<OwnedRoomOrAliasId, String> {
     OwnedRoomOrAliasId::try_from(input.to_owned()).map_err(|e| e.to_string())
 }
 
+/// The result of a successful [`join_room`] call. `is_space` lets a caller
+/// that doesn't already know the room's type (e.g. the create/join dialog,
+/// given only a user-typed address) tell a space apart from a regular room
+/// without a separate lookup.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct JoinedRoom {
+    pub room_id: String,
+    pub is_space: bool,
+}
+
 /// Joins a public/invited/restricted-and-allowed child room from a space
 /// browser, or a space by address/ID from the create/join dialog. Uses
 /// [`Client::join_room_by_id_or_alias`] rather than knocking — this is for
-/// rooms the user can join outright. Returns the resolved room id so a
-/// caller that only has an alias (e.g. the create/join dialog) can still
-/// navigate to the joined room/space afterward.
+/// rooms the user can join outright. Returns the resolved room id (and
+/// whether it's a space) so a caller that only has an alias (e.g. the
+/// create/join dialog) can still navigate to the joined room/space
+/// afterward.
 #[tauri::command]
 pub async fn join_room(
     state: State<'_, MatrixState>,
     room_id_or_alias: String,
-) -> Result<String, String> {
+) -> Result<JoinedRoom, String> {
     let client = state.require_client().await?;
     join_room_impl(&client, &room_id_or_alias).await
 }
 
 /// Core logic behind [`join_room`].
-pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<String, String> {
+pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<JoinedRoom, String> {
     let parsed = parse_room_or_alias(room_id_or_alias)?;
     let room = client
         .join_room_by_id_or_alias(&parsed, &[])
         .await
         .map_err(|e| e.to_string())?;
-    Ok(room.room_id().to_string())
+    Ok(JoinedRoom {
+        room_id: room.room_id().to_string(),
+        is_space: room.is_space(),
+    })
 }
 
 /// Creates a new space room (an `m.room.create` with `type: m.space` per

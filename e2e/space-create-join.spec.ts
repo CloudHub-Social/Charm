@@ -47,7 +47,7 @@ test("joins a space by address and switches into it", async ({ page }) => {
 
   const joinTab = page.getByRole("tab", { name: "Join by address" });
   await joinTab.click();
-  await page.getByLabel("Space address or ID").fill("#design-team:e2e");
+  await page.getByLabel("Space address").fill("#design-team:e2e");
   await page.getByRole("button", { name: "Join space" }).click();
 
   await expect(page.getByRole("heading", { name: "#design-team:e2e" })).toBeVisible();

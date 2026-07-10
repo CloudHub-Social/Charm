@@ -96,7 +96,7 @@ describe("CreateJoinSpaceDialog", () => {
   });
 
   it("joins a space by address and reports the resolved room id", async () => {
-    joinRoom.mockResolvedValue("!resolved:example.org");
+    joinRoom.mockResolvedValue({ room_id: "!resolved:example.org", is_space: true });
     const onSpaceJoined = vi.fn();
     renderWithProviders(
       <CreateJoinSpaceDialog
@@ -113,13 +113,63 @@ describe("CreateJoinSpaceDialog", () => {
     const joinTab = screen.getByRole("tab", { name: "Join by address" });
     joinTab.focus();
     fireEvent.click(joinTab);
-    fireEvent.change(await screen.findByLabelText("Space address or ID"), {
+    fireEvent.change(await screen.findByLabelText("Space address"), {
       target: { value: "#space:example.org" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Join space" }));
 
     await waitFor(() => expect(onSpaceJoined).toHaveBeenCalledWith("!resolved:example.org"));
     expect(joinRoom).toHaveBeenCalledWith("#space:example.org");
+  });
+
+  it("rejects a bare room ID instead of joining", async () => {
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    const joinTab = screen.getByRole("tab", { name: "Join by address" });
+    joinTab.focus();
+    fireEvent.click(joinTab);
+    fireEvent.change(await screen.findByLabelText("Space address"), {
+      target: { value: "!id:example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Join space" }));
+
+    expect(
+      screen.getByText("Enter a space address (e.g. #space:example.org), not a room ID."),
+    ).toBeInTheDocument();
+    expect(joinRoom).not.toHaveBeenCalled();
+  });
+
+  it("shows an error instead of navigating when the joined address is a regular room", async () => {
+    joinRoom.mockResolvedValue({ room_id: "!room:example.org", is_space: false });
+    const onSpaceJoined = vi.fn();
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={onSpaceJoined}
+      />,
+    );
+
+    const joinTab = screen.getByRole("tab", { name: "Join by address" });
+    joinTab.focus();
+    fireEvent.click(joinTab);
+    fireEvent.change(await screen.findByLabelText("Space address"), {
+      target: { value: "#general:example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Join space" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("That address is a room, not a space.")).toBeInTheDocument(),
+    );
+    expect(onSpaceJoined).not.toHaveBeenCalled();
   });
 
   it("requires an address before joining", async () => {
@@ -160,7 +210,7 @@ describe("CreateJoinSpaceDialog", () => {
     const joinTab = screen.getByRole("tab", { name: "Join by address" });
     joinTab.focus();
     fireEvent.click(joinTab);
-    await screen.findByLabelText("Space address or ID");
+    await screen.findByLabelText("Space address");
 
     expect(screen.queryByText("Name is required.")).not.toBeInTheDocument();
   });
@@ -179,7 +229,7 @@ describe("CreateJoinSpaceDialog", () => {
     const joinTab = screen.getByRole("tab", { name: "Join by address" });
     joinTab.focus();
     fireEvent.click(joinTab);
-    await screen.findByLabelText("Space address or ID");
+    await screen.findByLabelText("Space address");
 
     // Escape triggers Radix's onOpenChange(false), which the dialog wires to
     // resetAndClose — same close path as the dismiss button/backdrop click.
@@ -231,5 +281,53 @@ describe("CreateJoinSpaceDialog", () => {
     await Promise.resolve();
 
     expect(onSpaceCreated).not.toHaveBeenCalled();
+  });
+
+  it("does not let a stale dismissed request win over a newer one submitted after reopening", async () => {
+    let resolveFirst!: (value: string) => void;
+    createSpace.mockReturnValueOnce(
+      new Promise<string>((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+    const onOpenChange = vi.fn();
+    const onSpaceCreated = vi.fn();
+    const { rerender } = renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={onOpenChange}
+        onSpaceCreated={onSpaceCreated}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    // Submit the first request, then dismiss while it's still in flight.
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "First" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    // User reopens the dialog and submits a second, different request.
+    rerender(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={onOpenChange}
+        onSpaceCreated={onSpaceCreated}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+    createSpace.mockResolvedValueOnce("!second:example.org");
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Second" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    await waitFor(() => expect(onSpaceCreated).toHaveBeenCalledWith("!second:example.org"));
+
+    // The first (stale, dismissed) request finally resolves — it must not
+    // also fire onSpaceCreated a second time with its own (wrong) id.
+    resolveFirst("!first:example.org");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onSpaceCreated).toHaveBeenCalledTimes(1);
+    expect(onSpaceCreated).not.toHaveBeenCalledWith("!first:example.org");
   });
 });

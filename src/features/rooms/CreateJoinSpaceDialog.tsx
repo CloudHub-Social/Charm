@@ -34,15 +34,18 @@ export function CreateJoinSpaceDialog({
   const [joinTarget, setJoinTarget] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Tracks whether the in-flight create/join request (if any) is still the
-  // one the dialog cares about. Set to `false` on dismiss so a request that
-  // resolves *after* the user already closed the dialog (Escape/backdrop)
-  // doesn't still fire `onSpaceCreated`/`onSpaceJoined` and navigate them
-  // somewhere they never confirmed wanting to go.
-  const requestActiveRef = useRef(false);
+  // Identifies the current in-flight create/join request, if any, so a
+  // callback can tell "am I still the request the dialog cares about" apart
+  // from "some request is active" — a plain boolean can't distinguish a
+  // dismissed-then-superseded request from the new one the user just
+  // started, since both would see the flag as "active" and a stale response
+  // could silently win the race. Bumped on both dismiss (invalidates
+  // whatever was in flight) and every new request (claims a fresh id); a
+  // response only proceeds if the id it captured is still current.
+  const requestIdRef = useRef(0);
 
   function resetAndClose() {
-    requestActiveRef.current = false;
+    requestIdRef.current += 1;
     setTab("create");
     setName("");
     setTopic("");
@@ -62,7 +65,7 @@ export function CreateJoinSpaceDialog({
     }
     setPending(true);
     setError(null);
-    requestActiveRef.current = true;
+    const requestId = ++requestIdRef.current;
     try {
       const spaceId = await createSpace(
         trimmedName,
@@ -70,11 +73,11 @@ export function CreateJoinSpaceDialog({
         roomAlias.trim() || undefined,
         isPublic,
       );
-      if (!requestActiveRef.current) return;
+      if (requestIdRef.current !== requestId) return;
       onSpaceCreated(spaceId);
       resetAndClose();
     } catch (err) {
-      if (!requestActiveRef.current) return;
+      if (requestIdRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : "Couldn't create the space.");
       setPending(false);
     }
@@ -86,16 +89,31 @@ export function CreateJoinSpaceDialog({
       setError("Enter a space address or ID.");
       return;
     }
+    // A bare room ID (`!id:server`) has no via-server list attached, and
+    // Matrix federation generally can't route a join to a room the local
+    // homeserver doesn't already know about without one — unlike an alias,
+    // which resolves via its own server's directory. Rather than silently
+    // fail for a pasted permalink-style ID from a remote/unknown room,
+    // require an alias here.
+    if (trimmedTarget.startsWith("!")) {
+      setError("Enter a space address (e.g. #space:example.org), not a room ID.");
+      return;
+    }
     setPending(true);
     setError(null);
-    requestActiveRef.current = true;
+    const requestId = ++requestIdRef.current;
     try {
-      const spaceId = await joinRoom(trimmedTarget);
-      if (!requestActiveRef.current) return;
-      onSpaceJoined(spaceId);
+      const joined = await joinRoom(trimmedTarget);
+      if (requestIdRef.current !== requestId) return;
+      if (!joined.is_space) {
+        setError("That address is a room, not a space.");
+        setPending(false);
+        return;
+      }
+      onSpaceJoined(joined.room_id);
       resetAndClose();
     } catch (err) {
-      if (!requestActiveRef.current) return;
+      if (requestIdRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : "Couldn't join that space.");
       setPending(false);
     }
@@ -162,12 +180,12 @@ export function CreateJoinSpaceDialog({
           </TabsContent>
           <TabsContent value="join" className="flex flex-col gap-3 pt-2">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="space-join-target">Space address or ID</Label>
+              <Label htmlFor="space-join-target">Space address</Label>
               <Input
                 id="space-join-target"
                 value={joinTarget}
                 onChange={(event) => setJoinTarget(event.target.value)}
-                placeholder="#space:example.org or !id:example.org"
+                placeholder="#space:example.org"
               />
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}

@@ -82,6 +82,18 @@ export function RoomsScreen({
     setSelectedSpaceId(spaceId);
   }
 
+  // Selecting a space right after creating/joining it from the dialog can
+  // land with `activeRoomId` still `null` (e.g. the dialog was opened while
+  // no chat was active, such as right after a space deep link). `selectSpace`
+  // alone would leave that window open for the auto-select effect below to
+  // fire on the next sync-driven room-list update and switch back to the
+  // first non-space room — reusing `spaceDeepLinkSelectedRef` (the same
+  // guard the deep-link flow sets) suppresses that fallback the same way.
+  function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
+    selectSpace(spaceId);
+    spaceDeepLinkSelectedRef.current = true;
+  }
+
   function selectRoomInVisibleMode(room: RoomSummary) {
     if (room.is_space) {
       selectSpace(room.room_id);
@@ -299,14 +311,8 @@ export function RoomsScreen({
       <CreateJoinSpaceDialog
         open={createJoinDialogOpen}
         onOpenChange={setCreateJoinDialogOpen}
-        onSpaceCreated={(spaceId) => {
-          // The new space won't appear in `rooms` until the next sync-driven
-          // `room:update` push — `selectSpace` still switches the rail/list
-          // into "space" mode for it immediately, so it's ready to show as
-          // soon as that room list update lands.
-          selectSpace(spaceId);
-        }}
-        onSpaceJoined={(spaceId) => selectSpace(spaceId)}
+        onSpaceCreated={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
+        onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
