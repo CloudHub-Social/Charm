@@ -140,40 +140,45 @@ fn spawn_idle_session_sweeper(
             }
             tracing::info!("evicting {} idle session(s)", evicted.len());
             for (token, session) in evicted {
-                // Re-persist the client's *current* live token pair right
-                // before aborting its sync loop — closes a race
-                // `sync_loop::spawn`'s own repersist doesn't cover: that
-                // loop only re-saves after each full `sync_once` +
-                // event-emission cycle completes, so if the homeserver
-                // refreshed the access/refresh token during a cycle this
-                // sweep's `abort()` interrupts mid-flight, the persisted
-                // object would otherwise still hold the token pair from
-                // *before* that refresh — already invalidated — and a later
-                // on-demand restore would fail, turning idle eviction into
-                // a forced re-login. `matrix_auth().session()` reads
-                // whatever the client's in-memory auth state currently is,
-                // synchronously, no network call, so this can't itself
-                // race the same refresh.
-                if let Some(matrix_session) = session.client.matrix_auth().session() {
-                    let homeserver_url = session.client.homeserver().to_string();
-                    if let Err(e) = persistence
-                        .save(&token, &homeserver_url, &matrix_session)
-                        .await
-                    {
-                        tracing::warn!("failed to re-persist session before idle eviction: {e}");
-                    }
-                }
-                // Stop the background `/sync` long-poll — same reason
-                // `routes::logout` aborts it, just without also removing the
-                // persisted entry (see `SessionStore::sweep_idle`'s doc
-                // comment for why eviction leaves persistence alone).
-                if let Some(handle) = session
-                    .sync_handle
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
+                // `sweep_idle` already aborted this session's sync loop
+                // synchronously, before it ever returned this list — see
+                // that function's doc comment for why the abort itself
+                // needed to move there. What's left here is re-persisting
+                // the client's *current* live token pair: if the
+                // homeserver refreshed the access/refresh token during the
+                // sync cycle that was running right up until the abort,
+                // `sync_loop`'s own post-cycle repersist may never have run
+                // for it, so without this the persisted object could still
+                // hold the token pair from *before* that refresh — already
+                // invalidated — and a later on-demand restore would fail,
+                // turning idle eviction into a forced re-login.
+                // `matrix_auth().session()` reads whatever the client's
+                // in-memory auth state currently is, synchronously, no
+                // network call — and since the sync loop is already dead by
+                // this point, nothing can refresh it further out from under
+                // this read.
+                let Some(matrix_session) = session.client.matrix_auth().session() else {
+                    continue;
+                };
+                let homeserver_url = session.client.homeserver().to_string();
+                if let Err(e) = persistence
+                    .save(&token, &homeserver_url, &matrix_session)
+                    .await
                 {
-                    handle.abort();
+                    // The sync loop is already gone, but the just-saved (or
+                    // not-yet-saved) persisted object may not reflect this
+                    // client's actual current token — evicting anyway here
+                    // would risk losing this session for good behind a
+                    // stale/missing persisted copy. Put it back so it's at
+                    // least reachable again (degraded: no live sync until
+                    // something respawns one — see `SessionStore::reinsert`'s
+                    // doc comment) rather than dropping it from memory on
+                    // top of a failed save.
+                    tracing::error!(
+                        "failed to re-persist session before idle eviction, keeping it in \
+                         memory instead of evicting: {e}"
+                    );
+                    sessions.reinsert(token, session).await;
                 }
             }
         }

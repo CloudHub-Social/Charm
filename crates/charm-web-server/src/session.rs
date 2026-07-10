@@ -699,6 +699,22 @@ impl SessionStore {
         self.inner.write().await.insert(token, Arc::new(session));
     }
 
+    /// Puts an already-evicted `Arc<Session>` back under `token` — used by
+    /// `main.rs`'s idle sweeper when the final pre-eviction persistence save
+    /// fails: rather than silently proceeding as if eviction is safe (the
+    /// session's sync loop is already aborted by this point — see
+    /// `sweep_idle` — and its live token pair may not have actually landed
+    /// on disk), this keeps the session reachable via `get`/`require_session`
+    /// instead of letting it vanish from memory while the persisted copy
+    /// lags behind. Its sync loop stays dead until something spawns a new
+    /// one (nothing currently does for a reinserted session — this is a
+    /// degraded-but-reachable state, not a full undo of eviction), but
+    /// direct API calls against `session.client` keep working, and the next
+    /// sweep gets another chance to persist and cleanly evict it.
+    pub async fn reinsert(&self, token: String, session: Arc<Session>) {
+        self.inner.write().await.insert(token, session);
+    }
+
     /// Looks up `token` and marks the session active in the same step —
     /// `touch()` runs while this still holds `inner`'s read lock, which
     /// blocks `sweep_idle`'s write lock from running concurrently. Without
@@ -749,6 +765,30 @@ impl SessionStore {
             {
                 true
             } else {
+                // Abort the sync loop right here — synchronously, still
+                // under this write lock, in the same statement as the
+                // `has_pending_verification_events` check above — rather
+                // than leaving it to `main.rs`'s caller to abort later, one
+                // session at a time, only after this whole sweep has
+                // returned and (previously) after an awaited persistence
+                // save per session. That gap mattered: a verification event
+                // or a token refresh landing in it would be silently lost
+                // (the event) or discarded (the refresh) once the loop
+                // finally stopped. `abort()` itself is synchronous and
+                // non-blocking (it only requests cancellation — the task
+                // actually stops at its own next `.await` point, not
+                // instantly), so this doesn't fully eliminate the window,
+                // but shrinks it from "however long the rest of this sweep
+                // plus every prior evicted session's save call takes" down
+                // to "essentially zero, right next to the check above."
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
                 // Captured *before* this session is dropped from the map —
                 // see `evicted_presence`'s doc comment for why, and
                 // `routes::require_session` for where this gets consumed.
