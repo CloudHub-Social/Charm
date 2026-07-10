@@ -77,17 +77,23 @@ struct SentryConfig {
 /// contract `PersistenceStore::from_env` uses for
 /// `CHARM_WEB_SERVER_MASTER_KEY`. Pure aside from the env reads themselves,
 /// so tests can exercise it directly.
+/// Reads and trims an env var, returning `None` for unset *or* whitespace-only
+/// (including a lone trailing newline, which secret managers commonly inject)
+/// — same trim-then-check-empty shape `PersistenceStore::from_env` already
+/// uses for `CHARM_WEB_SERVER_MASTER_KEY`, so a trailing newline can't
+/// silently turn into part of a DSN/environment/release value, or make an
+/// effectively-blank value read as "configured".
+fn trimmed_env_var(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 fn resolve_sentry_config_from_env() -> Option<SentryConfig> {
-    let dsn = std::env::var(SENTRY_DSN_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())?;
-    let environment = std::env::var(SENTRY_ENVIRONMENT_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(Cow::Owned);
-    let release = std::env::var(SENTRY_RELEASE_ENV)
-        .ok()
-        .filter(|value| !value.is_empty())
+    let dsn = trimmed_env_var(SENTRY_DSN_ENV)?;
+    let environment = trimmed_env_var(SENTRY_ENVIRONMENT_ENV).map(Cow::Owned);
+    let release = trimmed_env_var(SENTRY_RELEASE_ENV)
         .map(Cow::Owned)
         .or_else(|| sentry::release_name!());
     Some(SentryConfig {
@@ -108,10 +114,11 @@ fn resolve_sentry_config_from_env() -> Option<SentryConfig> {
 /// for the rest of `main` (an unbound temporary would drop — and tear down
 /// the client — immediately).
 pub fn init() -> Option<SentryGuard> {
-    let fmt_layer = tracing_subscriber::fmt::layer();
-
     let Some(config) = resolve_sentry_config_from_env() else {
-        tracing_subscriber::registry().with(fmt_layer).init();
+        tracing_subscriber::registry()
+            .with(default_env_filter())
+            .with(tracing_subscriber::fmt::layer())
+            .init();
         tracing::info!(
             "{SENTRY_DSN_ENV} not set — error/log capture is stdout-only for this process"
         );
@@ -140,12 +147,23 @@ pub fn init() -> Option<SentryGuard> {
         .event_filter(sentry_event_filter)
         .span_filter(sentry_span_filter);
     tracing_subscriber::registry()
-        .with(fmt_layer)
+        .with(default_env_filter())
+        .with(tracing_subscriber::fmt::layer())
         .with(sentry_layer)
         .init();
 
     tracing::info!("Sentry error/log capture initialized for charm-web-server");
     Some(SentryGuard { _client: client })
+}
+
+/// Same default `tracing_subscriber::fmt::init()` used before this module
+/// existed — `RUST_LOG` if set and valid, otherwise `info`-level. Built
+/// fresh per branch (rather than shared/cloned) since `EnvFilter` reads
+/// `RUST_LOG` itself and constructing it is cheap; this keeps both call
+/// sites in [`init`] honoring the exact same default.
+fn default_env_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
 }
 
 /// Unconditional Sentry `before_send_log` hook — no consent gate to check
@@ -275,6 +293,36 @@ mod tests {
 
         assert!(config.environment.is_none());
         assert_eq!(config.release, sentry::release_name!());
+    }
+
+    /// Regression test: a secret manager commonly injects a trailing
+    /// newline into an env var's value — that must not silently become part
+    /// of the DSN (which would fail to parse or connect at runtime) nor
+    /// leak into the `environment`/`release` tags Sentry actually stores.
+    #[test]
+    fn resolve_sentry_config_trims_whitespace_from_every_field() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _dsn = EnvVarGuard::set(SENTRY_DSN_ENV, "https://key@example.invalid/1\n");
+        let _environment = EnvVarGuard::set(SENTRY_ENVIRONMENT_ENV, "  production\n");
+        let _release = EnvVarGuard::set(SENTRY_RELEASE_ENV, "\tcharm-web-server@test \n");
+
+        let config = resolve_sentry_config_from_env().expect("dsn is set");
+
+        assert_eq!(config.dsn, "https://key@example.invalid/1");
+        assert_eq!(config.environment.as_deref(), Some("production"));
+        assert_eq!(config.release.as_deref(), Some("charm-web-server@test"));
+    }
+
+    /// A DSN that's whitespace-only (e.g. a secret manager injecting just a
+    /// trailing newline for an otherwise-empty secret) must be treated the
+    /// same as unset, not as "configured with a blank string" — the latter
+    /// would call `sentry::init` with a value that fails to parse as a URL.
+    #[test]
+    fn resolve_sentry_config_is_none_for_a_whitespace_only_dsn() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _whitespace_dsn = EnvVarGuard::set(SENTRY_DSN_ENV, "  \n\t");
+
+        assert!(resolve_sentry_config_from_env().is_none());
     }
 
     #[test]

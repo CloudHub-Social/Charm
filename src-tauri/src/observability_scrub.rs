@@ -121,9 +121,16 @@ pub fn scrub_log_in_place(log: &mut sentry::protocol::Log) {
 /// which would otherwise drown out (and blow through rate limits on) the
 /// events this bridge actually exists to capture.
 pub fn is_tracing_target_allowed(target: &str, allowed_crates: &[&str]) -> bool {
-    allowed_crates
-        .iter()
-        .any(|allowed| target == *allowed || target.starts_with(&format!("{allowed}::")))
+    // Runs on every tracing event/span decision — `strip_prefix` + a `"::"`
+    // check on the remainder gets the same "exact match, or namespaced under
+    // it via `::`" semantics as `target.starts_with(&format!("{allowed}::"))`
+    // without allocating a new `String` per candidate on every call.
+    allowed_crates.iter().any(|allowed| {
+        target == *allowed
+            || target
+                .strip_prefix(allowed)
+                .is_some_and(|rest| rest.starts_with("::"))
+    })
 }
 
 /// Maps a `tracing` level + target to the Sentry `EventFilter` that should
