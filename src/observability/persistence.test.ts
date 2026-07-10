@@ -65,7 +65,11 @@ describe("observability persistence", () => {
     // top-level `await bootstrapSentry()` in main.tsx forever, leaving the
     // page permanently blank with no console errors.
     mocks.isTauri.mockReturnValue(false);
-    mocks.load.mockReset(); // no resolve/reject configured — would hang forever if called
+    // Deliberately left unconfigured (no mockResolvedValue/mockRejectedValue)
+    // rather than mimicking a real hang with a never-resolving Promise — the
+    // point of this test is the `not.toHaveBeenCalled()` assertion below, not
+    // observing a timeout.
+    mocks.load.mockReset();
 
     await expect(readObservabilitySettings()).resolves.toEqual(DEFAULT_OBSERVABILITY_SETTINGS);
     await expect(
