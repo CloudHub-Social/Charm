@@ -80,7 +80,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
-        if: failure() && github.event_name == 'schedule'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -145,7 +145,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
-        if: failure() && github.event_name == 'schedule'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -217,7 +217,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
-        if: failure() && github.event_name == 'schedule'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -285,7 +285,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
-        if: failure() && github.event_name == 'schedule'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -383,7 +383,7 @@ jobs:
           pnpm tauri android build --target aarch64 --debug --ci
 
       - name: Track failure as a GitHub issue
-        if: failure() && github.event_name == 'schedule'
+        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
