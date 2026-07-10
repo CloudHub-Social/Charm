@@ -74,18 +74,14 @@ def main() -> None:
     live_envs_by_key = {e["key"]: e for e in live_svc.get("envs", [])}
     merged_envs = []
     seen_keys = set()
+    missing_secrets = []
     for desired_env in desired_svc.get("envs", []):
         key = desired_env["key"]
         seen_keys.add(key)
         if desired_env.get("type") == "SECRET":
             live_env = live_envs_by_key.get(key)
             if live_env is None:
-                print(
-                    f"::warning::{key} has no live value yet — set it via the "
-                    "DO dashboard before this deploy is expected to work.",
-                    file=sys.stderr,
-                )
-                merged_envs.append(desired_env)
+                missing_secrets.append(key)
             else:
                 merged_envs.append(live_env)
         else:
@@ -93,6 +89,29 @@ def main() -> None:
     for live_env in live_svc.get("envs", []):
         if live_env["key"] not in seen_keys:
             merged_envs.append(live_env)
+
+    # A repo-declared SECRET with no live value yet must stop the deploy
+    # here, before anything is written or submitted — not warn-and-continue.
+    # The caller (`doctl apps update` immediately followed by
+    # `apps create-deployment --wait`) would otherwise submit an
+    # empty-valued secret and roll it straight to production, which is
+    # exactly the class of incident (DeployContainerExitNonZero / "must
+    # decode to exactly 32 bytes, got 0") this whole script exists to
+    # prevent. There's no legitimate case where this script runs against a
+    # newly-provisioned app with no secrets at all — initial provisioning
+    # goes through `doctl apps create` directly (see .do/app.yaml's header
+    # comment), never through this merge step.
+    if missing_secrets:
+        for key in missing_secrets:
+            print(
+                f"::error::{key} is declared as a SECRET in {repo_path} but has "
+                "no live value on the app — set it via the DO dashboard before "
+                "deploying. Refusing to submit a spec that would deploy it "
+                "empty.",
+                file=sys.stderr,
+            )
+        raise SystemExit(1)
+
     live_svc["envs"] = merged_envs
 
     with open(output_path, "w") as f:
