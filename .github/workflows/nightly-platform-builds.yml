@@ -381,7 +381,22 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-          cache: gradle
+          # NOT setup-java's own `cache: gradle` input — it has no save-if
+          # equivalent, so a workflow_dispatch run against a non-main branch
+          # would save its own branch-scoped copy against the shared
+          # 10GB/repo Actions cache budget (same reasoning as
+          # quality-checks.yml's android job). Restore/save split manually
+          # below instead, with saving scoped to main only.
+
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Set up Android SDK/NDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
@@ -432,6 +447,16 @@ jobs:
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           pnpm tauri android build --target aarch64 --debug --ci
+
+      # Only main saves — see the Restore Gradle cache step's comment above.
+      - name: Save Gradle cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
 
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a
