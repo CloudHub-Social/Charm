@@ -34,23 +34,14 @@ jobs:
     permissions:
       contents: read
       issues: write
-    # Object-level compilation cache — see quality-checks.yml's `rust` job
-    # for the full rationale.
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -67,8 +58,20 @@ jobs:
 
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
       # the macOS .app/.dmg bundler. Not signed or notarized — that's a
-      # separate concern from "does it build".
+      # separate concern from "does it build". sccache credentials scoped to
+      # just this step, not job-level, so earlier steps (checkout, pnpm
+      # install, etc.) never see the write key.
       - run: pnpm tauri build
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
         if: failure() && github.event_name == 'schedule'
@@ -91,21 +94,14 @@ jobs:
     permissions:
       contents: read
       issues: write
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -123,7 +119,18 @@ jobs:
       # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
       # have no system sqlite3 on PATH, so this is the one platform where
       # linking against the vendored copy is actually load-bearing.
+      # sccache credentials scoped to just this step — see the macOS job.
       - run: pnpm tauri build
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
         if: failure() && github.event_name == 'schedule'
@@ -147,15 +154,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -167,6 +165,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -184,8 +184,19 @@ jobs:
       # rust-integration (quality-checks.yml) already covers `cargo test` on
       # Linux; this is the full app bundle (AppImage/deb via the Tauri
       # bundler plus frontend asset embedding), a build path nothing else
-      # exercises.
+      # exercises. sccache credentials scoped to just this step — see the
+      # macOS job.
       - run: pnpm tauri build
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
         if: failure() && github.event_name == 'schedule'
@@ -208,15 +219,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -225,6 +227,8 @@ jobs:
           targets: aarch64-apple-ios-sim
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -242,8 +246,19 @@ jobs:
       # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
       # Silicon) rather than a device. This repo has no Apple Developer
       # signing identity configured for CI, and simulator builds don't need
-      # one — compile verification only, not a distributable IPA.
+      # one — compile verification only, not a distributable IPA. sccache
+      # credentials scoped to just this step — see the macOS job.
       - run: pnpm tauri ios build --target aarch64-sim --debug --ci
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Track failure as a GitHub issue
         if: failure() && github.event_name == 'schedule'
@@ -266,15 +281,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    env:
-      RUSTC_WRAPPER: sccache
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -283,6 +289,8 @@ jobs:
           targets: aarch64-linux-android
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -320,7 +328,18 @@ jobs:
         # steps' `run:` — it is NOT reflected in the `env` context, so
         # `${{ env.ANDROID_HOME }}` here would resolve to an empty string.
         # Deriving NDK_HOME/RANLIB/AR from $ANDROID_HOME inside the shell
-        # avoids that trap.
+        # avoids that trap. sccache credentials scoped to just this step —
+        # see the macOS job.
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           # openssl-sys vendors OpenSSL from source for the Android target

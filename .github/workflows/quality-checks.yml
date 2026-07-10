@@ -356,22 +356,9 @@ jobs:
     # caches at the individual compilation-unit level (object-code cache) —
     # complementary to Swatinem/rust-cache's coarser whole-target/-dir
     # caching below, catching cases where only a few crates in the
-    # dependency tree actually changed.
-    env:
-      RUSTC_WRAPPER: sccache
-      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
-      # sccache's GHA backend shares the same 10GB/repo budget as
-      # rust-cache/Gradle and has no reliable way to scope writes without
-      # still contending for that space; a dedicated bucket has no such
-      # cap, so every branch can freely read+write instead of being
-      # restricted to main-only saves.
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+    # dependency tree actually changed. The env block with credentials lives
+    # on just the clippy/nextest steps below (not job-level) — see those
+    # steps' comments for why.
     defaults:
       run:
         working-directory: src-tauri
@@ -383,6 +370,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -419,11 +408,40 @@ jobs:
       # can depend on the combined queue tree.
       - if: github.event_name != 'merge_group'
         run: cargo fmt --check
+      # sccache credentials scoped to just the steps that actually invoke
+      # rustc — a job-level env would also expose the write key to every
+      # other step (checkout, toolchain install, etc.), which don't need it.
+      # SCCACHE_IGNORE_SERVER_IO_ERROR: sccache fails the build by default on
+      # any cache-server error (unreachable endpoint, bad/missing
+      # credentials — e.g. fork/Dependabot PRs, which GitHub withholds
+      # secrets from) — this makes it fall back to local compilation instead
+      # of hard-failing required checks that have nothing to do with the
+      # cache.
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
       # Rust IPC type changed without the generated bindings being regenerated and
       # committed, the working tree now differs — fail so bindings never drift.
       - run: cargo nextest run --lib
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
       - name: ts-rs bindings are committed and up to date
         # --porcelain catches both modified tracked bindings and brand-new untracked
         # ones (a `git diff` alone would miss a newly generated, uncommitted file).
@@ -501,22 +519,6 @@ jobs:
       # collide (see common::test_username_2).
       TEST_MATRIX_USERNAME_2: ${{ secrets.CI_MATRIX_TEST_USERNAME_2 || 'evie2' }}
       TEST_MATRIX_PASSWORD_2: ${{ secrets.CI_MATRIX_TEST_PASSWORD_2 || 'testpass123' }}
-      # Object-level compilation cache — see the `rust` job's comment above
-      # for the full rationale.
-      RUSTC_WRAPPER: sccache
-      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
-      # sccache's GHA backend shares the same 10GB/repo budget as
-      # rust-cache/Gradle and has no reliable way to scope writes without
-      # still contending for that space; a dedicated bucket has no such
-      # cap, so every branch can freely read+write instead of being
-      # restricted to main-only saves.
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -532,6 +534,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -622,7 +626,19 @@ jobs:
             -u "$TEST_MATRIX_USERNAME_2" -p "$TEST_MATRIX_PASSWORD_2" --no-admin \
             -c /data/homeserver.yaml http://localhost:8008
 
+      # sccache credentials scoped to just this step — see the `rust` job's
+      # clippy/nextest steps for the full rationale.
       - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Stop Synapse and Dex
         if: always()
@@ -642,23 +658,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.integration == 'true'
     runs-on: ubuntu-latest
-    # Object-level compilation cache — see the `rust` job's comment for the
-    # full rationale.
-    env:
-      RUSTC_WRAPPER: sccache
-      # DigitalOcean Spaces (S3-compatible), not GitHub's Actions cache —
-      # sccache's GHA backend shares the same 10GB/repo budget as
-      # rust-cache/Gradle and has no reliable way to scope writes without
-      # still contending for that space; a dedicated bucket has no such
-      # cap, so every branch can freely read+write instead of being
-      # restricted to main-only saves.
-      SCCACHE_BUCKET: charm-sccache-storage
-      SCCACHE_REGION: tor1
-      SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
-      SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
-      SCCACHE_S3_USE_SSL: "true"
-      AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
     defaults:
       run:
         working-directory: src-tauri
@@ -673,6 +672,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
 
       # Only main saves its own cache — every PR/feature branch restores
       # (falling back to main's) rather than each saving a near-identical
@@ -739,7 +740,19 @@ jobs:
         working-directory: dev/synapse
         run: ./configure-mas.sh synapse-mas charm-dev-mas
 
+      # sccache credentials scoped to just this step — see the `rust` job's
+      # clippy/nextest steps for the full rationale.
       - run: cargo test --test qr_login
+        env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
 
       - name: Stop synapse-mas, MAS, and mas-db
         if: always()
