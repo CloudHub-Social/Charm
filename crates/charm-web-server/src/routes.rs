@@ -49,7 +49,8 @@ use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hier
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
-    confirm_sas_verification_impl, cross_signing_status_impl,
+    confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
+    recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
@@ -232,6 +233,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/verification/cross-signing/reset-url",
             get(get_cross_signing_reset_url),
+        )
+        .route(
+            "/api/verification/recovery",
+            get(get_recovery_status).post(recover_from_key),
         )
         .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
@@ -2267,6 +2272,31 @@ async fn get_cross_signing_reset_url(
     Ok(Json(
         get_cross_signing_reset_url_impl(&session.client).await,
     ))
+}
+
+async fn get_recovery_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(recovery_status_impl(&session.client)))
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoverFromKeyRequest {
+    recovery_key: String,
+}
+
+async fn recover_from_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<RecoverFromKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    recover_from_key_impl(&session.client, &request.recovery_key)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn accept_verification(
