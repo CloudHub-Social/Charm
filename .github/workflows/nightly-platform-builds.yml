@@ -236,12 +236,29 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # tauri-bundler's AppImage step shells out to plain `wget` (no
+      # timeout/retry flags) to fetch linuxdeploy/appimagetool/the GTK
+      # plugin from tauri-apps/binary-releases on every run — nothing
+      # caches that download. When a connection to GitHub stalls instead
+      # of erroring, wget's unbounded default retry/backoff means the
+      # build step hangs silently (no log output at all) rather than
+      # failing, as seen for 40+ min in run 29103517673 and again in
+      # 29107820618. This bounds every wget call so a stalled download
+      # fails fast and retries a few times instead of hanging forever.
+      - name: Bound wget timeouts for Tauri's AppImage tooling downloads
+        run: printf 'timeout=20\ntries=3\n' >> ~/.wgetrc
+
       # rust-integration (quality-checks.yml) already covers `cargo test` on
       # Linux; this is the full app bundle (AppImage/deb via the Tauri
       # bundler plus frontend asset embedding), a build path nothing else
       # exercises. sccache credentials scoped to just this step — see the
       # macOS job.
       - run: pnpm tauri build --debug
+        # Backstop: if the AppImage download hangs despite the wgetrc bound
+        # above (e.g. wget retries succeed but each attempt takes the full
+        # 20s against a black-holed connection), fail the job instead of
+        # occupying a runner indefinitely.
+        timeout-minutes: 15
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage

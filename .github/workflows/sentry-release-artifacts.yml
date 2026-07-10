@@ -116,8 +116,20 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
+      # tauri-bundler's AppImage step shells out to plain `wget` (no
+      # timeout/retry flags) to fetch linuxdeploy/appimagetool/the GTK
+      # plugin from tauri-apps/binary-releases on every run. When a
+      # connection to GitHub stalls instead of erroring, wget's unbounded
+      # default retry/backoff means the build step hangs silently instead
+      # of failing — see nightly-platform-builds.yml's Linux job for the
+      # observed 40+ min hangs this caused there. Same bound here.
+      - name: Bound wget timeouts for Tauri's AppImage tooling downloads
+        run: printf 'timeout=20\ntries=3\n' >> ~/.wgetrc
+
       - name: Build Tauri Linux app with release debuginfo
         run: pnpm tauri build
+        # Backstop if a download hangs despite the wgetrc bound above.
+        timeout-minutes: 20
         env:
           # ubuntu-latest (24.04) dropped libfuse2, so linuxdeploy/appimagetool
           # can't self-mount as a FUSE AppImage during bundling and hang
