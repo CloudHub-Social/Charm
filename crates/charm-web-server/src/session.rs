@@ -699,29 +699,6 @@ impl SessionStore {
         self.inner.write().await.insert(token, Arc::new(session));
     }
 
-    /// Puts an already-evicted `Arc<Session>` back under `token` — used by
-    /// `main.rs`'s idle sweeper when the final pre-eviction persistence save
-    /// fails and it can't respawn a working sync loop either: rather than
-    /// silently proceeding as if eviction is safe, this keeps the session
-    /// reachable via `get`/`require_session` instead of letting it vanish
-    /// from memory while the persisted copy lags behind.
-    ///
-    /// Only inserts if `token` is still absent. A concurrent request can
-    /// race the sweeper's own persistence save: `require_session`'s
-    /// on-demand restore can rebuild and insert a fresh, live `Session` for
-    /// this exact token while the save this method is responding to was
-    /// still in flight. Overwriting that with the stale session this call
-    /// is trying to save would silently orphan the newer session's live
-    /// sync loop and hand every future request the dead one instead — if
-    /// the token's already occupied, someone else already won; just drop
-    /// this one.
-    pub async fn reinsert(&self, token: String, session: Arc<Session>) {
-        let mut inner = self.inner.write().await;
-        if let std::collections::hash_map::Entry::Vacant(entry) = inner.entry(token) {
-            entry.insert(session);
-        }
-    }
-
     /// Looks up `token` and marks the session active in the same step —
     /// `touch()` runs while this still holds `inner`'s read lock, which
     /// blocks `sweep_idle`'s write lock from running concurrently. Without
@@ -1104,50 +1081,5 @@ mod tests {
             "evicted_presence must survive many multiples of idle_timeout — only the \
              separate, much longer EVICTED_PRESENCE_MAX_AGE should ever prune it"
         );
-    }
-
-    /// Regression test: `reinsert` must never clobber a session that a
-    /// concurrent request already restored for the same token — see
-    /// `reinsert`'s doc comment for the race this closes (the sweeper's
-    /// pre-eviction save racing `require_session`'s on-demand restore).
-    #[tokio::test]
-    async fn reinsert_does_not_overwrite_a_concurrently_restored_session() {
-        let store = SessionStore::new();
-        let token = store.create(dummy_session("@race:example.org").await).await;
-        let stale = store.get(&token).await.unwrap();
-
-        // Simulate a concurrent restore replacing this token with a fresh
-        // session while `stale`'s reinsert is still in flight.
-        store.remove(&token).await;
-        store
-            .insert(token.clone(), dummy_session("@race:example.org").await)
-            .await;
-        let live = store.get(&token).await.unwrap();
-
-        store.reinsert(token.clone(), stale).await;
-
-        let after = store.get(&token).await.unwrap();
-        assert!(
-            Arc::ptr_eq(&live, &after),
-            "reinsert must not replace a session a concurrent restore already installed"
-        );
-    }
-
-    /// `reinsert` still works for its actual intended case: the token is
-    /// genuinely absent (the sweeper's own eviction removed it, nobody else
-    /// raced in) — it must put the session back rather than silently
-    /// dropping it.
-    #[tokio::test]
-    async fn reinsert_restores_a_session_when_the_token_is_still_vacant() {
-        let store = SessionStore::new();
-        let token = store
-            .create(dummy_session("@lonely:example.org").await)
-            .await;
-        let session = store.remove(&token).await.unwrap();
-        assert!(store.get(&token).await.is_none());
-
-        store.reinsert(token.clone(), session).await;
-
-        assert!(store.get(&token).await.is_some());
     }
 }
