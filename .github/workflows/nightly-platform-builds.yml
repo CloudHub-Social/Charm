@@ -36,6 +36,12 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The job-level issues:write permission (needed only by the final
+          # failure-tracking step) would otherwise leave a repo-scoped token
+          # persisted in local git config, readable by every later step in
+          # this job (pnpm install's lifecycle scripts, the Tauri build).
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -61,7 +67,7 @@ jobs:
       # separate concern from "does it build". sccache credentials scoped to
       # just this step, not job-level, so earlier steps (checkout, pnpm
       # install, etc.) never see the write key.
-      - run: pnpm tauri build
+      - run: pnpm tauri build --debug
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -96,6 +102,12 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The job-level issues:write permission (needed only by the final
+          # failure-tracking step) would otherwise leave a repo-scoped token
+          # persisted in local git config, readable by every later step in
+          # this job (pnpm install's lifecycle scripts, the Tauri build).
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -120,7 +132,7 @@ jobs:
       # have no system sqlite3 on PATH, so this is the one platform where
       # linking against the vendored copy is actually load-bearing.
       # sccache credentials scoped to just this step — see the macOS job.
-      - run: pnpm tauri build
+      - run: pnpm tauri build --debug
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -156,6 +168,12 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The job-level issues:write permission (needed only by the final
+          # failure-tracking step) would otherwise leave a repo-scoped token
+          # persisted in local git config, readable by every later step in
+          # this job (pnpm install's lifecycle scripts, the Tauri build).
+          persist-credentials: false
 
       - name: Install Tauri Linux system dependencies
         run: |
@@ -186,7 +204,7 @@ jobs:
       # bundler plus frontend asset embedding), a build path nothing else
       # exercises. sccache credentials scoped to just this step — see the
       # macOS job.
-      - run: pnpm tauri build
+      - run: pnpm tauri build --debug
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -221,6 +239,12 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The job-level issues:write permission (needed only by the final
+          # failure-tracking step) would otherwise leave a repo-scoped token
+          # persisted in local git config, readable by every later step in
+          # this job (pnpm install's lifecycle scripts, the Tauri build).
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -283,6 +307,12 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The job-level issues:write permission (needed only by the final
+          # failure-tracking step) would otherwise leave a repo-scoped token
+          # persisted in local git config, readable by every later step in
+          # this job (pnpm install's lifecycle scripts, the Tauri build).
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
@@ -350,7 +380,7 @@ jobs:
           # on the Spec 13 spike branch, for the same vendored-OpenSSL build.
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          pnpm tauri android build --target aarch64 --ci
+          pnpm tauri android build --target aarch64 --debug --ci
 
       - name: Track failure as a GitHub issue
         if: failure() && github.event_name == 'schedule'
