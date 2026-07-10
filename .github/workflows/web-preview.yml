@@ -128,13 +128,10 @@ jobs:
       - name: Check preview configuration
         id: config
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CHARM_WEB_API_BASE_URL SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT VITE_SENTRY_DSN; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CHARM_WEB_API_BASE_URL VITE_SENTRY_DSN; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -146,30 +143,21 @@ jobs:
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # Reuses the same script sentry-release-artifacts.yml uses for tagged
-      # desktop releases. RELEASE_INPUT is left unset so it defaults to
-      # GITHUB_SHA — unique per preview build. Sentry secrets are scoped to
-      # this step and the build step below (via the composite action
-      # invocation's own env) rather than the job-level env, since the later
-      # Cloudflare deploy/verify steps never need them.
-      - name: Configure Sentry release upload
-        if: steps.config.outputs.enabled == 'true'
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          ENVIRONMENT_INPUT: preview
-          REQUIRE_VITE_SENTRY_DSN: "true"
-          WRITE_FRONTEND_UPLOAD_ENV: "true"
-        run: bash .github/scripts/configure-sentry-release-env.sh
-
+      # Deliberately does NOT run configure-sentry-release-env.sh /
+      # SENTRY_UPLOAD=true here, unlike web-deploy-dev.yml. That would put
+      # SENTRY_AUTH_TOKEN (a write-capable API token) in the environment
+      # during the composite action's `pnpm install`/`pnpm build:web` steps
+      # below — and those run on `pull_request`, which (unlike
+      # web-deploy-dev.yml's `push`-to-main trigger) executes PR-controlled
+      # lockfile/build-config content before human review. A compromised
+      # transitive dependency's postinstall script could exfiltrate the
+      # token. VITE_SENTRY_DSN is a public client key (it ships in the
+      # browser bundle regardless), so preview deploys still get runtime
+      # Sentry error reporting — they just skip source-map upload and
+      # release tagging, which need the token.
       - if: steps.config.outputs.enabled == 'true'
         uses: ./.github/actions/build-web-worker
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         with:
           worker-name: charm-preview
