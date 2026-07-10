@@ -6,6 +6,19 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+  schedule:
+    # 08:00 UTC daily, an hour ahead of nightly-platform-builds.yml's 09:00
+    # cron — runs the Tier 1/2 checks against the current tip of main even
+    # on a day with no pushes. Two benefits: (1) catches drift that a
+    # gated/skipped check on the last merged PR could have missed (e.g. a
+    # newly published cargo-audit advisory, or an environment/toolchain
+    # change unrelated to any diff), same rationale as nightly platform
+    # builds; (2) keeps the sccache/Swatinem rust-cache and Playwright
+    # browser caches warm daily instead of only whenever someone happens to
+    # push to main. Non-blocking by construction — a schedule run has no PR
+    # to gate — but failures are tracked via the same GitHub-issue pattern
+    # nightly-platform-builds.yml uses (see scheduled-failure-tracking).
+    - cron: "0 8 * * *"
 
 permissions:
   contents: read
@@ -119,9 +132,11 @@ jobs:
             # exist for this event type).
             base="${{ github.event.merge_group.base_sha }}"
             changed=$(diff_from "$base") || fallback "$base"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
-            # infra fix) always runs them — there's no "changed files" concept.
+            # infra fix) and the nightly schedule run both always run every
+            # gated job — there's no "changed files" concept for either (a
+            # schedule run has no prior commit of its own to diff against).
             changed=$'src-tauri/\nsrc/'
           elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
             # New branch / force-push with no prior tip to diff against —
@@ -850,3 +865,39 @@ jobs:
   # dominant cost driver of CI wall time. They now run on a daily schedule
   # off tip of main instead, non-blocking, opening/updating a tracking issue
   # on failure rather than blocking a PR.
+
+  # Only meaningful for the schedule trigger: a scheduled run has no PR to
+  # fail against, so without this a nightly break in lint/typecheck/tests/
+  # clippy/audit would be silent until the next real push to main happened
+  # to touch the same code path. Mirrors nightly-platform-builds.yml's
+  # tracking-issue pattern (search-or-create on title, comment if already
+  # open) instead of duplicating it per underlying job.
+  #
+  # needs the four top-level check surfaces: frontend/storybook-a11y/e2e
+  # report their own pass/fail/skip directly (no aggregator, unlike Rust),
+  # and rust-required is already the stable aggregator for the four gated
+  # Rust jobs. `if: always()` is load-bearing so this still runs (and can
+  # inspect results) even when an upstream job failed rather than being
+  # skipped itself.
+  scheduled-failure-tracking:
+    name: Track nightly quality-check failures
+    if: always() && github.event_name == 'schedule'
+    needs: [frontend, storybook-a11y, e2e, rust-required]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly quality-checks failure on main"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Scheduled quality-checks run against main failed. First occurrence: $run_url"
+          fi
