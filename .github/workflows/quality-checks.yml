@@ -419,7 +419,13 @@ jobs:
       # cache.
       - run: cargo clippy --all-targets -- -D warnings
         env:
-          RUSTC_WRAPPER: sccache
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -441,7 +447,13 @@ jobs:
       # committed, the working tree now differs — fail so bindings never drift.
       - run: cargo nextest run --lib
         env:
-          RUSTC_WRAPPER: sccache
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -646,7 +658,13 @@ jobs:
       # clippy/nextest steps for the full rationale.
       - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org
         env:
-          RUSTC_WRAPPER: sccache
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -768,7 +786,13 @@ jobs:
       # clippy/nextest steps for the full rationale.
       - run: cargo test --test qr_login
         env:
-          RUSTC_WRAPPER: sccache
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
