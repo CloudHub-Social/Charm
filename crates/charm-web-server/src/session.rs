@@ -569,8 +569,9 @@ fn spawn_timeline_listener(
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     /// The presence choice an idle-evicted session had at the instant
-    /// `sweep_idle` evicted it, keyed by token — populated there, consumed
-    /// once by `routes::require_session`'s on-demand restore (via
+    /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
+    /// was recorded at — populated there, consumed once by
+    /// `routes::require_session`'s on-demand restore (via
     /// `take_evicted_presence`) to seed the freshly rebuilt `Session`'s
     /// `sync_presence` before its sync loop starts, instead of silently
     /// reverting an explicit `unavailable`/`offline` choice back to `Online`
@@ -580,8 +581,28 @@ pub struct SessionStore {
     /// else in-memory, no worse than before this existed; it only smooths
     /// over the *much* more frequent idle-eviction-then-restore case this
     /// module introduces.
-    evicted_presence:
-        Arc<std::sync::Mutex<HashMap<String, charm_lib::matrix::presence::PresenceStateDto>>>,
+    ///
+    /// The recorded `Instant` isn't for `take_evicted_presence` — it's so
+    /// `sweep_idle` can prune entries for tokens that were evicted but never
+    /// came back (browser closed for good, cookie discarded). Without this,
+    /// an entry inserted here lives forever: nothing else ever removes it
+    /// except a restore that may never happen, so this map would otherwise
+    /// grow without bound over the process's lifetime — the exact kind of
+    /// unbounded memory growth this whole module exists to fix. `sweep_idle`
+    /// prunes anything older than its own `idle_timeout` on every run, since
+    /// that's the same "give up on this eventually" threshold already
+    /// governing everything else in this store.
+    evicted_presence: Arc<
+        std::sync::Mutex<
+            HashMap<
+                String,
+                (
+                    charm_lib::matrix::presence::PresenceStateDto,
+                    std::time::Instant,
+                ),
+            >,
+        >,
+    >,
 }
 
 impl SessionStore {
@@ -685,19 +706,29 @@ impl SessionStore {
                 self.evicted_presence
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(token.clone(), presence);
+                    .insert(token.clone(), (presence, std::time::Instant::now()));
                 evicted.push((token.clone(), Arc::clone(session)));
                 false
             }
         });
+        // Prune `evicted_presence` entries nobody ever came back to claim —
+        // see that field's doc comment for why this would otherwise leak.
+        // Piggybacks on this same periodic call rather than a separate
+        // task, since `main.rs` already invokes `sweep_idle` on a timer for
+        // exactly this kind of periodic upkeep.
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, (_, recorded_at)| recorded_at.elapsed() < idle_timeout);
         evicted
     }
 
     /// Removes and returns `token`'s presence choice at eviction time, if
     /// any was ever recorded — see `evicted_presence`'s doc comment. `None`
-    /// covers both "this token was never evicted" and "already consumed by
-    /// an earlier restore", either of which just means the restore path
-    /// falls back to the freshly built `Session`'s default (`Online`).
+    /// covers "this token was never evicted", "already consumed by an
+    /// earlier restore", and "pruned for having gone unclaimed too long",
+    /// all three of which just mean the restore path falls back to the
+    /// freshly built `Session`'s default (`Online`).
     pub fn take_evicted_presence(
         &self,
         token: &str,
@@ -706,6 +737,7 @@ impl SessionStore {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(token)
+            .map(|(presence, _)| presence)
     }
 }
 
@@ -859,6 +891,38 @@ mod tests {
             store.take_evicted_presence(&token),
             None,
             "a second take for the same token must find nothing left — it's consumed once"
+        );
+    }
+
+    /// Regression test: an `evicted_presence` entry for a token nobody ever
+    /// restored must eventually be pruned rather than living forever — see
+    /// `evicted_presence`'s doc comment for why an unbounded version of this
+    /// map would be its own memory leak.
+    #[tokio::test]
+    async fn evicted_presence_entries_are_pruned_once_the_idle_timeout_elapses_unclaimed() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_millis(50);
+
+        let token = store
+            .create(dummy_session("@never-returns:example.org").await)
+            .await;
+        backdate(&store.get(&token).await.unwrap(), idle_timeout * 2);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+        assert!(
+            store.evicted_presence.lock().unwrap().contains_key(&token),
+            "the presence entry must exist right after eviction"
+        );
+
+        tokio::time::sleep(idle_timeout * 3).await;
+        // Nothing new to evict this time — this call's only job here is to
+        // exercise the pruning pass.
+        store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            store.take_evicted_presence(&token).is_none(),
+            "an entry nobody ever came back to claim must be pruned, not kept forever"
         );
     }
 }
