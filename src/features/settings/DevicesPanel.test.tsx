@@ -191,6 +191,7 @@ describe("DevicesPanel", () => {
 
     const input = await screen.findByLabelText("Recovery key");
     const crossSigningCallsBeforeSubmit = crossSigningStatus.mock.calls.length;
+    const devicesCallsBeforeSubmit = listDevices.mock.calls.length;
     fireEvent.change(input, { target: { value: "EsTx some-recovery-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 
@@ -199,10 +200,15 @@ describe("DevicesPanel", () => {
     // still returning "incomplete", the card stays up rather than vanishing,
     // but the field itself should be blank again.
     await waitFor(() => expect(input).toHaveValue(""));
-    // recover() imports cross-signing secrets too, not just the backup key —
-    // its tile must refetch too, or it can keep showing stale status.
+    // recover() imports cross-signing secrets too, not just the backup key,
+    // and can mark this device verified — both the cross-signing tile and
+    // the devices list must refetch too, or they can keep showing stale
+    // state.
     await waitFor(() =>
       expect(crossSigningStatus.mock.calls.length).toBeGreaterThan(crossSigningCallsBeforeSubmit),
+    );
+    await waitFor(() =>
+      expect(listDevices.mock.calls.length).toBeGreaterThan(devicesCallsBeforeSubmit),
     );
   });
 

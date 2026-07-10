@@ -54,14 +54,16 @@ export function useRecoverFromKey() {
   return useMutation({
     mutationFn: (recoveryKey: string) => recoverFromKey(recoveryKey),
     // A successful recover() imports cross-signing secrets too (see
-    // recover_from_key_impl's doc comment), not just the backup key — so the
-    // Cross-signing tile's status needs invalidating alongside recovery's
-    // own, or it can keep showing stale "not set up" until an unrelated
-    // refresh happens to occur.
+    // recover_from_key_impl's doc comment) and can mark this device verified
+    // — not just the backup key — so both the Cross-signing tile's status
+    // and the current device's verified badge (from the cached `listDevices`
+    // result) need invalidating alongside recovery's own, or they can keep
+    // showing stale state until an unrelated refresh happens to occur.
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY }),
         queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY }),
       ]),
   });
 }
