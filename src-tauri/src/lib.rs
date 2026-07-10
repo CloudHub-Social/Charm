@@ -393,6 +393,8 @@ pub fn run() {
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
+            matrix::verification::recovery_status,
+            matrix::verification::recover_from_key,
             matrix::verification::accept_verification_request,
             matrix::verification::cancel_verification,
             matrix::verification::start_sas_verification,

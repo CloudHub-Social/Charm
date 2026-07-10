@@ -20,6 +20,8 @@ import {
   useCrossSigningStatus,
   useDeviceActions,
   useDevices,
+  useRecoverFromKey,
+  useRecoveryStatus,
 } from "./useDevices";
 import { useProfile } from "./useProfile";
 import { isUiaCommandError, uiaErrorMessage, useUiaRetry } from "./useUiaRetry";
@@ -37,6 +39,9 @@ export function DevicesPanel() {
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
+  const { data: recoveryState } = useRecoveryStatus();
+  const recover = useRecoverFromKey();
+  const [recoveryKey, setRecoveryKey] = useState("");
   const { revoke, verify, invalidateDevices, invalidateCrossSigning } = useDeviceActions();
   const oauthKnown = profile !== undefined;
   const usesOAuth = Boolean(profile?.uses_oauth);
@@ -180,6 +185,11 @@ export function DevicesPanel() {
     }
   }
 
+  async function handleRecover() {
+    await recover.mutateAsync(recoveryKey);
+    setRecoveryKey("");
+  }
+
   const selectedCount = selectedIds.size;
 
   return (
@@ -231,6 +241,36 @@ export function DevicesPanel() {
           {bootstrapError && <p className="mt-2 text-sm text-destructive">{bootstrapError}</p>}
         </SettingTile>
       </SettingsCard>
+
+      {recoveryState === "incomplete" && (
+        <SettingsCard heading="Recovery">
+          <SettingTile>
+            <p className="mb-3 text-sm text-muted-foreground">
+              This session is missing some of your account's encryption keys — usually after a
+              restart. Enter your recovery key to restore access to your encrypted message history.
+            </p>
+            <div className="mb-3 max-w-xs">
+              <Label htmlFor="recovery-key">Recovery key</Label>
+              <Input
+                id="recovery-key"
+                type="password"
+                value={recoveryKey}
+                onChange={(e) => setRecoveryKey(e.target.value)}
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() => handleRecover().catch(logAndIgnore)}
+              disabled={recover.isPending || recoveryKey === ""}
+            >
+              {recover.isPending ? "Restoring…" : "Restore"}
+            </Button>
+            {recover.isError && (
+              <p className="mt-2 text-sm text-destructive">{String(recover.error)}</p>
+            )}
+          </SettingTile>
+        </SettingsCard>
+      )}
 
       {verify.isError && (
         <p className="text-sm text-destructive">

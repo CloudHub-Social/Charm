@@ -1,4 +1,5 @@
 use futures_util::StreamExt;
+use matrix_sdk::encryption::recovery::RecoveryState;
 use matrix_sdk::encryption::verification::{Emoji, SasState, Verification};
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::Client;
@@ -179,6 +180,82 @@ pub async fn cross_signing_status_impl(
         has_self_signing_key: status.as_ref().is_some_and(|s| s.has_self_signing),
         has_user_signing_key: status.as_ref().is_some_and(|s| s.has_user_signing),
     })
+}
+
+/// A device's key-backup/secret-storage ("4S") recovery state, exposed to
+/// the frontend so it knows whether to prompt for a recovery key.
+/// `incomplete` is the state this feature exists for: secrets/backup exist
+/// on the server (some other session set them up), but this device — e.g. a
+/// `charm-web-server` session that just lost its in-memory crypto store to a
+/// restart, see `crates/charm-web-server/src/persistence.rs`'s module doc
+/// comment — doesn't have them locally, so previously-decrypted room
+/// history is unreadable until the user enters their recovery key.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStatusSummary {
+    Unknown,
+    Enabled,
+    Disabled,
+    Incomplete,
+}
+
+impl From<RecoveryState> for RecoveryStatusSummary {
+    fn from(state: RecoveryState) -> Self {
+        match state {
+            RecoveryState::Unknown => Self::Unknown,
+            RecoveryState::Enabled => Self::Enabled,
+            RecoveryState::Disabled => Self::Disabled,
+            RecoveryState::Incomplete => Self::Incomplete,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn recovery_status(
+    state: State<'_, MatrixState>,
+) -> Result<RecoveryStatusSummary, String> {
+    let client = state.require_client().await?;
+    Ok(recovery_status_impl(&client))
+}
+
+/// Core logic behind [`recovery_status`].
+pub fn recovery_status_impl(client: &Client) -> RecoveryStatusSummary {
+    client.encryption().recovery().state().into()
+}
+
+/// Restores this device's secrets (cross-signing keys, and the key-backup
+/// decryption key) from server-side secret storage using the account's
+/// recovery key. On success, matrix-sdk-crypto's backup machinery can start
+/// downloading and decrypting room keys from the server-side backup as
+/// needed — no separate "download history" step. No UIA/password challenge
+/// involved (unlike [`bootstrap_cross_signing`]): the recovery key itself is
+/// the proof of possession, so a wrong key just surfaces as an ordinary
+/// error rather than a retryable challenge.
+#[tauri::command]
+pub async fn recover_from_key(
+    state: State<'_, MatrixState>,
+    recovery_key: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    recover_from_key_impl(&client, &recovery_key).await
+}
+
+/// Core logic behind [`recover_from_key`]. Never logs `recovery_key` itself —
+/// only whether the attempt succeeded and, on failure, the SDK's error
+/// display — matching the redaction `src/observability/ipc.ts` already
+/// applies to this same argument on the frontend side of this same call.
+pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Result<(), String> {
+    let result = client.encryption().recovery().recover(recovery_key).await;
+    match &result {
+        Ok(()) => tracing::info!("recovery-key restore succeeded"),
+        // A wrong key is an expected, common user-input error (like a wrong
+        // password) rather than a bug — `warn`, not `error`, so the Sentry
+        // tracing layer (see SENTRY.md) files this as a breadcrumb, not an
+        // issue that could page anyone.
+        Err(error) => tracing::warn!(error = %error, "recovery-key restore failed"),
+    }
+    result.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
