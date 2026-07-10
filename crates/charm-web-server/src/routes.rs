@@ -623,22 +623,28 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     let Some(persistence) = &state.persistence else {
         return Err(ApiError::unauthorized("unknown or expired session"));
     };
-    // Taken *before* the restore call below, not after — see
+    // Read (not taken) *before* the restore call below — see
     // `persistence::PersistenceStore::restore_by_token`'s doc comment for
-    // why: it needs this to seed the freshly built session's presence
-    // before its own initial `sync_once` runs, not merely before this
-    // function returns. Carries forward whatever presence choice this
-    // session had at the moment `sweep_idle` evicted it (if any) — without
-    // this, an idle-evicted user who'd explicitly set `unavailable`/
-    // `offline` would show back up as `Online` (`SyncSettings`'s own
-    // default) the instant their session restores. See
-    // `SessionStore::evicted_presence`'s doc comment.
-    let evicted_presence = state.sessions.take_evicted_presence(&token);
+    // why it needs this to seed the freshly built session's presence before
+    // its own initial `sync_once` runs, not merely before this function
+    // returns. `peek_evicted_presence`, not `take`: `restore_by_token` can
+    // fail (timeout, unreachable homeserver, a transient object-store
+    // error), and taking the entry unconditionally up front would
+    // permanently lose the user's `unavailable`/`offline` choice on that
+    // first failed attempt — a *later*, successful retry with the same
+    // still-valid cookie would then silently fall back to `Online` even
+    // though the cached value was sitting right there the whole time. Only
+    // consumed (`forget_evicted_presence`, below) once the restore this
+    // presence was seeded into has actually succeeded.
+    let evicted_presence = state.sessions.peek_evicted_presence(&token);
     let Some((homeserver_url, session, initial_response, initial_access_token)) =
         persistence.restore_by_token(&token, evicted_presence).await
     else {
         return Err(ApiError::unauthorized("unknown or expired session"));
     };
+    if evicted_presence.is_some() {
+        state.sessions.forget_evicted_presence(&token);
+    }
     session.touch();
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),

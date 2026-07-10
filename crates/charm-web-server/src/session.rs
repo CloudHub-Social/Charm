@@ -701,18 +701,25 @@ impl SessionStore {
 
     /// Puts an already-evicted `Arc<Session>` back under `token` — used by
     /// `main.rs`'s idle sweeper when the final pre-eviction persistence save
-    /// fails: rather than silently proceeding as if eviction is safe (the
-    /// session's sync loop is already aborted by this point — see
-    /// `sweep_idle` — and its live token pair may not have actually landed
-    /// on disk), this keeps the session reachable via `get`/`require_session`
-    /// instead of letting it vanish from memory while the persisted copy
-    /// lags behind. Its sync loop stays dead until something spawns a new
-    /// one (nothing currently does for a reinserted session — this is a
-    /// degraded-but-reachable state, not a full undo of eviction), but
-    /// direct API calls against `session.client` keep working, and the next
-    /// sweep gets another chance to persist and cleanly evict it.
+    /// fails and it can't respawn a working sync loop either: rather than
+    /// silently proceeding as if eviction is safe, this keeps the session
+    /// reachable via `get`/`require_session` instead of letting it vanish
+    /// from memory while the persisted copy lags behind.
+    ///
+    /// Only inserts if `token` is still absent. A concurrent request can
+    /// race the sweeper's own persistence save: `require_session`'s
+    /// on-demand restore can rebuild and insert a fresh, live `Session` for
+    /// this exact token while the save this method is responding to was
+    /// still in flight. Overwriting that with the stale session this call
+    /// is trying to save would silently orphan the newer session's live
+    /// sync loop and hand every future request the dead one instead — if
+    /// the token's already occupied, someone else already won; just drop
+    /// this one.
     pub async fn reinsert(&self, token: String, session: Arc<Session>) {
-        self.inner.write().await.insert(token, session);
+        let mut inner = self.inner.write().await;
+        if let std::collections::hash_map::Entry::Vacant(entry) = inner.entry(token) {
+            entry.insert(session);
+        }
     }
 
     /// Looks up `token` and marks the session active in the same step —
@@ -842,6 +849,29 @@ impl SessionStore {
             .unwrap_or_else(|e| e.into_inner())
             .remove(token)
             .map(|(presence, _)| presence)
+    }
+
+    /// Non-destructive counterpart to [`Self::take_evicted_presence`] — reads
+    /// `token`'s recorded presence without removing it. `routes::require_session`
+    /// uses this before attempting a restore rather than `take`: a restore
+    /// can fail (timeout, unreachable homeserver, transient object-store
+    /// error), and an earlier version of this took the entry unconditionally
+    /// up front, so a failed restore attempt permanently lost the only
+    /// record of the user's `unavailable`/`offline` choice — a *later*,
+    /// successful retry with the same still-valid cookie would then fall
+    /// back to the default `Online` even though the cached value had been
+    /// sitting right there the whole time. Callers should still call
+    /// [`Self::forget_evicted_presence`] once a restore actually succeeds,
+    /// so a claimed entry doesn't linger until `EVICTED_PRESENCE_MAX_AGE`.
+    pub fn peek_evicted_presence(
+        &self,
+        token: &str,
+    ) -> Option<charm_lib::matrix::presence::PresenceStateDto> {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(token)
+            .map(|(presence, _)| *presence)
     }
 
     /// Drops `token`'s recorded presence, if any, without returning it —
@@ -1074,5 +1104,50 @@ mod tests {
             "evicted_presence must survive many multiples of idle_timeout — only the \
              separate, much longer EVICTED_PRESENCE_MAX_AGE should ever prune it"
         );
+    }
+
+    /// Regression test: `reinsert` must never clobber a session that a
+    /// concurrent request already restored for the same token — see
+    /// `reinsert`'s doc comment for the race this closes (the sweeper's
+    /// pre-eviction save racing `require_session`'s on-demand restore).
+    #[tokio::test]
+    async fn reinsert_does_not_overwrite_a_concurrently_restored_session() {
+        let store = SessionStore::new();
+        let token = store.create(dummy_session("@race:example.org").await).await;
+        let stale = store.get(&token).await.unwrap();
+
+        // Simulate a concurrent restore replacing this token with a fresh
+        // session while `stale`'s reinsert is still in flight.
+        store.remove(&token).await;
+        store
+            .insert(token.clone(), dummy_session("@race:example.org").await)
+            .await;
+        let live = store.get(&token).await.unwrap();
+
+        store.reinsert(token.clone(), stale).await;
+
+        let after = store.get(&token).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&live, &after),
+            "reinsert must not replace a session a concurrent restore already installed"
+        );
+    }
+
+    /// `reinsert` still works for its actual intended case: the token is
+    /// genuinely absent (the sweeper's own eviction removed it, nobody else
+    /// raced in) — it must put the session back rather than silently
+    /// dropping it.
+    #[tokio::test]
+    async fn reinsert_restores_a_session_when_the_token_is_still_vacant() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@lonely:example.org").await)
+            .await;
+        let session = store.remove(&token).await.unwrap();
+        assert!(store.get(&token).await.is_none());
+
+        store.reinsert(token.clone(), session).await;
+
+        assert!(store.get(&token).await.is_some());
     }
 }

@@ -165,20 +165,66 @@ fn spawn_idle_session_sweeper(
                     .save(&token, &homeserver_url, &matrix_session)
                     .await
                 {
-                    // The sync loop is already gone, but the just-saved (or
-                    // not-yet-saved) persisted object may not reflect this
-                    // client's actual current token — evicting anyway here
-                    // would risk losing this session for good behind a
-                    // stale/missing persisted copy. Put it back so it's at
-                    // least reachable again (degraded: no live sync until
-                    // something respawns one — see `SessionStore::reinsert`'s
-                    // doc comment) rather than dropping it from memory on
-                    // top of a failed save.
-                    tracing::error!(
-                        "failed to re-persist session before idle eviction, keeping it in \
-                         memory instead of evicting: {e}"
-                    );
-                    sessions.reinsert(token, session).await;
+                    // The just-saved (or not-yet-saved) persisted object may
+                    // not reflect this client's actual current token —
+                    // evicting anyway here would risk losing this session
+                    // for good behind a stale/missing persisted copy. But
+                    // `sweep_idle` already aborted its sync loop, so simply
+                    // reinserting it (an earlier version of this did
+                    // exactly that) would leave it reachable with no live
+                    // sync loop until logout or a restart — WebSockets
+                    // would attach to an event channel with nothing left to
+                    // produce on it. Try to resume syncing before deciding
+                    // reinserting is actually worthwhile.
+                    tracing::error!("failed to re-persist session before idle eviction: {e}");
+                    match session
+                        .client
+                        .sync_once(matrix_sdk::config::SyncSettings::default())
+                        .await
+                    {
+                        Ok(initial_response) => {
+                            let persist = Some(sync_loop::PersistHandle {
+                                store: Arc::clone(&persistence),
+                                token: token.clone(),
+                                homeserver_url,
+                                initial_access_token: Some(
+                                    matrix_session.tokens.access_token.clone(),
+                                ),
+                            });
+                            let handle = sync_loop::spawn(
+                                session.client.clone(),
+                                session.events.clone(),
+                                session.sync_presence.clone(),
+                                persist,
+                                initial_response,
+                                session.sync_snapshots(),
+                            );
+                            *session
+                                .sync_handle
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+                            tracing::warn!(
+                                "resumed syncing a session whose pre-eviction persistence \
+                                 save failed, keeping it in memory instead of evicting"
+                            );
+                            sessions.reinsert(token, session).await;
+                        }
+                        Err(sync_err) => {
+                            // Can't persist *and* can't resume syncing —
+                            // reinserting a session with a dead sync loop
+                            // and no realistic path to a fresh one is worse
+                            // than just evicting it: the persisted copy may
+                            // be stale, but a later on-demand restore at
+                            // least gets a real chance to rebuild a working
+                            // client, instead of this one sitting inert
+                            // until someone logs out or the process
+                            // restarts.
+                            tracing::error!(
+                                "also failed to resume syncing this session ({sync_err}) — \
+                                 evicting it despite the failed persistence save"
+                            );
+                        }
+                    }
                 }
             }
         }
