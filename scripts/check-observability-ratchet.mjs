@@ -60,9 +60,17 @@ const { _comment, ...floors } = JSON.parse(readFileSync(RATCHET_PATH, "utf8"));
 
 const actual = {
   e2eSpecFiles: countFiles("e2e", "*.spec.ts"),
+  // --exclude test/spec files: without it, mock assertions like
+  // `expect(Sentry.captureException).toHaveBeenCalledWith(...)` count as
+  // "instrumentation call sites", inflating the floor with test scaffolding
+  // that says nothing about actual production coverage (found by Sentry's
+  // own PR bot review — verified empirically: 9 of the original 11 matches
+  // were in src/observability/ipc.test.ts).
   frontendSentryCallSites: countMatches(
     "Sentry\\.(captureException|captureMessage)|addBreadcrumb\\(",
-    "src --include='*.ts' --include='*.tsx'"
+    "src --include='*.ts' --include='*.tsx' " +
+      "--exclude='*.test.ts' --exclude='*.test.tsx' " +
+      "--exclude='*.spec.ts' --exclude='*.spec.tsx'"
   ),
   rustSentryCallSites: countMatches(
     "tracing::(info|warn|error|debug)!|sentry::|capture_event|add_breadcrumb",
