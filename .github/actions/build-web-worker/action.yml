@@ -108,7 +108,11 @@ runs:
           "name": "${WORKER_NAME}",
           "compatibility_date": "2026-07-09",
           "main": "./worker.mjs",
-          ${dev_fields}"assets": {
+          ${dev_fields}"observability": {
+            "logs": { "enabled": true, "head_sampling_rate": 1, "destinations": ["sentry-logs"] },
+            "traces": { "enabled": true, "head_sampling_rate": 1, "destinations": ["sentry-traces"] }
+          },
+          "assets": {
             "directory": "../dist",
             "binding": "ASSETS",
             "not_found_handling": "single-page-application",
