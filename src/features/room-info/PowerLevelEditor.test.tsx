@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberPowerLevelDialog, PowerLevelThresholdsEditor } from "./PowerLevelEditor";
-import { makeRoomDetails, renderWithProviders, wrapWithProviders } from "./testUtils";
+import { makeRoomDetails } from "./testUtils";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 
 const setMemberPowerLevel = vi.fn().mockResolvedValue(undefined);
 const setRoomPowerLevelThresholds = vi.fn().mockResolvedValue(undefined);

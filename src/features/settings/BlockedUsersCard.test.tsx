@@ -1,8 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BlockedUsersCard } from "./BlockedUsersCard";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 
 const getIgnoredUsers = vi.fn();
 const unignoreUser = vi.fn();
@@ -11,11 +11,6 @@ vi.mock("@/lib/matrix", () => ({
   getIgnoredUsers: (...args: unknown[]) => getIgnoredUsers(...args),
   unignoreUser: (...args: unknown[]) => unignoreUser(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 beforeEach(() => {
   getIgnoredUsers.mockReset();
@@ -88,11 +83,7 @@ describe("BlockedUsersCard", () => {
     client.setQueryData(["settings", "ignored-users"], []);
     getIgnoredUsers.mockRejectedValue(new Error("network error"));
 
-    render(
-      <QueryClientProvider client={client}>
-        <BlockedUsersCard />
-      </QueryClientProvider>,
-    );
+    render(wrapWithProviders(<BlockedUsersCard />, client));
     await client.refetchQueries({ queryKey: ["settings", "ignored-users"] });
 
     expect(await screen.findByText("Couldn't load blocked users")).toBeInTheDocument();

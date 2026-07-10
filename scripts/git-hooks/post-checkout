@@ -1,0 +1,55 @@
+#!/bin/sh
+# Auto-links node_modules and graphify-out into a freshly created worktree.
+#
+# git worktree add performs a checkout in the new worktree, so this shared
+# post-checkout hook (hooks live in the common .git dir and apply to every
+# worktree) fires there too. We only want to act on that "brand new worktree"
+# case, not on every ordinary branch switch — git signals that by passing an
+# all-zero previous HEAD ($1) on the initial checkout of a new worktree/clone.
+prev_head="$1"
+branch_checkout="$3"
+
+case "$prev_head" in
+  0000000000000000000000000000000000000000) ;;
+  *) exit 0 ;;
+esac
+[ "$branch_checkout" = "1" ] || exit 0
+
+worktree_root="$(git rev-parse --show-toplevel)" || exit 0
+# Find the worktree whose checked-out branch is main specifically — not just
+# whichever worktree git-worktree-list happens to print first. That first
+# entry is always the repo's *original* clone location, which could itself
+# be sitting on a feature branch (someone checked one out directly there
+# instead of a separate worktree); linking against that would pull in
+# unmerged branch state instead of main's.
+main_root="$(git worktree list --porcelain | awk '
+  /^worktree /{path=$0; sub(/^worktree /, "", path)}
+  /^branch refs\/heads\/main$/{print path; exit}
+')"
+[ -n "$main_root" ] || exit 0
+[ "$worktree_root" = "$main_root" ] && exit 0
+
+cd "$worktree_root" || exit 0
+
+if [ ! -e node_modules ] && [ ! -L node_modules ] \
+   && [ -d "$main_root/node_modules" ] \
+   && [ ! -e "$main_root/node_modules/.charm-stale" ] \
+   && [ -f "$main_root/pnpm-lock.yaml" ] && [ -f pnpm-lock.yaml ] \
+   && diff -q "$main_root/pnpm-lock.yaml" pnpm-lock.yaml >/dev/null 2>&1; then
+  ln -s "$main_root/node_modules" node_modules
+fi
+
+# No -d check on main_root/graphify-out here (unlike node_modules above):
+# link it in even if main hasn't built a graph yet. A symlink to a
+# not-yet-existing directory is harmless — graphify/the nudge hook already
+# treat "no graph.json" as "no graph" regardless of whether the path exists
+# at all — and it means this worktree picks up the graph automatically once
+# main's exists, instead of staying without one forever. (Worktrees created
+# before this existence check was removed get backfilled by
+# scripts/sync-main-graphify.sh instead, since this hook only runs at
+# worktree-creation time.)
+if [ ! -e graphify-out ] && [ ! -L graphify-out ]; then
+  ln -s "$main_root/graphify-out" graphify-out
+fi
+
+exit 0

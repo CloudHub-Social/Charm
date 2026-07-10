@@ -15,8 +15,105 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect web-affecting changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      # Shallow checkout (default depth 1) — this job only needs a two-tree
+      # `git diff base..head`, same pattern as quality-checks.yml's `changes`
+      # job (see that file for the full rationale).
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check whether the web build's inputs changed
+        id: filter
+        run: |
+          # Everything `pnpm build:web` can actually read: the app source, web
+          # entry points, root config, the env files Vite loads for `--mode
+          # web` (the generic .env plus .env.web — VITE_CHARM_BUILD_TARGET in
+          # .env.web is consumed by src/lib/platform.ts; .env isn't tracked
+          # yet, but nothing gitignores a plain .env so it could be added),
+          # and the generated ts-rs bindings
+          # (build:web runs tsc first, and tsconfig maps @bindings/* to these —
+          # src/lib/matrix.ts imports them throughout, so a DTO shape change
+          # here can break the web build same as a src/ change). Deliberately
+          # excludes the REST of src-tauri/** (native-only) and
+          # crates/charm-web-server/** (a separately deployed companion server
+          # this preview only proxies to via an already-configured URL, not
+          # something this workflow builds) — unlike quality-checks.yml's
+          # broader frontend_pattern, this one is scoped to just what a
+          # Cloudflare Worker preview deploy needs.
+          web_pattern='^(src/|public/|\.design-sync/|src-tauri/src/bindings/|\.env$|\.env\.web$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|index\.html$|\.github/workflows/web-preview\.yml$)'
+
+          diff_from() {
+            # --no-renames: default rename detection can report ONLY the
+            # destination path for a moved file (e.g. src/Foo.tsx ->
+            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
+            # that a web source file left the tree entirely. Verified
+            # empirically — plain `git diff --name-only` omits the source
+            # side of a rename; --no-renames reports both.
+            git fetch --no-tags --depth=1 --quiet origin "$1" \
+              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
+          }
+          # On a fetch/diff failure, deploy anyway (safe default — this can
+          # only over-run, never wrongly skip a real web change).
+          fallback() { echo "::notice::changes: could not diff against base $1; deploying anyway"; changed="src/"; }
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            changed=$(diff_from "$base") || fallback "$base"
+          else
+            # workflow_dispatch — the only other event this workflow listens
+            # to (see the `on:` block; there's no push trigger here). No
+            # "changed files" concept for a manual run, and no
+            # github.event.before to diff against, so always deploy rather
+            # than attempting a pointless `git fetch origin ""`.
+            changed="src/"
+          fi
+
+          if echo "$changed" | grep -qE "$web_pattern"; then
+            web=true
+          else
+            web=false
+          fi
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+
+  mark-stale-preview:
+    name: Mark existing preview comment stale
+    needs: changes
+    # A PR that already has a preview comment from an earlier, web-affecting
+    # revision, then gets a later push that removes/reverts those changes,
+    # would otherwise leave that comment's URL silently pointing at a stale
+    # deployed bundle — nothing else in this workflow runs to update it once
+    # `deploy` is skipped.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.web == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note that the preview no longer reflects the current diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          marker="<!-- charm-web-preview -->"
+          stale_note="_No web-affecting changes in the latest revision — this preview reflects an earlier commit._"
+          id=$(gh api --paginate "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\")) and (.body | contains(\"${stale_note}\") | not)) | .id" \
+            | tail -n 1)
+          [ -z "$id" ] && exit 0
+          body=$(gh api "repos/${{ github.repository }}/issues/comments/${id}" --jq .body)
+          gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${id}" \
+            -f body="$(printf '%s\n\n%s' "$body" "$stale_note")"
+
   deploy:
     name: Cloudflare Worker preview
+    needs: changes
+    # workflow_dispatch has no "changed files" concept, so it always deploys.
+    # A skipped required-adjacent check here is fine — this isn't a required
+    # status check, just an informational preview link.
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     environment: cloudflare-preview
     env:
