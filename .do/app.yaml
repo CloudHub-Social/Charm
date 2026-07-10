@@ -1,0 +1,49 @@
+# DigitalOcean App Platform spec for charm-web-server (the companion API the
+# web client talks to — see crates/charm-web-server/README.md). Replaces the
+# hand-run VPS deploy (systemd + Docker on matrix-cloudhub-1.cloudhub.social)
+# that drifted out of date and caused the /api/devices + cross-signing
+# reset-url 404 bug.
+#
+# One-time provisioning (not automated by this file or any workflow):
+#   1. Create the DO Spaces bucket this app's session persistence writes to
+#      (see crates/charm-web-server/src/persistence.rs's SPACES_* env vars) —
+#      e.g. `charm-web-server-sessions` in the tor1 region, matching this
+#      repo's existing sccache Spaces bucket.
+#   2. `doctl apps create --spec .do/app.yaml` once to provision the app and
+#      get its app ID; store that ID as the DO_APP_ID repo secret consumed by
+#      .github/workflows/web-server-deploy.yml.
+#   3. Set the SECRET-typed env vars below via `doctl apps update <id> --spec
+#      .do/app.yaml` with real values, or the DO dashboard — never commit
+#      real secret values here.
+#
+# Deploys after initial provisioning are triggered explicitly by
+# web-server-deploy.yml (doctl apps create-deployment --wait), not DO's own
+# auto-deploy-on-push, so the sequencing/verification stays visible in
+# Actions the same way web-deploy-dev.yml already works for the frontend
+# Worker.
+name: charm-web-server
+services:
+  - name: api
+    dockerfile_path: crates/charm-web-server/Dockerfile
+    source_dir: /
+    http_port: 8787
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /api/health
+    envs:
+      - key: CHARM_WEB_SERVER_MASTER_KEY
+        type: SECRET
+      - key: CHARM_WEB_SERVER_SPACES_BUCKET
+        scope: RUN_TIME
+        value: charm-web-server-sessions
+      - key: CHARM_WEB_SERVER_SPACES_REGION
+        scope: RUN_TIME
+        value: tor1
+      - key: CHARM_WEB_SERVER_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://tor1.digitaloceanspaces.com
+      - key: CHARM_WEB_SERVER_SPACES_ACCESS_KEY_ID
+        type: SECRET
+      - key: CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY
+        type: SECRET

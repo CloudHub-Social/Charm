@@ -41,6 +41,11 @@ base64 = "0.22"
 eyeball = "0.8.8"
 sha2 = "0.11.0"
 tokio-util = { version = "0.7", features = ["io"] }
+# Backs `persistence.rs`'s encrypted session blob: `LocalFileSystem` for local
+# dev/tests (unchanged on-disk layout), `AmazonS3` (against DO Spaces'
+# S3-compatible endpoint, same as this repo's sccache config) in production,
+# where the deploy target has no persistent volume to write a plain file to.
+object_store = { version = "0.11", features = ["aws"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "cookies"] }

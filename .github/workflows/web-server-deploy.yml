@@ -1,0 +1,100 @@
+name: Web server deploy (companion API)
+
+# Deploys crates/charm-web-server (the companion HTTP API the web client
+# talks to — see its README) to DigitalOcean App Platform on every push to
+# main that touches it or the matrix_lib code it shares with src-tauri.
+#
+# Before this workflow existed, this server was redeployed by hand on a VPS
+# from an rsync'd, un-tracked source copy — which is exactly how it drifted
+# out of date and started 404ing on /api/devices and the cross-signing
+# reset-url endpoint (both added in c2cc6c2, never rebuilt on the box). This
+# workflow replaces that manual process: the App Platform app itself is
+# provisioned once out-of-band (see .do/app.yaml's header comment) and this
+# just triggers + verifies a new deployment from the now-current main.
+#
+# main is already gated by quality-checks.yml (push) + the merge queue's
+# required checks before a commit lands here, so this workflow does not
+# re-run the quality gate itself — same assumption web-deploy-dev.yml makes
+# for the frontend Worker.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/charm-web-server/**"
+      - "src-tauri/src/matrix/**"
+      - "src-tauri/src/bindings/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".do/app.yaml"
+      - ".github/workflows/web-server-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to DigitalOcean App Platform
+    runs-on: ubuntu-latest
+    environment: digitalocean-production
+    env:
+      DIGITALOCEAN_ACCESS_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+      DO_APP_ID: ${{ secrets.DO_APP_ID }}
+      DO_APP_URL: ${{ vars.CHARM_WEB_SERVER_APP_URL }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check deploy configuration
+        run: |
+          missing=()
+          for name in DIGITALOCEAN_ACCESS_TOKEN DO_APP_ID DO_APP_URL; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Cannot deploy charm-web-server; missing secret/var(s): %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Trigger and wait for App Platform deployment
+        run: doctl apps create-deployment "$DO_APP_ID" --wait
+
+      - name: Verify deployed API
+        run: |
+          if ! status=$(curl --silent --show-error --output /tmp/charm-web-server-health.txt --write-out "%{http_code}" "$DO_APP_URL/api/health"); then
+            echo "::error::Failed to connect to $DO_APP_URL/api/health."
+            cat /tmp/charm-web-server-health.txt
+            exit 1
+          fi
+          if [ "$status" != "200" ]; then
+            echo "::error::$DO_APP_URL/api/health returned HTTP ${status}; expected 200."
+            cat /tmp/charm-web-server-health.txt
+            exit 1
+          fi
+
+          # Same regression this whole workflow exists to catch: an
+          # auth-required route quietly missing from what's actually running
+          # (404, axum's "no route matched") vs. present but correctly
+          # rejecting the unauthenticated request (401).
+          if ! status=$(curl --silent --show-error --output /tmp/charm-web-server-devices.txt --write-out "%{http_code}" "$DO_APP_URL/api/devices"); then
+            echo "::error::Failed to connect to $DO_APP_URL/api/devices."
+            cat /tmp/charm-web-server-devices.txt
+            exit 1
+          fi
+          if [ "$status" != "401" ]; then
+            echo "::error::$DO_APP_URL/api/devices returned HTTP ${status}; expected 401 (route missing, or an unexpected auth failure mode)."
+            cat /tmp/charm-web-server-devices.txt
+            exit 1
+          fi

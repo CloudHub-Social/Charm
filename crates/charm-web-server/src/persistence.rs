@@ -47,16 +47,37 @@
 //! here rather than silently shipped incomplete.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use matrix_sdk::authentication::matrix::MatrixSession;
+use object_store::aws::AmazonS3Builder;
+use object_store::local::LocalFileSystem;
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, PutPayload};
 use serde::{Deserialize, Serialize};
 
 pub const MASTER_KEY_ENV: &str = "CHARM_WEB_SERVER_MASTER_KEY";
 pub const DATA_DIR_ENV: &str = "CHARM_WEB_SERVER_DATA_DIR";
+
+/// Set to switch the backing store from the local-disk default (fine for
+/// dev/tests and the VPS this crate used to deploy to) to DO Spaces — the
+/// deploy target this crate now targets has no persistent volume, so
+/// `sessions.enc.json` has to live somewhere that survives a redeploy on its
+/// own. All four `*_SPACES_*` vars below are required together once this one
+/// is set; see [`PersistenceStore::from_env`].
+pub const SPACES_BUCKET_ENV: &str = "CHARM_WEB_SERVER_SPACES_BUCKET";
+pub const SPACES_REGION_ENV: &str = "CHARM_WEB_SERVER_SPACES_REGION";
+pub const SPACES_ENDPOINT_ENV: &str = "CHARM_WEB_SERVER_SPACES_ENDPOINT";
+pub const SPACES_ACCESS_KEY_ID_ENV: &str = "CHARM_WEB_SERVER_SPACES_ACCESS_KEY_ID";
+pub const SPACES_SECRET_ACCESS_KEY_ENV: &str = "CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY";
+
+/// Object key the encrypted session blob is stored under, in either backend
+/// — same name the local-disk backend has always used.
+const SESSIONS_OBJECT_KEY: &str = "sessions.enc.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
@@ -99,31 +120,48 @@ fn token_hash(token: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Builds the DO Spaces (S3-compatible) backend once [`SPACES_BUCKET_ENV`] is
+/// set — the other three `*_SPACES_*` vars are then required too, since a
+/// bucket name alone isn't enough to reach a non-AWS S3-compatible endpoint
+/// or authenticate against it.
+fn spaces_store_from_env(bucket: &str) -> Result<object_store::aws::AmazonS3, String> {
+    let require = |name: &str| {
+        std::env::var(name).map_err(|_| format!("{name} must be set when {SPACES_BUCKET_ENV} is"))
+    };
+    AmazonS3Builder::new()
+        .with_bucket_name(bucket)
+        .with_region(require(SPACES_REGION_ENV)?)
+        .with_endpoint(require(SPACES_ENDPOINT_ENV)?)
+        .with_access_key_id(require(SPACES_ACCESS_KEY_ID_ENV)?)
+        .with_secret_access_key(require(SPACES_SECRET_ACCESS_KEY_ENV)?)
+        .with_virtual_hosted_style_request(true)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 pub struct PersistenceStore {
     key: Aes256Gcm,
-    path: PathBuf,
-    /// Serializes read-modify-write cycles against the single shared file —
+    store: Arc<dyn ObjectStore>,
+    object_path: ObjectPath,
+    /// Serializes read-modify-write cycles against the single shared object —
     /// two concurrent logins racing a read-then-write would otherwise let
-    /// the second writer's `write_all` silently clobber the first login's
-    /// just-saved entry (last-writer-wins on the *whole file*, not a merge).
+    /// the second writer's `write_all_raw` silently clobber the first login's
+    /// just-saved entry (last-writer-wins on the *whole object*, not a merge).
     lock: tokio::sync::Mutex<()>,
 }
 
 impl PersistenceStore {
     /// See the module doc comment for the env vars this reads. Returns
     /// `Ok(None)`, not an error, when `CHARM_WEB_SERVER_MASTER_KEY` is unset.
+    ///
+    /// Backend selection: [`SPACES_BUCKET_ENV`] set → DO Spaces (the four
+    /// `*_SPACES_*` vars are then all required); otherwise local disk under
+    /// [`DATA_DIR_ENV`] (default `./data`), same as before this crate could
+    /// target a deploy platform with no persistent volume.
     pub fn from_env() -> Result<Option<Self>, String> {
         let Ok(key_b64) = std::env::var(MASTER_KEY_ENV) else {
             return Ok(None);
         };
-        Self::with_key_b64_and_dir(
-            &key_b64,
-            &std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string()),
-        )
-        .map(Some)
-    }
-
-    fn with_key_b64_and_dir(key_b64: &str, dir: &str) -> Result<Self, String> {
         let key_bytes = BASE64
             .decode(key_b64.trim())
             .map_err(|e| format!("{MASTER_KEY_ENV} is not valid base64: {e}"))?;
@@ -135,22 +173,32 @@ impl PersistenceStore {
         }
         let key = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
 
-        let dir = PathBuf::from(dir);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let store: Arc<dyn ObjectStore> = if let Ok(bucket) = std::env::var(SPACES_BUCKET_ENV) {
+            Arc::new(spaces_store_from_env(&bucket)?)
+        } else {
+            let dir = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
+            let dir = PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            Arc::new(LocalFileSystem::new_with_prefix(&dir).map_err(|e| e.to_string())?)
+        };
 
-        Ok(Self {
+        Ok(Some(Self {
             key,
-            path: dir.join("sessions.enc.json"),
+            store,
+            object_path: ObjectPath::from(SESSIONS_OBJECT_KEY),
             lock: tokio::sync::Mutex::new(()),
-        })
+        }))
     }
 
     #[cfg(test)]
     pub fn new_for_test(dir: &std::path::Path, key_bytes: [u8; 32]) -> Self {
         let key = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
+        let store =
+            LocalFileSystem::new_with_prefix(dir).expect("scratch dir must exist for tests");
         Self {
             key,
-            path: dir.join("sessions.enc.json"),
+            store: Arc::new(store),
+            object_path: ObjectPath::from(SESSIONS_OBJECT_KEY),
             lock: tokio::sync::Mutex::new(()),
         }
     }
@@ -172,9 +220,9 @@ impl PersistenceStore {
     /// entry, destroying every other still-possibly-recoverable session in
     /// it.
     async fn read_all_raw(&self) -> Result<Vec<EncryptedBlob>, String> {
-        let bytes = match tokio::fs::read(&self.path).await {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        let bytes = match self.store.get(&self.object_path).await {
+            Ok(result) => result.bytes().await.map_err(|e| e.to_string())?,
+            Err(object_store::Error::NotFound { .. }) => return Ok(Vec::new()),
             Err(e) => return Err(e.to_string()),
         };
         // Per-entry, not per-file, *within* the array: deserializing the
@@ -299,30 +347,17 @@ impl PersistenceStore {
 
     async fn write_all_raw(&self, blobs: &[EncryptedBlob]) -> Result<(), String> {
         let json = serde_json::to_vec(blobs).map_err(|e| e.to_string())?;
-        // Write-then-rename (same-volume, atomic on every platform this
-        // deploys to) so a crash mid-write never leaves the real file
-        // truncated/corrupt for the next startup to choke on.
-        let tmp_path = self.path.with_extension("tmp");
-        tokio::fs::write(&tmp_path, &json)
+        // A single whole-object `put` — every backend `object_store` gives us
+        // here (S3-compatible Spaces, and its own `LocalFileSystem`, which
+        // itself writes via a temp-file-then-rename under the hood) already
+        // makes this atomic, so a crash mid-write can never leave a reader
+        // seeing a truncated/corrupt object, without this module hand-rolling
+        // that guarantee itself.
+        self.store
+            .put(&self.object_path, PutPayload::from(json))
             .await
-            .map_err(|e| e.to_string())?;
-        // Unlike POSIX, `rename` on Windows fails with `AlreadyExists`
-        // rather than atomically replacing an existing destination — this
-        // deploys to Linux (`matrix-vps`) in practice, but falling back to
-        // remove-then-rename keeps this correct cross-platform rather than
-        // silently relying on a POSIX-only guarantee.
-        match tokio::fs::rename(&tmp_path, &self.path).await {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                tokio::fs::remove_file(&self.path)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tokio::fs::rename(&tmp_path, &self.path)
-                    .await
-                    .map_err(|e| e.to_string())
-            }
-            Err(e) => Err(e.to_string()),
-        }
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Rebuilds a live `Client` (and runs an initial sync, same as
@@ -722,5 +757,86 @@ mod tests {
         // The real, decryptable entry must also still be there.
         let all = store.read_all().await;
         assert!(all.iter().any(|s| s.token == "tok-real"));
+    }
+
+    /// Guards a single env var for the lifetime of the guard, restoring
+    /// whatever was there before (or unsetting it again) on drop — same
+    /// pattern as `tests/http_api.rs`'s `EnvVarGuard`, needed here since
+    /// `from_env` reads process env directly and these tests all share one
+    /// test binary's process.
+    // The two `from_env_*` tests below mutate process-wide env vars
+    // (`std::env::set_var`/`remove_var`), and `cargo test` runs `#[test]`s
+    // concurrently within one process by default — without serializing them
+    // against each other, one test's `EnvVarGuard` could restore/clear a var
+    // mid-way through the other's `from_env` call. Same problem
+    // `tests/http_api.rs`'s `ALLOWED_ORIGIN_ENV_LOCK` exists for.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// No `SPACES_BUCKET_ENV` set → `from_env` must still build the
+    /// local-disk backend it always has, not silently do nothing or error.
+    #[test]
+    fn from_env_without_spaces_bucket_uses_local_disk() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = scratch_dir("from-env-local");
+        let _master_key = EnvVarGuard::set(MASTER_KEY_ENV, &BASE64.encode([1u8; 32]));
+        let _data_dir = EnvVarGuard::set(DATA_DIR_ENV, dir.to_str().unwrap());
+        let _no_bucket = EnvVarGuard::remove(SPACES_BUCKET_ENV);
+
+        let store = PersistenceStore::from_env().unwrap();
+        assert!(
+            store.is_some(),
+            "a master key alone must be enough to opt in"
+        );
+    }
+
+    /// `SPACES_BUCKET_ENV` set without its sibling `*_SPACES_*` vars must
+    /// fail closed with a clear error rather than silently falling back to
+    /// local disk (which would mean "configured for Spaces" deployments
+    /// quietly writing to an ephemeral filesystem instead) or panicking.
+    #[test]
+    fn from_env_with_spaces_bucket_but_missing_credentials_errors() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _master_key = EnvVarGuard::set(MASTER_KEY_ENV, &BASE64.encode([1u8; 32]));
+        let _bucket = EnvVarGuard::set(SPACES_BUCKET_ENV, "charm-web-server-sessions");
+        let _no_region = EnvVarGuard::remove(SPACES_REGION_ENV);
+        let _no_endpoint = EnvVarGuard::remove(SPACES_ENDPOINT_ENV);
+        let _no_access_key = EnvVarGuard::remove(SPACES_ACCESS_KEY_ID_ENV);
+        let _no_secret_key = EnvVarGuard::remove(SPACES_SECRET_ACCESS_KEY_ENV);
+
+        let err = match PersistenceStore::from_env() {
+            Err(e) => e,
+            Ok(_) => panic!(
+                "a bucket with no region/endpoint/credentials must fail closed, not fall back"
+            ),
+        };
+        assert!(err.contains(SPACES_REGION_ENV), "got: {err}");
     }
 }
