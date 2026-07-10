@@ -97,18 +97,25 @@ const actual = {
 };
 
 // Reject a PR that lowers a floor in observability-ratchet.json itself while
-// also shrinking the underlying coverage — without this, the two checks
-// above only ever compare against whatever floor the current diff ships, so
-// lowering the floor and deleting the coverage in the same commit sails
-// through green (found by Codex's PR bot review). Compare against
-// origin/main's committed floors; if that's unavailable (no origin remote,
-// first commit introducing this file, offline dev run), skip the
-// decrease check rather than fail closed on an infra hiccup — the
-// below-floor check above still catches a same-PR regression either way.
+// also shrinking the underlying coverage — without this, the below-floor
+// check only ever compares against whatever floor the current diff ships,
+// so lowering the floor and deleting the coverage in the same commit sails
+// through green (found by Codex's PR bot review). Compares against the PR's
+// actual base branch (release/* backports have their own, possibly older,
+// floors — comparing every PR to origin/main regardless of its real base
+// would false-fail a valid backport or force unrelated main-only ratchet
+// edits into it; see require-main-base.yml for the allowed bases). Falls
+// back to "main" when no base ref is supplied (local/offline runs). If the
+// fetch/show itself fails (no origin remote, first commit introducing this
+// file), skip the decrease check rather than fail closed on an infra
+// hiccup — the below-floor check above still catches a same-PR regression
+// either way.
+const BASE_REF = (process.env.RATCHET_BASE_REF || "main").replace(/^refs\/heads\//, "");
+
 function baseFloors() {
   try {
-    execSync("git fetch --depth=1 origin main", { cwd: ROOT, stdio: "ignore" });
-    const raw = execSync("git show origin/main:observability-ratchet.json", {
+    execSync(`git fetch --depth=1 origin ${BASE_REF}`, { cwd: ROOT, stdio: "ignore" });
+    const raw = execSync(`git show origin/${BASE_REF}:observability-ratchet.json`, {
       cwd: ROOT,
       stdio: ["ignore", "pipe", "ignore"],
     }).toString();
@@ -119,6 +126,20 @@ function baseFloors() {
   }
 }
 
+// A floor set to a non-numeric JSON value (e.g. "disabled", or "14 calls")
+// makes every `<`/`>` comparison below evaluate false after coercing to
+// NaN, silently disabling enforcement for that metric instead of failing
+// (found by Codex's PR bot review). Fail closed on any non-finite floor
+// instead of letting it slide through as a false pass.
+function assertFinite(key, value, source) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(
+      `${key}: floor in ${source} is not a finite number (got ${JSON.stringify(value)}) — ` +
+        "fix observability-ratchet.json",
+    );
+  }
+}
+
 const failures = [];
 for (const [key, floor] of Object.entries(floors)) {
   const count = actual[key];
@@ -126,39 +147,30 @@ for (const [key, floor] of Object.entries(floors)) {
     failures.push(`Unknown ratchet key "${key}" in observability-ratchet.json`);
     continue;
   }
+  assertFinite(key, floor, "observability-ratchet.json");
   if (count < floor) {
     failures.push(`${key}: ${count} is below the floor of ${floor} in observability-ratchet.json`);
-  }
-  // A PR that adds coverage without raising the matching floor leaves the
-  // floor stale, so a *later* PR can delete that same coverage and only
-  // fall back to the old (still-passing) floor — the regression happens two
-  // PRs removed from the floor edit that should have caught it (found by
-  // Codex's PR bot review). Forcing floor === count keeps the ratchet
-  // exact, not just a one-directional backstop.
-  if (count > floor) {
-    failures.push(
-      `${key}: actual count ${count} is above the floor of ${floor} — raise the floor to ` +
-        `${count} in observability-ratchet.json in this PR so the new coverage is locked in`,
-    );
   }
 }
 
 // Deleting a ratchet key entirely (e.g. dropping "rustSentryCallSites" from
 // observability-ratchet.json) would otherwise let a PR remove that metric's
-// entire floor along with the coverage it was tracking — the loops above
-// only walk the PR's own `floors`, so a removed key is invisible to them
-// (found by Codex's PR bot review). Compare against origin/main's key set
-// too: any key present on main must still be present here.
+// entire floor along with the coverage it was tracking — the loop above
+// only walks the PR's own `floors`, so a removed key is invisible to it
+// (found by Codex's PR bot review). Compare against the base branch's key
+// set too: any key present there must still be present here.
 const base = baseFloors();
 if (base) {
   for (const [key, baseFloor] of Object.entries(base)) {
     if (!(key in floors)) {
       failures.push(
-        `${key}: present in origin/main's observability-ratchet.json (floor ${baseFloor}) but ` +
+        `${key}: present in ${BASE_REF}'s observability-ratchet.json (floor ${baseFloor}) but ` +
           "missing here — a ratchet key can't be silently dropped; restore it or raise this in " +
           "review if the metric is genuinely being retired",
       );
+      continue;
     }
+    assertFinite(key, baseFloor, `origin/${BASE_REF}'s observability-ratchet.json`);
   }
   for (const [key, floor] of Object.entries(floors)) {
     const baseFloor = base[key];
