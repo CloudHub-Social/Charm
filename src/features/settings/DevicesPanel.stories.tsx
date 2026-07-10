@@ -51,6 +51,7 @@ type Story = StoryObj<typeof meta>;
 export const Bootstrapped: Story = {
   render: () => {
     const client = withSeededDevices(DEVICES, {
+      has_identity: true,
       has_master_key: true,
       has_self_signing_key: true,
       has_user_signing_key: true,
@@ -66,6 +67,7 @@ export const Bootstrapped: Story = {
 export const NotSetUp: Story = {
   render: () => {
     const client = withSeededDevices(DEVICES, {
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,

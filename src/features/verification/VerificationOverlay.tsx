@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { CROSS_SIGNING_STATUS_QUERY_KEY, DEVICES_QUERY_KEY } from "@/features/settings/useDevices";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
 import {
   acceptVerificationRequest,
@@ -27,6 +29,7 @@ export function VerificationOverlay() {
   const [request, setRequest] = useState<VerificationRequestSummary | null>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "incoming" });
   const doneTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queryClient = useQueryClient();
   const { closeSettings } = useSettingsNavigation();
 
   useEffect(() => {
@@ -64,6 +67,8 @@ export function VerificationOverlay() {
           break;
         case "done":
           setPhase({ kind: "done" });
+          void queryClient.invalidateQueries({ queryKey: DEVICES_QUERY_KEY });
+          void queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY });
           doneTimeoutRef.current = setTimeout(() => setRequest(null), 2000);
           break;
         case "cancelled":
@@ -82,7 +87,7 @@ export function VerificationOverlay() {
         doneTimeoutRef.current = null;
       }
     };
-  }, [request]);
+  }, [queryClient, request]);
 
   if (!request) return null;
 

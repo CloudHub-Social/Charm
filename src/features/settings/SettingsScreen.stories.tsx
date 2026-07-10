@@ -27,6 +27,7 @@ const DEVICES: DeviceSummary[] = [
 ];
 
 const CROSS_SIGNING_STATUS: CrossSigningStatusSummary = {
+  has_identity: true,
   has_master_key: true,
   has_self_signing_key: true,
   has_user_signing_key: true,

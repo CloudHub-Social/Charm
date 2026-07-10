@@ -1,5 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createStore, Provider as JotaiProvider } from "jotai";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import { VerificationOverlay } from "./VerificationOverlay";
@@ -39,6 +41,15 @@ function incomingRequest(overrides: Partial<VerificationRequestSummary> = {}) {
   };
 }
 
+function renderWithProviders(children: ReactNode, store = createStore()) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <JotaiProvider store={store}>{children}</JotaiProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe("VerificationOverlay", () => {
   beforeEach(() => {
     verificationRequestCallback = undefined;
@@ -55,12 +66,12 @@ describe("VerificationOverlay", () => {
   });
 
   it("renders nothing until a verification request arrives", () => {
-    render(<VerificationOverlay />);
+    renderWithProviders(<VerificationOverlay />);
     expect(screen.queryByText("Verify new sign-in")).not.toBeInTheDocument();
   });
 
   it("shows the incoming request and moves to done after confirming", async () => {
-    render(<VerificationOverlay />);
+    renderWithProviders(<VerificationOverlay />);
 
     act(() => {
       verificationRequestCallback?.(incomingRequest());
@@ -94,7 +105,7 @@ describe("VerificationOverlay", () => {
     // cleanup previously guarding it. If a second, unrelated verification
     // request arrives in that window, the stale timeout must not fire and
     // clobber it back to null.
-    render(<VerificationOverlay />);
+    renderWithProviders(<VerificationOverlay />);
 
     act(() => {
       verificationRequestCallback?.(incomingRequest({ flow_id: "flow-1" }));
@@ -131,11 +142,7 @@ describe("VerificationOverlay", () => {
     const store = createStore();
     store.set(settingsOpenAtom, "devices");
 
-    render(
-      <JotaiProvider store={store}>
-        <VerificationOverlay />
-      </JotaiProvider>,
-    );
+    renderWithProviders(<VerificationOverlay />, store);
 
     act(() => {
       verificationRequestCallback?.(incomingRequest());

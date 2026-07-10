@@ -10,7 +10,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,10 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
 use charm_lib::matrix::commands::SlashCommand;
+use charm_lib::matrix::devices::{
+    delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
+    list_devices_impl,
+};
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
@@ -220,6 +224,10 @@ pub fn router(state: AppState) -> Router {
             get(get_cross_signing_status).post(bootstrap_cross_signing),
         )
         .route(
+            "/api/verification/cross-signing/reset-url",
+            get(get_cross_signing_reset_url),
+        )
+        .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
             post(accept_verification),
         )
@@ -238,6 +246,12 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/verification/devices/{device_id}/request",
             post(request_device_verification),
+        )
+        .route("/api/devices", get(list_devices))
+        .route("/api/devices/{device_id}", delete(delete_device))
+        .route(
+            "/api/devices/{device_id}/delete-url",
+            get(get_device_delete_url),
         )
         // -- live events --
         .route("/api/ws", get(ws_handler))
@@ -2130,6 +2144,14 @@ async fn bootstrap_cross_signing(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn get_cross_signing_reset_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(get_cross_signing_reset_url_impl(&session.client).await))
+}
+
 async fn accept_verification(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2213,6 +2235,50 @@ async fn request_device_verification(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(flow_id))
+}
+
+async fn list_devices(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let devices = list_devices_impl(&session.client)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(devices))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeleteDeviceRequest {
+    password: Option<String>,
+}
+
+async fn delete_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(device_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let request: DeleteDeviceRequest = parse_optional_json(&body)?;
+    delete_device_impl(&session.client, device_id, request.password)
+        .await
+        .map_err(|error| match error {
+            UiaCommandError::UiaChallenge => ApiError::uia_challenge(),
+            UiaCommandError::Other { message } => ApiError::uia_other(message),
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_device_delete_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(device_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(get_device_delete_url_impl(&session.client, device_id).await))
 }
 
 // ---------------------------------------------------------------------

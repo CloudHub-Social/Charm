@@ -18,6 +18,7 @@ vi.mock("@/lib/matrix", () => ({
   getAccountDeactivateUrl: vi.fn().mockResolvedValue(null),
   listDevices: vi.fn().mockResolvedValue([]),
   crossSigningStatus: vi.fn().mockResolvedValue({
+    has_identity: true,
     has_master_key: true,
     has_self_signing_key: true,
     has_user_signing_key: true,

@@ -15,6 +15,8 @@ vi.mock("@/lib/matrix", () => ({
   setAccountData: () => Promise.resolve(),
   getLocalOnboardingFlag: (...args: unknown[]) => getLocalOnboardingFlag(...args),
   setLocalOnboardingFlag: () => Promise.resolve(),
+  onVerificationRequest: () => Promise.resolve(() => {}),
+  onSasUpdate: () => Promise.resolve(() => {}),
 }));
 
 vi.mock("@/lib/deepLink", () => ({
@@ -29,6 +31,10 @@ vi.mock("@/features/rooms/RoomsScreen", () => ({
   RoomsScreen: ({ onLoggedOut }: { onLoggedOut: () => void }) => (
     <button onClick={onLoggedOut}>trigger logout</button>
   ),
+}));
+
+vi.mock("@/features/verification/VerificationOverlay", () => ({
+  VerificationOverlay: () => null,
 }));
 
 // `OnboardingScreen`'s own pane navigation/skip behavior is covered by

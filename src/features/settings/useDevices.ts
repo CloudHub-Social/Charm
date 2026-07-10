@@ -9,8 +9,8 @@ import {
   requestDeviceVerification,
 } from "@/lib/matrix";
 
-const DEVICES_QUERY_KEY = ["devices"] as const;
-const CROSS_SIGNING_STATUS_QUERY_KEY = ["crossSigningStatus"] as const;
+export const DEVICES_QUERY_KEY = ["devices"] as const;
+export const CROSS_SIGNING_STATUS_QUERY_KEY = ["crossSigningStatus"] as const;
 const CROSS_SIGNING_RESET_URL_QUERY_KEY = ["crossSigningResetUrl"] as const;
 
 export function useDevices(enabled = true) {

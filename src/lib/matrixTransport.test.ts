@@ -348,6 +348,28 @@ describe("matrix web transport", () => {
     ],
     ["cross_signing_status", {}, "GET", "/api/verification/cross-signing", undefined],
     [
+      "get_cross_signing_reset_url",
+      {},
+      "GET",
+      "/api/verification/cross-signing/reset-url",
+      undefined,
+    ],
+    ["list_devices", {}, "GET", "/api/devices", undefined],
+    [
+      "delete_device",
+      { deviceId: "DEVICE", password: "pw" },
+      "DELETE",
+      "/api/devices/DEVICE",
+      { password: "pw" },
+    ],
+    [
+      "get_device_delete_url",
+      { deviceId: "DEVICE" },
+      "GET",
+      "/api/devices/DEVICE/delete-url",
+      undefined,
+    ],
+    [
       "accept_verification_request",
       { otherUserId: "@alice:example.org", flowId: "flow" },
       "POST",

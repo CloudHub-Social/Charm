@@ -24,12 +24,10 @@ use charm_lib::matrix::room_admin;
 use charm_lib::matrix::rooms;
 use charm_lib::matrix::shell;
 use charm_lib::matrix::sync::SyncStateEvent;
-use charm_lib::matrix::verification::{
-    self, EmojiPair, SasUpdateEvent, VerificationRequestSummary,
-};
+use charm_lib::matrix::verification::{self, SasUpdateEvent, VerificationRequestSummary};
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
-use matrix_sdk::encryption::verification::{Emoji, SasState};
+use matrix_sdk::encryption::verification::SasState;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::room::member::SyncRoomMemberEvent;
@@ -570,40 +568,24 @@ pub async fn start_sas_verification(
     other_user_id: &str,
     flow_id: &str,
 ) -> Result<(), String> {
-    let sas = verification::start_sas_verification_impl(client, other_user_id, flow_id).await?;
+    let verification::StartedSasVerification {
+        sas,
+        accept_after_subscribe,
+    } = verification::start_sas_verification_impl(client, other_user_id, flow_id).await?;
+    let watcher_sas = sas.clone();
+    let mut changes = watcher_sas.changes();
+    if accept_after_subscribe {
+        sas.accept().await.map_err(|e| e.to_string())?;
+    }
     let flow_id = flow_id.to_string();
 
     tokio::spawn(async move {
-        let mut changes = sas.changes();
+        if buffer_sas_update(&events, &pending, &flow_id, watcher_sas.state()) {
+            return;
+        }
+
         while let Some(sas_state) = changes.next().await {
-            let update = match sas_state {
-                SasState::Started { .. } => SasUpdateEvent::Started,
-                SasState::Accepted { .. } => SasUpdateEvent::Accepted,
-                SasState::KeysExchanged { emojis, .. } => SasUpdateEvent::KeysExchanged {
-                    emojis: emojis
-                        .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
-                        .unwrap_or_default(),
-                },
-                SasState::Confirmed => SasUpdateEvent::Confirmed,
-                SasState::Done { .. } => SasUpdateEvent::Done,
-                SasState::Cancelled(info) => SasUpdateEvent::Cancelled {
-                    reason: info.reason().to_string(),
-                },
-                SasState::Created { .. } => continue,
-            };
-            let is_terminal = matches!(
-                update,
-                SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
-            );
-            buffer_verification_event(
-                &events,
-                &pending,
-                ServerEvent::VerificationSasUpdate(SasUpdatePayload {
-                    flow_id: flow_id.clone(),
-                    update,
-                }),
-            );
-            if is_terminal {
+            if buffer_sas_update(&events, &pending, &flow_id, sas_state) {
                 break;
             }
         }
@@ -612,11 +594,28 @@ pub async fn start_sas_verification(
     Ok(())
 }
 
-fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
-    EmojiPair {
-        symbol: emoji.symbol.to_string(),
-        description: emoji.description.to_string(),
-    }
+fn buffer_sas_update(
+    events: &broadcast::Sender<ServerEvent>,
+    pending: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    flow_id: &str,
+    sas_state: SasState,
+) -> bool {
+    let Some(update) = verification::sas_state_to_update(sas_state) else {
+        return false;
+    };
+    let is_terminal = matches!(
+        update,
+        SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
+    );
+    buffer_verification_event(
+        events,
+        pending,
+        ServerEvent::VerificationSasUpdate(SasUpdatePayload {
+            flow_id: flow_id.to_string(),
+            update,
+        }),
+    );
+    is_terminal
 }
 
 /// Starts an outgoing SAS verification of another of this account's own

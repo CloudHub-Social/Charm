@@ -38,7 +38,7 @@ const SECTIONS: {
   { value: "account", label: "Account" },
   { value: "general", label: "General", webUnsupported: true },
   { value: "notifications", label: "Notifications", webUnsupported: true },
-  { value: "devices", label: "Devices", webUnsupported: true },
+  { value: "devices", label: "Devices" },
   { value: "appearance", label: "Appearance" },
   { value: "observability", label: "Observability" },
   { value: "desktop", label: "Desktop", desktopOnly: true },
@@ -116,19 +116,17 @@ function SettingsBody({
           </TabsContent>
         )}
         {!webBuild && (
-          <>
-            <TabsContent value="notifications">
-              <Suspense fallback={null}>
-                <NotificationsPanel />
-              </Suspense>
-            </TabsContent>
-            <TabsContent value="devices">
-              <Suspense fallback={null}>
-                <DevicesPanel />
-              </Suspense>
-            </TabsContent>
-          </>
+          <TabsContent value="notifications">
+            <Suspense fallback={null}>
+              <NotificationsPanel />
+            </Suspense>
+          </TabsContent>
         )}
+        <TabsContent value="devices">
+          <Suspense fallback={null}>
+            <DevicesPanel />
+          </Suspense>
+        </TabsContent>
         <TabsContent value="appearance">
           <AppearancePanel />
         </TabsContent>
