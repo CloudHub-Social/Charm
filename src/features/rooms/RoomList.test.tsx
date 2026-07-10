@@ -1019,6 +1019,42 @@ describe("RoomList", () => {
     expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
   });
 
+  it("finds an unjoined space hierarchy child by search, with its Join affordance", async () => {
+    // Regression test: `rooms` (and everything derived from it, like
+    // `scopedRooms`) only ever contains rooms the account has joined, so a
+    // public/knock child rendered straight from `spaceHierarchy` (with a
+    // Join/Request button, never joined) previously had no way to show up in
+    // search at all — "No matching rooms" even though it's plainly visible
+    // in the unsearched hierarchy view right below.
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!unjoined:localhost",
+          name: "Alpha Unjoined",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "public",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList {...roomListProps({ rooms: [space], mode: "space", selectedSpace: space })} />,
+    );
+
+    await screen.findByText("Alpha Unjoined");
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    expect(screen.getByText("Alpha Unjoined")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Join" })).toBeInTheDocument();
+    expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
+  });
+
   it("allows Search everywhere even while the selected space is still loading", async () => {
     listSpaceHierarchy.mockReturnValue(new Promise(() => {})); // never resolves
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });

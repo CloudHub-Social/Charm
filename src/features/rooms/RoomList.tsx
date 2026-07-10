@@ -29,7 +29,7 @@ import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
-import { filterRoomsByQuery } from "./roomSearch";
+import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomListMode } from "./SpaceRail";
@@ -154,6 +154,22 @@ export function RoomList({
     const pool = (searchEverywhere ? rooms : scopedRooms).filter((room) => !room.is_space);
     return filterRoomsByQuery(pool, searchQuery);
   }, [isSearching, searchEverywhere, rooms, scopedRooms, searchQuery]);
+  // Unjoined children of the currently selected space's hierarchy: `rooms`
+  // (and therefore `scopedRooms`) only ever contains rooms the account has
+  // joined, so a public/knock child the user can see in the unsearched
+  // hierarchy view (rendered straight from `spaceHierarchy` below) would
+  // otherwise silently vanish from search — reported as a real bug (PR #150
+  // review thread on this file). Scoped to the selected space's own
+  // hierarchy regardless of "Search everywhere", since that toggle only
+  // widens the *joined-room* pool above; unjoined children of other spaces
+  // aren't loaded here to search in the first place.
+  const unjoinedHierarchyMatches = useMemo(() => {
+    if (!isSearching || mode !== "space" || !selectedSpaceId) return [];
+    const unjoinedChildren = flattenHierarchy(spaceHierarchy)
+      .map((node) => node.child)
+      .filter((child) => !child.is_space && !roomById.has(child.room_id));
+    return filterSpaceChildrenByQuery(unjoinedChildren, searchQuery);
+  }, [isSearching, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
@@ -427,10 +443,25 @@ export function RoomList({
           // can't be searched, so it must not hide scoped search results.
           <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
         ) : isSearching ? (
-          searchResults.length === 0 ? (
+          searchResults.length === 0 && unjoinedHierarchyMatches.length === 0 ? (
             <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
           ) : (
-            <div className="flex flex-col gap-0.5">{renderSearchResults(searchResults)}</div>
+            <div className="flex flex-col gap-0.5">
+              {renderSearchResults(searchResults)}
+              {unjoinedHierarchyMatches.map((child) => (
+                <HierarchyRow
+                  key={child.room_id}
+                  child={child}
+                  joinedRoom={undefined}
+                  depth={0}
+                  active={false}
+                  pending={pendingRoomId === child.room_id}
+                  onSelectRoom={onSelectRoom}
+                  onSelectSpace={onSelectSpace}
+                  onJoin={handleJoin}
+                />
+              ))}
+            </div>
           )
         ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">

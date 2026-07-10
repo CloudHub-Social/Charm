@@ -1,4 +1,4 @@
-import type { RoomSummary } from "@/lib/matrix";
+import type { RoomSummary, SpaceChild } from "@/lib/matrix";
 import { displayName } from "./roomDisplay";
 
 /**
@@ -14,5 +14,22 @@ export function filterRoomsByQuery(rooms: RoomSummary[], query: string): RoomSum
   return rooms.filter((room) => {
     const name = displayName(room.room_id, room.name).toLowerCase();
     return name.includes(trimmed) || room.room_id.toLowerCase().includes(trimmed);
+  });
+}
+
+/**
+ * Same matching rule as `filterRoomsByQuery`, but for `SpaceChild` — the
+ * shape returned by the `/hierarchy` endpoint for a space's children that
+ * the user hasn't joined yet, which never show up in `rooms`/`RoomSummary`.
+ * Without this, searching a space you're browsing (but not a member of)
+ * would report "No matching rooms" for a child that's plainly visible right
+ * below in the unsearched hierarchy view.
+ */
+export function filterSpaceChildrenByQuery(children: SpaceChild[], query: string): SpaceChild[] {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return children;
+  return children.filter((child) => {
+    const name = (child.name ?? child.room_id).toLowerCase();
+    return name.includes(trimmed) || child.room_id.toLowerCase().includes(trimmed);
   });
 }
