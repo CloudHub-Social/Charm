@@ -99,13 +99,26 @@ jobs:
       # dispatchable from any branch without silently hitting an
       # unrelated S3-auth failure.
       - name: Start Tauri Linux build in background
+        env:
+          # Passed via env rather than interpolated directly into the
+          # `sh -c` string: bundles is a free-text workflow_dispatch
+          # input, so building the command by string concatenation would
+          # let commas-with-spaces mis-split it into extra args at best,
+          # or shell metacharacters change what actually runs at worst.
+          BUNDLES_INPUT: ${{ inputs.bundles }}
+          VERBOSE_INPUT: ${{ inputs.verbose }}
         run: |
           rm -f /tmp/tauri-build.exit
+          if [[ ! "$BUNDLES_INPUT" =~ ^[a-zA-Z0-9,_-]+$ ]]; then
+            echo "::error::bundles input must only contain letters, numbers, commas, hyphens, underscores — got: $BUNDLES_INPUT"
+            exit 1
+          fi
           VERBOSE_FLAG=""
-          if [ "${{ inputs.verbose }}" = "true" ]; then
+          if [ "$VERBOSE_INPUT" = "true" ]; then
             VERBOSE_FLAG="-vv"
           fi
-          nohup sh -c "pnpm tauri build --debug --bundles ${{ inputs.bundles }} $VERBOSE_FLAG; echo \$? > /tmp/tauri-build.exit" \
+          nohup env BUNDLES_INPUT="$BUNDLES_INPUT" VERBOSE_FLAG="$VERBOSE_FLAG" sh -c \
+            'pnpm tauri build --debug --bundles "$BUNDLES_INPUT" $VERBOSE_FLAG; echo $? > /tmp/tauri-build.exit' \
             > /tmp/tauri-build.log 2>&1 &
           echo $! > /tmp/tauri-build.pid
 
@@ -116,8 +129,14 @@ jobs:
       # genuinely elapsed with no sentinel file.
       - name: Wait for the build to actually finish (or genuinely hang)
         id: wait
+        env:
+          WAIT_MINUTES_INPUT: ${{ inputs.wait_minutes }}
         run: |
-          wait_iterations=$((${{ inputs.wait_minutes }} * 6))
+          if [[ ! "$WAIT_MINUTES_INPUT" =~ ^[0-9]+$ ]] || [ "$WAIT_MINUTES_INPUT" -lt 1 ]; then
+            echo "::error::wait_minutes must be a positive integer — got: $WAIT_MINUTES_INPUT"
+            exit 1
+          fi
+          wait_iterations=$((WAIT_MINUTES_INPUT * 6))
           checkpoint_iteration=$((wait_iterations / 3))
           for i in $(seq 1 "$wait_iterations"); do
             if [ -f /tmp/tauri-build.exit ]; then
@@ -137,7 +156,7 @@ jobs:
             fi
             sleep 10
           done
-          echo "Build still running after ${{ inputs.wait_minutes }} minutes — treating as genuinely stuck"
+          echo "Build still running after $WAIT_MINUTES_INPUT minutes — treating as genuinely stuck"
           echo "::group::Last 200 lines of the build log before the hang"
           tail -n 200 /tmp/tauri-build.log
           echo "::endgroup::"
@@ -225,7 +244,7 @@ jobs:
 
       - name: Upload hang diagnostics
         if: steps.wait.outputs.still_stuck == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-tauri-hang-diagnostics
           path: /tmp/diag/
