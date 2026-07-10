@@ -294,6 +294,16 @@ pub async fn join_room(
 }
 
 /// Core logic behind [`join_room`].
+///
+/// `is_space` is a best-effort read of `Room::is_space()` at the moment the
+/// join completes, from the client's local sync state — it can briefly lag
+/// behind a room that was just created/joined in the same request, before
+/// that room's own `m.room.create` type has finished syncing back. This
+/// command doesn't retry/poll for it here: `join_room` is also the plain
+/// "join a regular room" path (e.g. from the space browser), where blocking
+/// every join on a fixed poll window would add needless latency to the
+/// common case. Retrying is instead the caller's job where the ambiguity
+/// actually matters — see `CreateJoinSpaceDialog.handleJoin`'s retry loop.
 pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<JoinedRoom, String> {
     let parsed = parse_room_or_alias(room_id_or_alias)?;
     let room = client

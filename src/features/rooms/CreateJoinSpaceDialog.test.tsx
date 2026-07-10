@@ -146,7 +146,11 @@ describe("CreateJoinSpaceDialog", () => {
     expect(joinRoom).not.toHaveBeenCalled();
   });
 
-  it("shows an error instead of navigating when the joined address is a regular room", async () => {
+  it("shows an error instead of navigating when the joined address is a regular room, after exhausting retries", async () => {
+    // `is_space` can lag right after a join (see the retry loop's own
+    // comment), so the dialog retries a fixed number of times before
+    // concluding the address really is a regular room rather than a space
+    // that just hasn't synced yet.
     joinRoom.mockResolvedValue({ room_id: "!room:example.org", is_space: false });
     const onSpaceJoined = vi.fn();
     renderWithProviders(
@@ -166,10 +170,39 @@ describe("CreateJoinSpaceDialog", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Join space" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("That address is a room, not a space.")).toBeInTheDocument(),
+    await waitFor(
+      () => expect(screen.getByText("That address is a room, not a space.")).toBeInTheDocument(),
+      { timeout: 3000 },
     );
     expect(onSpaceJoined).not.toHaveBeenCalled();
+    // Initial call plus every retry attempt.
+    expect(joinRoom.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("retries and navigates once the joined address resolves as a space", async () => {
+    joinRoom
+      .mockResolvedValueOnce({ room_id: "!space:example.org", is_space: false })
+      .mockResolvedValueOnce({ room_id: "!space:example.org", is_space: true });
+    const onSpaceJoined = vi.fn();
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={onSpaceJoined}
+      />,
+    );
+
+    const joinTab = screen.getByRole("tab", { name: "Join by address" });
+    joinTab.focus();
+    fireEvent.click(joinTab);
+    fireEvent.change(await screen.findByLabelText("Space address"), {
+      target: { value: "#space:example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Join space" }));
+
+    await waitFor(() => expect(onSpaceJoined).toHaveBeenCalledWith("!space:example.org"));
+    expect(joinRoom).toHaveBeenCalledTimes(2);
   });
 
   it("requires an address before joining", async () => {

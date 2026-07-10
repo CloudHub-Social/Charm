@@ -6,6 +6,22 @@ import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { createSpace, joinRoom } from "@/lib/matrix";
 
+// `join_room`'s `is_space` is a best-effort read of the client's local sync
+// state at the moment the join completes — it can briefly lag behind a room
+// that was just created/joined (by this or another client) in the same
+// window, before that room's own `m.room.create` type has finished syncing
+// back. Rather than trust the very first response, retry the (idempotent,
+// since we're already joined) call a few times before concluding the address
+// really is a regular room. Scoped to this dialog rather than `join_room`
+// itself, since the space browser's plain "join a room" flow shouldn't pay
+// this latency for its own, unambiguous, non-space joins.
+const JOIN_IS_SPACE_RETRY_ATTEMPTS = 5;
+const JOIN_IS_SPACE_RETRY_DELAY_MS = 300;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface CreateJoinSpaceDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -103,7 +119,13 @@ export function CreateJoinSpaceDialog({
     setError(null);
     const requestId = ++requestIdRef.current;
     try {
-      const joined = await joinRoom(trimmedTarget);
+      let joined = await joinRoom(trimmedTarget);
+      for (let attempt = 0; !joined.is_space && attempt < JOIN_IS_SPACE_RETRY_ATTEMPTS; attempt++) {
+        if (requestIdRef.current !== requestId) return;
+        await delay(JOIN_IS_SPACE_RETRY_DELAY_MS);
+        if (requestIdRef.current !== requestId) return;
+        joined = await joinRoom(trimmedTarget);
+      }
       if (requestIdRef.current !== requestId) return;
       if (!joined.is_space) {
         setError("That address is a room, not a space.");
