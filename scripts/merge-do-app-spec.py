@@ -103,7 +103,17 @@ def main() -> None:
     # comment), never through this merge step.
     if missing_secrets:
         for key in missing_secrets:
-            print(
+            # `key` here is only ever the env var's *name* (e.g.
+            # "CHARM_WEB_SERVER_MASTER_KEY") — `missing_secrets` is built
+            # above purely from `desired_env["key"]`, never from a `value`
+            # field, so nothing sensitive is logged. CodeQL's
+            # py/clear-text-logging-sensitive-data still flags this: it
+            # treats any field read off a dict that (for its `SECRET`-typed
+            # entries) also carries a `value`/`type: SECRET` marker as
+            # tainted, without distinguishing which field was actually
+            # extracted. False positive, confirmed by inspection — this
+            # file never reads `["value"]` anywhere near a print/log call.
+            print(  # lgtm[py/clear-text-logging-sensitive-data]
                 f"::error::{key} is declared as a SECRET in {repo_path} but has "
                 "no live value on the app — set it via the DO dashboard before "
                 "deploying. Refusing to submit a spec that would deploy it "
