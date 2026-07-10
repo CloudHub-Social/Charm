@@ -54,8 +54,13 @@ def main() -> None:
     desired_svc = desired["services"][0]
     live_svc = find_service(live, desired_svc["name"])
 
+    # Several of these (source_dir, http_port, health_check, ...) are
+    # optional in the DO app spec — if the repo spec omits one, leave
+    # whatever's live untouched rather than crashing on a KeyError or
+    # writing an explicit `null` over a real configured value.
     for field in STRUCTURAL_FIELDS:
-        live_svc[field] = desired_svc[field]
+        if field in desired_svc:
+            live_svc[field] = desired_svc[field]
 
     # Envs: RUN_TIME (non-secret) values come from the repo spec every time.
     # SECRET entries keep whatever's already live (their real EV[...]
