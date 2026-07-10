@@ -349,18 +349,44 @@ impl PersistenceStore {
     /// caller treats that identically to "unknown session": an ordinary 401
     /// and a re-login, no different from today's behavior for any other
     /// invalid cookie.
+    /// `initial_presence`, if given, seeds the freshly built `Session`'s
+    /// `sync_presence` *and* the presence this restore's own initial
+    /// `sync_once` reports to the homeserver — see `restore_one`'s doc
+    /// comment for why sending it as an ordinary follow-up `PUT` only
+    /// *after* this call returns would be too late: `restore_one`'s
+    /// `sync_once` already completes (as `Online`, `SyncSettings`'s own
+    /// default) before this function can return anything for a caller to
+    /// act on. Pass `None` for the ordinary "no known prior presence to
+    /// restore" case (there's nothing wrong with the homeserver seeing the
+    /// default `Online` then).
     pub async fn restore_by_token(
         &self,
         token: &str,
+        initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
     ) -> Option<(
         String,
         crate::session::Session,
         matrix_sdk::sync::SyncResponse,
         String,
     )> {
-        let entry = self.read_one(token).await?;
+        // Bounds `read_one`'s object-store read too, not just `restore_one`'s
+        // homeserver round-trip below — a stalled `get`/`bytes()` call
+        // against a Spaces-backed deployment previously ran with no timeout
+        // at all, so a hung object store could tie up a request despite the
+        // "restore is bounded" claim this whole function makes.
+        let entry = match tokio::time::timeout(RESTORE_TIMEOUT, self.read_one(token)).await {
+            Ok(Some(entry)) => entry,
+            Ok(None) => return None,
+            Err(_) => {
+                tracing::warn!(
+                    "dropping restore attempt for a token: reading its persisted object timed \
+                     out after {RESTORE_TIMEOUT:?}"
+                );
+                return None;
+            }
+        };
         let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-        match tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry)).await {
+        match tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry, initial_presence)).await {
             Ok(Ok((session, initial_response))) => Some((
                 entry.homeserver_url,
                 session,
@@ -510,7 +536,14 @@ impl PersistenceStore {
         let entries = self.read_all().await;
         let attempts = entries.into_iter().map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry)).await;
+            // `restore_all` only ever runs at startup, right after a
+            // process restart — there's no in-memory `evicted_presence` to
+            // carry over at that point (the whole point of that map is
+            // bridging *this same process's* idle-eviction-then-restore
+            // gap), so this always passes `None`: `Online`, `SyncSettings`'s
+            // own default, is exactly what a restart already implied before
+            // presence-carrying existed.
+            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry, None)).await;
             (entry, originally_persisted_access_token, outcome)
         });
         let outcomes = futures_util::future::join_all(attempts).await;
@@ -543,8 +576,21 @@ impl PersistenceStore {
     }
 }
 
+/// `initial_presence`, when given, is applied to the freshly built
+/// `Session`'s `sync_presence` *before* the initial `sync_once` below, and
+/// used as that same call's own `SyncSettings::set_presence` — not just
+/// stored for some later push. Setting it only afterwards (an earlier
+/// version of this — see `routes::require_session` — set `sync_presence`
+/// only after `restore_by_token` had already returned) would be too late:
+/// this function's own initial sync already completes, reporting whatever
+/// presence `SyncSettings::default()` implies (`Online`), before a caller
+/// ever gets anything back to act on. A restored `unavailable`/`offline`
+/// user would therefore flash `Online` to the homeserver for the length of
+/// this sync, no matter how quickly the caller corrected `sync_presence`
+/// afterward.
 async fn restore_one(
     entry: &PersistedSession,
+    initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
     let client = matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
@@ -567,6 +613,12 @@ async fn restore_one(
     // replayed later, so the handler must already be registered.
     let session =
         crate::session::Session::new(client.clone(), entry.session.meta.user_id.to_string());
+    if let Some(presence) = initial_presence {
+        *session
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = presence;
+    }
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
@@ -578,8 +630,15 @@ async fn restore_one(
     // (see `auth::login`'s doc comment, including why the response is
     // returned rather than discarded — `sync_loop::spawn` reuses it as its
     // own initial state instead of long-polling a second, redundant sync).
+    // Reports `initial_presence` right away when given, instead of always
+    // `SyncSettings::default()`'s implicit `Online` — see this function's
+    // own doc comment for why that timing matters.
+    let sync_settings = match initial_presence {
+        Some(presence) => matrix_sdk::config::SyncSettings::default().set_presence(presence.into()),
+        None => matrix_sdk::config::SyncSettings::default(),
+    };
     let initial_response = client
-        .sync_once(matrix_sdk::config::SyncSettings::default())
+        .sync_once(sync_settings)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1013,7 +1072,7 @@ mod tests {
         let dir = scratch_dir("restore-missing");
         let store = PersistenceStore::new_for_test(&dir, [11u8; 32]);
 
-        assert!(store.restore_by_token("never-saved").await.is_none());
+        assert!(store.restore_by_token("never-saved", None).await.is_none());
     }
 
     /// A persisted entry whose homeserver can't actually be reached (dead
@@ -1038,6 +1097,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(store.restore_by_token("tok-unreachable").await.is_none());
+        assert!(store
+            .restore_by_token("tok-unreachable", None)
+            .await
+            .is_none());
     }
 }
