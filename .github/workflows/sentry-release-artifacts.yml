@@ -116,23 +116,38 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # AppImage is deliberately excluded via --bundles: it reproducibly
-      # hangs forever (zero CPU, zero log output) right after rpm bundling
-      # finishes. Two earlier fixes targeting plausible causes (FUSE
-      # mounting, an untimed network download inside tauri-bundler) both
-      # failed to reproduce-then-fix it — a background build + `tmate`/
-      # /proc snapshot on the actual hung runner (see the now-closed
-      # debug-linux-appimage-hang branch) showed no linuxdeploy/appimagetool
-      # subprocess ever gets spawned at all, and every thread of the Tauri
-      # CLI's own node process sits idle in epoll_pwait/futex_wait — a
-      # genuine internal deadlock in @tauri-apps/cli 2.11.4 / tauri-bundler
-      # 2.9.4's AppImage codepath itself, not an external timing issue.
-      # Revisit once upstream has a fix; deb+rpm both bundle fine.
-      - name: Build Tauri Linux app with release debuginfo
-        run: pnpm tauri build --bundles deb,rpm
-        # Backstop in case some other hang path exists beyond the one
-        # --bundles deb,rpm avoids.
-        timeout-minutes: 20
+      # AppImage is deliberately excluded via --bundles: its own bundling
+      # codepath has a separately-known upstream deadlock. deb/rpm
+      # bundling is also prone to an *intermittent* hang of its own —
+      # see nightly-platform-builds.yml's Linux job for the full
+      # investigation history and why this retries on a timeout rather
+      # than trying to prevent it outright.
+      - name: Build Tauri Linux app with release debuginfo (retry on hang, not on a real failure)
+        timeout-minutes: 60
+        run: |
+          max_attempts=3
+          per_attempt_timeout=900 # 15 minutes
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "::group::Build attempt $attempt/$max_attempts"
+            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --bundles deb,rpm
+            status=$?
+            echo "::endgroup::"
+            if [ "$status" -eq 0 ]; then
+              echo "Build succeeded on attempt $attempt."
+              exit 0
+            fi
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
+              rm -rf src-tauri/target/release/bundle
+            else
+              echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
+              exit "$status"
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "All $max_attempts attempts timed out — giving up."
+          exit 1
 
       - name: Resolve Cargo target directory
         id: cargo-target
