@@ -15,25 +15,36 @@ name: PR checklist gate
 # a diff-pattern check, but it closes the "just never mentioned it" failure
 # mode this was written for, and doesn't false-positive on PRs that
 # genuinely don't touch anything observable (docs, CI config, deps).
+#
+# Runs on pull_request (where it actually checks the PR body) and merge_group
+# (where it's a trivial pass, same pattern as review-gate.yml): a bot-authored
+# PR (Dependabot) can't write an N/A explanation into its own auto-generated
+# body, so this repo's merge queue would otherwise fail-closed on every
+# dependency bump. Bot PRs are exempted below for the same reason.
 
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checklist:
     name: Observability & e2e checklist
     runs-on: ubuntu-latest
-    if: github.event.pull_request.draft == false
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+          && github.event.pull_request.user.type != 'Bot')
     steps:
       - name: Verify checklist items are checked or explained
+        if: github.event_name == 'pull_request'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
           script: |

@@ -69,11 +69,43 @@ const actual = {
       "--exclude='*.test.ts' --exclude='*.test.tsx' " +
       "--exclude='*.spec.ts' --exclude='*.spec.tsx'",
   ),
+  // Narrowed to actual event-emitting calls/macros, not every `sentry::`
+  // reference — the original broad pattern also matched setup/config code
+  // (sentry::init, sentry::ClientOptions, scrub_log's type signatures in
+  // lib.rs), so a PR could delete real tracing::warn!/add_breadcrumb
+  // instrumentation while those unrelated references kept the count above
+  // the floor (found by Codex's PR bot review). Rust tests are inline `mod
+  // tests` in the same file rather than separate *.test.rs files (unlike the
+  // frontend convention above), so this can't file-level exclude them the
+  // same way; a test asserting on a real emitting call still counts.
   rustSentryCallSites: countMatches(
-    "tracing::(info|warn|error|debug)!|sentry::|capture_event|add_breadcrumb",
+    "tracing::(info|warn|error|debug)!|capture_event|add_breadcrumb|capture_message",
     "src-tauri/src --include='*.rs'",
   ),
 };
+
+// Reject a PR that lowers a floor in observability-ratchet.json itself while
+// also shrinking the underlying coverage — without this, the two checks
+// above only ever compare against whatever floor the current diff ships, so
+// lowering the floor and deleting the coverage in the same commit sails
+// through green (found by Codex's PR bot review). Compare against
+// origin/main's committed floors; if that's unavailable (no origin remote,
+// first commit introducing this file, offline dev run), skip the
+// decrease check rather than fail closed on an infra hiccup — the
+// below-floor check above still catches a same-PR regression either way.
+function baseFloors() {
+  try {
+    execSync("git fetch --depth=1 origin main", { cwd: ROOT, stdio: "ignore" });
+    const raw = execSync("git show origin/main:observability-ratchet.json", {
+      cwd: ROOT,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).toString();
+    const { _comment: _baseComment, ...parsed } = JSON.parse(raw);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 const failures = [];
 for (const [key, floor] of Object.entries(floors)) {
@@ -84,6 +116,20 @@ for (const [key, floor] of Object.entries(floors)) {
   }
   if (count < floor) {
     failures.push(`${key}: ${count} is below the floor of ${floor} in observability-ratchet.json`);
+  }
+}
+
+const base = baseFloors();
+if (base) {
+  for (const [key, floor] of Object.entries(floors)) {
+    const baseFloor = base[key];
+    if (baseFloor !== undefined && floor < baseFloor) {
+      failures.push(
+        `${key}: floor was lowered from ${baseFloor} to ${floor} in observability-ratchet.json — ` +
+          "floors only ever move up; if coverage genuinely needs to shrink, that's a separate " +
+          "conversation, not a silent edit to this file",
+      );
+    }
   }
 }
 
