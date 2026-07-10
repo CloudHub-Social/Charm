@@ -481,6 +481,41 @@ async fn logout(
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+            // See the matching call in the `else` branch below — harmless
+            // even in the (normal) case where this token was never
+            // idle-evicted and so never had an entry to begin with.
+            state.sessions.forget_evicted_presence(&token);
+        } else if let Some(persistence) = &state.persistence {
+            // No live in-memory `Session` for this token — either it was
+            // never loaded (a startup `restore_all` failure/timeout) or it
+            // was idle-evicted (see `session::SessionStore::sweep_idle`).
+            // Either way there's still a persisted access/refresh token that
+            // would otherwise stay valid at the homeserver forever, since
+            // nothing below this rebuilds a `Client` to revoke it — only
+            // deletes the local persisted copy. Restore just far enough to
+            // call `logout()` on the homeserver before that persisted copy
+            // is gone. The restore itself is awaited (not spawned) and
+            // *before* the unconditional `remove` below — `restore_by_token`
+            // reads the same persisted object `remove` is about to delete,
+            // so this has to run first, not race it — and it's already
+            // bounded by `RESTORE_TIMEOUT`, so a slow/unreachable homeserver
+            // can't hang on *that* part. The actual `logout()` call is
+            // spawned rather than awaited, same as the live-session branch
+            // above and for the same reason: it's a second, independent
+            // network call with no timeout of its own, so awaiting it
+            // inline here would let a slow/unreachable homeserver hang this
+            // response even after the bounded restore already succeeded.
+            if let Some((_, session, _, _)) = persistence.restore_by_token(&token).await {
+                tokio::spawn(async move {
+                    let _ = session.client.matrix_auth().logout().await;
+                });
+            }
+            // This token's cached presence (if any — see
+            // `SessionStore::evicted_presence`) is now meaningless: the
+            // persisted session it would have restored into is about to be
+            // deleted below. Drop it immediately instead of leaving it to
+            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
+            state.sessions.forget_evicted_presence(&token);
         }
         // Removed unconditionally, whether or not a live in-memory session
         // was found above — not nested inside that `if let Some(session)`.
@@ -560,6 +595,76 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    if let Some(session) = state.sessions.get(&token).await {
+        session.touch();
+        return Ok(session);
+    }
+
+    // Not in memory — either never logged in under this token, or this
+    // session was idle-evicted (see `session::SessionStore::sweep_idle`)
+    // while the cookie was still valid. Try restoring it from persistence
+    // before giving up, so a browser that comes back after the eviction
+    // window doesn't get forced into a full re-login for no reason other
+    // than server-side memory pressure.
+    //
+    // Known race, accepted rather than solved here: two requests for the
+    // same idle-evicted token arriving concurrently (e.g. a page load firing
+    // several API calls at once right after the eviction window) can both
+    // miss the `get` above and both restore + spawn their own `Client` and
+    // sync loop, with the second `insert` silently winning and orphaning the
+    // first's sync loop (never aborted, just abandoned — it'll keep polling
+    // until the process restarts). Narrow in practice (only matters in the
+    // instant right after an eviction, before either restore completes) and
+    // no worse than today's behavior for the equivalent case elsewhere in
+    // this file; closing it properly needs a per-token restore lock, which
+    // isn't worth the added complexity unless it shows up in practice.
+    let Some(persistence) = &state.persistence else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    let Some((homeserver_url, session, initial_response, initial_access_token)) =
+        persistence.restore_by_token(&token).await
+    else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    session.touch();
+    // Carry forward whatever presence choice this session had at the moment
+    // `sweep_idle` evicted it (if any) — the freshly built `session` above
+    // defaults `sync_presence` to `Online`, and `sync_loop::spawn` now
+    // reads this before its own initial presence push, so without this an
+    // idle-evicted user who'd explicitly set `unavailable`/`offline` would
+    // silently show back up as `Online` the instant their session restores.
+    // See `SessionStore::evicted_presence`'s doc comment.
+    if let Some(presence) = state.sessions.take_evicted_presence(&token) {
+        *session
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = presence;
+    }
+    let persist = Some(crate::sync_loop::PersistHandle {
+        store: Arc::clone(persistence),
+        token: token.clone(),
+        homeserver_url,
+        initial_access_token: Some(initial_access_token),
+    });
+    let handle = crate::sync_loop::spawn(
+        session.client.clone(),
+        session.events.clone(),
+        session.sync_presence.clone(),
+        persist,
+        initial_response,
+        session.sync_snapshots(),
+    );
+    *session
+        .sync_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    state.sessions.insert(token.clone(), session).await;
+    // `insert` takes the session by value and wraps it in its own `Arc`
+    // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
+    // rather than wrapping a second, disconnected one here, so every holder
+    // of this session (this request, `sync_loop`'s spawned task, any other
+    // concurrent request racing the same restore) is looking at the same
+    // instance.
     state
         .sessions
         .get(&token)
@@ -2575,7 +2680,32 @@ fn requeue_pending_verification_events(
     *buffer = requeued;
 }
 
+/// Keeps `Session::ws_connections` accurate across every exit path out of
+/// `handle_socket` (clean close, a failed `socket.send`, the lag-induced
+/// forced close) — see that field's doc comment for why an open connection
+/// must always count as active for `SessionStore::sweep_idle`, regardless
+/// of how long ago this session's last HTTP request was.
+struct WsConnectionGuard(Arc<Session>);
+
+impl WsConnectionGuard {
+    fn new(session: Arc<Session>) -> Self {
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(session)
+    }
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.0
+            .ws_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
+    let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see

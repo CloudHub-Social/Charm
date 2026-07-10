@@ -246,8 +246,24 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
+        let sync_presence = sync_presence.clone();
         tokio::spawn(async move {
-            let _ = presence::set_presence_online(&client).await;
+            // Read whatever `sync_presence` already holds rather than
+            // hardcoding `Online` — for an ordinary fresh login/register or
+            // a full-process restart's `restore_all`, `Session::new`
+            // defaults this to `Online` anyway (see `PresenceStateDto`'s
+            // `Default` impl), so behavior there is unchanged. But
+            // `routes::require_session`'s on-demand restore of an
+            // idle-evicted session (see `session::SessionStore::sweep_idle`)
+            // seeds this with the session's presence choice *at the moment
+            // it was evicted* before calling this `spawn` — hardcoding
+            // `Online` here would silently undo an explicit
+            // `unavailable`/`offline` choice the instant that session comes
+            // back from an idle eviction, even though the steady-state loop
+            // below already takes care to read this same value fresh on
+            // every iteration for exactly that reason.
+            let presence = *sync_presence.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = presence::set_presence_impl(&client, presence, None).await;
         });
     }
 

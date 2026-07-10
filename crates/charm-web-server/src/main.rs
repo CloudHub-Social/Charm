@@ -73,6 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Only sweep when persistence is configured — an idle-evicted session
+    // can only come back via `routes::require_session`'s on-demand restore
+    // (`PersistenceStore::restore_by_token`), which needs `state.persistence`
+    // to be `Some`. Sweeping in in-memory-only mode would silently log out
+    // any user who leaves a tab open without an active WebSocket for the
+    // idle timeout, with no way back short of a fresh login.
+    if let Some(persistence) = &persistence {
+        spawn_idle_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
+    }
+
     let addr =
         std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -92,4 +102,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(e.into());
     }
     Ok(())
+}
+
+/// Periodically evicts idle sessions' in-memory `Client`s — see
+/// `session::SessionStore::sweep_idle` and `session::DEFAULT_IDLE_TIMEOUT_SECS`
+/// for what "idle" means and why eviction is safe (the persisted session, if
+/// any, is left alone and restored on demand — see
+/// `routes::require_session`'s persistence fallback). Runs for the lifetime
+/// of the process; there's nothing to join it against on shutdown since it
+/// does no I/O of its own beyond the sweep and aborting already-idle sync
+/// loops.
+fn spawn_idle_session_sweeper(
+    sessions: charm_web_server::session::SessionStore,
+    persistence: Arc<PersistenceStore>,
+) {
+    let idle_timeout = std::env::var(charm_web_server::session::IDLE_TIMEOUT_SECS_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(
+            charm_web_server::session::DEFAULT_IDLE_TIMEOUT_SECS,
+        ));
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(charm_web_server::session::SWEEP_INTERVAL);
+        // The first `tick()` fires immediately, not after the first
+        // interval — skip it so this doesn't sweep the instant the process
+        // starts, when nothing has had time to go idle yet. Same fix as the
+        // WS keepalive in `routes.rs` and the liveness check in
+        // `spawn_timeline_listener` (`session.rs`).
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let evicted = sessions.sweep_idle(idle_timeout).await;
+            if evicted.is_empty() {
+                continue;
+            }
+            tracing::info!("evicting {} idle session(s)", evicted.len());
+            for (token, session) in evicted {
+                // Re-persist the client's *current* live token pair right
+                // before aborting its sync loop — closes a race
+                // `sync_loop::spawn`'s own repersist doesn't cover: that
+                // loop only re-saves after each full `sync_once` +
+                // event-emission cycle completes, so if the homeserver
+                // refreshed the access/refresh token during a cycle this
+                // sweep's `abort()` interrupts mid-flight, the persisted
+                // object would otherwise still hold the token pair from
+                // *before* that refresh — already invalidated — and a later
+                // on-demand restore would fail, turning idle eviction into
+                // a forced re-login. `matrix_auth().session()` reads
+                // whatever the client's in-memory auth state currently is,
+                // synchronously, no network call, so this can't itself
+                // race the same refresh.
+                if let Some(matrix_session) = session.client.matrix_auth().session() {
+                    let homeserver_url = session.client.homeserver().to_string();
+                    if let Err(e) = persistence
+                        .save(&token, &homeserver_url, &matrix_session)
+                        .await
+                    {
+                        tracing::warn!("failed to re-persist session before idle eviction: {e}");
+                    }
+                }
+                // Stop the background `/sync` long-poll — same reason
+                // `routes::logout` aborts it, just without also removing the
+                // persisted entry (see `SessionStore::sweep_idle`'s doc
+                // comment for why eviction leaves persistence alone).
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+            }
+        }
+    });
 }
