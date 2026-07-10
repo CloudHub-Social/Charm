@@ -351,6 +351,31 @@ impl Session {
             > 0
     }
 
+    /// Whether this session has an undelivered verification event sitting in
+    /// `pending_verification_events`. Per that field's own doc comment, none
+    /// of the three event kinds buffered there (`verification:request`, an
+    /// outgoing "other device accepted", a `verification:sas_update`) are
+    /// ever reissued once the sync loop has already produced them — the
+    /// buffer *is* the only remaining copy until a WebSocket connects and
+    /// `routes::handle_socket` drains it. Idle-evicting a session in that
+    /// state would abort the sync loop and drop the `Client` with that
+    /// buffer still non-empty; the entry itself survives on the `Session`
+    /// (evicted sessions are simply dropped, not persisted separately), but
+    /// there is no live sync loop left to eventually finish the flow, and no
+    /// mechanism to hand the buffer to whatever fresh `Session` a later
+    /// on-demand restore builds — so the verification flow would be
+    /// silently stuck forever with no way for the browser to ever learn
+    /// what happened. `SessionStore::sweep_idle` treats this the same as an
+    /// open WebSocket connection: it keeps the session alive regardless of
+    /// how long it's been idle until the buffer drains.
+    fn has_pending_verification_events(&self) -> bool {
+        !self
+            .pending_verification_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
     /// Returns this session's cached `Timeline` for `room_id`, building and
     /// caching one on first access. Concurrent first-accesses for the same
     /// room can both build a `Timeline` (the lock isn't held across the
@@ -543,6 +568,20 @@ fn spawn_timeline_listener(
 #[derive(Clone, Default)]
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    /// The presence choice an idle-evicted session had at the instant
+    /// `sweep_idle` evicted it, keyed by token — populated there, consumed
+    /// once by `routes::require_session`'s on-demand restore (via
+    /// `take_evicted_presence`) to seed the freshly rebuilt `Session`'s
+    /// `sync_presence` before its sync loop starts, instead of silently
+    /// reverting an explicit `unavailable`/`offline` choice back to `Online`
+    /// (see `sync_loop::spawn`'s doc comment for why that would otherwise
+    /// happen). This is plain in-memory bookkeeping, not persisted — a full
+    /// process restart already loses this the same way it loses everything
+    /// else in-memory, no worse than before this existed; it only smooths
+    /// over the *much* more frequent idle-eviction-then-restore case this
+    /// module introduces.
+    evicted_presence:
+        Arc<std::sync::Mutex<HashMap<String, charm_lib::matrix::presence::PresenceStateDto>>>,
 }
 
 impl SessionStore {
@@ -630,14 +669,43 @@ impl SessionStore {
         let mut inner = self.inner.write().await;
         let mut evicted = Vec::new();
         inner.retain(|token, session| {
-            if session.has_open_connection() || session.idle_for() < idle_timeout {
+            if session.has_open_connection()
+                || session.has_pending_verification_events()
+                || session.idle_for() < idle_timeout
+            {
                 true
             } else {
+                // Captured *before* this session is dropped from the map —
+                // see `evicted_presence`'s doc comment for why, and
+                // `routes::require_session` for where this gets consumed.
+                let presence = *session
+                    .sync_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                self.evicted_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(token.clone(), presence);
                 evicted.push((token.clone(), Arc::clone(session)));
                 false
             }
         });
         evicted
+    }
+
+    /// Removes and returns `token`'s presence choice at eviction time, if
+    /// any was ever recorded — see `evicted_presence`'s doc comment. `None`
+    /// covers both "this token was never evicted" and "already consumed by
+    /// an earlier restore", either of which just means the restore path
+    /// falls back to the freshly built `Session`'s default (`Online`).
+    pub fn take_evicted_presence(
+        &self,
+        token: &str,
+    ) -> Option<charm_lib::matrix::presence::PresenceStateDto> {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token)
     }
 }
 
@@ -728,5 +796,69 @@ mod tests {
 
         assert!(evicted.is_empty());
         assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test: an idle session with an undelivered verification
+    /// event must not be evicted, since nobody would ever be left to
+    /// deliver it — see `Session::has_pending_verification_events`'s doc
+    /// comment.
+    #[tokio::test]
+    async fn a_pending_verification_event_prevents_eviction_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store
+            .create(dummy_session("@verifying:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 10);
+        session.pending_verification_events.lock().unwrap().push(
+            crate::events::ServerEvent::VerificationRequest(
+                charm_lib::matrix::verification::VerificationRequestSummary {
+                    flow_id: "flow-1".to_string(),
+                    other_user_id: "@other:example.org".to_string(),
+                    other_device_id: "DEVICE".to_string(),
+                },
+            ),
+        );
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            evicted.is_empty(),
+            "a session with an undelivered verification event must never be evicted — there \
+             would be nothing left to ever deliver it"
+        );
+        assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test: `sweep_idle` must capture a session's presence
+    /// choice at eviction time so a later on-demand restore can seed it back
+    /// in, instead of silently reverting to `Online` — see
+    /// `SessionStore::evicted_presence`'s doc comment.
+    #[tokio::test]
+    async fn sweep_idle_captures_presence_for_a_later_restore_to_consume() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store.create(dummy_session("@away:example.org").await).await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 2);
+        *session.sync_presence.lock().unwrap() =
+            charm_lib::matrix::presence::PresenceStateDto::Unavailable;
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+
+        assert_eq!(
+            store.take_evicted_presence(&token),
+            Some(charm_lib::matrix::presence::PresenceStateDto::Unavailable),
+            "the presence choice recorded at eviction time must be retrievable exactly once"
+        );
+        assert_eq!(
+            store.take_evicted_presence(&token),
+            None,
+            "a second take for the same token must find nothing left — it's consumed once"
+        );
     }
 }

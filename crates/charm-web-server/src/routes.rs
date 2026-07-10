@@ -476,6 +476,25 @@ async fn logout(
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+        } else if let Some(persistence) = &state.persistence {
+            // No live in-memory `Session` for this token — either it was
+            // never loaded (a startup `restore_all` failure/timeout) or it
+            // was idle-evicted (see `session::SessionStore::sweep_idle`).
+            // Either way there's still a persisted access/refresh token that
+            // would otherwise stay valid at the homeserver forever, since
+            // nothing below this rebuilds a `Client` to revoke it — only
+            // deletes the local persisted copy. Restore just far enough to
+            // call `logout()` on the homeserver before that persisted copy
+            // is gone. Awaited (not spawned) and *before* the unconditional
+            // `remove` below: `restore_by_token` reads the same persisted
+            // object `remove` is about to delete, so this has to run first,
+            // not race it. `restore_by_token` already bounds this with
+            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
+            // this response indefinitely — same tradeoff `require_session`'s
+            // restore fallback already makes.
+            if let Some((_, session, _, _)) = persistence.restore_by_token(&token).await {
+                let _ = session.client.matrix_auth().logout().await;
+            }
         }
         // Removed unconditionally, whether or not a live in-memory session
         // was found above — not nested inside that `if let Some(session)`.
@@ -587,6 +606,19 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         return Err(ApiError::unauthorized("unknown or expired session"));
     };
     session.touch();
+    // Carry forward whatever presence choice this session had at the moment
+    // `sweep_idle` evicted it (if any) — the freshly built `session` above
+    // defaults `sync_presence` to `Online`, and `sync_loop::spawn` now
+    // reads this before its own initial presence push, so without this an
+    // idle-evicted user who'd explicitly set `unavailable`/`offline` would
+    // silently show back up as `Online` the instant their session restores.
+    // See `SessionStore::evicted_presence`'s doc comment.
+    if let Some(presence) = state.sessions.take_evicted_presence(&token) {
+        *session
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = presence;
+    }
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
         token: token.clone(),

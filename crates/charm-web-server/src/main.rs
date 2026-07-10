@@ -52,7 +52,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    spawn_idle_session_sweeper(state.sessions.clone());
+    // Only sweep when persistence is configured — an idle-evicted session
+    // can only come back via `routes::require_session`'s on-demand restore
+    // (`PersistenceStore::restore_by_token`), which needs `state.persistence`
+    // to be `Some`. Sweeping in in-memory-only mode would silently log out
+    // any user who leaves a tab open without an active WebSocket for the
+    // idle timeout, with no way back short of a fresh login.
+    if persistence.is_some() {
+        spawn_idle_session_sweeper(state.sessions.clone());
+    }
 
     let addr =
         std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
