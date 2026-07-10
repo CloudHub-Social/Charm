@@ -18,9 +18,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // must run before anything else in this function logs.
     let _sentry_guard = observability::init();
 
-    let persistence = PersistenceStore::from_env()
-        .map_err(|e| format!("invalid session persistence configuration: {e}"))?
-        .map(Arc::new);
+    let persistence = match PersistenceStore::from_env() {
+        Ok(persistence) => persistence.map(Arc::new),
+        Err(e) => {
+            // `tracing::error!` here (not just the `?` below) matters: this
+            // target (`charm_web_server`) is one `observability::init`'s
+            // Sentry bridge forwards ERROR-level events for, so a
+            // misconfigured deploy (bad `CHARM_WEB_SERVER_MASTER_KEY`/Spaces
+            // credentials) actually reaches Sentry as an event before the
+            // process exits, instead of only ever being visible in DO's
+            // stdout log viewer. `_sentry_guard`'s `Drop` still runs on this
+            // early return (guards for every local drop on any return path,
+            // `?` included) and flushes whatever's already queued, so this
+            // event isn't lost even though the process exits immediately
+            // after.
+            tracing::error!("invalid session persistence configuration: {e}");
+            return Err(format!("invalid session persistence configuration: {e}").into());
+        }
+    };
 
     let state = AppState {
         persistence: persistence.clone(),
@@ -60,10 +75,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr =
         std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(listener) => listener,
+        Err(e) => {
+            // Same reasoning as the persistence error above: log it as an
+            // ERROR before returning so it reaches Sentry, not just stdout.
+            tracing::error!("failed to bind {addr}: {e}");
+            return Err(e.into());
+        }
+    };
     tracing::info!("charm-web-server listening on {addr}");
 
     let app = routes::router(state);
-    axum::serve(listener, app).await?;
+    if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!("server exited with an error: {e}");
+        return Err(e.into());
+    }
     Ok(())
 }
