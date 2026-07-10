@@ -265,6 +265,10 @@ jobs:
       - name: Fail the job if the build didn't actually succeed
         if: always()
         run: |
+          if [ "${{ steps.wait.outcome }}" = "failure" ]; then
+            echo "The wait step itself failed (e.g. invalid wait_minutes input) — see its log above. Not a build hang or failure."
+            exit 1
+          fi
           if [ "${{ steps.wait.outputs.still_stuck }}" = "true" ]; then
             echo "Build never finished — genuinely stuck. See the uploaded diagnostics artifact."
             exit 1
