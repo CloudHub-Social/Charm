@@ -292,10 +292,10 @@ pub async fn join_room_impl(client: &Client, room_id_or_alias: &str) -> Result<S
 }
 
 /// Creates a new space room (an `m.room.create` with `type: m.space` per
-/// MSC1772), optionally under a parent space. Parenting (adding the
-/// resulting `m.space.child` state event on `parent_space_id`, if given) is
-/// a follow-up call from the frontend, not done here — this command's job
-/// is only to create the room itself.
+/// MSC1772). Does not accept a parent space — parenting an existing space
+/// under another (adding an `m.space.child` state event) is a separate
+/// follow-up call, not implemented by this command, which only creates the
+/// room itself.
 #[tauri::command]
 pub async fn create_space(
     state: State<'_, MatrixState>,

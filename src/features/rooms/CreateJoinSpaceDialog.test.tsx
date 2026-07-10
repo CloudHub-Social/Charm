@@ -36,6 +36,28 @@ describe("CreateJoinSpaceDialog", () => {
     expect(createSpace).toHaveBeenCalledWith("Engineering", undefined, undefined, false);
   });
 
+  it("passes the entered address through as the room alias", async () => {
+    createSpace.mockResolvedValue("!newspace:example.org");
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Engineering" } });
+    fireEvent.change(screen.getByLabelText("Address (optional)"), {
+      target: { value: "engineering" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+
+    await waitFor(() =>
+      expect(createSpace).toHaveBeenCalledWith("Engineering", undefined, "engineering", false),
+    );
+  });
+
   it("shows an error and does not close when creation fails", async () => {
     createSpace.mockRejectedValue(new Error("homeserver rejected the request"));
     const onSpaceCreated = vi.fn();
@@ -174,5 +196,40 @@ describe("CreateJoinSpaceDialog", () => {
     );
 
     expect(screen.getByRole("tab", { name: "Create new", selected: true })).toBeInTheDocument();
+  });
+
+  it("does not navigate if the request resolves after the dialog was dismissed mid-flight", async () => {
+    let resolveCreate!: (value: string) => void;
+    createSpace.mockReturnValue(
+      new Promise<string>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    const onOpenChange = vi.fn();
+    const onSpaceCreated = vi.fn();
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={onOpenChange}
+        onSpaceCreated={onSpaceCreated}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Engineering" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    expect(screen.getByRole("button", { name: "Creating…" })).toBeInTheDocument();
+
+    // User dismisses the dialog while the create request is still in flight.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    resolveCreate("!newspace:example.org");
+    await waitFor(() => expect(createSpace).toHaveBeenCalled());
+    // Give the resolved promise's `.then` a tick to run.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onSpaceCreated).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
@@ -29,15 +29,24 @@ export function CreateJoinSpaceDialog({
   const [tab, setTab] = useState<"create" | "join">("create");
   const [name, setName] = useState("");
   const [topic, setTopic] = useState("");
+  const [roomAlias, setRoomAlias] = useState("");
   const [isPublic, setIsPublic] = useState(false);
   const [joinTarget, setJoinTarget] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Tracks whether the in-flight create/join request (if any) is still the
+  // one the dialog cares about. Set to `false` on dismiss so a request that
+  // resolves *after* the user already closed the dialog (Escape/backdrop)
+  // doesn't still fire `onSpaceCreated`/`onSpaceJoined` and navigate them
+  // somewhere they never confirmed wanting to go.
+  const requestActiveRef = useRef(false);
 
   function resetAndClose() {
+    requestActiveRef.current = false;
     setTab("create");
     setName("");
     setTopic("");
+    setRoomAlias("");
     setIsPublic(false);
     setJoinTarget("");
     setError(null);
@@ -53,16 +62,19 @@ export function CreateJoinSpaceDialog({
     }
     setPending(true);
     setError(null);
+    requestActiveRef.current = true;
     try {
       const spaceId = await createSpace(
         trimmedName,
         topic.trim() || undefined,
-        undefined,
+        roomAlias.trim() || undefined,
         isPublic,
       );
+      if (!requestActiveRef.current) return;
       onSpaceCreated(spaceId);
       resetAndClose();
     } catch (err) {
+      if (!requestActiveRef.current) return;
       setError(err instanceof Error ? err.message : "Couldn't create the space.");
       setPending(false);
     }
@@ -76,11 +88,14 @@ export function CreateJoinSpaceDialog({
     }
     setPending(true);
     setError(null);
+    requestActiveRef.current = true;
     try {
       const spaceId = await joinRoom(trimmedTarget);
+      if (!requestActiveRef.current) return;
       onSpaceJoined(spaceId);
       resetAndClose();
     } catch (err) {
+      if (!requestActiveRef.current) return;
       setError(err instanceof Error ? err.message : "Couldn't join that space.");
       setPending(false);
     }
@@ -120,6 +135,15 @@ export function CreateJoinSpaceDialog({
                 value={topic}
                 onChange={(event) => setTopic(event.target.value)}
                 placeholder="What's this space for?"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="space-alias">Address (optional)</Label>
+              <Input
+                id="space-alias"
+                value={roomAlias}
+                onChange={(event) => setRoomAlias(event.target.value)}
+                placeholder="engineering"
               />
             </div>
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
