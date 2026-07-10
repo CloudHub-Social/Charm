@@ -369,41 +369,42 @@ impl PersistenceStore {
         matrix_sdk::sync::SyncResponse,
         String,
     )> {
-        // Bounds `read_one`'s object-store read too, not just `restore_one`'s
-        // homeserver round-trip below — a stalled `get`/`bytes()` call
-        // against a Spaces-backed deployment previously ran with no timeout
-        // at all, so a hung object store could tie up a request despite the
-        // "restore is bounded" claim this whole function makes.
-        let entry = match tokio::time::timeout(RESTORE_TIMEOUT, self.read_one(token)).await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => return None,
-            Err(_) => {
-                tracing::warn!(
-                    "dropping restore attempt for a token: reading its persisted object timed \
-                     out after {RESTORE_TIMEOUT:?}"
-                );
-                return None;
+        // A single shared `RESTORE_TIMEOUT` budget for the *whole*
+        // operation — `read_one`'s object-store read and `restore_one`'s
+        // homeserver round-trip together, not one independent timeout each.
+        // Two separate `tokio::time::timeout` calls (an earlier version of
+        // this had exactly that, to close the previously-unbounded
+        // `read_one` gap) can each legitimately spend the full budget on a
+        // bad day, doubling the worst case to 30s despite every doc comment
+        // here claiming a single 15s bound.
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            let originally_persisted_access_token = entry.session.tokens.access_token.clone();
+            let user_id = entry.session.meta.user_id.clone();
+            match restore_one(&entry, initial_presence).await {
+                Ok((session, initial_response)) => Some(Ok((
+                    entry.homeserver_url,
+                    session,
+                    initial_response,
+                    originally_persisted_access_token,
+                ))),
+                Err(e) => Some(Err((user_id, e))),
             }
-        };
-        let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-        match tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry, initial_presence)).await {
-            Ok(Ok((session, initial_response))) => Some((
-                entry.homeserver_url,
-                session,
-                initial_response,
-                originally_persisted_access_token,
-            )),
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    "dropping persisted session for {}: failed to restore: {e}",
-                    entry.session.meta.user_id
-                );
+        })
+        .await;
+
+        match outcome {
+            Ok(Some(Ok(restored))) => Some(restored),
+            Ok(Some(Err((user_id, e)))) => {
+                tracing::warn!("dropping persisted session for {user_id}: failed to restore: {e}");
                 None
             }
+            // Never persisted (or unreadable/corrupt — `read_one` already
+            // logged that case itself) — not a timeout, nothing more to log.
+            Ok(None) => None,
             Err(_) => {
                 tracing::warn!(
-                    "dropping persisted session for {}: restore timed out after {RESTORE_TIMEOUT:?}",
-                    entry.session.meta.user_id
+                    "dropping restore attempt for a token: timed out after {RESTORE_TIMEOUT:?}"
                 );
                 None
             }
