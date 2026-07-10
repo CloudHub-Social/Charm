@@ -41,11 +41,26 @@ export function useCrossSigningResetUrl(enabled = true) {
   });
 }
 
+/**
+ * Polls rather than fetching once: the initial `/sync` that populates
+ * secret-storage account data runs asynchronously after login/session
+ * restore, and nothing currently pushes an event when the SDK's
+ * `recovery().state()` changes (no WebSocket/Tauri-event plumbing for this
+ * yet — a deliberate scope cut, see the recovery-key-restore PR description).
+ * Without polling, a Devices panel that mounted while this was still
+ * `"unknown"` — or another session enabling recovery while this one stays
+ * open — could leave the Recovery card hidden for the rest of that mount,
+ * since the app's default `QueryClient` also disables focus refetching (see
+ * `providers.tsx`). The underlying check is a cheap local SDK read (Tauri)
+ * or a trivial GET (web), not a heavy operation, so this stays cheap even at
+ * a fairly tight interval.
+ */
 export function useRecoveryStatus(enabled = true) {
   return useQuery({
     queryKey: RECOVERY_STATUS_QUERY_KEY,
     queryFn: recoveryStatus,
     enabled,
+    refetchInterval: 10_000,
   });
 }
 
