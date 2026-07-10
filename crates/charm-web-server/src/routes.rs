@@ -45,7 +45,9 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
-use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hierarchy_impl};
+use charm_lib::matrix::spaces::{
+    create_space_impl, join_room_impl, knock_room_impl, list_space_hierarchy_impl,
+};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
@@ -95,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/knock", post(knock_room))
+        .route("/api/rooms/create-space", post(create_space))
         .route("/api/rooms/{room_id}", get(get_room_details))
         .route("/api/rooms/{room_id}/members", get(get_room_members))
         .route(
@@ -680,10 +683,36 @@ async fn join_room(
     Json(request): Json<JoinRoomRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    join_room_impl(&session.client, &request.room_id_or_alias)
+    let room_id = join_room_impl(&session.client, &request.room_id_or_alias)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(room_id))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSpaceRequest {
+    name: String,
+    topic: Option<String>,
+    room_alias_name: Option<String>,
+    public: bool,
+}
+
+async fn create_space(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<CreateSpaceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let room_id = create_space_impl(
+        &session.client,
+        &request.name,
+        request.topic.as_deref(),
+        request.room_alias_name.as_deref(),
+        request.public,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(room_id))
 }
 
 #[derive(Debug, Deserialize)]

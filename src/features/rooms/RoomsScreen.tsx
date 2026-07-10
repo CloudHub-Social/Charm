@@ -280,6 +280,7 @@ export function RoomsScreen({
             onSelectSpace={selectSpace}
             mode={roomListMode}
             selectedSpace={selectedSpace}
+            intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
             showAllRooms={showAllRooms}
             onShowAllRoomsChange={setShowAllRooms}
           />

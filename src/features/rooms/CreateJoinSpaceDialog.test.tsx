@@ -121,4 +121,58 @@ describe("CreateJoinSpaceDialog", () => {
     expect(screen.getByText("Enter a space address or ID.")).toBeInTheDocument();
     expect(joinRoom).not.toHaveBeenCalled();
   });
+
+  it("clears an error from one tab when switching to the other", async () => {
+    renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={vi.fn()}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Create space" }));
+    expect(screen.getByText("Name is required.")).toBeInTheDocument();
+
+    const joinTab = screen.getByRole("tab", { name: "Join by address" });
+    joinTab.focus();
+    fireEvent.click(joinTab);
+    await screen.findByLabelText("Space address or ID");
+
+    expect(screen.queryByText("Name is required.")).not.toBeInTheDocument();
+  });
+
+  it("resets to the Create new tab after closing", async () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = renderWithProviders(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={onOpenChange}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    const joinTab = screen.getByRole("tab", { name: "Join by address" });
+    joinTab.focus();
+    fireEvent.click(joinTab);
+    await screen.findByLabelText("Space address or ID");
+
+    // Escape triggers Radix's onOpenChange(false), which the dialog wires to
+    // resetAndClose — same close path as the dismiss button/backdrop click.
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape", code: "Escape" });
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+
+    rerender(
+      <CreateJoinSpaceDialog
+        open
+        onOpenChange={onOpenChange}
+        onSpaceCreated={vi.fn()}
+        onSpaceJoined={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: "Create new", selected: true })).toBeInTheDocument();
+  });
 });

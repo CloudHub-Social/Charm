@@ -35,6 +35,7 @@ export function CreateJoinSpaceDialog({
   const [error, setError] = useState<string | null>(null);
 
   function resetAndClose() {
+    setTab("create");
     setName("");
     setTopic("");
     setIsPublic(false);
@@ -91,7 +92,13 @@ export function CreateJoinSpaceDialog({
         <DialogHeader>
           <DialogTitle>Create or join a space</DialogTitle>
         </DialogHeader>
-        <Tabs value={tab} onValueChange={(value) => setTab(value as "create" | "join")}>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => {
+            setTab(value as "create" | "join");
+            setError(null);
+          }}
+        >
           <TabsList className="w-full">
             <TabsTrigger value="create">Create new</TabsTrigger>
             <TabsTrigger value="join">Join by address</TabsTrigger>

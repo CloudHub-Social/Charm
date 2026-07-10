@@ -292,6 +292,7 @@ describe("RoomsScreen", () => {
       />,
     );
     await screen.findByText("space-rail:home:none");
+    await screen.findByText("chat-content:!room:example.org");
     expect(screen.queryByText("create-join-dialog")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "create-join" }));
@@ -300,6 +301,7 @@ describe("RoomsScreen", () => {
     // Opening the dialog is a pure overlay — it must not disturb whatever
     // room/space was already selected underneath it.
     expect(screen.getByText("space-rail:home:none")).toBeInTheDocument();
+    expect(screen.getByText("chat-content:!room:example.org")).toBeInTheDocument();
   });
 
   it("clears the space deep-link guard when another space is selected", async () => {

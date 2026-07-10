@@ -39,6 +39,16 @@ interface RoomListProps {
   onSelectSpace: (id: string) => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
+  /**
+   * The id `selectedSpace` is expected to resolve to, even before it shows
+   * up in `rooms` (e.g. right after creating/joining a space, before the
+   * next room-list sync lands it). Lets the empty state below tell "a space
+   * is selected but hasn't loaded yet" apart from "no space selected at
+   * all" — both look identical from `selectedSpace` alone (`null`). Distinct
+   * from the `selectedSpaceId` derived below from the *resolved* space —
+   * this one is the caller's intent, which may be ahead of it.
+   */
+  intendedSpaceId?: string | null;
   showAllRooms: boolean;
   onShowAllRoomsChange: (showAll: boolean) => void;
 }
@@ -61,6 +71,7 @@ export function RoomList({
   onSelectSpace,
   mode,
   selectedSpace,
+  intendedSpaceId = null,
   showAllRooms,
   onShowAllRoomsChange,
 }: RoomListProps) {
@@ -256,7 +267,9 @@ export function RoomList({
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {mode === "space" && !selectedSpace ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
+          <p className="px-3 py-2 text-sm text-muted-foreground">
+            {intendedSpaceId ? "Loading space…" : "Select a space."}
+          </p>
         ) : mode === "space" && spaceLoading ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
         ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
