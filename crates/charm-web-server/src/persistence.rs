@@ -86,6 +86,16 @@ pub const SPACES_SECRET_ACCESS_KEY_ENV: &str = "CHARM_WEB_SERVER_SPACES_SECRET_A
 /// one object per session at `<SESSIONS_PREFIX>/<sha256(token)>.json`.
 const SESSIONS_PREFIX: &str = "sessions";
 
+/// Bounds how long any single [`restore_one`] call (build a client, restore
+/// the session, run an initial `sync_once`) can run before being treated as
+/// a failure — shared by [`PersistenceStore::restore_all`] (bounds total
+/// startup time against a slow/unreachable homeserver) and
+/// [`PersistenceStore::restore_by_token`] (bounds a single request's
+/// on-demand restore the same way, so a hung DNS lookup or a homeserver that
+/// never responds can't tie up a request — and the connection handling
+/// it — indefinitely).
+const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
     token: String,
@@ -284,6 +294,123 @@ impl PersistenceStore {
             .collect()
     }
 
+    /// Single-object counterpart to [`Self::read_all`] — reads and decrypts
+    /// just `token`'s object, for [`Self::restore_by_token`]'s on-demand
+    /// restore path (an idle session was evicted from `SessionStore` but its
+    /// cookie is still valid; see `routes::require_session`). `Ok(None)`
+    /// covers "never persisted" the same way [`Self::remove`] treats it as a
+    /// no-op rather than an error; any other read/decrypt failure is also
+    /// folded into `None` — same fail-open tolerance `read_all` gives a
+    /// single bad entry, just scoped to the one object a caller asked for.
+    async fn read_one(&self, token: &str) -> Option<PersistedSession> {
+        let path = object_path_for_token(token);
+        let bytes = match self.store.get(&path).await {
+            Ok(result) => match result.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::warn!("failed to read persisted session object {path}: {e}");
+                    return None;
+                }
+            },
+            Err(object_store::Error::NotFound { .. }) => return None,
+            Err(e) => {
+                tracing::warn!("failed to read persisted session object {path}: {e}");
+                return None;
+            }
+        };
+        let blob: EncryptedBlob = match serde_json::from_slice(&bytes) {
+            Ok(blob) => blob,
+            Err(e) => {
+                tracing::warn!("dropping unreadable persisted session object {path}: {e}");
+                return None;
+            }
+        };
+        match self.decrypt(&blob) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                tracing::warn!("dropping unreadable persisted session object {path}: {e}");
+                None
+            }
+        }
+    }
+
+    /// On-demand counterpart to [`Self::restore_all`] — rebuilds a live
+    /// `Client` for exactly one token, for the case where a request arrives
+    /// with a still-valid session cookie but no matching in-memory
+    /// `Session` (evicted for being idle too long — see
+    /// `session::SessionStore::sweep_idle` — rather than ever logged out).
+    /// Idle eviction deliberately never calls [`Self::remove`] or the
+    /// homeserver's own `logout` on the evicted session (that would burn the
+    /// refresh token and make this restore permanently impossible) — it
+    /// only drops the in-memory `Client`, so the persisted object this reads
+    /// is still exactly what a fresh login would have written. Returns
+    /// `None` for the same reasons a `restore_all` entry gets dropped
+    /// (never persisted, revoked token, homeserver unreachable) — the
+    /// caller treats that identically to "unknown session": an ordinary 401
+    /// and a re-login, no different from today's behavior for any other
+    /// invalid cookie.
+    /// `initial_presence`, if given, seeds the freshly built `Session`'s
+    /// `sync_presence` *and* the presence this restore's own initial
+    /// `sync_once` reports to the homeserver — see `restore_one`'s doc
+    /// comment for why sending it as an ordinary follow-up `PUT` only
+    /// *after* this call returns would be too late: `restore_one`'s
+    /// `sync_once` already completes (as `Online`, `SyncSettings`'s own
+    /// default) before this function can return anything for a caller to
+    /// act on. Pass `None` for the ordinary "no known prior presence to
+    /// restore" case (there's nothing wrong with the homeserver seeing the
+    /// default `Online` then).
+    pub async fn restore_by_token(
+        &self,
+        token: &str,
+        initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
+    ) -> Option<(
+        String,
+        crate::session::Session,
+        matrix_sdk::sync::SyncResponse,
+        String,
+    )> {
+        // A single shared `RESTORE_TIMEOUT` budget for the *whole*
+        // operation — `read_one`'s object-store read and `restore_one`'s
+        // homeserver round-trip together, not one independent timeout each.
+        // Two separate `tokio::time::timeout` calls (an earlier version of
+        // this had exactly that, to close the previously-unbounded
+        // `read_one` gap) can each legitimately spend the full budget on a
+        // bad day, doubling the worst case to 30s despite every doc comment
+        // here claiming a single 15s bound.
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            let originally_persisted_access_token = entry.session.tokens.access_token.clone();
+            let user_id = entry.session.meta.user_id.clone();
+            match restore_one(&entry, initial_presence).await {
+                Ok((session, initial_response)) => Some(Ok((
+                    entry.homeserver_url,
+                    session,
+                    initial_response,
+                    originally_persisted_access_token,
+                ))),
+                Err(e) => Some(Err((user_id, e))),
+            }
+        })
+        .await;
+
+        match outcome {
+            Ok(Some(Ok(restored))) => Some(restored),
+            Ok(Some(Err((user_id, e)))) => {
+                tracing::warn!("dropping persisted session for {user_id}: failed to restore: {e}");
+                None
+            }
+            // Never persisted (or unreadable/corrupt — `read_one` already
+            // logged that case itself) — not a timeout, nothing more to log.
+            Ok(None) => None,
+            Err(_) => {
+                tracing::warn!(
+                    "dropping restore attempt for a token: timed out after {RESTORE_TIMEOUT:?}"
+                );
+                None
+            }
+        }
+    }
+
     fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
         // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
@@ -407,12 +534,17 @@ impl PersistenceStore {
         // accepting connections. `RESTORE_TIMEOUT` bounds how long any
         // single entry can hold up the rest: a homeserver that never
         // responds at all can't block startup indefinitely either.
-        const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
         let entries = self.read_all().await;
         let attempts = entries.into_iter().map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry)).await;
+            // `restore_all` only ever runs at startup, right after a
+            // process restart — there's no in-memory `evicted_presence` to
+            // carry over at that point (the whole point of that map is
+            // bridging *this same process's* idle-eviction-then-restore
+            // gap), so this always passes `None`: `Online`, `SyncSettings`'s
+            // own default, is exactly what a restart already implied before
+            // presence-carrying existed.
+            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry, None)).await;
             (entry, originally_persisted_access_token, outcome)
         });
         let outcomes = futures_util::future::join_all(attempts).await;
@@ -445,8 +577,21 @@ impl PersistenceStore {
     }
 }
 
+/// `initial_presence`, when given, is applied to the freshly built
+/// `Session`'s `sync_presence` *before* the initial `sync_once` below, and
+/// used as that same call's own `SyncSettings::set_presence` — not just
+/// stored for some later push. Setting it only afterwards (an earlier
+/// version of this — see `routes::require_session` — set `sync_presence`
+/// only after `restore_by_token` had already returned) would be too late:
+/// this function's own initial sync already completes, reporting whatever
+/// presence `SyncSettings::default()` implies (`Online`), before a caller
+/// ever gets anything back to act on. A restored `unavailable`/`offline`
+/// user would therefore flash `Online` to the homeserver for the length of
+/// this sync, no matter how quickly the caller corrected `sync_presence`
+/// afterward.
 async fn restore_one(
     entry: &PersistedSession,
+    initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
     let client = matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
@@ -469,6 +614,12 @@ async fn restore_one(
     // replayed later, so the handler must already be registered.
     let session =
         crate::session::Session::new(client.clone(), entry.session.meta.user_id.to_string());
+    if let Some(presence) = initial_presence {
+        *session
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = presence;
+    }
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
@@ -480,8 +631,15 @@ async fn restore_one(
     // (see `auth::login`'s doc comment, including why the response is
     // returned rather than discarded — `sync_loop::spawn` reuses it as its
     // own initial state instead of long-polling a second, redundant sync).
+    // Reports `initial_presence` right away when given, instead of always
+    // `SyncSettings::default()`'s implicit `Online` — see this function's
+    // own doc comment for why that timing matters.
+    let sync_settings = match initial_presence {
+        Some(presence) => matrix_sdk::config::SyncSettings::default().set_presence(presence.into()),
+        None => matrix_sdk::config::SyncSettings::default(),
+    };
     let initial_response = client
-        .sync_once(matrix_sdk::config::SyncSettings::default())
+        .sync_once(sync_settings)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -901,5 +1059,48 @@ mod tests {
         };
         assert!(err.contains(MASTER_KEY_ENV), "got: {err}");
         assert!(err.contains(SPACES_BUCKET_ENV), "got: {err}");
+    }
+
+    /// `restore_by_token` is `require_session`'s on-demand-restore fallback
+    /// for a cookie whose session was idle-evicted from `SessionStore` (see
+    /// `session::SessionStore::sweep_idle`) — a token that was simply never
+    /// persisted (never logged in, or the object was already removed by an
+    /// explicit `logout`) must resolve to `None`, the same "unknown session"
+    /// outcome `require_session` already gives any other invalid cookie,
+    /// not a panic or a spurious restored session.
+    #[tokio::test]
+    async fn restore_by_token_is_none_for_a_token_that_was_never_persisted() {
+        let dir = scratch_dir("restore-missing");
+        let store = PersistenceStore::new_for_test(&dir, [11u8; 32]);
+
+        assert!(store.restore_by_token("never-saved", None).await.is_none());
+    }
+
+    /// A persisted entry whose homeserver can't actually be reached (dead
+    /// domain, network down) must drop out to `None` the same way
+    /// `restore_all` drops an unrestorable entry rather than propagating the
+    /// error — this crate's test suite has no live homeserver to restore
+    /// against, but `example.invalid` (reserved, guaranteed non-resolving —
+    /// RFC 2606) exercises the exact same "restore_one failed" path
+    /// `restore_by_token` maps to `None`, which is what actually matters
+    /// here: `read_one` successfully found and decrypted the object, so this
+    /// is testing `restore_one`'s failure handling, not `read_one`'s.
+    #[tokio::test]
+    async fn restore_by_token_is_none_when_the_homeserver_is_unreachable() {
+        let dir = scratch_dir("restore-unreachable");
+        let store = PersistenceStore::new_for_test(&dir, [12u8; 32]);
+        store
+            .save(
+                "tok-unreachable",
+                "https://example.invalid",
+                &dummy_session("@henry:example.invalid"),
+            )
+            .await
+            .unwrap();
+
+        assert!(store
+            .restore_by_token("tok-unreachable", None)
+            .await
+            .is_none());
     }
 }

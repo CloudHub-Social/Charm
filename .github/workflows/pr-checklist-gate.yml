@@ -1,0 +1,103 @@
+name: PR checklist gate
+
+# Enforces the two "Observability & e2e coverage" checklist items in
+# .github/PULL_REQUEST_TEMPLATE.md. CLAUDE.md/AGENTS.md already ask agents to
+# add e2e coverage and Sentry instrumentation for relevant changes, but that's
+# a soft instruction buried in project docs — easy for an agent (or a human)
+# to skip under time pressure, and nothing previously stopped the PR from
+# merging anyway. This makes the checklist self-enforcing: each of the two
+# lines must be either checked `[x]` or carry an explicit `N/A: <reason>`
+# explanation, or the PR fails a required check.
+#
+# Deliberately text-based, not diff-based: it can't tell whether the e2e test
+# or Sentry call actually covers this PR's change, only that someone made an
+# affirmative claim one way or the other. That's a much weaker guarantee than
+# a diff-pattern check, but it closes the "just never mentioned it" failure
+# mode this was written for, and doesn't false-positive on PRs that
+# genuinely don't touch anything observable (docs, CI config, deps).
+#
+# Runs on pull_request (where it actually checks the PR body) and merge_group
+# (where it's a trivial pass, same pattern as review-gate.yml): a bot-authored
+# PR (Dependabot) can't write an N/A explanation into its own auto-generated
+# body, so this repo's merge queue would otherwise fail-closed on every
+# dependency bump. Bot PRs are exempted below for the same reason.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checklist:
+    name: Observability & e2e checklist
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'pull_request'
+      || (github.event.pull_request.draft == false
+          && github.event.pull_request.user.type != 'Bot')
+    steps:
+      - name: Verify checklist items are checked or explained
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+            // Only consider actual checklist-item lines ("- [ ] ..." / "- [x]
+            // ..."), not prose elsewhere in the description that happens to
+            // contain the same words (e.g. this PR's own description
+            // discussing "Playwright e2e coverage" before reaching the real
+            // checklist line) — Array.find took the first textual match
+            // regardless of line shape, which is exactly that bug.
+            const lines = body
+              .split("\n")
+              .filter((l) => /^\s*-\s*\[[ xX]\]/.test(l));
+
+            const REQUIRED = [
+              {
+                key: "e2e",
+                pattern: /playwright e2e coverage/i,
+              },
+              {
+                key: "sentry",
+                pattern: /sentry breadcrumbs\/logging\/metrics/i,
+              },
+            ];
+
+            const checkedBox = /^\s*-\s*\[[xX]\]/;
+            const naExplained = /n\/a\s*:\s*\S/i;
+
+            const failures = [];
+            for (const req of REQUIRED) {
+              const line = lines.find((l) => req.pattern.test(l));
+              if (!line) {
+                // Template line was removed entirely from the PR body — treat
+                // as missing rather than silently passing.
+                failures.push(
+                  `Could not find the "${req.key}" checklist line in the PR ` +
+                  `description. Restore it from the PR template.`
+                );
+                continue;
+              }
+              if (checkedBox.test(line) || naExplained.test(line)) {
+                continue;
+              }
+              failures.push(
+                `Checklist item not satisfied: "${line.trim()}" — check the ` +
+                `box, or add "N/A: <reason>" after it explaining why this PR ` +
+                `doesn't need it.`
+              );
+            }
+
+            if (failures.length > 0) {
+              core.setFailed(
+                "Observability & e2e coverage checklist incomplete:\n\n" +
+                failures.map((f) => `- ${f}`).join("\n")
+              );
+            }

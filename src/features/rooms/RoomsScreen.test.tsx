@@ -84,6 +84,24 @@ vi.mock("./SpaceRail", () => ({
   ),
 }));
 
+vi.mock("./CreateJoinSpaceDialog", () => ({
+  CreateJoinSpaceDialog: ({
+    open,
+    onSpaceJoined,
+  }: {
+    open: boolean;
+    onSpaceJoined: (spaceId: string) => void;
+  }) =>
+    open ? (
+      <div>
+        create-join-dialog
+        <button type="button" onClick={() => onSpaceJoined("!newly-joined:example.org")}>
+          join-new-space
+        </button>
+      </div>
+    ) : null,
+}));
+
 vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
@@ -272,23 +290,13 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
-  it("auto-selects a room when create/join exits a consumed space deep link", async () => {
+  it("opens the create/join space dialog without changing the current selection", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!space:example.org", name: "Team", is_space: true }),
       room({ room_id: "!room:example.org", name: "Room" }),
     ]);
 
-    const { rerender } = render(
-      <RoomsScreen
-        currentUserId="@me:example.org"
-        deepLinkRoomId="!space:example.org"
-        onDeepLinkConsumed={() => {}}
-        onLoggedOut={() => {}}
-      />,
-    );
-    await screen.findByText("space-rail:space:!space:example.org");
-
-    rerender(
+    render(
       <RoomsScreen
         currentUserId="@me:example.org"
         deepLinkRoomId={null}
@@ -296,44 +304,17 @@ describe("RoomsScreen", () => {
         onLoggedOut={() => {}}
       />,
     );
-    await screen.findByText("chat-content:none");
+    await screen.findByText("space-rail:home:none");
+    await screen.findByText("chat-content:!room:example.org");
+    expect(screen.queryByText("create-join-dialog")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "create-join" }));
 
-    await screen.findByText("space-rail:home:none");
+    expect(screen.getByText("create-join-dialog")).toBeInTheDocument();
+    // Opening the dialog is a pure overlay — it must not disturb whatever
+    // room/space was already selected underneath it.
+    expect(screen.getByText("space-rail:home:none")).toBeInTheDocument();
     expect(screen.getByText("chat-content:!room:example.org")).toBeInTheDocument();
-  });
-
-  it("keeps create/join in Home when only DMs are selectable", async () => {
-    listRooms.mockResolvedValue([
-      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
-      room({ room_id: "!dm:example.org", name: "Alice", is_direct: true }),
-    ]);
-
-    const { rerender } = render(
-      <RoomsScreen
-        currentUserId="@me:example.org"
-        deepLinkRoomId="!space:example.org"
-        onDeepLinkConsumed={() => {}}
-        onLoggedOut={() => {}}
-      />,
-    );
-    await screen.findByText("space-rail:space:!space:example.org");
-
-    rerender(
-      <RoomsScreen
-        currentUserId="@me:example.org"
-        deepLinkRoomId={null}
-        onDeepLinkConsumed={() => {}}
-        onLoggedOut={() => {}}
-      />,
-    );
-    await screen.findByText("chat-content:none");
-
-    fireEvent.click(screen.getByRole("button", { name: "create-join" }));
-
-    await screen.findByText("space-rail:home:none");
-    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
   it("clears the space deep-link guard when another space is selected", async () => {
@@ -376,6 +357,55 @@ describe("RoomsScreen", () => {
     });
 
     await screen.findByText("chat-content:!room:example.org");
+  });
+
+  it("stays on a space just created/joined via the dialog instead of falling back on the next room-list sync", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+      room({ room_id: "!room:example.org", name: "Room" }),
+    ]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!space:example.org"
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("space-rail:space:!space:example.org");
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    // Still no active room — this is the exact "dialog opened while no chat
+    // is active" state the fix targets.
+    await screen.findByText("chat-content:none");
+
+    fireEvent.click(screen.getByRole("button", { name: "create-join" }));
+    fireEvent.click(screen.getByRole("button", { name: "join-new-space" }));
+    await screen.findByText("space-rail:space:!newly-joined:example.org");
+
+    // The room-list sync that surfaces the newly joined space arrives after
+    // navigation, same as the real create_space/join_room round trip.
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([
+        room({ room_id: "!space:example.org", name: "Team", is_space: true }),
+        room({ room_id: "!room:example.org", name: "Room" }),
+        room({ room_id: "!newly-joined:example.org", name: "New Space", is_space: true }),
+      ]);
+    });
+
+    // Must still be on the newly joined space, not auto-selected back to
+    // "!room:example.org" the way a normal navigation would allow.
+    expect(screen.getByText("space-rail:space:!newly-joined:example.org")).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
   it("returns to the mobile list when a space deep link arrives from room detail", async () => {

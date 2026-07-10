@@ -6,6 +6,7 @@
 #![recursion_limit = "512"]
 
 pub mod matrix;
+pub mod observability_scrub;
 pub mod push;
 
 use std::borrow::Cow;
@@ -20,98 +21,18 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// Matches `key = value` / `key: "value"` pairs (JSON-ish or Debug/Display
-/// formatted) for field names that should never reach Sentry, case
-/// insensitively. Not a general-purpose secret scanner — just a
-/// defense-in-depth backstop: nothing in this codebase today formats a
-/// token/passphrase/key into a panic or error string, but `Result<_, String>`
-/// is pervasive here (see `persistence.rs`, `qr_login.rs`), so a single
-/// future `.expect()`/`unwrap()` added against one of those `Err`s could
-/// otherwise ship a secret verbatim to Sentry with nothing catching it.
-static SECRET_FIELD_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(
-        r#"(?i)(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)("?\s*[:=]\s*"?)([^"'\s,}\]]+)"#,
-    )
-    .expect("SECRET_FIELD_PATTERN is a valid static regex")
-});
-
-static SECRET_FIELD_NAME_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
-    || {
-        regex::Regex::new(
-        r#"(?i)^(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)$"#,
-    )
-    .expect("SECRET_FIELD_NAME_PATTERN is a valid static regex")
-    },
-);
-
-static MATRIX_ID_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?"#)
-        .expect("MATRIX_ID_PATTERN is a valid static regex")
-});
-
-static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"mxc://[A-Za-z0-9.-]+/[A-Za-z0-9._~-]+"#)
-        .expect("MXC_URI_PATTERN is a valid static regex")
-});
+/// Crate targets the desktop Sentry tracing bridge forwards — see
+/// `observability_scrub::is_tracing_target_allowed`.
+const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 
-fn scrub_secrets(text: &str) -> String {
-    SECRET_FIELD_PATTERN
-        .replace_all(text, "$1$2[redacted]")
-        .into_owned()
-}
-
-fn scrub_matrix_ids(text: &str) -> String {
-    let without_mxc = MXC_URI_PATTERN
-        .replace_all(text, "mxc://[redacted]/[redacted]")
-        .into_owned();
-    MATRIX_ID_PATTERN
-        .replace_all(&without_mxc, "$1[redacted]:[redacted]")
-        .into_owned()
-}
-
-fn scrub_sensitive_text(text: &str) -> String {
-    scrub_secrets(&scrub_matrix_ids(text))
-}
-
-fn scrub_json_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => {
-            *text = scrub_sensitive_text(text);
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                scrub_json_value(item);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for (key, field) in fields.iter_mut() {
-                if SECRET_FIELD_NAME_PATTERN.is_match(key) {
-                    *field = serde_json::Value::String("[redacted]".to_owned());
-                } else {
-                    scrub_json_value(field);
-                }
-            }
-        }
-        serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::Null => {}
-    }
-}
-
-/// Sentry `before_send` hook: redacts anything matching [`SECRET_FIELD_PATTERN`]
-/// and Matrix identifier patterns from every serialized string field before
-/// the event ever leaves the process.
-fn scrub_event(
-    event: sentry::protocol::Event<'static>,
-) -> Option<sentry::protocol::Event<'static>> {
-    let Ok(mut value) = serde_json::to_value(&event) else {
-        return Some(event);
-    };
-    scrub_json_value(&mut value);
-    serde_json::from_value(value).ok()
-}
-
+/// Consent-gated wrapper around `observability_scrub::scrub_log_in_place` —
+/// desktop is the one Sentry call site with a per-user runtime toggle (the
+/// Observability settings panel), so the gating lives here rather than in
+/// the shared module `charm-web-server` also uses (which has no such
+/// toggle).
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     if !RUNTIME_LOG_CONSENT.load(Ordering::SeqCst) {
         return None;
@@ -119,10 +40,7 @@ fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     if matches!(log.level, sentry::protocol::LogLevel::Debug) && !cfg!(debug_assertions) {
         return None;
     }
-    log.body = scrub_sensitive_text(&log.body);
-    for attribute in log.attributes.values_mut() {
-        scrub_json_value(&mut attribute.0);
-    }
+    observability_scrub::scrub_log_in_place(&mut log);
     Some(log)
 }
 
@@ -133,64 +51,31 @@ struct SentryGuard {
     logs_enabled: bool,
 }
 
-fn is_charm_tracing_target(target: &str) -> bool {
-    matches!(target, "charm" | "charm_lib")
-        || target.starts_with("charm::")
-        || target.starts_with("charm_lib::")
-}
-
-fn sentry_event_filter_for_level_target(
-    level: &tracing::Level,
-    target: &str,
-    logs_enabled: bool,
-) -> sentry::integrations::tracing::EventFilter {
-    use sentry::integrations::tracing::EventFilter;
-
-    if !is_charm_tracing_target(target) {
-        return EventFilter::Ignore;
-    }
-
-    if !logs_enabled {
-        return EventFilter::Ignore;
-    }
-
-    match *level {
-        tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
-        tracing::Level::WARN => EventFilter::Breadcrumb | EventFilter::Log,
-        tracing::Level::INFO => EventFilter::Breadcrumb,
-        tracing::Level::DEBUG => EventFilter::Ignore,
-        tracing::Level::TRACE => EventFilter::Ignore,
-    }
-}
-
 fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
 ) -> sentry::integrations::tracing::EventFilter {
     use sentry::integrations::tracing::EventFilter;
 
-    if !is_charm_tracing_target(metadata.target()) {
-        return EventFilter::Ignore;
-    }
-
     match *metadata.level() {
         tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO => {
             let logs_enabled = runtime_observability_logs_enabled();
-            sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
+            observability_scrub::sentry_event_filter_for_level_target(
+                metadata.level(),
+                metadata.target(),
+                logs_enabled,
+                DESKTOP_SENTRY_TRACING_CRATES,
+            )
         }
         tracing::Level::DEBUG | tracing::Level::TRACE => EventFilter::Ignore,
     }
 }
 
 fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
-    sentry_span_filter_for_level_target(metadata.level(), metadata.target())
-}
-
-fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> bool {
-    is_charm_tracing_target(target)
-        && matches!(
-            *level,
-            tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
-        )
+    observability_scrub::sentry_span_filter_for_level_target(
+        metadata.level(),
+        metadata.target(),
+        DESKTOP_SENTRY_TRACING_CRATES,
+    )
 }
 
 fn install_sentry_tracing() -> bool {
@@ -305,7 +190,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             // Keep Sentry Logs initialized for same-session opt-in; scrub_log
             // drops every native log unless runtime log consent is enabled.
             enable_logs: true,
-            before_send: Some(std::sync::Arc::new(scrub_event)),
+            before_send: Some(std::sync::Arc::new(observability_scrub::scrub_event)),
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
@@ -508,6 +393,8 @@ pub fn run() {
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
+            matrix::verification::recovery_status,
+            matrix::verification::recover_from_key,
             matrix::verification::accept_verification_request,
             matrix::verification::cancel_verification,
             matrix::verification::start_sas_verification,
@@ -530,6 +417,7 @@ pub fn run() {
             matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
             matrix::spaces::knock_room,
+            matrix::spaces::create_space,
             matrix::room_admin::get_room_details,
             matrix::room_admin::get_room_member_list,
             matrix::room_admin::set_room_name,
@@ -606,41 +494,11 @@ mod observability_tests {
         RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
     }
 
-    #[test]
-    fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
-        let input = r#"room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media password="secret""#;
-
-        assert_eq!(
-            scrub_sensitive_text(input),
-            r#"room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] password="[redacted]""#
-        );
-    }
-
-    #[test]
-    fn scrub_json_value_redacts_secret_field_values() {
-        let mut value = serde_json::json!({
-            "message": "failed in !room:example.org",
-            "extra": {
-                "password": "secret",
-                "access_token": "token",
-                "nested": ["@user:example.org", "plain string"]
-            }
-        });
-
-        scrub_json_value(&mut value);
-
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "message": "failed in ![redacted]:[redacted]",
-                "extra": {
-                    "password": "[redacted]",
-                    "access_token": "[redacted]",
-                    "nested": ["@[redacted]:[redacted]", "plain string"]
-                }
-            })
-        );
-    }
+    // Pure redaction-rule tests (matrix ID/secret patterns, JSON walking)
+    // live in `observability_scrub`'s own test module now that the logic
+    // does — this module keeps only what's actually desktop-specific:
+    // consent gating and crate-scoped filtering wired to
+    // `DESKTOP_SENTRY_TRACING_CRATES`.
 
     #[test]
     fn scrub_log_redacts_body_and_attributes() {
@@ -670,52 +528,6 @@ mod observability_tests {
                 "![redacted]:[redacted]".to_owned()
             ))
         );
-    }
-
-    #[test]
-    fn sentry_tracing_filter_keeps_bridge_charm_scoped() {
-        use sentry::integrations::tracing::EventFilter;
-
-        fn assert_event_filter(actual: EventFilter, expected: EventFilter) {
-            assert_eq!(actual.bits(), expected.bits());
-        }
-
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::INFO, "matrix_sdk::sync", true),
-            EventFilter::Ignore,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", true),
-            EventFilter::Breadcrumb,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", true),
-            EventFilter::Breadcrumb | EventFilter::Log,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::ERROR, "charm_lib::matrix", true),
-            EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", false),
-            EventFilter::Ignore,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(
-                &tracing::Level::ERROR,
-                "charm_lib::matrix",
-                false,
-            ),
-            EventFilter::Ignore,
-        );
-        assert!(!sentry_span_filter_for_level_target(
-            &tracing::Level::INFO,
-            "matrix_sdk::sync"
-        ));
-        assert!(sentry_span_filter_for_level_target(
-            &tracing::Level::INFO,
-            "charm_lib::matrix"
-        ));
     }
 
     #[test]

@@ -45,11 +45,14 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
-use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hierarchy_impl};
+use charm_lib::matrix::spaces::{
+    create_space_impl, join_room_impl, knock_room_impl, list_space_hierarchy_impl,
+};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
-    confirm_sas_verification_impl, cross_signing_status_impl,
+    confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
+    recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
@@ -95,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/knock", post(knock_room))
+        .route("/api/rooms/create-space", post(create_space))
         .route("/api/rooms/{room_id}", get(get_room_details))
         .route("/api/rooms/{room_id}/members", get(get_room_members))
         .route(
@@ -232,6 +236,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/verification/cross-signing/reset-url",
             get(get_cross_signing_reset_url),
+        )
+        .route(
+            "/api/verification/recovery",
+            get(get_recovery_status).post(recover_from_key),
         )
         .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
@@ -476,6 +484,43 @@ async fn logout(
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+            // See the matching call in the `else` branch below — harmless
+            // even in the (normal) case where this token was never
+            // idle-evicted and so never had an entry to begin with.
+            state.sessions.forget_evicted_presence(&token);
+        } else if let Some(persistence) = &state.persistence {
+            // No live in-memory `Session` for this token — either it was
+            // never loaded (a startup `restore_all` failure/timeout) or it
+            // was idle-evicted (see `session::SessionStore::sweep_idle`).
+            // Either way there's still a persisted access/refresh token that
+            // would otherwise stay valid at the homeserver forever, since
+            // nothing below this rebuilds a `Client` to revoke it — only
+            // deletes the local persisted copy. Restore just far enough to
+            // call `logout()` on the homeserver before that persisted copy
+            // is gone. The restore itself is awaited (not spawned) and
+            // *before* the unconditional `remove` below — `restore_by_token`
+            // reads the same persisted object `remove` is about to delete,
+            // so this has to run first, not race it — and it's already
+            // bounded by `RESTORE_TIMEOUT`, so a slow/unreachable homeserver
+            // can't hang on *that* part. The actual `logout()` call is
+            // spawned rather than awaited, same as the live-session branch
+            // above and for the same reason: it's a second, independent
+            // network call with no timeout of its own, so awaiting it
+            // inline here would let a slow/unreachable homeserver hang this
+            // response even after the bounded restore already succeeded.
+            // No presence to carry forward here — this session is being
+            // logged out, not restored for continued use.
+            if let Some((_, session, _, _)) = persistence.restore_by_token(&token, None).await {
+                tokio::spawn(async move {
+                    let _ = session.client.matrix_auth().logout().await;
+                });
+            }
+            // This token's cached presence (if any — see
+            // `SessionStore::evicted_presence`) is now meaningless: the
+            // persisted session it would have restored into is about to be
+            // deleted below. Drop it immediately instead of leaving it to
+            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
+            state.sessions.forget_evicted_presence(&token);
         }
         // Removed unconditionally, whether or not a live in-memory session
         // was found above — not nested inside that `if let Some(session)`.
@@ -555,6 +600,80 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    if let Some(session) = state.sessions.get(&token).await {
+        session.touch();
+        return Ok(session);
+    }
+
+    // Not in memory — either never logged in under this token, or this
+    // session was idle-evicted (see `session::SessionStore::sweep_idle`)
+    // while the cookie was still valid. Try restoring it from persistence
+    // before giving up, so a browser that comes back after the eviction
+    // window doesn't get forced into a full re-login for no reason other
+    // than server-side memory pressure.
+    //
+    // Known race, accepted rather than solved here: two requests for the
+    // same idle-evicted token arriving concurrently (e.g. a page load firing
+    // several API calls at once right after the eviction window) can both
+    // miss the `get` above and both restore + spawn their own `Client` and
+    // sync loop, with the second `insert` silently winning and orphaning the
+    // first's sync loop (never aborted, just abandoned — it'll keep polling
+    // until the process restarts). Narrow in practice (only matters in the
+    // instant right after an eviction, before either restore completes) and
+    // no worse than today's behavior for the equivalent case elsewhere in
+    // this file; closing it properly needs a per-token restore lock, which
+    // isn't worth the added complexity unless it shows up in practice.
+    let Some(persistence) = &state.persistence else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    // Read (not taken) *before* the restore call below — see
+    // `persistence::PersistenceStore::restore_by_token`'s doc comment for
+    // why it needs this to seed the freshly built session's presence before
+    // its own initial `sync_once` runs, not merely before this function
+    // returns. `peek_evicted_presence`, not `take`: `restore_by_token` can
+    // fail (timeout, unreachable homeserver, a transient object-store
+    // error), and taking the entry unconditionally up front would
+    // permanently lose the user's `unavailable`/`offline` choice on that
+    // first failed attempt — a *later*, successful retry with the same
+    // still-valid cookie would then silently fall back to `Online` even
+    // though the cached value was sitting right there the whole time. Only
+    // consumed (`forget_evicted_presence`, below) once the restore this
+    // presence was seeded into has actually succeeded.
+    let evicted_presence = state.sessions.peek_evicted_presence(&token);
+    let Some((homeserver_url, session, initial_response, initial_access_token)) =
+        persistence.restore_by_token(&token, evicted_presence).await
+    else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    if evicted_presence.is_some() {
+        state.sessions.forget_evicted_presence(&token);
+    }
+    session.touch();
+    let persist = Some(crate::sync_loop::PersistHandle {
+        store: Arc::clone(persistence),
+        token: token.clone(),
+        homeserver_url,
+        initial_access_token: Some(initial_access_token),
+    });
+    let handle = crate::sync_loop::spawn(
+        session.client.clone(),
+        session.events.clone(),
+        session.sync_presence.clone(),
+        persist,
+        initial_response,
+        session.sync_snapshots(),
+    );
+    *session
+        .sync_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    state.sessions.insert(token.clone(), session).await;
+    // `insert` takes the session by value and wraps it in its own `Arc`
+    // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
+    // rather than wrapping a second, disconnected one here, so every holder
+    // of this session (this request, `sync_loop`'s spawned task, any other
+    // concurrent request racing the same restore) is looking at the same
+    // instance.
     state
         .sessions
         .get(&token)
@@ -680,10 +799,36 @@ async fn join_room(
     Json(request): Json<JoinRoomRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    join_room_impl(&session.client, &request.room_id_or_alias)
+    let room_id = join_room_impl(&session.client, &request.room_id_or_alias)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(room_id))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSpaceRequest {
+    name: String,
+    topic: Option<String>,
+    room_alias_name: Option<String>,
+    public: bool,
+}
+
+async fn create_space(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<CreateSpaceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let room_id = create_space_impl(
+        &session.client,
+        &request.name,
+        request.topic.as_deref(),
+        request.room_alias_name.as_deref(),
+        request.public,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(room_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2164,6 +2309,31 @@ async fn get_cross_signing_reset_url(
     ))
 }
 
+async fn get_recovery_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(recovery_status_impl(&session.client)))
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoverFromKeyRequest {
+    recovery_key: String,
+}
+
+async fn recover_from_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<RecoverFromKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    recover_from_key_impl(&session.client, &request.recovery_key)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn accept_verification(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2545,7 +2715,32 @@ fn requeue_pending_verification_events(
     *buffer = requeued;
 }
 
+/// Keeps `Session::ws_connections` accurate across every exit path out of
+/// `handle_socket` (clean close, a failed `socket.send`, the lag-induced
+/// forced close) — see that field's doc comment for why an open connection
+/// must always count as active for `SessionStore::sweep_idle`, regardless
+/// of how long ago this session's last HTTP request was.
+struct WsConnectionGuard(Arc<Session>);
+
+impl WsConnectionGuard {
+    fn new(session: Arc<Session>) -> Self {
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(session)
+    }
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.0
+            .ws_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
+    let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see

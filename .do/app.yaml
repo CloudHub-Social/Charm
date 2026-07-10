@@ -73,3 +73,22 @@ services:
         type: SECRET
       - key: CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY
         type: SECRET
+      # CHARM_WEB_SERVER_SENTRY_DSN (see
+      # crates/charm-web-server/src/observability.rs) is deliberately *not*
+      # declared here, unlike every other SECRET above — scripts/merge-do-app-spec.py
+      # treats any repo-declared `type: SECRET` missing a live value as
+      # fatal and refuses to deploy at all (see that script's own comment),
+      # which would turn this genuinely optional env var into a hard
+      # dependency on someone provisioning it before the *next* deploy of
+      # this app, contradicting "unset means stdout-only". Add it directly
+      # via the DO dashboard or `doctl apps update` whenever Sentry should
+      # be turned on for this app — the merge script already preserves any
+      # live env not mentioned in this repo spec (see its own doc comment),
+      # so once added out-of-band it survives every future automated
+      # deploy without ever needing an entry here. Reuse the same Sentry
+      # org/project as the frontend/desktop/Android (see
+      # SENTRY_OPERATIONAL_CHECKLIST.md) rather than provisioning a separate
+      # one.
+      - key: CHARM_WEB_SERVER_SENTRY_ENVIRONMENT
+        scope: RUN_TIME
+        value: production

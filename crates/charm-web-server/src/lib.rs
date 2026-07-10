@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod events;
 pub mod media_cache;
+pub mod observability;
 pub mod persistence;
 pub mod routes;
 pub mod session;

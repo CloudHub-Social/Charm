@@ -307,6 +307,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         room_id_or_alias: args.roomIdOrAlias,
         reason: args.reason,
       });
+    case "create_space":
+      return requestJson<T>("POST", "/api/rooms/create-space", {
+        name: args.name,
+        topic: args.topic,
+        room_alias_name: args.roomAliasName,
+        public: args.public,
+      });
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,
@@ -533,6 +540,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("GET", "/api/verification/cross-signing");
     case "get_cross_signing_reset_url":
       return requestJson<T>("GET", "/api/verification/cross-signing/reset-url");
+    case "recovery_status":
+      return requestJson<T>("GET", "/api/verification/recovery");
+    case "recover_from_key":
+      return requestJson<T>("POST", "/api/verification/recovery", {
+        recovery_key: args.recoveryKey,
+      });
     case "list_devices":
       return requestJson<T>("GET", "/api/devices");
     case "delete_device":

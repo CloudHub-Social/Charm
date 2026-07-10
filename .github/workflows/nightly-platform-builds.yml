@@ -241,22 +241,21 @@ jobs:
       # plus frontend asset embedding), a build path nothing else exercises.
       # sccache credentials scoped to just this step — see the macOS job.
       #
-      # AppImage is deliberately excluded via --bundles: it reproducibly
-      # hangs forever (zero CPU, zero log output) right after rpm bundling
-      # finishes. Two earlier fixes targeting plausible causes (FUSE
-      # mounting, an untimed network download inside tauri-bundler) both
-      # failed to reproduce-then-fix it — a background build + `tmate`/
-      # /proc snapshot on the actual hung runner (see the now-closed
-      # debug-linux-appimage-hang branch) showed no linuxdeploy/appimagetool
-      # subprocess ever gets spawned at all, and every thread of the Tauri
-      # CLI's own node process sits idle in epoll_pwait/futex_wait — a
-      # genuine internal deadlock in @tauri-apps/cli 2.11.4 / tauri-bundler
-      # 2.9.4's AppImage codepath itself, not an external timing issue.
-      # Revisit once upstream has a fix; deb+rpm both bundle fine.
-      - run: pnpm tauri build --debug --bundles deb,rpm
-        # Backstop in case some other hang path exists beyond the one
-        # --bundles deb,rpm avoids.
-        timeout-minutes: 15
+      # AppImage is deliberately excluded via --bundles: its own bundling
+      # codepath has a separately-known upstream deadlock. deb/rpm
+      # bundling is also prone to an *intermittent* hang of its own —
+      # tauri-apps/tauri#11478 describes the same symptom (rpm bundling
+      # stuck indefinitely, no error) and was closed upstream as
+      # unresolved. An extensive investigation here (FUSE mounting, an
+      # untimed network download, a libuv io_uring kernel bug, a recent
+      # Node regression, a byte-for-byte repro of the pre-sccache job,
+      # ubuntu-22.04 as a fallback image — all tested and ruled out)
+      # narrowed it to something at or below the rpm-rs crate / kernel
+      # boundary, not anything in this repo's control. Retry on a
+      # timeout rather than a real build failure: rerunning is the
+      # practical mitigation until upstream has a fix.
+      - name: Build (retry on hang, not on a real failure)
+        timeout-minutes: 60
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -274,6 +273,42 @@ jobs:
           # feature branch.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+        run: |
+          # GH Actions runs this as `bash -e` by default, so a non-zero exit
+          # from `timeout` (including the expected 124/137 on a hang) would
+          # normally abort the step immediately. `|| status=$?` (not
+          # `|| true; status=$?` — that captures true's exit code, always 0,
+          # not timeout's) sets status only on failure, leaving it unset
+          # (defaulted to 0 below) on success, without ever tripping -e.
+          max_attempts=3
+          per_attempt_timeout=900 # 15 minutes
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "::group::Build attempt $attempt/$max_attempts"
+            status=0
+            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --debug --bundles deb,rpm || status=$?
+            echo "::endgroup::"
+            if [ "$status" -eq 0 ]; then
+              echo "Build succeeded on attempt $attempt."
+              exit 0
+            fi
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
+              # Clean slate before retrying: tauri-bundler's deb/rpm steps
+              # aren't obviously idempotent against a stale bundle dir
+              # from a killed attempt. Workspace target dir lives at the
+              # repo root (root Cargo.toml declares [workspace] with
+              # src-tauri as a member), not src-tauri/target — confirmed
+              # from CI logs (.../work/Charm/Charm/target/debug/bundle/...).
+              rm -rf target/debug/bundle
+            else
+              echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
+              exit "$status"
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "All $max_attempts attempts timed out — giving up."
+          exit 1
 
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a

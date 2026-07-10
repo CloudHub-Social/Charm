@@ -6,6 +6,7 @@ import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverRes
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
+import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
@@ -26,6 +27,7 @@ import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
+import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
@@ -86,6 +88,7 @@ export type {
   ReactionToggleResult,
   ReceiptTypeDto,
   ReceiptUpdate,
+  RecoveryStatusSummary,
   RegisterRequest,
   ReplyRef,
   RoomDetails,
@@ -305,6 +308,19 @@ export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
   return invoke("cross_signing_status");
 }
 
+export function recoveryStatus(): Promise<RecoveryStatusSummary> {
+  return invoke("recovery_status");
+}
+
+// captureOnError: false — a wrong/invalid recovery key is an expected user-input
+// error (same class as a wrong password), not a bug report; DevicesPanel already
+// surfaces it inline via the mutation's own error state. `recoveryKey` itself never
+// reaches Sentry either way: `observability/ipc.ts`'s arg-redaction pattern already
+// matches `recovery_key`/`recoveryKey` field names.
+export function recoverFromKey(recoveryKey: string): Promise<void> {
+  return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
+}
+
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
   return invoke("accept_verification_request", { otherUserId, flowId });
 }
@@ -469,12 +485,32 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
   return invoke("list_space_hierarchy", { spaceId });
 }
 
-export function joinRoom(roomIdOrAlias: string): Promise<void> {
+/**
+ * Returns the resolved room id (and whether it's a space), since
+ * `roomIdOrAlias` may be an alias and/or the caller may not already know
+ * the room's type.
+ */
+export function joinRoom(roomIdOrAlias: string): Promise<JoinedRoom> {
   return invoke("join_room", { roomIdOrAlias });
 }
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
+}
+
+/** Creates a new space room and returns its room id. */
+export function createSpace(
+  name: string,
+  topic?: string,
+  roomAliasName?: string,
+  isPublic = false,
+): Promise<string> {
+  return invoke("create_space", {
+    name,
+    topic: topic ?? null,
+    roomAliasName: roomAliasName ?? null,
+    public: isPublic,
+  });
 }
 
 export function logout(): Promise<void> {
