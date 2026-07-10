@@ -13,9 +13,24 @@
 # them instead of silently retrying forever.
 set -e
 
-repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+own_root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# CLAUDE.md requires agents to work from an isolated worktree, never main
+# directly — so running this installer from wherever it happens to sit
+# isn't safe to assume is main. Resolve the actual worktree with branch
+# `main` checked out (same approach as scripts/git-hooks/post-checkout),
+# regardless of which checkout the installer itself was run from.
+repo_root="$(git -C "$own_root" worktree list --porcelain | awk '
+  /^worktree /{path=$0; sub(/^worktree /, "", path)}
+  /^branch refs\/heads\/main$/{print path; exit}
+')"
+if [ -z "$repo_root" ]; then
+  echo "install-launchd-agent: no worktree with branch 'main' checked out found — refusing to install" >&2
+  exit 1
+fi
+
 label="social.cloudhub.charm.sync-main-graphify"
-src="$repo_root/scripts/$label.plist"
+src="$own_root/scripts/$label.plist"
 dest="$HOME/Library/LaunchAgents/$label.plist"
 
 mkdir -p "$HOME/Library/LaunchAgents"

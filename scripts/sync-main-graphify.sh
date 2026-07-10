@@ -43,6 +43,14 @@ if [ ! -f "$repo_root/graphify-out/graph.json" ] || [ -f "$fail_marker" ]; then
   need_graphify_update=1
 fi
 
+# A marker file living *inside* node_modules itself (not a separate /tmp
+# file) — it travels automatically through the symlink, so post-checkout and
+# guard-symlinked-node-modules.py both see it without needing to duplicate a
+# lookup against some out-of-band coordination file.
+stale_marker="$repo_root/node_modules/.charm-stale"
+need_reinstall=0
+[ -f "$stale_marker" ] && need_reinstall=1
+
 if [ "$local_head" != "$remote_head" ]; then
   if ! git merge-base --is-ancestor "$local_head" "$remote_head"; then
     echo "sync-main-graphify: local main has diverged from origin/main — skipping" >&2
@@ -58,33 +66,31 @@ if [ "$local_head" != "$remote_head" ]; then
 
   lockfile_after=""
   [ -f "$repo_root/pnpm-lock.yaml" ] && lockfile_after="$(cat "$repo_root/pnpm-lock.yaml")"
+  [ "$lockfile_before" != "$lockfile_after" ] && need_reinstall=1
+fi
 
-  # If the fast-forward moved pnpm-lock.yaml, main's own real node_modules
-  # is now stale relative to its own lockfile — and every worktree created
-  # afterwards would symlink that stale install while believing (correctly,
-  # by lockfile comparison) that it matches main. Reinstalling here is what
-  # actually keeps the shared node_modules trustworthy, not just the
-  # lockfile-comparison guard (which only catches divergence, not main
-  # itself being behind its own lockfile).
-  if [ "$lockfile_before" != "$lockfile_after" ]; then
-    # A marker file living *inside* node_modules itself (not a separate /tmp
-    # file) — it travels automatically through the symlink, so post-checkout
-    # and guard-symlinked-node-modules.py both see it without needing to
-    # duplicate a lookup against some out-of-band coordination file.
-    stale_marker="$repo_root/node_modules/.charm-stale"
-    if command -v pnpm >/dev/null 2>&1; then
-      echo "sync-main-graphify: pnpm-lock.yaml changed — reinstalling main's dependencies"
-      if pnpm install --frozen-lockfile >/tmp/charm-sync-pnpm-install.log 2>&1; then
-        echo "sync-main-graphify: pnpm install completed"
-        rm -f "$stale_marker"
-      else
-        echo "sync-main-graphify: pnpm install failed — see /tmp/charm-sync-pnpm-install.log" >&2
-        [ -d "$repo_root/node_modules" ] && touch "$stale_marker"
-      fi
+# If the fast-forward moved pnpm-lock.yaml (checked above), OR a previous
+# run's reinstall attempt failed and left the stale marker behind (checked
+# up front — this fires even on a run where main *doesn't* move, otherwise a
+# one-time failure would leave the shared install permanently marked stale
+# until the next unrelated main commit), main's own real node_modules is
+# stale relative to its own lockfile. Reinstalling here is what actually
+# keeps the shared node_modules trustworthy, not just the lockfile-
+# comparison guard (which only catches divergence, not main itself being
+# behind its own lockfile).
+if [ "$need_reinstall" = "1" ]; then
+  if command -v pnpm >/dev/null 2>&1; then
+    echo "sync-main-graphify: reinstalling main's dependencies"
+    if pnpm install --frozen-lockfile >/tmp/charm-sync-pnpm-install.log 2>&1; then
+      echo "sync-main-graphify: pnpm install completed"
+      rm -f "$stale_marker"
     else
-      echo "sync-main-graphify: pnpm-lock.yaml changed but pnpm not found on PATH — main's node_modules is now stale" >&2
+      echo "sync-main-graphify: pnpm install failed — see /tmp/charm-sync-pnpm-install.log" >&2
       [ -d "$repo_root/node_modules" ] && touch "$stale_marker"
     fi
+  else
+    echo "sync-main-graphify: pnpm not found on PATH — main's node_modules stays marked stale" >&2
+    [ -d "$repo_root/node_modules" ] && touch "$stale_marker"
   fi
 fi
 

@@ -44,6 +44,7 @@ HARD_DENY_SUBCOMMANDS = {
     "install", "i", "in", "ins", "inst",
     "insta", "instal", "isnt", "isnta", "isntal", "isntall",
     "install-test", "it",
+    "install-ci-test", "cit", "clean-install-test", "sit",
     "ci", "add",
     "remove", "rm", "uninstall", "un", "unlink", "r",
     "update", "up", "prune",
@@ -78,7 +79,13 @@ def find_subcommand(rest_of_segment):
     while i < len(tokens):
         tok = tokens[i]
         if tok.startswith("-"):
-            if tok in VALUE_FLAGS:
+            # --prefix=<value> packs the value into the same token; --prefix
+            # <value> (or -C <value>) puts it in the next one. Handle both.
+            name, sep, value = tok.partition("=")
+            if sep and name in VALUE_FLAGS:
+                override = value
+                i += 1
+            elif tok in VALUE_FLAGS:
                 if i + 1 < len(tokens):
                     override = tokens[i + 1]
                 i += 2
