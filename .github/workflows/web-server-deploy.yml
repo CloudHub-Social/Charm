@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
 
-      - uses: digitalocean/action-doctl@v2
+      - uses: digitalocean/action-doctl@3cb3953159719656269e044e0e24ca16dd2a690f # v2.5.2
         with:
           token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
 
@@ -73,7 +73,13 @@ jobs:
 
       - name: Verify deployed API
         run: |
-          if ! status=$(curl --silent --show-error --output /tmp/charm-web-server-health.txt --write-out "%{http_code}" "$DO_APP_URL/api/health"); then
+          # --connect-timeout bounds a stalled TCP connect/TLS handshake;
+          # --max-time bounds the whole request (a slow/hanging response
+          # after connecting) — without both, a stalled endpoint hangs this
+          # step (and the deploy job) indefinitely instead of failing fast.
+          curl_opts=(--silent --show-error --connect-timeout 10 --max-time 30)
+
+          if ! status=$(curl "${curl_opts[@]}" --output /tmp/charm-web-server-health.txt --write-out "%{http_code}" "$DO_APP_URL/api/health"); then
             echo "::error::Failed to connect to $DO_APP_URL/api/health."
             cat /tmp/charm-web-server-health.txt
             exit 1
@@ -88,7 +94,7 @@ jobs:
           # auth-required route quietly missing from what's actually running
           # (404, axum's "no route matched") vs. present but correctly
           # rejecting the unauthenticated request (401).
-          if ! status=$(curl --silent --show-error --output /tmp/charm-web-server-devices.txt --write-out "%{http_code}" "$DO_APP_URL/api/devices"); then
+          if ! status=$(curl "${curl_opts[@]}" --output /tmp/charm-web-server-devices.txt --write-out "%{http_code}" "$DO_APP_URL/api/devices"); then
             echo "::error::Failed to connect to $DO_APP_URL/api/devices."
             cat /tmp/charm-web-server-devices.txt
             exit 1

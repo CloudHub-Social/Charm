@@ -121,22 +121,44 @@ fn token_hash(token: &str) -> String {
 }
 
 /// Builds the DO Spaces (S3-compatible) backend once [`SPACES_BUCKET_ENV`] is
-/// set — the other three `*_SPACES_*` vars are then required too, since a
+/// set — the other four `*_SPACES_*` vars are then required too, since a
 /// bucket name alone isn't enough to reach a non-AWS S3-compatible endpoint
 /// or authenticate against it.
 fn spaces_store_from_env(bucket: &str) -> Result<object_store::aws::AmazonS3, String> {
     let require = |name: &str| {
-        std::env::var(name).map_err(|_| format!("{name} must be set when {SPACES_BUCKET_ENV} is"))
+        std::env::var(name)
+            .map_err(|_| format!("{name} must be set when {SPACES_BUCKET_ENV} is set"))
     };
+    // `object_store` requires that, when `with_virtual_hosted_style_request`
+    // is enabled, the endpoint it's given already has the bucket name in it
+    // (see `AmazonS3Builder::with_virtual_hosted_style_request`'s own doc
+    // comment) — it does not insert one itself. `SPACES_ENDPOINT_ENV` is
+    // meant to hold the plain *region* endpoint (e.g.
+    // `https://tor1.digitaloceanspaces.com`, matching this repo's existing
+    // sccache config), so build the actual per-bucket virtual-hosted
+    // endpoint here rather than expecting every caller of this env var to
+    // already know to include the bucket subdomain themselves.
+    let endpoint = virtual_hosted_endpoint(bucket, &require(SPACES_ENDPOINT_ENV)?);
     AmazonS3Builder::new()
         .with_bucket_name(bucket)
         .with_region(require(SPACES_REGION_ENV)?)
-        .with_endpoint(require(SPACES_ENDPOINT_ENV)?)
+        .with_endpoint(endpoint)
         .with_access_key_id(require(SPACES_ACCESS_KEY_ID_ENV)?)
         .with_secret_access_key(require(SPACES_SECRET_ACCESS_KEY_ENV)?)
         .with_virtual_hosted_style_request(true)
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// Turns a plain region endpoint (e.g. `https://tor1.digitaloceanspaces.com`)
+/// into the per-bucket virtual-hosted endpoint `object_store` requires when
+/// `with_virtual_hosted_style_request(true)` is set (e.g.
+/// `https://my-bucket.tor1.digitaloceanspaces.com`).
+fn virtual_hosted_endpoint(bucket: &str, region_endpoint: &str) -> String {
+    match region_endpoint.split_once("://") {
+        Some((scheme, host)) => format!("{scheme}://{bucket}.{host}"),
+        None => format!("{bucket}.{region_endpoint}"),
+    }
 }
 
 pub struct PersistenceStore {
@@ -800,6 +822,21 @@ mod tests {
         }
     }
 
+    /// Regression test: `object_store`'s `AmazonS3Builder` does not insert
+    /// the bucket name into a custom endpoint on its own even with
+    /// `with_virtual_hosted_style_request(true)` — a prior version of
+    /// `spaces_store_from_env` passed the bare region endpoint straight
+    /// through, which would have made every Spaces request fail once
+    /// deployed (never caught locally since these tests never exercised the
+    /// Spaces backend against a real or mocked S3 endpoint).
+    #[test]
+    fn virtual_hosted_endpoint_inserts_bucket_as_subdomain() {
+        assert_eq!(
+            virtual_hosted_endpoint("my-bucket", "https://tor1.digitaloceanspaces.com"),
+            "https://my-bucket.tor1.digitaloceanspaces.com"
+        );
+    }
+
     /// No `SPACES_BUCKET_ENV` set → `from_env` must still build the
     /// local-disk backend it always has, not silently do nothing or error.
     #[test]
@@ -837,6 +874,20 @@ mod tests {
                 "a bucket with no region/endpoint/credentials must fail closed, not fall back"
             ),
         };
-        assert!(err.contains(SPACES_REGION_ENV), "got: {err}");
+        // Whichever of the four missing vars this happens to check first
+        // (not asserting a specific one — that's an implementation detail
+        // of `spaces_store_from_env`'s field-building order, not a contract
+        // worth pinning down here).
+        assert!(
+            [
+                SPACES_REGION_ENV,
+                SPACES_ENDPOINT_ENV,
+                SPACES_ACCESS_KEY_ID_ENV,
+                SPACES_SECRET_ACCESS_KEY_ENV
+            ]
+            .iter()
+            .any(|name| err.contains(name)),
+            "got: {err}"
+        );
     }
 }

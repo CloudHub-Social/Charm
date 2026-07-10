@@ -22,6 +22,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get -o Acquire::Retries=5 update && apt-get install -y --fix-missing --no-install-recommends \
     libsqlite3-0 \
+    libssl3 \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
