@@ -123,7 +123,11 @@ jobs:
       # investigation history and why this retries on a timeout rather
       # than trying to prevent it outright.
       - name: Build Tauri Linux app with release debuginfo (retry on hang, not on a real failure)
-        timeout-minutes: 60
+        # Worst case: 3 attempts * (per_attempt_timeout=1200s + kill-after
+        # grace=30s) = 3690s (61.5min) — must exceed that or GH Actions
+        # kills the step mid-retry, before its own error handling/logging
+        # can run.
+        timeout-minutes: 70
         run: |
           # GH Actions runs this as `bash -e` by default, so a non-zero exit
           # from `timeout` (including the expected 124/137 on a hang) would
