@@ -86,6 +86,16 @@ pub const SPACES_SECRET_ACCESS_KEY_ENV: &str = "CHARM_WEB_SERVER_SPACES_SECRET_A
 /// one object per session at `<SESSIONS_PREFIX>/<sha256(token)>.json`.
 const SESSIONS_PREFIX: &str = "sessions";
 
+/// Bounds how long any single [`restore_one`] call (build a client, restore
+/// the session, run an initial `sync_once`) can run before being treated as
+/// a failure — shared by [`PersistenceStore::restore_all`] (bounds total
+/// startup time against a slow/unreachable homeserver) and
+/// [`PersistenceStore::restore_by_token`] (bounds a single request's
+/// on-demand restore the same way, so a hung DNS lookup or a homeserver that
+/// never responds can't tie up a request — and the connection handling
+/// it — indefinitely).
+const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
     token: String,
@@ -350,16 +360,23 @@ impl PersistenceStore {
     )> {
         let entry = self.read_one(token).await?;
         let originally_persisted_access_token = entry.session.tokens.access_token.clone();
-        match restore_one(&entry).await {
-            Ok((session, initial_response)) => Some((
+        match tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry)).await {
+            Ok(Ok((session, initial_response))) => Some((
                 entry.homeserver_url,
                 session,
                 initial_response,
                 originally_persisted_access_token,
             )),
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(
                     "dropping persisted session for {}: failed to restore: {e}",
+                    entry.session.meta.user_id
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "dropping persisted session for {}: restore timed out after {RESTORE_TIMEOUT:?}",
                     entry.session.meta.user_id
                 );
                 None
@@ -490,8 +507,6 @@ impl PersistenceStore {
         // accepting connections. `RESTORE_TIMEOUT` bounds how long any
         // single entry can hold up the rest: a homeserver that never
         // responds at all can't block startup indefinitely either.
-        const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
         let entries = self.read_all().await;
         let attempts = entries.into_iter().map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();

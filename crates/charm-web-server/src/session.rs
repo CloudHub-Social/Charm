@@ -578,14 +578,26 @@ impl SessionStore {
         }
     }
 
-    /// Inserts `session` under a caller-chosen `token` — used only at
-    /// startup to reinsert a persisted session under the exact token it was
-    /// issued to a browser under before the restart (see
-    /// `persistence::PersistenceStore::restore_all` and `main.rs`), so an
-    /// already-set cookie keeps working. Never exposed to request handlers:
-    /// every other insertion path goes through [`Self::create`]'s
-    /// server-chosen token, preserving the "tokens are never client/caller
-    /// influenced at request time" property.
+    /// Inserts `session` under a caller-chosen `token` — for reinserting a
+    /// persisted session under the exact token it was already issued to a
+    /// browser as a cookie, so that already-set cookie keeps working. Two
+    /// call sites do this: `main.rs`'s startup restore (see
+    /// `persistence::PersistenceStore::restore_all`), and
+    /// `routes::require_session`'s on-demand restore of an idle-evicted
+    /// session (see `SessionStore::sweep_idle` and
+    /// `persistence::PersistenceStore::restore_by_token`) — the latter *is*
+    /// exposed to request handlers, updated from this doc comment's
+    /// original claim otherwise.
+    ///
+    /// This still never lets a client or caller choose a *new* token,
+    /// though: both call sites only ever pass back a token that was already
+    /// a valid cookie for an existing persisted session (looked up by
+    /// `sha256(token)` — see `persistence::object_path_for_token`), not one
+    /// invented at request time. A request presenting an unknown or forged
+    /// token never reaches this function at all; it 401s in
+    /// `require_session` before any restore is attempted. Every *fresh*
+    /// login still goes through [`Self::create`]'s server-chosen token —
+    /// this function only ever re-establishes a token that already existed.
     pub async fn insert(&self, token: String, session: Session) {
         self.inner.write().await.insert(token, Arc::new(session));
     }
