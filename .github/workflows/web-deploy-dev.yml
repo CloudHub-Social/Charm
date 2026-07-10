@@ -1,0 +1,151 @@
+name: Web deploy (dev)
+
+# Deploys the web build to the `charm` Cloudflare Worker
+# (charm-2-dev.cloudhub.social) on every push to main. Nothing in this repo
+# did this before — web-preview.yml only builds ephemeral per-PR previews
+# (the `charm-preview` Worker) on pull_request/workflow_dispatch, so merges
+# to main never reached the dev Worker at all. This mirrors web-preview.yml's
+# build/bundle steps but deploys straight to `charm` instead of a
+# preview-alias version of `charm-preview`.
+#
+# main is already gated by quality-checks.yml (push) + the merge queue's
+# required checks before a commit lands here, so this workflow does not
+# re-run the quality gate itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Same "what pnpm build:web can actually read" set as web-preview.yml's
+      # path filter — kept in sync manually since GitHub Actions `paths:`
+      # doesn't support importing a shared list.
+      - "src/**"
+      - "public/**"
+      - ".design-sync/**"
+      - "src-tauri/src/bindings/**"
+      - ".env"
+      - ".env.web"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "index.html"
+      - ".github/workflows/web-deploy-dev.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to charm-2-dev.cloudhub.social
+    runs-on: ubuntu-latest
+    environment: cloudflare-preview
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Check deploy configuration
+        id: config
+        run: |
+          missing=()
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CHARM_WEB_API_BASE_URL; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Cannot deploy web build to charm-2-dev; missing secret(s): %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:web
+
+      - name: Configure Worker bundle
+        run: |
+          api_base="${CHARM_WEB_API_BASE_URL%/}"
+          case "$api_base" in
+            http://*|https://*) ;;
+            *)
+              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API base URL for proxying"
+              exit 1
+              ;;
+          esac
+          mkdir -p deploy-worker
+          cat > deploy-worker/worker.mjs <<EOF
+          const API_BASE = ${api_base@Q};
+
+          export default {
+            async fetch(request, env) {
+              const url = new URL(request.url);
+              if (url.pathname.startsWith("/api/")) {
+                const apiBase = new URL(API_BASE);
+                const basePath = apiBase.pathname.replace(/\/$/, "");
+                const upstream = new URL(apiBase);
+                upstream.pathname = \`\${basePath}\${url.pathname}\`;
+                upstream.search = url.search;
+                const headers = new Headers(request.headers);
+                headers.set("x-forwarded-host", url.host);
+                headers.set("x-forwarded-proto", url.protocol.replace(/:$/, ""));
+                const proxied = new Request(upstream, {
+                  method: request.method,
+                  headers,
+                  body: request.body,
+                  redirect: "manual",
+                });
+                return fetch(proxied);
+              }
+              return env.ASSETS.fetch(request);
+            },
+          };
+          EOF
+          cat > deploy-worker/wrangler.jsonc <<'EOF'
+          {
+            "name": "charm",
+            "compatibility_date": "2026-07-09",
+            "main": "./worker.mjs",
+            "assets": {
+              "directory": "../dist",
+              "binding": "ASSETS",
+              "not_found_handling": "single-page-application",
+              "run_worker_first": ["/api/*"]
+            }
+          }
+          EOF
+
+      - name: Deploy to Cloudflare Workers
+        run: npx --yes wrangler@4.107.1 deploy --config deploy-worker/wrangler.jsonc
+
+      - name: Verify deployed API proxy
+        run: |
+          if ! status=$(curl --silent --show-error --output /tmp/charm-dev-proxy.txt --write-out "%{http_code}" "https://charm-2-dev.cloudhub.social/api/auth/me"); then
+            echo "::error::Failed to connect to charm-2-dev.cloudhub.social API proxy."
+            cat /tmp/charm-dev-proxy.txt
+            exit 1
+          fi
+          case "$status" in
+            401) ;;
+            *)
+              echo "::error::charm-2-dev.cloudhub.social API proxy returned HTTP ${status}; expected 401 from unauthenticated /api/auth/me."
+              cat /tmp/charm-dev-proxy.txt
+              exit 1
+              ;;
+          esac
