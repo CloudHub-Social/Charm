@@ -109,9 +109,8 @@ runs:
           "compatibility_date": "2026-07-09",
           "main": "./worker.mjs",
           ${dev_fields}"observability": {
-            "enabled": true,
-            "head_sampling_rate": 1,
-            "traces": { "enabled": true, "head_sampling_rate": 1 }
+            "logs": { "enabled": true, "head_sampling_rate": 1, "destinations": ["sentry-logs"] },
+            "traces": { "enabled": true, "head_sampling_rate": 1, "destinations": ["sentry-traces"] }
           },
           "assets": {
             "directory": "../dist",
