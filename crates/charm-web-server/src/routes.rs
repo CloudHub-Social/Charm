@@ -476,6 +476,10 @@ async fn logout(
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+            // See the matching call in the `else` branch below — harmless
+            // even in the (normal) case where this token was never
+            // idle-evicted and so never had an entry to begin with.
+            state.sessions.forget_evicted_presence(&token);
         } else if let Some(persistence) = &state.persistence {
             // No live in-memory `Session` for this token — either it was
             // never loaded (a startup `restore_all` failure/timeout) or it
@@ -485,16 +489,28 @@ async fn logout(
             // nothing below this rebuilds a `Client` to revoke it — only
             // deletes the local persisted copy. Restore just far enough to
             // call `logout()` on the homeserver before that persisted copy
-            // is gone. Awaited (not spawned) and *before* the unconditional
-            // `remove` below: `restore_by_token` reads the same persisted
-            // object `remove` is about to delete, so this has to run first,
-            // not race it. `restore_by_token` already bounds this with
-            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
-            // this response indefinitely — same tradeoff `require_session`'s
-            // restore fallback already makes.
+            // is gone. The restore itself is awaited (not spawned) and
+            // *before* the unconditional `remove` below — `restore_by_token`
+            // reads the same persisted object `remove` is about to delete,
+            // so this has to run first, not race it — and it's already
+            // bounded by `RESTORE_TIMEOUT`, so a slow/unreachable homeserver
+            // can't hang on *that* part. The actual `logout()` call is
+            // spawned rather than awaited, same as the live-session branch
+            // above and for the same reason: it's a second, independent
+            // network call with no timeout of its own, so awaiting it
+            // inline here would let a slow/unreachable homeserver hang this
+            // response even after the bounded restore already succeeded.
             if let Some((_, session, _, _)) = persistence.restore_by_token(&token).await {
-                let _ = session.client.matrix_auth().logout().await;
+                tokio::spawn(async move {
+                    let _ = session.client.matrix_auth().logout().await;
+                });
             }
+            // This token's cached presence (if any — see
+            // `SessionStore::evicted_presence`) is now meaningless: the
+            // persisted session it would have restored into is about to be
+            // deleted below. Drop it immediately instead of leaving it to
+            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
+            state.sessions.forget_evicted_presence(&token);
         }
         // Removed unconditionally, whether or not a live in-memory session
         // was found above — not nested inside that `if let Some(session)`.

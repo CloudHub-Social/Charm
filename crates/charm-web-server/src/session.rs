@@ -49,6 +49,17 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 /// write-lock over the whole session map too often on a busy server.
 pub const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// How long `SessionStore::evicted_presence` keeps an entry nobody has
+/// restored yet before giving up on it — deliberately much longer than
+/// `DEFAULT_IDLE_TIMEOUT_SECS`, since a persisted session (and the browser
+/// cookie pointing at it) both stay restorable far longer than that; see
+/// `sweep_idle`'s doc comment for why tying this to the idle timeout itself
+/// was wrong. Seven days: long enough to cover a week-long vacation/absence,
+/// short enough that a truly abandoned session's tiny presence-cache entry
+/// doesn't linger forever.
+const EVICTED_PRESENCE_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 /// How many rooms' live `matrix-sdk-ui` `Timeline`s one session holds open
 /// at once — same bound and rationale as desktop's `MatrixState::
 /// MAX_LIVE_TIMELINES` (see `src-tauri/src/matrix/mod.rs`): bounds memory so
@@ -376,6 +387,32 @@ impl Session {
             .is_empty()
     }
 
+    /// Whether this session belongs to at least one end-to-end-encrypted
+    /// room — a cheap, synchronous check (`Room::encryption_state` reads
+    /// already-synced local state, no network call) used as a proxy for
+    /// "this session's in-memory `matrix_sdk::Client` holds Megolm/Olm state
+    /// that idle eviction would irrecoverably lose."
+    ///
+    /// `persistence.rs`'s own module doc comment already documents that the
+    /// Olm/Megolm crypto store isn't persisted — restoring a session (there,
+    /// only ever after a full process restart) rebuilds a bare in-memory
+    /// `Client` that can no longer decrypt history it had already learned,
+    /// or continue an established verification. Idle eviction hits the exact
+    /// same gap, just far more often (a normal 30-minute idle gap during the
+    /// same process's uptime, not only a restart) — the real fix is giving
+    /// each persisted session its own encrypted `matrix-sdk-sqlite` store
+    /// (same doc comment), which is real, standalone work out of scope for
+    /// idle eviction itself. Until that exists, `SessionStore::sweep_idle`
+    /// treats *any* encrypted-room membership as reason enough to keep a
+    /// session alive regardless of idle time — narrower than "never evict,"
+    /// since a session that's never touched E2EE has nothing at risk here.
+    fn has_encrypted_room(&self) -> bool {
+        self.client
+            .rooms()
+            .iter()
+            .any(|room| room.encryption_state().is_encrypted())
+    }
+
     /// Returns this session's cached `Timeline` for `room_id`, building and
     /// caching one on first access. Concurrent first-accesses for the same
     /// room can both build a `Timeline` (the lock isn't held across the
@@ -662,8 +699,23 @@ impl SessionStore {
         self.inner.write().await.insert(token, Arc::new(session));
     }
 
+    /// Looks up `token` and marks the session active in the same step —
+    /// `touch()` runs while this still holds `inner`'s read lock, which
+    /// blocks `sweep_idle`'s write lock from running concurrently. Without
+    /// that, a caller doing `get` then `touch()` as two separate steps (an
+    /// earlier version of this did exactly that) leaves a gap between them
+    /// where the sweeper can evict this exact session — a WebSocket upgrade
+    /// racing the sweep in that gap could then attach to a `Session` that's
+    /// already been removed from the store and whose sync loop is being
+    /// aborted, leaving the browser connected to a dead event channel.
+    /// Folding the touch in here closes that window: by the time this
+    /// returns, the session is guaranteed fresh enough that this same sweep
+    /// cycle can't have just evicted it.
     pub async fn get(&self, token: &str) -> Option<Arc<Session>> {
-        self.inner.read().await.get(token).cloned()
+        let inner = self.inner.read().await;
+        let session = inner.get(token)?;
+        session.touch();
+        Some(Arc::clone(session))
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
@@ -692,6 +744,7 @@ impl SessionStore {
         inner.retain(|token, session| {
             if session.has_open_connection()
                 || session.has_pending_verification_events()
+                || session.has_encrypted_room()
                 || session.idle_for() < idle_timeout
             {
                 true
@@ -712,15 +765,26 @@ impl SessionStore {
             }
         });
         // Prune `evicted_presence` entries nobody ever came back to claim —
-        // see that field's doc comment for why this would otherwise leak.
-        // Piggybacks on this same periodic call rather than a separate
-        // task, since `main.rs` already invokes `sweep_idle` on a timer for
-        // exactly this kind of periodic upkeep.
+        // see that field's doc comment for why this would otherwise leak,
+        // and `prune_evicted_presence`'s own doc comment for why this uses
+        // `EVICTED_PRESENCE_MAX_AGE` rather than `idle_timeout`. Piggybacks
+        // on this same periodic call rather than a separate task, since
+        // `main.rs` already invokes `sweep_idle` on a timer for exactly this
+        // kind of periodic upkeep.
+        self.prune_evicted_presence(EVICTED_PRESENCE_MAX_AGE);
+        evicted
+    }
+
+    /// Drops every `evicted_presence` entry recorded more than `max_age`
+    /// ago — split out from [`Self::sweep_idle`] (which always calls this
+    /// with [`EVICTED_PRESENCE_MAX_AGE`]) purely so tests can exercise the
+    /// pruning logic itself with a short `max_age` instead of waiting out
+    /// the real multi-day constant.
+    fn prune_evicted_presence(&self, max_age: std::time::Duration) {
         self.evicted_presence
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, (_, recorded_at)| recorded_at.elapsed() < idle_timeout);
-        evicted
+            .retain(|_, (_, recorded_at)| recorded_at.elapsed() < max_age);
     }
 
     /// Removes and returns `token`'s presence choice at eviction time, if
@@ -738,6 +802,17 @@ impl SessionStore {
             .unwrap_or_else(|e| e.into_inner())
             .remove(token)
             .map(|(presence, _)| presence)
+    }
+
+    /// Drops `token`'s recorded presence, if any, without returning it —
+    /// called from `routes::logout` once the persisted session itself is
+    /// being deleted, so an explicit logout doesn't leave a now-meaningless
+    /// entry sitting around for `EVICTED_PRESENCE_MAX_AGE` for no reason.
+    pub fn forget_evicted_presence(&self, token: &str) {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
     }
 }
 
@@ -899,7 +974,7 @@ mod tests {
     /// `evicted_presence`'s doc comment for why an unbounded version of this
     /// map would be its own memory leak.
     #[tokio::test]
-    async fn evicted_presence_entries_are_pruned_once_the_idle_timeout_elapses_unclaimed() {
+    async fn evicted_presence_entries_are_pruned_once_max_age_elapses_unclaimed() {
         let store = SessionStore::new();
         let idle_timeout = std::time::Duration::from_millis(50);
 
@@ -916,13 +991,48 @@ mod tests {
         );
 
         tokio::time::sleep(idle_timeout * 3).await;
-        // Nothing new to evict this time — this call's only job here is to
-        // exercise the pruning pass.
-        store.sweep_idle(idle_timeout).await;
+        // Exercises the pruning pass directly with a short `max_age` — the
+        // real `EVICTED_PRESENCE_MAX_AGE` this backs onto in `sweep_idle` is
+        // multiple days, deliberately independent of `idle_timeout` (see
+        // `sweep_idle`'s doc comment), so this test can't wait it out for
+        // real.
+        store.prune_evicted_presence(idle_timeout);
 
         assert!(
             store.take_evicted_presence(&token).is_none(),
             "an entry nobody ever came back to claim must be pruned, not kept forever"
+        );
+    }
+
+    /// Regression test: `sweep_idle` must *not* prune `evicted_presence`
+    /// entries against its own short `idle_timeout` parameter — only
+    /// `prune_evicted_presence`'s separate, much longer `max_age` should
+    /// ever remove one. An earlier version of this tied pruning directly to
+    /// `idle_timeout`, which threw away a user's explicit presence choice
+    /// almost immediately after eviction even though the persisted session
+    /// itself stays restorable far longer.
+    #[tokio::test]
+    async fn sweep_idle_does_not_prune_evicted_presence_against_its_own_idle_timeout() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_millis(50);
+
+        let token = store
+            .create(dummy_session("@away-a-while:example.org").await)
+            .await;
+        backdate(&store.get(&token).await.unwrap(), idle_timeout * 2);
+        store.sweep_idle(idle_timeout).await;
+        assert!(store.evicted_presence.lock().unwrap().contains_key(&token));
+
+        tokio::time::sleep(idle_timeout * 5).await;
+        // Several `idle_timeout`s have now passed — if pruning were still
+        // tied to `idle_timeout`, this call would drop the entry. It must
+        // not: only `EVICTED_PRESENCE_MAX_AGE` (multiple days) governs that.
+        store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            store.evicted_presence.lock().unwrap().contains_key(&token),
+            "evicted_presence must survive many multiples of idle_timeout — only the \
+             separate, much longer EVICTED_PRESENCE_MAX_AGE should ever prune it"
         );
     }
 }
