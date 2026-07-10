@@ -44,7 +44,7 @@ without gating anyone's work.
 These builds only prove "does it compile and bundle" — they don't need to
 gate every commit, just catch breakage within a day.
 
-## Tier 3.5 — Release-candidate builds *(planned, not yet built)*
+## Tier 3.5 — Release-candidate builds _(planned, not yet built)_
 
 The idea: when a `release/X.Y.Z` branch is cut (already a recognized PR base
 per `CLAUDE.md`), run the full native matrix in **release** mode (not the
@@ -53,7 +53,7 @@ release-mode-only bug (LTO/codegen differences, bundler-specific issues)
 would actually get caught before tagging. Not yet implemented; no new
 credentials needed to build it, just workflow wiring.
 
-## Tier 4 — Production release *(partially implemented)*
+## Tier 4 — Production release _(partially implemented)_
 
 Triggered by pushing a version tag (`v*`). `sentry-release-artifacts.yml`
 already does part of this today: uploads debug symbols / release artifacts

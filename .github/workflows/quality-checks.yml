@@ -426,19 +426,16 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty (not just scoped-away) on pull_request/merge_group: Cargo
-          # executes build scripts and build-dependency code before
-          # compiling, so a same-repo PR (which DOES get full secrets access
-          # — only forks are denied) modifying src-tauri/build.rs could read
-          # a present write key regardless of which step it's attached to.
-          # Only a trusted ref (a push that already landed on main) gets
-          # real credentials; PR/merge_group builds fall back to local
-          # compilation via SCCACHE_IGNORE_SERVER_IO_ERROR above. TODO: once
-          # a read-only DO Spaces key exists, use that here instead of
-          # nothing, to restore cache-read benefit for PR builds without
-          # reintroducing write-key exposure.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
       # Rust IPC type changed without the generated bindings being regenerated and
       # committed, the working tree now differs — fail so bindings never drift.
@@ -451,19 +448,16 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty (not just scoped-away) on pull_request/merge_group: Cargo
-          # executes build scripts and build-dependency code before
-          # compiling, so a same-repo PR (which DOES get full secrets access
-          # — only forks are denied) modifying src-tauri/build.rs could read
-          # a present write key regardless of which step it's attached to.
-          # Only a trusted ref (a push that already landed on main) gets
-          # real credentials; PR/merge_group builds fall back to local
-          # compilation via SCCACHE_IGNORE_SERVER_IO_ERROR above. TODO: once
-          # a read-only DO Spaces key exists, use that here instead of
-          # nothing, to restore cache-read benefit for PR builds without
-          # reintroducing write-key exposure.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
       - name: ts-rs bindings are committed and up to date
         # --porcelain catches both modified tracked bindings and brand-new untracked
         # ones (a `git diff` alone would miss a newly generated, uncommitted file).
@@ -659,19 +653,16 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty (not just scoped-away) on pull_request/merge_group: Cargo
-          # executes build scripts and build-dependency code before
-          # compiling, so a same-repo PR (which DOES get full secrets access
-          # — only forks are denied) modifying src-tauri/build.rs could read
-          # a present write key regardless of which step it's attached to.
-          # Only a trusted ref (a push that already landed on main) gets
-          # real credentials; PR/merge_group builds fall back to local
-          # compilation via SCCACHE_IGNORE_SERVER_IO_ERROR above. TODO: once
-          # a read-only DO Spaces key exists, use that here instead of
-          # nothing, to restore cache-read benefit for PR builds without
-          # reintroducing write-key exposure.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Stop Synapse and Dex
         if: always()
@@ -784,19 +775,16 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty (not just scoped-away) on pull_request/merge_group: Cargo
-          # executes build scripts and build-dependency code before
-          # compiling, so a same-repo PR (which DOES get full secrets access
-          # — only forks are denied) modifying src-tauri/build.rs could read
-          # a present write key regardless of which step it's attached to.
-          # Only a trusted ref (a push that already landed on main) gets
-          # real credentials; PR/merge_group builds fall back to local
-          # compilation via SCCACHE_IGNORE_SERVER_IO_ERROR above. TODO: once
-          # a read-only DO Spaces key exists, use that here instead of
-          # nothing, to restore cache-read benefit for PR builds without
-          # reintroducing write-key exposure.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Stop synapse-mas, MAS, and mas-db
         if: always()
