@@ -24,6 +24,7 @@ on:
       - "crates/charm-web-server/**"
       - "src-tauri/src/matrix/**"
       - "src-tauri/src/bindings/**"
+      - "src-tauri/src/observability_scrub.rs"
       - "src-tauri/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
