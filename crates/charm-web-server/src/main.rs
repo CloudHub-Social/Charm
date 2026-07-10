@@ -91,6 +91,12 @@ fn spawn_idle_session_sweeper(sessions: charm_web_server::session::SessionStore)
 
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(charm_web_server::session::SWEEP_INTERVAL);
+        // The first `tick()` fires immediately, not after the first
+        // interval — skip it so this doesn't sweep the instant the process
+        // starts, when nothing has had time to go idle yet. Same fix as the
+        // WS keepalive in `routes.rs` and the liveness check in
+        // `spawn_timeline_listener` (`session.rs`).
+        interval.tick().await;
         loop {
             interval.tick().await;
             let evicted = sessions.sweep_idle(idle_timeout).await;
