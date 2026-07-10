@@ -84,7 +84,7 @@ export function DevicesPanel() {
   // action is the only thing that can repair that.
   const isBootstrapped = Boolean(
     status?.has_identity ||
-      (status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key),
+    (status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key),
   );
   const groups = groupDevices(devices ?? []);
   const selectableDeviceIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
