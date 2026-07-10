@@ -4,9 +4,10 @@ name: Web deploy (dev)
 # (charm-2-dev.cloudhub.social) on every push to main. Nothing in this repo
 # did this before — web-preview.yml only builds ephemeral per-PR previews
 # (the `charm-preview` Worker) on pull_request/workflow_dispatch, so merges
-# to main never reached the dev Worker at all. This mirrors web-preview.yml's
-# build/bundle steps but deploys straight to `charm` instead of a
-# preview-alias version of `charm-preview`.
+# to main never reached the dev Worker at all. This deploys straight to
+# `charm` instead of a preview-alias version of `charm-preview`. The
+# build/bundle steps shared with web-preview.yml live in the
+# `build-web-worker` composite action so the two can't drift apart.
 #
 # main is already gated by quality-checks.yml (push) + the merge queue's
 # required checks before a commit lands here, so this workflow does not
@@ -55,13 +56,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
       - name: Check deploy configuration
         id: config
         run: |
@@ -76,63 +70,14 @@ jobs:
             exit 1
           fi
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build:web
-
-      - name: Configure Worker bundle
-        run: |
-          api_base="${CHARM_WEB_API_BASE_URL%/}"
-          case "$api_base" in
-            http://*|https://*) ;;
-            *)
-              echo "::error::CHARM_WEB_API_BASE_URL must be an absolute companion API base URL for proxying"
-              exit 1
-              ;;
-          esac
-          mkdir -p deploy-worker
-          cat > deploy-worker/worker.mjs <<EOF
-          const API_BASE = ${api_base@Q};
-
-          export default {
-            async fetch(request, env) {
-              const url = new URL(request.url);
-              if (url.pathname.startsWith("/api/")) {
-                const apiBase = new URL(API_BASE);
-                const basePath = apiBase.pathname.replace(/\/$/, "");
-                const upstream = new URL(apiBase);
-                upstream.pathname = \`\${basePath}\${url.pathname}\`;
-                upstream.search = url.search;
-                const headers = new Headers(request.headers);
-                headers.set("x-forwarded-host", url.host);
-                headers.set("x-forwarded-proto", url.protocol.replace(/:$/, ""));
-                const proxied = new Request(upstream, {
-                  method: request.method,
-                  headers,
-                  body: request.body,
-                  redirect: "manual",
-                });
-                return fetch(proxied);
-              }
-              return env.ASSETS.fetch(request);
-            },
-          };
-          EOF
-          cat > deploy-worker/wrangler.jsonc <<'EOF'
-          {
-            "name": "charm",
-            "compatibility_date": "2026-07-09",
-            "main": "./worker.mjs",
-            "assets": {
-              "directory": "../dist",
-              "binding": "ASSETS",
-              "not_found_handling": "single-page-application",
-              "run_worker_first": ["/api/*"]
-            }
-          }
-          EOF
+      - uses: ./.github/actions/build-web-worker
+        with:
+          worker-name: charm
+          bundle-dir: deploy-worker
+          charm-web-api-base-url: ${{ env.CHARM_WEB_API_BASE_URL }}
 
       - name: Deploy to Cloudflare Workers
-        run: npx --yes wrangler@4.107.1 deploy --config deploy-worker/wrangler.jsonc
+        run: pnpm dlx wrangler@4.107.1 deploy --config deploy-worker/wrangler.jsonc
 
       - name: Verify deployed API proxy
         run: |
@@ -142,7 +87,28 @@ jobs:
             exit 1
           fi
           case "$status" in
-            401) ;;
+            401)
+              ;;
+            403)
+              echo "::error::charm-2-dev.cloudhub.social API proxy returned 403 for /api/auth/me. Expected unauthenticated companion API response is 401."
+              cat /tmp/charm-dev-proxy.txt
+              exit 1
+              ;;
+            404)
+              echo "::error::charm-2-dev.cloudhub.social API proxy returned 404 for /api/auth/me. The Worker's route/proxy is likely missing or not routing."
+              cat /tmp/charm-dev-proxy.txt
+              exit 1
+              ;;
+            502)
+              echo "::error::charm-2-dev.cloudhub.social API proxy returned 502. Ensure CHARM_WEB_API_BASE_URL points at the companion server origin."
+              cat /tmp/charm-dev-proxy.txt
+              exit 1
+              ;;
+            5*)
+              echo "::error::charm-2-dev.cloudhub.social API proxy returned HTTP ${status}."
+              cat /tmp/charm-dev-proxy.txt
+              exit 1
+              ;;
             *)
               echo "::error::charm-2-dev.cloudhub.social API proxy returned HTTP ${status}; expected 401 from unauthenticated /api/auth/me."
               cat /tmp/charm-dev-proxy.txt

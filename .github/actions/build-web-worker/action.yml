@@ -1,0 +1,105 @@
+name: Build web Worker bundle
+description: >
+  Installs deps, builds the web app, and generates the Cloudflare Worker
+  wrapper (API proxy + wrangler.jsonc) shared by web-preview.yml and
+  web-deploy-dev.yml, so the two workflows can't drift out of sync on this
+  logic the way separate copy-pasted steps did.
+
+inputs:
+  worker-name:
+    description: Name of the Cloudflare Worker to configure in wrangler.jsonc
+    required: true
+  bundle-dir:
+    description: Directory to write worker.mjs/wrangler.jsonc into
+    required: true
+  charm-web-api-base-url:
+    description: Absolute companion API base URL the Worker proxies /api/* to
+    required: true
+  workers-dev:
+    description: >
+      Set to "true" to enable workers.dev + preview_urls (used by the PR
+      preview deploy for its ephemeral preview-alias URLs). Left unset/false
+      for a Worker that only serves its own custom domain.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22
+        cache: pnpm
+
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+
+    - run: pnpm build:web
+      shell: bash
+
+    - name: Configure Worker bundle
+      shell: bash
+      env:
+        WORKER_NAME: ${{ inputs.worker-name }}
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        CHARM_WEB_API_BASE_URL: ${{ inputs.charm-web-api-base-url }}
+        WORKERS_DEV: ${{ inputs.workers-dev }}
+      run: |
+        api_base="${CHARM_WEB_API_BASE_URL%/}"
+        case "$api_base" in
+          http://*|https://*) ;;
+          *)
+            echo "::error::charm-web-api-base-url must be an absolute companion API base URL for proxying"
+            exit 1
+            ;;
+        esac
+        mkdir -p "$BUNDLE_DIR"
+        cat > "$BUNDLE_DIR/worker.mjs" <<EOF
+        const API_BASE = ${api_base@Q};
+
+        export default {
+          async fetch(request, env) {
+            const url = new URL(request.url);
+            if (url.pathname.startsWith("/api/")) {
+              const apiBase = new URL(API_BASE);
+              const basePath = apiBase.pathname.replace(/\/$/, "");
+              const upstream = new URL(apiBase);
+              upstream.pathname = \`\${basePath}\${url.pathname}\`;
+              upstream.search = url.search;
+              const headers = new Headers(request.headers);
+              headers.set("x-forwarded-host", url.host);
+              headers.set("x-forwarded-proto", url.protocol.replace(/:$/, ""));
+              const proxied = new Request(upstream, {
+                method: request.method,
+                headers,
+                body: request.body,
+                redirect: "manual",
+              });
+              return fetch(proxied);
+            }
+            return env.ASSETS.fetch(request);
+          },
+        };
+        EOF
+
+        dev_fields=""
+        if [ "$WORKERS_DEV" = "true" ]; then
+          dev_fields='"workers_dev": true,
+          "preview_urls": true,
+          '
+        fi
+        cat > "$BUNDLE_DIR/wrangler.jsonc" <<EOF
+        {
+          "name": ${WORKER_NAME@Q},
+          "compatibility_date": "2026-07-09",
+          "main": "./worker.mjs",
+          ${dev_fields}"assets": {
+            "directory": "../dist",
+            "binding": "ASSETS",
+            "not_found_handling": "single-page-application",
+            "run_worker_first": ["/api/*"]
+          }
+        }
+        EOF
