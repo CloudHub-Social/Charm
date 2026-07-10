@@ -199,6 +199,25 @@ jobs:
       # Audit stays unconditional because fresh advisory data is not tied to
       # changed frontend files. Frontend-specific checks are gated below.
       - run: pnpm audit --audit-level=high
+
+      # Unconditional like audit above: it's a cheap grep-based count over
+      # both src/ and src-tauri/src/, so it isn't tied to the frontend-path
+      # filter and should catch a rust-only PR that quietly removes
+      # instrumentation too. See observability-ratchet.json for the floors
+      # and scripts/check-observability-ratchet.mjs for the rationale.
+      #
+      # RATCHET_BASE_REF picks the branch the script diffs its stale-floor
+      # check against: a PR's real base (main, or a release/* backport base
+      # per require-main-base.yml) for pull_request, the merge queue's
+      # target branch (a full refs/heads/... ref; the script strips that
+      # prefix itself) for merge_group, and "main" as the fallback for a
+      # main push/schedule run where there's no "other side" to diff.
+      - env:
+          RATCHET_BASE_REF: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref
+             || github.event_name == 'merge_group' && github.event.merge_group.base_ref
+             || 'main' }}
+        run: pnpm check:observability-ratchet
       - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
         run: pnpm lint
       - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
