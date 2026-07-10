@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
+import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
@@ -46,7 +47,7 @@ export function RoomsScreen({
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
-  const [createJoinNotice, setCreateJoinNotice] = useState(false);
+  const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
   const spaceDeepLinkSelectedRef = useRef(false);
 
@@ -67,21 +68,30 @@ export function RoomsScreen({
     spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("home");
     setSelectedSpaceId(null);
-    setCreateJoinNotice(false);
   }
 
   function selectDms() {
     spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
-    setCreateJoinNotice(false);
   }
 
   function selectSpace(spaceId: string) {
     spaceDeepLinkSelectedRef.current = false;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
-    setCreateJoinNotice(false);
+  }
+
+  // Selecting a space right after creating/joining it from the dialog can
+  // land with `activeRoomId` still `null` (e.g. the dialog was opened while
+  // no chat was active, such as right after a space deep link). `selectSpace`
+  // alone would leave that window open for the auto-select effect below to
+  // fire on the next sync-driven room-list update and switch back to the
+  // first non-space room — reusing `spaceDeepLinkSelectedRef` (the same
+  // guard the deep-link flow sets) suppresses that fallback the same way.
+  function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
+    selectSpace(spaceId);
+    spaceDeepLinkSelectedRef.current = true;
   }
 
   function selectRoomInVisibleMode(room: RoomSummary) {
@@ -106,7 +116,6 @@ export function RoomsScreen({
         setRoomListMode("home");
         setSelectedSpaceId(null);
         setShowAllRooms(true);
-        setCreateJoinNotice(false);
       }
     } else {
       selectHome();
@@ -267,19 +276,7 @@ export function RoomsScreen({
             onSelectHome={selectHome}
             onSelectDms={selectDms}
             onSelectSpace={selectSpace}
-            onCreateJoin={() => {
-              spaceDeepLinkSelectedRef.current = false;
-              setRoomListMode("home");
-              setSelectedSpaceId(null);
-              setCreateJoinNotice(true);
-              if (activeRoomId === null) {
-                const firstSelectableRoom = getInitialHomeRoom(rooms);
-                if (firstSelectableRoom) {
-                  selectRoomInVisibleMode(firstSelectableRoom);
-                  setCreateJoinNotice(true);
-                }
-              }
-            }}
+            onCreateJoin={() => setCreateJoinDialogOpen(true)}
           />
         }
         activeRoomId={activeRoomId}
@@ -295,10 +292,9 @@ export function RoomsScreen({
             onSelectSpace={selectSpace}
             mode={roomListMode}
             selectedSpace={selectedSpace}
+            intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
             showAllRooms={showAllRooms}
             onShowAllRoomsChange={setShowAllRooms}
-            createJoinNotice={createJoinNotice}
-            onDismissCreateJoinNotice={() => setCreateJoinNotice(false)}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
@@ -311,6 +307,12 @@ export function RoomsScreen({
             />
           ) : null
         }
+      />
+      <CreateJoinSpaceDialog
+        open={createJoinDialogOpen}
+        onOpenChange={setCreateJoinDialogOpen}
+        onSpaceCreated={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
+        onSpaceJoined={(spaceId) => selectNewlyCreatedOrJoinedSpace(spaceId)}
       />
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />

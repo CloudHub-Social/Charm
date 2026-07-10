@@ -6,6 +6,7 @@ import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverRes
 import type { EmojiPair } from "@bindings/EmojiPair";
 import type { EventReceipt } from "@bindings/EventReceipt";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
+import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
@@ -484,12 +485,32 @@ export function listSpaceHierarchy(spaceId: string): Promise<SpaceHierarchyNode[
   return invoke("list_space_hierarchy", { spaceId });
 }
 
-export function joinRoom(roomIdOrAlias: string): Promise<void> {
+/**
+ * Returns the resolved room id (and whether it's a space), since
+ * `roomIdOrAlias` may be an alias and/or the caller may not already know
+ * the room's type.
+ */
+export function joinRoom(roomIdOrAlias: string): Promise<JoinedRoom> {
   return invoke("join_room", { roomIdOrAlias });
 }
 
 export function knockRoom(roomIdOrAlias: string, reason?: string): Promise<void> {
   return invoke("knock_room", { roomIdOrAlias, reason });
+}
+
+/** Creates a new space room and returns its room id. */
+export function createSpace(
+  name: string,
+  topic?: string,
+  roomAliasName?: string,
+  isPublic = false,
+): Promise<string> {
+  return invoke("create_space", {
+    name,
+    topic: topic ?? null,
+    roomAliasName: roomAliasName ?? null,
+    public: isPublic,
+  });
 }
 
 export function logout(): Promise<void> {

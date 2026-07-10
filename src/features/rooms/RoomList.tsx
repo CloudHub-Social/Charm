@@ -1,6 +1,6 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { SettingsIcon, X } from "lucide-react";
+import { SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -39,10 +39,18 @@ interface RoomListProps {
   onSelectSpace: (id: string) => void;
   mode: RoomListMode;
   selectedSpace: RoomSummary | null;
+  /**
+   * The id `selectedSpace` is expected to resolve to, even before it shows
+   * up in `rooms` (e.g. right after creating/joining a space, before the
+   * next room-list sync lands it). Lets the empty state below tell "a space
+   * is selected but hasn't loaded yet" apart from "no space selected at
+   * all" — both look identical from `selectedSpace` alone (`null`). Distinct
+   * from the `selectedSpaceId` derived below from the *resolved* space —
+   * this one is the caller's intent, which may be ahead of it.
+   */
+  intendedSpaceId?: string | null;
   showAllRooms: boolean;
   onShowAllRoomsChange: (showAll: boolean) => void;
-  createJoinNotice?: boolean;
-  onDismissCreateJoinNotice?: () => void;
 }
 
 // Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
@@ -63,10 +71,9 @@ export function RoomList({
   onSelectSpace,
   mode,
   selectedSpace,
+  intendedSpaceId = null,
   showAllRooms,
   onShowAllRoomsChange,
-  createJoinNotice = false,
-  onDismissCreateJoinNotice,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
@@ -257,26 +264,12 @@ export function RoomList({
             </label>
           )}
         </div>
-        {createJoinNotice && (
-          <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
-            <p className="min-w-0 flex-1">
-              Space creation and join-by-address are scheduled for Phase 4.
-            </p>
-            <button
-              type="button"
-              aria-label="Dismiss create or join notice"
-              className="rounded-sm p-0.5 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!onDismissCreateJoinNotice}
-              onClick={() => onDismissCreateJoinNotice?.()}
-            >
-              <X className="size-3" aria-hidden="true" />
-            </button>
-          </div>
-        )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
         {mode === "space" && !selectedSpace ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
+          <p className="px-3 py-2 text-sm text-muted-foreground">
+            {intendedSpaceId ? "Loading space…" : "Select a space."}
+          </p>
         ) : mode === "space" && spaceLoading ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
         ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (

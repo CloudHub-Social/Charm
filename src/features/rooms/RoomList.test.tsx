@@ -695,25 +695,4 @@ describe("RoomList", () => {
       "true",
     );
   });
-
-  it("surfaces the Phase 4 create/join placeholder", () => {
-    const onDismiss = vi.fn();
-    renderRoomList(
-      <RoomList
-        {...roomListProps({ createJoinNotice: true, onDismissCreateJoinNotice: onDismiss })}
-      />,
-    );
-
-    expect(
-      screen.getByText("Space creation and join-by-address are scheduled for Phase 4."),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss create or join notice" }));
-    expect(onDismiss).toHaveBeenCalledOnce();
-  });
-
-  it("disables the Phase 4 create/join dismiss control without a handler", () => {
-    renderRoomList(<RoomList {...roomListProps({ createJoinNotice: true })} />);
-
-    expect(screen.getByRole("button", { name: "Dismiss create or join notice" })).toBeDisabled();
-  });
 });

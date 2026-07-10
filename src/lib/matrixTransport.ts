@@ -307,6 +307,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         room_id_or_alias: args.roomIdOrAlias,
         reason: args.reason,
       });
+    case "create_space":
+      return requestJson<T>("POST", "/api/rooms/create-space", {
+        name: args.name,
+        topic: args.topic,
+        room_alias_name: args.roomAliasName,
+        public: args.public,
+      });
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,
