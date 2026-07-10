@@ -294,8 +294,11 @@ jobs:
               echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
               # Clean slate before retrying: tauri-bundler's deb/rpm steps
               # aren't obviously idempotent against a stale bundle dir
-              # from a killed attempt.
-              rm -rf src-tauri/target/debug/bundle
+              # from a killed attempt. Workspace target dir lives at the
+              # repo root (root Cargo.toml declares [workspace] with
+              # src-tauri as a member), not src-tauri/target — confirmed
+              # from CI logs (.../work/Charm/Charm/target/debug/bundle/...).
+              rm -rf target/debug/bundle
             else
               echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
               exit "$status"

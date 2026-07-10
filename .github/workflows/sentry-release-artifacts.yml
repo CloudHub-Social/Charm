@@ -129,8 +129,15 @@ jobs:
           # here, a non-zero exit from `timeout` (including the expected
           # 124/137 on a hang) would abort the step immediately, before
           # `status=$?` is ever reached, and the retry would never run.
+          #
+          # 1200s (20 min), not 15: this is an optimized release build (no
+          # --debug), which is slower to compile than the nightly job's
+          # debug build — the old single-shot step here already used
+          # timeout-minutes: 20, and a shorter per-attempt cap would kill
+          # and retry legitimately-still-compiling attempts as if they'd
+          # hung.
           max_attempts=3
-          per_attempt_timeout=900 # 15 minutes
+          per_attempt_timeout=1200 # 20 minutes
           attempt=1
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
@@ -143,7 +150,11 @@ jobs:
             fi
             if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
               echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
-              rm -rf src-tauri/target/release/bundle
+              # Workspace target dir lives at the repo root (root Cargo.toml
+              # declares [workspace] with src-tauri as a member), not
+              # src-tauri/target — confirmed from CI logs
+              # (.../work/Charm/Charm/target/release/bundle/...).
+              rm -rf target/release/bundle
             else
               echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
               exit "$status"
