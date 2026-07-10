@@ -1,10 +1,11 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { SettingsIcon, X } from "lucide-react";
+import { SearchIcon, SettingsIcon, X } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
@@ -28,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomListSection } from "./SpaceSection";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
+import { filterRoomsByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomListMode } from "./SpaceRail";
@@ -69,6 +71,11 @@ export function RoomList({
   onDismissCreateJoinNotice,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [searchQuery, setSearchQuery] = useState("");
+  // Off by default: search is scoped to the current Home/space/DMs context,
+  // matching Charm 1.0's Search.tsx pattern — this is the escape hatch to
+  // search every joined room instead.
+  const [searchEverywhere, setSearchEverywhere] = useState(false);
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
   const [spaceLoading, setSpaceLoading] = useState(false);
   const [spaceError, setSpaceError] = useState<string | null>(null);
@@ -103,6 +110,16 @@ export function RoomList({
   const roomSectionRooms = mode === "space" ? [] : sections.rooms;
   const fullRoomSectionRooms =
     mode === "dms" ? roomSectionRooms : getFullSectionRooms(roomSectionRooms, fullSections.rooms);
+
+  const isSearching = searchQuery.trim().length > 0;
+  const searchResults = useMemo(() => {
+    if (!isSearching) return [];
+    // Spaces aren't a destination search should surface — selecting one
+    // isn't a single unambiguous action the way a room/DM row is (see
+    // HierarchyRow's separate "Open" affordance for that).
+    const pool = (searchEverywhere ? rooms : scopedRooms).filter((room) => !room.is_space);
+    return filterRoomsByQuery(pool, searchQuery);
+  }, [isSearching, searchEverywhere, rooms, scopedRooms, searchQuery]);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
@@ -146,6 +163,35 @@ export function RoomList({
         active={room.room_id === activeRoomId}
         onSelect={() => onSelectRoom(room.room_id)}
         onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
+      />
+    ));
+  }
+
+  // Deliberately not renderSectionRooms/DraggableRoomRow: search results are
+  // a filtered view, not a real section — dragging one would compute a
+  // manual_order target against the *filtered* list's positions rather than
+  // the room's true section, silently corrupting its order once the search
+  // is cleared.
+  function renderSearchResults(results: RoomSummary[]) {
+    return results.map((room) => (
+      <RoomListItem
+        key={room.room_id}
+        room={room}
+        active={room.room_id === activeRoomId}
+        onSelect={() => onSelectRoom(room.room_id)}
+        onToggleFavourite={() =>
+          setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
+        }
+        onToggleLowPriority={() =>
+          setRoomLowPriority(room.room_id, !room.is_low_priority).catch(logAndIgnore)
+        }
+        onToggleMuted={
+          isWebBuild()
+            ? undefined
+            : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
+        }
+        onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+        onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       />
     ));
   }
@@ -257,6 +303,33 @@ export function RoomList({
             </label>
           )}
         </div>
+        <div className="mt-2 flex items-center gap-2">
+          <div className="relative min-w-0 flex-1">
+            <SearchIcon
+              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              placeholder="Search rooms"
+              aria-label="Search rooms"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              className="h-8 pl-8 text-sm"
+            />
+          </div>
+        </div>
+        {isSearching && (
+          <label className="mt-2 flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+            <input
+              type="checkbox"
+              className="size-3.5 accent-primary"
+              checked={searchEverywhere}
+              onChange={(event) => setSearchEverywhere(event.target.checked)}
+            />
+            Search everywhere
+          </label>
+        )}
         {createJoinNotice && (
           <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
             <p className="min-w-0 flex-1">
@@ -275,7 +348,13 @@ export function RoomList({
         )}
       </div>
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {mode === "space" && !selectedSpace ? (
+        {isSearching ? (
+          searchResults.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
+          ) : (
+            <div className="flex flex-col gap-0.5">{renderSearchResults(searchResults)}</div>
+          )
+        ) : mode === "space" && !selectedSpace ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
         ) : mode === "space" && spaceLoading ? (
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>

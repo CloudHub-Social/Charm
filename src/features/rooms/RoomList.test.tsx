@@ -716,4 +716,83 @@ describe("RoomList", () => {
 
     expect(screen.getByRole("button", { name: "Dismiss create or join notice" })).toBeDisabled();
   });
+
+  it("filters the visible rooms by search query, scoped to the current mode by default", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const orphanMatch = makeRoomSummary({ room_id: "!orphan:localhost", name: "Alpha orphan" });
+    const orphanNoMatch = makeRoomSummary({ room_id: "!other:localhost", name: "Beta orphan" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, orphanMatch, orphanNoMatch, spaceChildMatch] })}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    expect(screen.getByText("Alpha orphan")).toBeInTheDocument();
+    expect(screen.queryByText("Beta orphan")).not.toBeInTheDocument();
+    // Scoped to Home (orphan rooms only) by default — a match that's only
+    // reachable via the space isn't shown without "Search everywhere".
+    expect(screen.queryByText("Alpha in space")).not.toBeInTheDocument();
+  });
+
+  it("searches every joined room when Search everywhere is checked", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space, spaceChildMatch] })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+    expect(screen.queryByText("Alpha in space")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+    expect(screen.getByText("Alpha in space")).toBeInTheDocument();
+  });
+
+  it("never shows spaces themselves as a search result", () => {
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Alpha" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [space] })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+
+    expect(screen.getByText("No matching rooms")).toBeInTheDocument();
+  });
+
+  it("shows a no-match message when nothing satisfies the search", () => {
+    const orphan = makeRoomSummary({ room_id: "!orphan:localhost", name: "Orphan" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [orphan] })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "nonexistent" },
+    });
+
+    expect(screen.getByText("No matching rooms")).toBeInTheDocument();
+  });
+
+  it("hides the Search everywhere toggle until a query is entered", () => {
+    renderRoomList(<RoomList {...roomListProps()} />);
+
+    expect(screen.queryByRole("checkbox", { name: "Search everywhere" })).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "a" },
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Search everywhere" })).toBeInTheDocument();
+  });
 });
