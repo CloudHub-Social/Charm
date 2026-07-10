@@ -178,6 +178,26 @@ this in a production deployment that's actually behind TLS.
   cache live (default `./data`). Only relevant when `CHARM_WEB_SERVER_MASTER_KEY`
   is set.
 
+### Observability (Sentry) env vars
+
+See `observability.rs`'s module doc comment for the full design. Unset by
+default — this process logs to stdout only (via `tracing_subscriber::fmt`)
+until `CHARM_WEB_SERVER_SENTRY_DSN` is set; there's no per-user consent
+toggle to configure separately (unlike desktop/frontend), since this is a
+headless backend process with a single operator-controlled opt-in gate.
+
+- `CHARM_WEB_SERVER_SENTRY_DSN` — Sentry project DSN. Unset (default): no
+  `sentry::init` call happens at all.
+- `CHARM_WEB_SERVER_SENTRY_ENVIRONMENT` — optional, e.g. `production`/`dev`.
+- `CHARM_WEB_SERVER_SENTRY_RELEASE` — optional; falls back to this crate's
+  own `CARGO_PKG_NAME@CARGO_PKG_VERSION` (via `sentry::release_name!()`) when
+  unset. Nothing in CI sets this today (see the env var's own doc comment).
+- Every event/log is scrubbed through `charm_lib::observability_scrub`
+  (shared with desktop) before it ever leaves the process — Matrix
+  IDs/room IDs/event IDs/MXC URIs and known secret fields (access/refresh
+  tokens, passwords, recovery keys, etc.) are redacted unconditionally,
+  matching `PRIVACY.md`'s guarantee regardless of platform.
+
 ### WebSocket origin allowlist and CORS
 
 - `CHARM_WEB_SERVER_ALLOWED_ORIGIN` — the frontend origin(s) allowed to open

@@ -73,3 +73,15 @@ services:
         type: SECRET
       - key: CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY
         type: SECRET
+      # Optional — see crates/charm-web-server/src/observability.rs. Unset
+      # (the default until provisioned) means this process logs to stdout
+      # only, same as before Sentry support existed here; DO's own log
+      # viewer/`doctl apps logs` still works either way. Reuses the same
+      # Sentry org/project as the frontend/desktop/Android (see
+      # SENTRY_OPERATIONAL_CHECKLIST.md) rather than provisioning a separate
+      # one — set this to that project's DSN, not a new project's.
+      - key: CHARM_WEB_SERVER_SENTRY_DSN
+        type: SECRET
+      - key: CHARM_WEB_SERVER_SENTRY_ENVIRONMENT
+        scope: RUN_TIME
+        value: production

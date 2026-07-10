@@ -6,11 +6,17 @@
 
 use std::sync::Arc;
 
-use charm_web_server::{persistence::PersistenceStore, routes, sync_loop, AppState};
+use charm_web_server::{observability, persistence::PersistenceStore, routes, sync_loop, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    // Bound for the rest of `main`'s lifetime, not discarded — an unbound
+    // `Some(guard)` temporary would drop (and tear down the Sentry client)
+    // immediately after this statement. `None` when
+    // `observability::SENTRY_DSN_ENV` isn't set; either way this call is
+    // also what installs the `tracing_subscriber` global default, so it
+    // must run before anything else in this function logs.
+    let _sentry_guard = observability::init();
 
     let persistence = PersistenceStore::from_env()
         .map_err(|e| format!("invalid session persistence configuration: {e}"))?
