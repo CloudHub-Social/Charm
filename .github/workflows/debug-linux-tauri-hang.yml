@@ -68,6 +68,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # This can be dispatched against any ref, and the checkout token
+          # would otherwise persist in local git config, readable by every
+          # later step (pnpm install's lifecycle scripts, the Tauri build)
+          # — same reasoning as the real Linux job in
+          # nightly-platform-builds.yml.
+          persist-credentials: false
 
       - name: Install Tauri Linux system dependencies
         run: |
