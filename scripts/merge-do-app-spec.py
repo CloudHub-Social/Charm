@@ -113,7 +113,7 @@ def main() -> None:
             # tainted, without distinguishing which field was actually
             # extracted. False positive, confirmed by inspection — this
             # file never reads `["value"]` anywhere near a print/log call.
-            print(  # lgtm[py/clear-text-logging-sensitive-data]
+            print(  # codeql[py/clear-text-logging-sensitive-data]
                 f"::error::{key} is declared as a SECRET in {repo_path} but has "
                 "no live value on the app — set it via the DO dashboard before "
                 "deploying. Refusing to submit a spec that would deploy it "
