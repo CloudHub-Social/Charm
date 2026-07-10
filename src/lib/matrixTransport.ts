@@ -533,6 +533,12 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("GET", "/api/verification/cross-signing");
     case "get_cross_signing_reset_url":
       return requestJson<T>("GET", "/api/verification/cross-signing/reset-url");
+    case "recovery_status":
+      return requestJson<T>("GET", "/api/verification/recovery");
+    case "recover_from_key":
+      return requestJson<T>("POST", "/api/verification/recovery", {
+        recovery_key: args.recoveryKey,
+      });
     case "list_devices":
       return requestJson<T>("GET", "/api/devices");
     case "delete_device":

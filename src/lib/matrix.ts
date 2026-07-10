@@ -26,6 +26,7 @@ import type { ReactionGroup } from "@bindings/ReactionGroup";
 import type { ReactionToggleResult } from "@bindings/ReactionToggleResult";
 import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
+import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
@@ -86,6 +87,7 @@ export type {
   ReactionToggleResult,
   ReceiptTypeDto,
   ReceiptUpdate,
+  RecoveryStatusSummary,
   RegisterRequest,
   ReplyRef,
   RoomDetails,
@@ -303,6 +305,19 @@ export function bootstrapCrossSigning(password?: string): Promise<void> {
 
 export function crossSigningStatus(): Promise<CrossSigningStatusSummary> {
   return invoke("cross_signing_status");
+}
+
+export function recoveryStatus(): Promise<RecoveryStatusSummary> {
+  return invoke("recovery_status");
+}
+
+// captureOnError: false — a wrong/invalid recovery key is an expected user-input
+// error (same class as a wrong password), not a bug report; DevicesPanel already
+// surfaces it inline via the mutation's own error state. `recoveryKey` itself never
+// reaches Sentry either way: `observability/ipc.ts`'s arg-redaction pattern already
+// matches `recovery_key`/`recoveryKey` field names.
+export function recoverFromKey(recoveryKey: string): Promise<void> {
+  return invoke("recover_from_key", { recoveryKey }, { captureOnError: false });
 }
 
 export function acceptVerificationRequest(otherUserId: string, flowId: string): Promise<void> {
