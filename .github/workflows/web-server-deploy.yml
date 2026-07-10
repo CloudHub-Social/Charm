@@ -76,7 +76,24 @@ jobs:
         # could merge and run this workflow while App Platform keeps
         # deploying with its old, unrelated config. Applying the spec every
         # run (a no-op when it hasn't changed) keeps that impossible.
-        run: doctl apps update "$DO_APP_ID" --spec .do/app.yaml
+        #
+        # NOT a plain `doctl apps update --spec .do/app.yaml`: DO's spec
+        # update is a full replace, and .do/app.yaml's SECRET-type envs
+        # (master key, Spaces credentials) have no `value:` at all — git can
+        # never hold that plaintext. Submitting the git spec directly wipes
+        # every secret to empty on every single run (confirmed the hard way:
+        # this crashed production twice in a row before this fix — see the
+        # DeployContainerExitNonZero / "must decode to exactly 32 bytes,
+        # got 0" incident on PR #141). Instead: fetch the *live* spec (whose
+        # SECRET envs already carry DO's own encrypted EV[...] values) and
+        # only patch the structural fields .do/app.yaml is meant to drive
+        # onto it, leaving every SECRET env's real value completely
+        # untouched.
+        run: |
+          pip install --quiet pyyaml
+          doctl apps spec get "$DO_APP_ID" > /tmp/live-spec.yaml
+          python3 scripts/merge-do-app-spec.py /tmp/live-spec.yaml .do/app.yaml /tmp/merged-spec.yaml
+          doctl apps update "$DO_APP_ID" --spec /tmp/merged-spec.yaml
 
       - name: Trigger and wait for App Platform deployment
         run: doctl apps create-deployment "$DO_APP_ID" --wait
