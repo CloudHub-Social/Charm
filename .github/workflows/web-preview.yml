@@ -120,6 +120,10 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CHARM_WEB_API_BASE_URL: ${{ secrets.CHARM_WEB_API_BASE_URL }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+      SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+      VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -129,7 +133,7 @@ jobs:
         id: config
         run: |
           missing=()
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CHARM_WEB_API_BASE_URL; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CHARM_WEB_API_BASE_URL SENTRY_AUTH_TOKEN SENTRY_ORG SENTRY_PROJECT VITE_SENTRY_DSN; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
@@ -140,6 +144,17 @@ jobs:
           else
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # Reuses the same script sentry-release-artifacts.yml uses for tagged
+      # desktop releases. RELEASE_INPUT is left unset so it defaults to
+      # GITHUB_SHA — unique per preview build.
+      - name: Configure Sentry release upload
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          ENVIRONMENT_INPUT: preview
+          REQUIRE_VITE_SENTRY_DSN: "true"
+          WRITE_FRONTEND_UPLOAD_ENV: "true"
+        run: bash .github/scripts/configure-sentry-release-env.sh
 
       - if: steps.config.outputs.enabled == 'true'
         uses: ./.github/actions/build-web-worker
