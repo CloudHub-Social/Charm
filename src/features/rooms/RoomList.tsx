@@ -107,6 +107,14 @@ export function RoomList({
     () => getScopedRooms({ rooms, mode, selectedSpace, showAllRooms, hierarchy: spaceHierarchy }),
     [rooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
   );
+  // Used to decide whether a search result is already visible in the current
+  // scope (just select it) or requires switching context first (mode,
+  // selected space, showAllRooms) via onSelectSearchResult — otherwise every
+  // hit, even ones already on screen, would over-eagerly switch scope.
+  const scopedRoomIds = useMemo(
+    () => new Set(scopedRooms.map((room) => room.room_id)),
+    [scopedRooms],
+  );
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
   const fullFavouriteSectionRooms = getFullSectionRooms(
@@ -205,9 +213,14 @@ export function RoomList({
         key={room.room_id}
         room={room}
         active={room.room_id === activeRoomId}
-        onSelect={() =>
-          onSelectSearchResult ? onSelectSearchResult(room) : onSelectRoom(room.room_id)
-        }
+        onSelect={() => {
+          const inScope = scopedRoomIds.has(room.room_id);
+          if (!inScope && onSelectSearchResult) {
+            onSelectSearchResult(room);
+          } else {
+            onSelectRoom(room.room_id);
+          }
+        }}
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
         }
@@ -382,12 +395,20 @@ export function RoomList({
           // this guard wins over an active query rather than showing search
           // results (or "No matching rooms") for an undefined scope.
           <p className="px-3 py-2 text-sm text-muted-foreground">Select a space.</p>
-        ) : mode === "space" && spaceLoading ? (
+        ) : mode === "space" && spaceLoading && !(isSearching && searchEverywhere) ? (
           // Same reasoning: a search over an as-yet-empty `scopedRooms` while
           // the space is still loading would otherwise misreport "No
           // matching rooms" for a query that hasn't actually been evaluated
-          // against the space's real contents yet.
+          // against the space's real contents yet. Exempted when "Search
+          // everywhere" is on: that pool is `rooms`, not the space's
+          // hierarchy, so it doesn't depend on this load finishing.
           <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
+        ) : mode === "space" && spaceError && !(isSearching && searchEverywhere) ? (
+          // A failed hierarchy fetch should stay visible instead of a scoped
+          // search silently reporting "No matching rooms" against contents
+          // that were never actually loaded. Global search is unaffected —
+          // it doesn't read the hierarchy either.
+          <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
         ) : isSearching ? (
           searchResults.length === 0 ? (
             <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>

@@ -894,4 +894,76 @@ describe("RoomList", () => {
 
     expect(onSelectSearchResult).toHaveBeenCalledWith(spaceChildMatch);
   });
+
+  it("keeps in-scope search result selections in place instead of switching context", () => {
+    // Home with "Show all rooms" already surfaces space children in
+    // scopedRooms, so a match here is already visible — selecting it should
+    // just activate the room, not trigger the cross-scope switch callback.
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const spaceChildMatch = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Alpha in space",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const onSelectRoom = vi.fn();
+    const onSelectSearchResult = vi.fn();
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, spaceChildMatch],
+          showAllRooms: true,
+          onSelectRoom,
+          onSelectSearchResult,
+        })}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+    screen.getByText("Alpha in space").click();
+
+    expect(onSelectRoom).toHaveBeenCalledWith("!child:localhost");
+    expect(onSelectSearchResult).not.toHaveBeenCalled();
+  });
+
+  it("shows the hierarchy error instead of a stale no-match message while searching", async () => {
+    listSpaceHierarchy.mockRejectedValue(new Error("hierarchy fetch failed"));
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    renderRoomList(
+      <RoomList {...roomListProps({ rooms: [space], mode: "space", selectedSpace: space })} />,
+    );
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("Error: hierarchy fetch failed")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("No matching rooms")).not.toBeInTheDocument();
+  });
+
+  it("allows Search everywhere even while the selected space is still loading", async () => {
+    listSpaceHierarchy.mockReturnValue(new Promise(() => {})); // never resolves
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const orphanMatch = makeRoomSummary({ room_id: "!orphan:localhost", name: "Alpha orphan" });
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, orphanMatch], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+    await waitFor(() => expect(screen.getByText("Loading space…")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Search everywhere" }));
+
+    expect(screen.getByText("Alpha orphan")).toBeInTheDocument();
+    expect(screen.queryByText("Loading space…")).not.toBeInTheDocument();
+  });
 });
