@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.0.3",
   "scripts": {
+    "prepare": "sh scripts/install-git-hooks.sh",
     "dev": "vite",
     "build": "tsc && vite build",
     "build:web": "tsc && vite build --mode web",
