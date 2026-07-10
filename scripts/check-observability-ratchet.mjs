@@ -31,10 +31,7 @@ const RATCHET_PATH = path.join(ROOT, "observability-ratchet.json");
 // risk is acceptable here — this only needs to fail closed on removed
 // coverage, not police untracked files.
 function countFiles(dir, filenamePattern) {
-  const out = execSync(
-    `find ${dir} -type f -name '${filenamePattern}'`,
-    { cwd: ROOT }
-  ).toString();
+  const out = execSync(`find ${dir} -type f -name '${filenamePattern}'`, { cwd: ROOT }).toString();
   return out.split("\n").filter(Boolean).length;
 }
 
@@ -70,11 +67,11 @@ const actual = {
     "Sentry\\.(captureException|captureMessage)|addBreadcrumb\\(",
     "src --include='*.ts' --include='*.tsx' " +
       "--exclude='*.test.ts' --exclude='*.test.tsx' " +
-      "--exclude='*.spec.ts' --exclude='*.spec.tsx'"
+      "--exclude='*.spec.ts' --exclude='*.spec.tsx'",
   ),
   rustSentryCallSites: countMatches(
     "tracing::(info|warn|error|debug)!|sentry::|capture_event|add_breadcrumb",
-    "src-tauri/src --include='*.rs'"
+    "src-tauri/src --include='*.rs'",
   ),
 };
 
@@ -86,9 +83,7 @@ for (const [key, floor] of Object.entries(floors)) {
     continue;
   }
   if (count < floor) {
-    failures.push(
-      `${key}: ${count} is below the floor of ${floor} in observability-ratchet.json`
-    );
+    failures.push(`${key}: ${count} is below the floor of ${floor} in observability-ratchet.json`);
   }
 }
 
@@ -97,10 +92,10 @@ if (failures.length > 0) {
   for (const f of failures) console.error(`  - ${f}`);
   console.error(
     "\nIf coverage genuinely dropped (e.g. an e2e spec or Sentry call site " +
-    "was removed without a replacement), restore it. If this is a false " +
-    "positive from the ratchet's own counting logic, fix the script — do " +
-    "not lower the floor to make CI pass without raising the underlying " +
-    "coverage."
+      "was removed without a replacement), restore it. If this is a false " +
+      "positive from the ratchet's own counting logic, fix the script — do " +
+      "not lower the floor to make CI pass without raising the underlying " +
+      "coverage.",
   );
   process.exit(1);
 }
