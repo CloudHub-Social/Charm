@@ -50,7 +50,17 @@ pub const SENTRY_RELEASE_ENV: &str = "CHARM_WEB_SERVER_SENTRY_RELEASE";
 /// excludes `matrix_sdk`/`axum`/etc — see
 /// `charm_lib::observability_scrub::is_tracing_target_allowed`'s doc comment
 /// for why an unscoped bridge would be counterproductive.
-const SENTRY_TRACING_CRATES: &[&str] = &["charm_web_server", "charm_lib"];
+///
+/// Includes `"charm"` alongside `"charm_lib"` even though every module
+/// actually compiled into *this* binary uses the `charm_lib` target (the
+/// `[lib] name = "charm_lib"` in `src-tauri/Cargo.toml`; `"charm"` is only
+/// the separate desktop *binary* target's own module path, which
+/// `charm-web-server` never links against or executes) — matching desktop's
+/// own `DESKTOP_SENTRY_TRACING_CRATES` list keeps the two from silently
+/// drifting apart, and costs nothing here since no tracing event in this
+/// process can ever actually carry a `"charm"`-prefixed target to begin
+/// with.
+const SENTRY_TRACING_CRATES: &[&str] = &["charm_web_server", "charm", "charm_lib"];
 
 /// Holds the process alive for the life of `main` — dropping this flushes
 /// and tears down the Sentry client. `None` when Sentry isn't configured
