@@ -274,12 +274,16 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
         run: |
+          # GH Actions runs this as `bash -e` by default — without `|| true`
+          # here, a non-zero exit from `timeout` (including the expected
+          # 124/137 on a hang) would abort the step immediately, before
+          # `status=$?` is ever reached, and the retry would never run.
           max_attempts=3
           per_attempt_timeout=900 # 15 minutes
           attempt=1
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
-            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --debug --bundles deb,rpm
+            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --debug --bundles deb,rpm || true
             status=$?
             echo "::endgroup::"
             if [ "$status" -eq 0 ]; then
