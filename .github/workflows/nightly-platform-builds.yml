@@ -76,11 +76,22 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          # Empty for workflow_dispatch runs against anything other than
+          # main: the caller can select an arbitrary branch/ref to dispatch
+          # against, and that branch's build.rs/JS build scripts run with
+          # whatever's injected here — same reasoning as quality-checks.yml's
+          # main-only gate. schedule always runs against main, so this only
+          # actually withholds credentials for a manual dispatch on a
+          # feature branch.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
 
       - name: Track failure as a GitHub issue
-        if: failure()
+        # Excludes workflow_dispatch against a non-main branch — a
+        # branch-local breakage shouldn't be reported as main/nightly drift
+        # (schedule always runs against main, so this only actually excludes
+        # a manual dispatch on a feature branch).
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -141,11 +152,22 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          # Empty for workflow_dispatch runs against anything other than
+          # main: the caller can select an arbitrary branch/ref to dispatch
+          # against, and that branch's build.rs/JS build scripts run with
+          # whatever's injected here — same reasoning as quality-checks.yml's
+          # main-only gate. schedule always runs against main, so this only
+          # actually withholds credentials for a manual dispatch on a
+          # feature branch.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
 
       - name: Track failure as a GitHub issue
-        if: failure()
+        # Excludes workflow_dispatch against a non-main branch — a
+        # branch-local breakage shouldn't be reported as main/nightly drift
+        # (schedule always runs against main, so this only actually excludes
+        # a manual dispatch on a feature branch).
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -213,11 +235,22 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          # Empty for workflow_dispatch runs against anything other than
+          # main: the caller can select an arbitrary branch/ref to dispatch
+          # against, and that branch's build.rs/JS build scripts run with
+          # whatever's injected here — same reasoning as quality-checks.yml's
+          # main-only gate. schedule always runs against main, so this only
+          # actually withholds credentials for a manual dispatch on a
+          # feature branch.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
 
       - name: Track failure as a GitHub issue
-        if: failure()
+        # Excludes workflow_dispatch against a non-main branch — a
+        # branch-local breakage shouldn't be reported as main/nightly drift
+        # (schedule always runs against main, so this only actually excludes
+        # a manual dispatch on a feature branch).
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -281,11 +314,22 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          # Empty for workflow_dispatch runs against anything other than
+          # main: the caller can select an arbitrary branch/ref to dispatch
+          # against, and that branch's build.rs/JS build scripts run with
+          # whatever's injected here — same reasoning as quality-checks.yml's
+          # main-only gate. schedule always runs against main, so this only
+          # actually withholds credentials for a manual dispatch on a
+          # feature branch.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
 
       - name: Track failure as a GitHub issue
-        if: failure()
+        # Excludes workflow_dispatch against a non-main branch — a
+        # branch-local breakage shouldn't be reported as main/nightly drift
+        # (schedule always runs against main, so this only actually excludes
+        # a manual dispatch on a feature branch).
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -368,8 +412,15 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_S3_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_S3_SECRET_ACCESS_KEY }}
+          # Empty for workflow_dispatch runs against anything other than
+          # main: the caller can select an arbitrary branch/ref to dispatch
+          # against, and that branch's build.rs/JS build scripts run with
+          # whatever's injected here — same reasoning as quality-checks.yml's
+          # main-only gate. schedule always runs against main, so this only
+          # actually withholds credentials for a manual dispatch on a
+          # feature branch.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           # openssl-sys vendors OpenSSL from source for the Android target
@@ -383,7 +434,11 @@ jobs:
           pnpm tauri android build --target aarch64 --debug --ci
 
       - name: Track failure as a GitHub issue
-        if: failure()
+        # Excludes workflow_dispatch against a non-main branch — a
+        # branch-local breakage shouldn't be reported as main/nightly drift
+        # (schedule always runs against main, so this only actually excludes
+        # a manual dispatch on a feature branch).
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
