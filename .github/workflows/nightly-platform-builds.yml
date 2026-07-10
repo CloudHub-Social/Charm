@@ -249,6 +249,10 @@ jobs:
       # with a properly bounded `curl` short-circuits the untimed download
       # entirely instead of trying to bound ureq's behavior indirectly.
       - name: Pre-fetch Tauri's AppImage tooling with a bounded curl
+        # Each curl call retries up to 5x with its own timeout, so the step
+        # as a whole could still take ~30min in the worst case (all 5 files
+        # stalling) without an outer cap of its own.
+        timeout-minutes: 15
         run: |
           mkdir -p "$HOME/.cache/tauri"
           cd "$HOME/.cache/tauri"
