@@ -190,6 +190,7 @@ describe("DevicesPanel", () => {
     renderWithProviders(<DevicesPanel />);
 
     const input = await screen.findByLabelText("Recovery key");
+    const crossSigningCallsBeforeSubmit = crossSigningStatus.mock.calls.length;
     fireEvent.change(input, { target: { value: "EsTx some-recovery-key" } });
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 
@@ -198,6 +199,11 @@ describe("DevicesPanel", () => {
     // still returning "incomplete", the card stays up rather than vanishing,
     // but the field itself should be blank again.
     await waitFor(() => expect(input).toHaveValue(""));
+    // recover() imports cross-signing secrets too, not just the backup key —
+    // its tile must refetch too, or it can keep showing stale status.
+    await waitFor(() =>
+      expect(crossSigningStatus.mock.calls.length).toBeGreaterThan(crossSigningCallsBeforeSubmit),
+    );
   });
 
   it("surfaces a recovery error instead of silently failing on a wrong key", async () => {

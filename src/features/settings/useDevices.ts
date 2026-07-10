@@ -53,7 +53,16 @@ export function useRecoverFromKey() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (recoveryKey: string) => recoverFromKey(recoveryKey),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY }),
+    // A successful recover() imports cross-signing secrets too (see
+    // recover_from_key_impl's doc comment), not just the backup key — so the
+    // Cross-signing tile's status needs invalidating alongside recovery's
+    // own, or it can keep showing stale "not set up" until an unrelated
+    // refresh happens to occur.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: RECOVERY_STATUS_QUERY_KEY }),
+        queryClient.invalidateQueries({ queryKey: CROSS_SIGNING_STATUS_QUERY_KEY }),
+      ]),
   });
 }
 
