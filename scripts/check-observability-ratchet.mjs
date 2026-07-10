@@ -35,16 +35,28 @@ function countFiles(dir, filenamePattern) {
   return out.split("\n").filter(Boolean).length;
 }
 
+// Uses `grep -n` (line contents), not `grep -c` (a bare count), so a
+// commented-out call — `// Sentry.captureException(...)` or `//
+// tracing::warn!(...)` — can be filtered out below. A raw `-c` count treats
+// commenting out an instrumentation call the same as leaving it live, so a
+// PR could silently disable Sentry coverage while the ratchet stays green
+// (found by Codex's PR bot review). Only strips `//` line comments (both
+// TS and Rust use them); a `/* */` block comment or a Rust `///` doc comment
+// wrapping a call would still be miscounted as live — an accepted gap given
+// how rare that shape is here, not worth the complexity of a real
+// comment-aware parser for a repo-wide count.
 function countMatches(pattern, dir) {
   try {
-    const out = execSync(`grep -rEc '${pattern}' ${dir}`, {
+    const out = execSync(`grep -rnE '${pattern}' ${dir}`, {
       cwd: ROOT,
     }).toString();
-    // `grep -c` prints one "path:count" line per matching file.
     return out
       .split("\n")
       .filter(Boolean)
-      .reduce((sum, line) => sum + Number(line.split(":").pop()), 0);
+      .filter((line) => {
+        const content = line.slice(line.indexOf(":", line.indexOf(":") + 1) + 1);
+        return !/^\s*\/\//.test(content);
+      }).length;
   } catch (err) {
     // grep exits 1 when there are zero matches — that's a legitimate count
     // of 0, not a failure.
@@ -117,10 +129,37 @@ for (const [key, floor] of Object.entries(floors)) {
   if (count < floor) {
     failures.push(`${key}: ${count} is below the floor of ${floor} in observability-ratchet.json`);
   }
+  // A PR that adds coverage without raising the matching floor leaves the
+  // floor stale, so a *later* PR can delete that same coverage and only
+  // fall back to the old (still-passing) floor — the regression happens two
+  // PRs removed from the floor edit that should have caught it (found by
+  // Codex's PR bot review). Forcing floor === count keeps the ratchet
+  // exact, not just a one-directional backstop.
+  if (count > floor) {
+    failures.push(
+      `${key}: actual count ${count} is above the floor of ${floor} — raise the floor to ` +
+        `${count} in observability-ratchet.json in this PR so the new coverage is locked in`,
+    );
+  }
 }
 
+// Deleting a ratchet key entirely (e.g. dropping "rustSentryCallSites" from
+// observability-ratchet.json) would otherwise let a PR remove that metric's
+// entire floor along with the coverage it was tracking — the loops above
+// only walk the PR's own `floors`, so a removed key is invisible to them
+// (found by Codex's PR bot review). Compare against origin/main's key set
+// too: any key present on main must still be present here.
 const base = baseFloors();
 if (base) {
+  for (const [key, baseFloor] of Object.entries(base)) {
+    if (!(key in floors)) {
+      failures.push(
+        `${key}: present in origin/main's observability-ratchet.json (floor ${baseFloor}) but ` +
+          "missing here — a ratchet key can't be silently dropped; restore it or raise this in " +
+          "review if the metric is genuinely being retired",
+      );
+    }
+  }
   for (const [key, floor] of Object.entries(floors)) {
     const baseFloor = base[key];
     if (baseFloor !== undefined && floor < baseFloor) {
