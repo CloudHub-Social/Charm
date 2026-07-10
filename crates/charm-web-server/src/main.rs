@@ -52,6 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    spawn_idle_session_sweeper(state.sessions.clone());
+
     let addr =
         std::env::var("CHARM_WEB_SERVER_ADDR").unwrap_or_else(|_| "0.0.0.0:8787".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -60,4 +62,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = routes::router(state);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Periodically evicts idle sessions' in-memory `Client`s — see
+/// `session::SessionStore::sweep_idle` and `session::DEFAULT_IDLE_TIMEOUT_SECS`
+/// for what "idle" means and why eviction is safe (the persisted session, if
+/// any, is left alone and restored on demand — see
+/// `routes::require_session`'s persistence fallback). Runs for the lifetime
+/// of the process; there's nothing to join it against on shutdown since it
+/// does no I/O of its own beyond the sweep and aborting already-idle sync
+/// loops.
+fn spawn_idle_session_sweeper(sessions: charm_web_server::session::SessionStore) {
+    let idle_timeout = std::env::var(charm_web_server::session::IDLE_TIMEOUT_SECS_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(std::time::Duration::from_secs)
+        .unwrap_or(std::time::Duration::from_secs(
+            charm_web_server::session::DEFAULT_IDLE_TIMEOUT_SECS,
+        ));
+
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(charm_web_server::session::SWEEP_INTERVAL);
+        loop {
+            interval.tick().await;
+            let evicted = sessions.sweep_idle(idle_timeout).await;
+            if evicted.is_empty() {
+                continue;
+            }
+            tracing::info!("evicting {} idle session(s)", evicted.len());
+            for (_token, session) in evicted {
+                // Stop the background `/sync` long-poll — same reason
+                // `routes::logout` aborts it, just without also removing the
+                // persisted entry (see `SessionStore::sweep_idle`'s doc
+                // comment for why eviction leaves persistence alone).
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+            }
+        }
+    });
 }

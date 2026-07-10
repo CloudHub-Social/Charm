@@ -284,6 +284,89 @@ impl PersistenceStore {
             .collect()
     }
 
+    /// Single-object counterpart to [`Self::read_all`] — reads and decrypts
+    /// just `token`'s object, for [`Self::restore_by_token`]'s on-demand
+    /// restore path (an idle session was evicted from `SessionStore` but its
+    /// cookie is still valid; see `routes::require_session`). `Ok(None)`
+    /// covers "never persisted" the same way [`Self::remove`] treats it as a
+    /// no-op rather than an error; any other read/decrypt failure is also
+    /// folded into `None` — same fail-open tolerance `read_all` gives a
+    /// single bad entry, just scoped to the one object a caller asked for.
+    async fn read_one(&self, token: &str) -> Option<PersistedSession> {
+        let path = object_path_for_token(token);
+        let bytes = match self.store.get(&path).await {
+            Ok(result) => match result.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tracing::warn!("failed to read persisted session object {path}: {e}");
+                    return None;
+                }
+            },
+            Err(object_store::Error::NotFound { .. }) => return None,
+            Err(e) => {
+                tracing::warn!("failed to read persisted session object {path}: {e}");
+                return None;
+            }
+        };
+        let blob: EncryptedBlob = match serde_json::from_slice(&bytes) {
+            Ok(blob) => blob,
+            Err(e) => {
+                tracing::warn!("dropping unreadable persisted session object {path}: {e}");
+                return None;
+            }
+        };
+        match self.decrypt(&blob) {
+            Ok(session) => Some(session),
+            Err(e) => {
+                tracing::warn!("dropping unreadable persisted session object {path}: {e}");
+                None
+            }
+        }
+    }
+
+    /// On-demand counterpart to [`Self::restore_all`] — rebuilds a live
+    /// `Client` for exactly one token, for the case where a request arrives
+    /// with a still-valid session cookie but no matching in-memory
+    /// `Session` (evicted for being idle too long — see
+    /// `session::SessionStore::sweep_idle` — rather than ever logged out).
+    /// Idle eviction deliberately never calls [`Self::remove`] or the
+    /// homeserver's own `logout` on the evicted session (that would burn the
+    /// refresh token and make this restore permanently impossible) — it
+    /// only drops the in-memory `Client`, so the persisted object this reads
+    /// is still exactly what a fresh login would have written. Returns
+    /// `None` for the same reasons a `restore_all` entry gets dropped
+    /// (never persisted, revoked token, homeserver unreachable) — the
+    /// caller treats that identically to "unknown session": an ordinary 401
+    /// and a re-login, no different from today's behavior for any other
+    /// invalid cookie.
+    pub async fn restore_by_token(
+        &self,
+        token: &str,
+    ) -> Option<(
+        String,
+        crate::session::Session,
+        matrix_sdk::sync::SyncResponse,
+        String,
+    )> {
+        let entry = self.read_one(token).await?;
+        let originally_persisted_access_token = entry.session.tokens.access_token.clone();
+        match restore_one(&entry).await {
+            Ok((session, initial_response)) => Some((
+                entry.homeserver_url,
+                session,
+                initial_response,
+                originally_persisted_access_token,
+            )),
+            Err(e) => {
+                tracing::warn!(
+                    "dropping persisted session for {}: failed to restore: {e}",
+                    entry.session.meta.user_id
+                );
+                None
+            }
+        }
+    }
+
     fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
         // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
@@ -901,5 +984,45 @@ mod tests {
         };
         assert!(err.contains(MASTER_KEY_ENV), "got: {err}");
         assert!(err.contains(SPACES_BUCKET_ENV), "got: {err}");
+    }
+
+    /// `restore_by_token` is `require_session`'s on-demand-restore fallback
+    /// for a cookie whose session was idle-evicted from `SessionStore` (see
+    /// `session::SessionStore::sweep_idle`) — a token that was simply never
+    /// persisted (never logged in, or the object was already removed by an
+    /// explicit `logout`) must resolve to `None`, the same "unknown session"
+    /// outcome `require_session` already gives any other invalid cookie,
+    /// not a panic or a spurious restored session.
+    #[tokio::test]
+    async fn restore_by_token_is_none_for_a_token_that_was_never_persisted() {
+        let dir = scratch_dir("restore-missing");
+        let store = PersistenceStore::new_for_test(&dir, [11u8; 32]);
+
+        assert!(store.restore_by_token("never-saved").await.is_none());
+    }
+
+    /// A persisted entry whose homeserver can't actually be reached (dead
+    /// domain, network down) must drop out to `None` the same way
+    /// `restore_all` drops an unrestorable entry rather than propagating the
+    /// error — this crate's test suite has no live homeserver to restore
+    /// against, but `example.invalid` (reserved, guaranteed non-resolving —
+    /// RFC 2606) exercises the exact same "restore_one failed" path
+    /// `restore_by_token` maps to `None`, which is what actually matters
+    /// here: `read_one` successfully found and decrypted the object, so this
+    /// is testing `restore_one`'s failure handling, not `read_one`'s.
+    #[tokio::test]
+    async fn restore_by_token_is_none_when_the_homeserver_is_unreachable() {
+        let dir = scratch_dir("restore-unreachable");
+        let store = PersistenceStore::new_for_test(&dir, [12u8; 32]);
+        store
+            .save(
+                "tok-unreachable",
+                "https://example.invalid",
+                &dummy_session("@henry:example.invalid"),
+            )
+            .await
+            .unwrap();
+
+        assert!(store.restore_by_token("tok-unreachable").await.is_none());
     }
 }

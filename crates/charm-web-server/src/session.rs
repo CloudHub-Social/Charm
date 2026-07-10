@@ -23,6 +23,32 @@ use crate::events::{ServerEvent, EVENT_CHANNEL_CAPACITY};
 /// process-lifetime secret.
 const SESSION_TOKEN_LEN: usize = 48;
 
+/// Env var overriding [`DEFAULT_IDLE_TIMEOUT_SECS`] — see `main.rs`'s
+/// periodic sweep task, which calls [`SessionStore::sweep_idle`] with
+/// whichever of these two applies.
+pub const IDLE_TIMEOUT_SECS_ENV: &str = "CHARM_WEB_SERVER_SESSION_IDLE_TIMEOUT_SECS";
+
+/// How long a session (with no WebSocket connected — see
+/// `Session::has_open_connection`) can go without an authenticated HTTP
+/// request before `main.rs`'s periodic sweep evicts its in-memory `Client`.
+/// 30 minutes: long enough that a user reading a long thread or stepping
+/// away for a coffee without touching a room doesn't get evicted mid-session
+/// (an open WebSocket keeps the session alive regardless, so this really
+/// only bounds "tab open, nobody home, nothing polling it"), short enough
+/// that a genuinely abandoned session's full `matrix_sdk::Client` (event
+/// cache, crypto state, the works) doesn't sit in memory indefinitely on a
+/// small instance. Eviction only drops the in-memory `Client` — the
+/// persisted session is left alone and restored on demand if the cookie
+/// comes back (see `persistence::PersistenceStore::restore_by_token`), so
+/// this is purely a memory-pressure knob, not a security timeout.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
+/// Shorter than the idle timeout itself so an idle session isn't kept around
+/// much longer than the timeout implies, but long enough not to churn a
+/// write-lock over the whole session map too often on a busy server.
+pub const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// How many rooms' live `matrix-sdk-ui` `Timeline`s one session holds open
 /// at once — same bound and rationale as desktop's `MatrixState::
 /// MAX_LIVE_TIMELINES` (see `src-tauri/src/matrix/mod.rs`): bounds memory so
@@ -191,6 +217,28 @@ pub struct Session {
     /// otherwise leave that user's status stale indefinitely.
     pub presence_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedUserId, ServerEvent>>>,
+    /// When this session last did something other than sit idle — bumped by
+    /// `routes::require_session` on every authenticated HTTP request, so
+    /// `SessionStore::sweep_idle` can tell a genuinely abandoned session
+    /// (browser closed, cookie never coming back) apart from one that's just
+    /// between requests. Deliberately *not* bumped by anything inside
+    /// `sync_loop`'s own background loop — a session nobody is looking at
+    /// shouldn't count as active just because it keeps long-polling `/sync`
+    /// in the background, or idle eviction would never trigger for an
+    /// abandoned browser tab that was left open. An open WebSocket
+    /// connection is tracked separately (`ws_connections` below) and always
+    /// counts as active regardless of this timestamp.
+    pub last_active: std::sync::Mutex<std::time::Instant>,
+    /// Count of this session's currently-connected WebSocket clients (zero,
+    /// one, or more — the same "zero or more tabs" shape as `events`
+    /// above). `crate::routes::handle_socket` increments this on connect and
+    /// decrements it on disconnect via a drop guard, so it stays accurate
+    /// across every exit path (clean close, send failure, lag-induced
+    /// close). `SessionStore::sweep_idle` never evicts a session with at
+    /// least one connection open, regardless of `last_active` — a tab left
+    /// open and quietly receiving live updates is active by definition, even
+    /// if the user hasn't issued an HTTP request in a while.
+    pub ws_connections: std::sync::atomic::AtomicUsize,
 }
 
 /// Bundles `Session`'s "current state, replayed to every new connection"
@@ -272,8 +320,35 @@ impl Session {
             typing_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
             presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }
+    }
+
+    /// Marks this session as active right now — see `last_active`'s doc
+    /// comment for who calls this and why.
+    pub fn touch(&self) {
+        *self.last_active.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// How long since this session was last touched by an authenticated HTTP
+    /// request. Not itself sufficient to decide eviction — see
+    /// `has_open_connection` and `SessionStore::sweep_idle`, which combines
+    /// both.
+    fn idle_for(&self) -> std::time::Duration {
+        self.last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed()
+    }
+
+    /// Whether at least one WebSocket client is currently connected — see
+    /// `ws_connections`'s doc comment.
+    fn has_open_connection(&self) -> bool {
+        self.ws_connections
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
     }
 
     /// Returns this session's cached `Timeline` for `room_id`, building and
@@ -521,5 +596,125 @@ impl SessionStore {
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
         self.inner.write().await.remove(token)
+    }
+
+    /// Removes and returns every session idle longer than `idle_timeout`
+    /// with no WebSocket currently connected (see `Session::idle_for` /
+    /// `Session::has_open_connection`) — the caller (a periodic background
+    /// task in `main.rs`) is responsible for cleaning up each returned
+    /// session's `sync_handle` afterwards; this only touches the map itself,
+    /// same division of responsibility as `routes::logout`.
+    ///
+    /// Deliberately does **not** touch `PersistenceStore` — an evicted
+    /// session's persisted object is left exactly as-is, so a request
+    /// arriving later with that session's still-valid cookie can restore it
+    /// on demand (see `persistence::PersistenceStore::restore_by_token` and
+    /// `routes::require_session`) instead of forcing a full re-login just
+    /// because nobody happened to use the tab for a while.
+    pub async fn sweep_idle(
+        &self,
+        idle_timeout: std::time::Duration,
+    ) -> Vec<(String, Arc<Session>)> {
+        let mut inner = self.inner.write().await;
+        let mut evicted = Vec::new();
+        inner.retain(|token, session| {
+            if session.has_open_connection() || session.idle_for() < idle_timeout {
+                true
+            } else {
+                evicted.push((token.clone(), Arc::clone(session)));
+                false
+            }
+        });
+        evicted
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn dummy_session(user_id: &str) -> Session {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        Session::new(client, user_id.to_string())
+    }
+
+    /// Backdates a session's `last_active` so tests don't need to actually
+    /// sleep past the idle timeout to exercise eviction.
+    fn backdate(session: &Session, ago: std::time::Duration) {
+        *session
+            .last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - ago;
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_evicts_only_sessions_past_the_timeout_with_no_open_connection() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let idle_token = store.create(dummy_session("@idle:example.org").await).await;
+        backdate(&store.get(&idle_token).await.unwrap(), idle_timeout * 2);
+
+        let active_token = store
+            .create(dummy_session("@active:example.org").await)
+            .await;
+        store.get(&active_token).await.unwrap().touch();
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0, idle_token);
+        assert!(
+            store.get(&idle_token).await.is_none(),
+            "the idle session must be gone from the store"
+        );
+        assert!(
+            store.get(&active_token).await.is_some(),
+            "a recently-touched session must survive the sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_websocket_connection_prevents_eviction_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store
+            .create(dummy_session("@connected:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 10);
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            evicted.is_empty(),
+            "a session with a live WebSocket connection must never be evicted, no matter how \
+             long ago its last HTTP request was"
+        );
+        assert!(store.get(&token).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_is_a_no_op_when_nothing_is_idle_yet() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@fresh:example.org").await)
+            .await;
+
+        let evicted = store.sweep_idle(std::time::Duration::from_secs(60)).await;
+
+        assert!(evicted.is_empty());
+        assert!(store.get(&token).await.is_some());
     }
 }

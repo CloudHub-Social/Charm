@@ -555,6 +555,63 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    if let Some(session) = state.sessions.get(&token).await {
+        session.touch();
+        return Ok(session);
+    }
+
+    // Not in memory — either never logged in under this token, or this
+    // session was idle-evicted (see `session::SessionStore::sweep_idle`)
+    // while the cookie was still valid. Try restoring it from persistence
+    // before giving up, so a browser that comes back after the eviction
+    // window doesn't get forced into a full re-login for no reason other
+    // than server-side memory pressure.
+    //
+    // Known race, accepted rather than solved here: two requests for the
+    // same idle-evicted token arriving concurrently (e.g. a page load firing
+    // several API calls at once right after the eviction window) can both
+    // miss the `get` above and both restore + spawn their own `Client` and
+    // sync loop, with the second `insert` silently winning and orphaning the
+    // first's sync loop (never aborted, just abandoned — it'll keep polling
+    // until the process restarts). Narrow in practice (only matters in the
+    // instant right after an eviction, before either restore completes) and
+    // no worse than today's behavior for the equivalent case elsewhere in
+    // this file; closing it properly needs a per-token restore lock, which
+    // isn't worth the added complexity unless it shows up in practice.
+    let Some(persistence) = &state.persistence else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    let Some((homeserver_url, session, initial_response, initial_access_token)) =
+        persistence.restore_by_token(&token).await
+    else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    session.touch();
+    let persist = Some(crate::sync_loop::PersistHandle {
+        store: Arc::clone(persistence),
+        token: token.clone(),
+        homeserver_url,
+        initial_access_token: Some(initial_access_token),
+    });
+    let handle = crate::sync_loop::spawn(
+        session.client.clone(),
+        session.events.clone(),
+        session.sync_presence.clone(),
+        persist,
+        initial_response,
+        session.sync_snapshots(),
+    );
+    *session
+        .sync_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    state.sessions.insert(token.clone(), session).await;
+    // `insert` takes the session by value and wraps it in its own `Arc`
+    // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
+    // rather than wrapping a second, disconnected one here, so every holder
+    // of this session (this request, `sync_loop`'s spawned task, any other
+    // concurrent request racing the same restore) is looking at the same
+    // instance.
     state
         .sessions
         .get(&token)
@@ -2545,7 +2602,32 @@ fn requeue_pending_verification_events(
     *buffer = requeued;
 }
 
+/// Keeps `Session::ws_connections` accurate across every exit path out of
+/// `handle_socket` (clean close, a failed `socket.send`, the lag-induced
+/// forced close) — see that field's doc comment for why an open connection
+/// must always count as active for `SessionStore::sweep_idle`, regardless
+/// of how long ago this session's last HTTP request was.
+struct WsConnectionGuard(Arc<Session>);
+
+impl WsConnectionGuard {
+    fn new(session: Arc<Session>) -> Self {
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(session)
+    }
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.0
+            .ws_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
+    let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see
