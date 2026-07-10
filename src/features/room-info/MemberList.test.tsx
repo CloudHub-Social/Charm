@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MemberList } from "./MemberList";
-import { makeRoomDetails, openDropdownMenu, renderWithProviders } from "./testUtils";
+import { makeRoomDetails, openDropdownMenu } from "./testUtils";
+import { renderWithProviders } from "@/test/renderWithProviders";
 import type { RoomMemberSummary } from "@/lib/matrix";
 
 const getRoomMemberList = vi.fn();

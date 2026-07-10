@@ -1,19 +1,14 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ContactInformationCard } from "./ContactInformationCard";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 
 const get3pids = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   get3pids: (...args: unknown[]) => get3pids(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 beforeEach(() => {
   get3pids.mockReset();
@@ -56,11 +51,7 @@ describe("ContactInformationCard", () => {
     client.setQueryData(["settings", "3pids"], []);
     get3pids.mockRejectedValue(new Error("network error"));
 
-    render(
-      <QueryClientProvider client={client}>
-        <ContactInformationCard />
-      </QueryClientProvider>,
-    );
+    render(wrapWithProviders(<ContactInformationCard />, client));
     await client.refetchQueries({ queryKey: ["settings", "3pids"] });
 
     expect(await screen.findByText("Couldn't load contact information")).toBeInTheDocument();

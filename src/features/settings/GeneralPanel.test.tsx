@@ -1,8 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GeneralPanel } from "./GeneralPanel";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const isPermissionGranted = vi.fn();
 const requestPermission = vi.fn();
@@ -11,11 +10,6 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
   isPermissionGranted: (...args: unknown[]) => isPermissionGranted(...args),
   requestPermission: (...args: unknown[]) => requestPermission(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 beforeEach(() => {
   isPermissionGranted.mockReset().mockResolvedValue(false);

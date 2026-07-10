@@ -1,9 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DevicesPanel } from "./DevicesPanel";
 import type { DeviceSummary } from "@/lib/matrix";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const listDevices = vi.fn();
 const crossSigningStatus = vi.fn();
@@ -31,11 +30,6 @@ const openUrl = vi.fn();
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrl(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */
 function openActionsMenu(name: string) {

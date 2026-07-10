@@ -16,19 +16,11 @@ use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::{Int, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use tauri::State;
 use ts_rs::TS;
 
 use super::members;
 use super::MatrixState;
-
-/// Tauri passes avatar bytes over IPC as a plain `Vec<u8>` — cap how large a
-/// file the frontend can hand over, rather than trusting a file picker to
-/// only ever offer something reasonable. Checked against file metadata
-/// before reading (see `set_room_avatar`), not after, so a huge or
-/// malicious path can't be read into memory first.
-const MAX_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -400,27 +392,14 @@ pub async fn set_room_avatar_impl(
     room_id: &str,
     file_path: &str,
 ) -> Result<(), String> {
-    // Reads the path + sniffs its MIME type server-side, same convention as
-    // `send::send_attachment` — the frontend hands over a path from its file
-    // picker rather than marshaling raw bytes over IPC itself. Checks
-    // metadata (regular file + size) *before* reading, same as
-    // `send_attachment`: reading first would mean a huge or symlinked-to-a-
-    // special-file path gets pulled fully into memory before this ever gets
-    // a chance to reject it.
-    let path = Path::new(file_path);
-    let metadata = tokio::fs::metadata(path).await.map_err(|e| e.to_string())?;
-    if !metadata.is_file() {
-        return Err("file_path does not refer to a regular file".to_string());
-    }
-    if metadata.len() > MAX_AVATAR_BYTES {
-        return Err(format!(
-            "avatar is {} bytes, over the {MAX_AVATAR_BYTES}-byte limit",
-            metadata.len()
-        ));
-    }
-
-    let data = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    // Same frontend-supplied-file-picker-path convention as `set_avatar`
+    // (account avatar) — and the same arbitrary-file-read risk, so it goes
+    // through the same validation: canonicalize, cap size (checked both via
+    // metadata and against the actual bytes read), decode fully (not just
+    // sniff), cap decoded dimensions, and restrict to the picker's supported
+    // formats. See `super::account::validate_avatar_path`'s doc comment for
+    // the full threat-model rationale.
+    let (_path, data, mime) = super::account::validate_avatar_path(file_path).await?;
 
     let room = require_room(client, room_id)?;
     room.upload_avatar(&mime, data, None)
@@ -662,4 +641,55 @@ pub async fn unban_member_impl(
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::*;
+
+    /// `set_room_avatar_impl` must reject an invalid avatar path the same
+    /// way `set_avatar` (account avatar) does, via the shared
+    /// `account::validate_avatar_path` — it should fail before ever looking
+    /// up a room, so a client with no joined rooms at all is enough to prove
+    /// the validation runs (a non-existent `room_id` would otherwise fail
+    /// for the wrong reason).
+    #[tokio::test]
+    async fn set_room_avatar_impl_rejects_a_non_image_file() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("not-an-avatar.png");
+        tokio::fs::write(&file_path, b"not an image").await.unwrap();
+
+        let result = set_room_avatar_impl(
+            &client,
+            "!nonexistent:example.org",
+            file_path.to_str().unwrap(),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected a non-image file to be rejected before any room lookup, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_room_avatar_impl_rejects_a_nonexistent_path() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let result = set_room_avatar_impl(
+            &client,
+            "!nonexistent:example.org",
+            "/nonexistent/path/to/avatar.png",
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected a nonexistent avatar path to be rejected, got {result:?}"
+        );
+    }
 }
