@@ -84,11 +84,22 @@ export function RoomListItem({
           )}
         </span>
         {/* `bg-primary-solid` (not `bg-primary`): solid fill under
-            near-white text — see button.tsx's comment / tokens.css. */}
-        {room.unread_count > 0 && (
+            near-white text — see button.tsx's comment / tokens.css.
+            Precedence: numeric badge (unread_count > 0) > plain unread dot
+            (has_unread but nothing counts as a notification) > bold
+            room-name text alone. The dot is additive — bold text still
+            applies whenever `unread` is true. */}
+        {room.unread_count > 0 ? (
           <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground">
             {room.unread_count}
           </span>
+        ) : (
+          room.has_unread && (
+            <span className="flex shrink-0 items-center">
+              <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
+              <span className="sr-only">Unread</span>
+            </span>
+          )
         )}
       </div>
     </button>
