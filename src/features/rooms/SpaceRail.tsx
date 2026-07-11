@@ -176,10 +176,7 @@ export function SpaceRail({
                 .map((room) => (
                   <Tooltip key={room.room_id}>
                     <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        className="block cursor-default border-0 bg-transparent p-0"
-                      >
+                      <span className="block">
                         <Avatar size="sm">
                           <AvatarImage
                             src={resolveAvatar(room.avatar_path, room.avatar_url)}
@@ -192,7 +189,7 @@ export function SpaceRail({
                             {initials(room.room_id, room.name)}
                           </AvatarFallback>
                         </Avatar>
-                      </button>
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent side="right">
                       {displayName(room.room_id, room.name)}

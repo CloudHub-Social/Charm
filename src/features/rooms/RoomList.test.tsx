@@ -248,19 +248,6 @@ describe("RoomList", () => {
     expect(tooltip).toHaveTextContent(badge.getAttribute("aria-label") ?? "");
   });
 
-  it("shows a tooltip with the same text as the badge's aria-label on keyboard focus", async () => {
-    const store = createStore();
-    store.set(badgeAtom, { total_unread: 1, total_highlight: 1, spaces: {} });
-    renderRoomList(<RoomList {...roomListProps()} />, store);
-
-    const badge = screen.getByLabelText("1 unread room, 1 mention");
-    expect(badge.tagName).toBe("BUTTON");
-    fireEvent.focus(badge);
-
-    const tooltip = await screen.findByRole("tooltip");
-    expect(tooltip).toHaveTextContent("1 unread room, 1 mention");
-  });
-
   it("renders recursive space hierarchy with indentation and inline join actions", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     const joinedChild = makeRoomSummary({

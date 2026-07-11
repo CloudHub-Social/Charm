@@ -361,10 +361,9 @@ export function RoomList({
             {badge && badge.total_unread > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    type="button"
+                  <span
                     className={cn(
-                      "flex h-[18px] min-w-[18px] cursor-default items-center justify-center rounded-full border-0 px-1 text-[11px] font-bold",
+                      "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
                       badge.total_highlight > 0
                         ? "bg-primary text-primary-foreground"
                         : "bg-muted text-muted-foreground",
@@ -372,7 +371,7 @@ export function RoomList({
                     aria-label={unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
                   >
                     {badge.total_highlight > 0 ? badge.total_highlight : badge.total_unread}
-                  </button>
+                  </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
                   {unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
