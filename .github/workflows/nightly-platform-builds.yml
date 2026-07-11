@@ -150,7 +150,53 @@ jobs:
           IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           rm -f cert.p12
-          echo "APPLE_SIGNING_IDENTITY=${MACOS_CERT_NAME}" >> "$GITHUB_ENV"
+          # Trim: a MACOS_CERT_NAME secret copied from Keychain Access or a
+          # terminal (e.g. via pbcopy, or a text file with a trailing
+          # newline) commonly picks up leading/trailing whitespace. That
+          # whitespace makes it into $GITHUB_ENV verbatim and then into
+          # codesign's -s argument, where it no longer exact-matches the
+          # identity's actual common name — codesign fails late with an
+          # opaque "no identity found" instead of failing here with a clear
+          # diagnostic.
+          # sed, not xargs: xargs re-parses its input for shell quoting
+          # metacharacters, so a name containing an apostrophe (a real
+          # possibility in a cert common name) would abort with an
+          # "unterminated quote" error under `set -euo pipefail` instead of
+          # just being trimmed.
+          identity_name="$(printf '%s' "$MACOS_CERT_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          # The trimmed name is still derived from a secret; GitHub only
+          # auto-masks the literal secret value, not this transformed copy
+          # of it, so register it explicitly before it can reach any log
+          # line below (the error diagnostic, the available-identities
+          # listing, or step env dumps).
+          echo "::add-mask::$identity_name"
+          # Verify the trimmed name actually resolves to an identity in this
+          # keychain before handing it to the build step — codesign's own
+          # "no identity found" error doesn't say what it expected instead,
+          # which makes a name mismatch (typo, stale MACOS_CERT_NAME secret
+          # after regenerating the cert, wrong keychain search order) far
+          # harder to diagnose than catching it right after import. Extract
+          # each identity's own quoted name and compare exactly rather than
+          # grepping the raw `security find-identity` output for a
+          # substring match — that could false-positive if one identity's
+          # name happens to contain another's as a substring.
+          available_identities="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^[[:space:]]*[0-9]*)[[:space:]]*[A-F0-9]*[[:space:]]*"\(.*\)"$/\1/p')"
+          # An empty identity_name (blank MACOS_CERT_NAME secret) must not
+          # be allowed through even if available_identities also comes back
+          # empty — `grep -qxF ""` matches the empty line a bare here-string
+          # always produces, so the check below would otherwise silently
+          # pass on two empty strings instead of catching a misconfigured
+          # secret right here.
+          if [ -z "$identity_name" ]; then
+            echo "::error::MACOS_CERT_NAME is empty after trimming."
+            exit 1
+          fi
+          if ! grep -qxF "$identity_name" <<< "$available_identities"; then
+            echo "::error::MACOS_CERT_NAME does not match any codesigning identity in the imported keychain. Available identity names:"
+            printf '%s\n' "$available_identities"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
 
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
       # the macOS .app/.dmg bundler. Signed with APPLE_SIGNING_IDENTITY when
