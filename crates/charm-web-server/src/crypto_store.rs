@@ -101,12 +101,6 @@ pub fn existing_store_dir(store_key: &str) -> Result<Option<PathBuf>, String> {
 mod tests {
     use super::*;
 
-    /// Guards every test below that reads/writes `DATA_DIR_ENV` — same
-    /// rationale as `persistence.rs`'s own `ENV_LOCK`: `cargo test` runs
-    /// `#[test]`s concurrently within one process by default, and this env
-    /// var is process-wide.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn scratch_data_dir(name: &str) -> std::path::PathBuf {
         let suffix: String = format!("{:x}", rand::random::<u64>());
         let path =
@@ -123,7 +117,7 @@ mod tests {
     /// left behind on disk afterward.
     #[test]
     fn existing_store_dir_never_creates_a_missing_directory() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
         let data_dir = scratch_data_dir("missing");
         std::env::set_var(crate::persistence::DATA_DIR_ENV, data_dir.to_str().unwrap());
 
@@ -141,7 +135,7 @@ mod tests {
     /// store, `existing_store_dir` must find it.
     #[test]
     fn existing_store_dir_finds_a_directory_create_store_dir_made() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
         let data_dir = scratch_data_dir("present");
         std::env::set_var(crate::persistence::DATA_DIR_ENV, data_dir.to_str().unwrap());
 

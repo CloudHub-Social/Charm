@@ -104,7 +104,34 @@ impl std::fmt::Debug for CryptoStoreHandle {
 pub struct Session {
     pub client: Client,
     pub user_id: String,
-    pub crypto: Option<CryptoStoreHandle>,
+    /// The crypto-store key/passphrase pair to keep writing on every re-save
+    /// of this session (token refresh, idle-eviction re-save) — deliberately
+    /// *not* the same signal as [`Self::crypto_store_open`]. At restore this
+    /// is populated from the persisted entry's fields whenever they exist,
+    /// regardless of whether this particular restore attempt actually
+    /// managed to open that store: if it didn't (transient lock/permissions
+    /// issue, not necessarily the directory being gone for good), re-saves
+    /// must still carry the *original* key/passphrase forward so a later
+    /// restart gets another chance to open it — deriving this from
+    /// `crypto_store_open` instead (an earlier revision of this field did
+    /// exactly that) would silently overwrite the persisted pair with `None`
+    /// on the very next re-save, permanently orphaning a store that might
+    /// still be perfectly readable.
+    pub persisted_crypto: Option<CryptoStoreHandle>,
+    /// Whether *this* session's live `client` is actually backed by an
+    /// opened on-disk crypto store right now — the signal
+    /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
+    /// This is about safety of evicting *this* client's current in-memory
+    /// crypto state (accumulated since it was built, whether or not that
+    /// happened to come from a successfully-opened store), which is a
+    /// different question from "what should we keep telling
+    /// `PersistenceStore::save` to write" ([`Self::persisted_crypto`]):
+    /// e.g. a session whose store failed to open this restore attempt has
+    /// `persisted_crypto = Some(..)` (so re-saves don't lose the original
+    /// pair) but `crypto_store_open = false` (evicting it now would still
+    /// lose whatever this fallback in-memory client has learned since it
+    /// started, exactly like a session with no persisted store at all).
+    pub crypto_store_open: bool,
     /// Mirrors desktop's `MatrixState::get_or_create_timeline`: a `Timeline`
     /// carries its own pagination cursor, so building a fresh one on every
     /// `get_timeline_page` request (as sub-PR A originally did) silently
@@ -340,12 +367,18 @@ impl Session {
 pub(crate) const MAX_PENDING_VERIFICATION_EVENTS: usize = 20;
 
 impl Session {
-    pub fn new(client: Client, user_id: String, crypto: Option<CryptoStoreHandle>) -> Self {
+    pub fn new(
+        client: Client,
+        user_id: String,
+        persisted_crypto: Option<CryptoStoreHandle>,
+        crypto_store_open: bool,
+    ) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             client,
             user_id,
-            crypto,
+            persisted_crypto,
+            crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
             )),
@@ -419,12 +452,22 @@ impl Session {
     }
 
     /// Whether this session belongs to at least one end-to-end-encrypted
-    /// room *and* has no on-disk crypto store to fall back on — a cheap,
-    /// synchronous check (`Room::encryption_state` reads already-synced
-    /// local state, no network call) used as a proxy for "evicting this
-    /// session's in-memory `matrix_sdk::Client` would irrecoverably lose
-    /// Megolm/Olm state, not just require a homeserver round-trip to rebuild
-    /// it."
+    /// room *and* its live `client` isn't currently backed by an opened
+    /// on-disk crypto store — a cheap, synchronous check
+    /// (`Room::encryption_state` reads already-synced local state, no
+    /// network call) used as a proxy for "evicting this session's in-memory
+    /// `matrix_sdk::Client` would irrecoverably lose Megolm/Olm state, not
+    /// just require a homeserver round-trip to rebuild it."
+    ///
+    /// Gates on [`Self::crypto_store_open`], not [`Self::persisted_crypto`]:
+    /// the question here is whether *this client's* current in-memory crypto
+    /// state (accumulated since it was built) would survive eviction, which
+    /// is true only when this client is actually backed by a store on disk
+    /// right now — a session whose store *exists* on disk but failed to open
+    /// on this particular restore attempt (`persisted_crypto = Some(..)`,
+    /// `crypto_store_open = false`) is running on a fallback in-memory
+    /// client just like a session with no persisted store at all, so
+    /// evicting it loses exactly the same kind of state.
     ///
     /// Before Spec 25, `charm-web-server` never persisted the Olm/Megolm
     /// crypto store at all — restoring a session (there, only ever after a
@@ -437,14 +480,13 @@ impl Session {
     /// since a session that's never touched E2EE has nothing at risk, but
     /// still meant every E2EE session held its full `Client` (event cache,
     /// crypto state, timelines) in memory indefinitely regardless of how
-    /// long it sat idle. Now that a session's crypto store is
-    /// (`session.crypto`, see `crypto_store.rs`) persisted, eviction can
-    /// restore it from disk via `build_client_for_restore` — same as any
+    /// long it sat idle. Now that a session's crypto store is persisted
+    /// (see `crypto_store.rs`), a session actually backed by an opened store
+    /// can be safely evicted and restored again on demand — same as any
     /// other persisted session — so this exemption only still applies when
-    /// there's no store to fall back on (persistence disabled, or a
-    /// pre-Spec-25 session that hasn't re-established one yet).
+    /// this client currently has no working store to fall back on.
     fn has_unpersisted_encrypted_room(&self) -> bool {
-        self.crypto.is_none()
+        !self.crypto_store_open
             && self
                 .client
                 .rooms()
@@ -915,7 +957,7 @@ mod tests {
                 "building a client against an unreachable homeserver shouldn't require network \
                  access",
             );
-        Session::new(client, user_id.to_string(), None)
+        Session::new(client, user_id.to_string(), None, false)
     }
 
     /// Backdates a session's `last_active` so tests don't need to actually

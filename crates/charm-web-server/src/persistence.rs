@@ -518,6 +518,19 @@ impl PersistenceStore {
     /// part that actually matters for correctness (an orphaned crypto store
     /// is disk waste, not a security or correctness issue on its own).
     ///
+    /// `live_crypto`, when given, is `(store_key, passphrase)` from the
+    /// caller's own still-live `Session::persisted_crypto` — used as a
+    /// fallback source for which directory to remove when [`Self::read_one`]
+    /// finds no blob to read one from. That gap is real, not hypothetical:
+    /// `routes::finish_login`'s own initial `PersistenceStore::save`
+    /// explicitly tolerates failing (the session is already usable
+    /// in-memory regardless), so a session can have a genuine on-disk crypto
+    /// store — created directly by `auth::build_client` at login, before any
+    /// blob was ever written — with nothing in the object store for
+    /// `read_one` to find it through on logout. Without this fallback, every
+    /// login whose *first* persistence save fails (e.g. a transient
+    /// object-store outage) leaks one crypto-store directory per logout.
+    ///
     /// The token object is deleted *before* the crypto-store directory, not
     /// after: if the crypto-store removal below ran first and then this
     /// object's delete failed, the persisted session would survive pointing
@@ -530,7 +543,11 @@ impl PersistenceStore {
     /// just leaves an orphaned directory for the next `remove` of an
     /// unrelated session to no-op past — pure disk waste, not a dangling
     /// reference.
-    pub async fn remove(&self, token: &str) -> Result<(), String> {
+    pub async fn remove(
+        &self,
+        token: &str,
+        live_crypto: Option<(&str, &str)>,
+    ) -> Result<(), String> {
         let entry = self.read_one(token).await;
 
         match self.store.delete(&object_path_for_token(token)).await {
@@ -543,7 +560,10 @@ impl PersistenceStore {
             Err(e) => return Err(e.to_string()),
         }
 
-        if let Some(store_key) = entry.and_then(|entry| entry.crypto_store_key) {
+        let store_key = entry
+            .and_then(|entry| entry.crypto_store_key)
+            .or_else(|| live_crypto.map(|(store_key, _)| store_key.to_string()));
+        if let Some(store_key) = store_key {
             match crate::crypto_store::existing_store_dir(&store_key) {
                 Ok(Some(dir)) => {
                     if let Err(e) = std::fs::remove_dir_all(&dir) {
@@ -696,20 +716,20 @@ async fn build_client_for_restore(
     Ok((client, false))
 }
 
-/// The `Session::crypto` [`restore_one`] should carry for a restored client
-/// — `Some` only when `opened` is true, i.e. [`build_client_for_restore`]
-/// actually opened `entry`'s persisted store, never merely because `entry`
-/// *claims* to have one (`entry.crypto_store_key.is_some()`). Pulled out as
-/// its own pure function (no `Client`/network involved) specifically so this
-/// mapping is unit-testable on its own — see the regression test below for
-/// the bug this guards against.
-fn crypto_handle_if_opened(
+/// The `Session::persisted_crypto` [`restore_one`] should carry for a
+/// restored client — populated from `entry`'s fields whenever *both* exist,
+/// unconditionally on whether [`build_client_for_restore`] actually managed
+/// to open that store this time (`Session::crypto_store_open` carries that
+/// separate signal instead; see its doc comment for why the two must not be
+/// conflated — deriving this from "was it opened" instead, as an earlier
+/// revision of this function did, would drop the persisted pair to `None` on
+/// the very next re-save after a merely transient open failure, permanently
+/// orphaning a store that might still be perfectly readable). Pulled out as
+/// its own pure function (no `Client`/network involved) so this mapping is
+/// unit-testable on its own.
+fn persisted_crypto_from_entry(
     entry: &PersistedSession,
-    opened: bool,
 ) -> Option<crate::session::CryptoStoreHandle> {
-    if !opened {
-        return None;
-    }
     entry
         .crypto_store_key
         .clone()
@@ -753,11 +773,12 @@ async fn restore_one(
     // why: a to-device verification event landing in this restore's own
     // initial sync is processed synchronously as part of it and never
     // replayed later, so the handler must already be registered.
-    let crypto = crypto_handle_if_opened(entry, crypto_store_opened);
+    let persisted_crypto = persisted_crypto_from_entry(entry);
     let session = crate::session::Session::new(
         client.clone(),
         entry.session.meta.user_id.to_string(),
-        crypto,
+        persisted_crypto,
+        crypto_store_opened,
     );
     if let Some(presence) = initial_presence {
         *session
@@ -945,7 +966,7 @@ mod tests {
             .await
             .unwrap();
 
-        store.remove("tok-a").await.unwrap();
+        store.remove("tok-a", None).await.unwrap();
 
         let remaining = store.read_all().await;
         assert_eq!(remaining.len(), 1);
@@ -1069,7 +1090,7 @@ mod tests {
             .await
             .unwrap();
         // ...and an unrelated logout...
-        store.remove("tok-other").await.unwrap();
+        store.remove("tok-other", None).await.unwrap();
 
         // ...must never have touched the undecryptable entry.
         let bytes_after = tokio::fs::read(&corrupt_path).await.unwrap();
@@ -1159,20 +1180,19 @@ mod tests {
     /// token blob — otherwise every login/logout cycle leaks one directory.
     #[tokio::test]
     async fn remove_also_deletes_the_crypto_store_directory() {
+        // Held for the *entire* test, not just around `EnvVarGuard::set` —
+        // `crypto_store::store_path` reads `DATA_DIR_ENV` fresh on every
+        // call (including inside the `.await`ed `save`/`remove` calls
+        // below), so releasing the lock right after setup would leave this
+        // test's env var value unprotected against a concurrently-running
+        // test overwriting it mid-flight. `tokio::sync::Mutex` (not
+        // `std::sync::Mutex`) is what makes holding it across those
+        // `.await`s sound in the first place — see `ENV_TEST_LOCK`'s own
+        // doc comment.
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
         let dir = scratch_dir("remove-crypto");
         let data_dir = scratch_dir("remove-crypto-data");
-        // Only the *setup* of `DATA_DIR_ENV` needs `ENV_LOCK` (so it can't be
-        // clobbered mid-set-up by another env-mutating test running in
-        // parallel) — held here as a plain synchronous scope, not across the
-        // `.await`s below, since clippy (rightly) disallows holding a
-        // `std::sync::MutexGuard` across an await point. `EnvVarGuard`
-        // itself stays alive for the rest of the test regardless (its
-        // restore-on-drop doesn't need the lock, same as every other
-        // `EnvVarGuard` use in this file).
-        let _data_dir_env = {
-            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap())
-        };
+        let _data_dir_env = EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap());
         let store = PersistenceStore::new_for_test(&dir, [12u8; 32]);
 
         // `save` only ever persists the key/passphrase *pair* into the
@@ -1194,11 +1214,50 @@ mod tests {
             .await
             .unwrap();
 
-        store.remove("tok-logout").await.unwrap();
+        store.remove("tok-logout", None).await.unwrap();
 
         assert!(
             !crypto_dir.exists(),
             "logout must remove the crypto store directory, not just the session blob"
+        );
+    }
+
+    /// Codex-flagged gap: a session whose *first* `save` failed (which
+    /// `routes::finish_login` explicitly tolerates — see its doc comment)
+    /// still has a real on-disk crypto store from `auth::build_client`, but
+    /// no blob for `read_one` to find its `crypto_store_key` through.
+    /// `remove`'s `live_crypto` parameter must clean that directory up from
+    /// the caller's own still-live `Session::persisted_crypto` in exactly
+    /// this case — without it, every login whose first persistence save
+    /// fails leaks one crypto-store directory per logout.
+    #[tokio::test]
+    async fn remove_uses_the_live_crypto_fallback_when_no_blob_exists() {
+        // See `remove_also_deletes_the_crypto_store_directory`'s matching
+        // comment: held for the whole test, not just around setup.
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let dir = scratch_dir("remove-crypto-no-blob");
+        let data_dir = scratch_dir("remove-crypto-no-blob-data");
+        let _data_dir_env = EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap());
+        let store = PersistenceStore::new_for_test(&dir, [13u8; 32]);
+
+        // Simulates `auth::build_client` having created a store at login,
+        // with no matching `save` ever landing (the exact gap this test
+        // guards) — deliberately *not* calling `store.save` at all.
+        let crypto_dir = crate::crypto_store::create_store_dir("storeKeyNoBlob").unwrap();
+        assert!(crypto_dir.exists());
+
+        store
+            .remove(
+                "tok-never-saved",
+                Some(("storeKeyNoBlob", "passphrase-no-blob")),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !crypto_dir.exists(),
+            "remove must fall back to the caller-supplied live crypto handle when no \
+             persisted blob exists to read one from"
         );
     }
 
@@ -1207,8 +1266,12 @@ mod tests {
     // concurrently within one process by default — without serializing them
     // against each other, one test's `EnvVarGuard` could restore/clear a var
     // mid-way through the other's `from_env` call. Same problem
-    // `tests/http_api.rs`'s `ALLOWED_ORIGIN_ENV_LOCK` exists for.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // `tests/http_api.rs`'s `ALLOWED_ORIGIN_ENV_LOCK` exists for. Uses the
+    // crate-wide `crate::ENV_TEST_LOCK`, not a module-local static — this
+    // module and `crypto_store.rs`'s own tests both mutate `DATA_DIR_ENV`,
+    // and two separate, unsynchronized locks (one per module — an earlier
+    // revision of this had exactly that) don't serialize against each
+    // other at all, which flaked in practice, not just in theory.
 
     /// Guards a single env var for the lifetime of the guard, restoring
     /// whatever was there before (or unsetting it again) on drop — same
@@ -1262,7 +1325,7 @@ mod tests {
     /// local-disk backend it always has, not silently do nothing or error.
     #[test]
     fn from_env_without_spaces_bucket_uses_local_disk() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
         let dir = scratch_dir("from-env-local");
         let _master_key = EnvVarGuard::set(MASTER_KEY_ENV, &BASE64.encode([1u8; 32]));
         let _data_dir = EnvVarGuard::set(DATA_DIR_ENV, dir.to_str().unwrap());
@@ -1281,7 +1344,7 @@ mod tests {
     /// quietly writing to an ephemeral filesystem instead) or panicking.
     #[test]
     fn from_env_with_spaces_bucket_but_missing_credentials_errors() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
         let _master_key = EnvVarGuard::set(MASTER_KEY_ENV, &BASE64.encode([1u8; 32]));
         let _bucket = EnvVarGuard::set(SPACES_BUCKET_ENV, "charm-web-server-sessions");
         let _no_region = EnvVarGuard::remove(SPACES_REGION_ENV);
@@ -1321,7 +1384,7 @@ mod tests {
     /// persisting to the configured bucket.
     #[test]
     fn from_env_with_spaces_bucket_but_no_master_key_errors() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::ENV_TEST_LOCK.blocking_lock();
         let _no_master_key = EnvVarGuard::remove(MASTER_KEY_ENV);
         let _bucket = EnvVarGuard::set(SPACES_BUCKET_ENV, "charm-web-server-sessions");
 
@@ -1380,23 +1443,20 @@ mod tests {
             .is_none());
     }
 
-    /// Regression test for a Sentry-flagged bug in an earlier revision of
-    /// this same PR: `crypto_handle_if_opened` must return `None` when
-    /// `opened` is `false`, even though `entry` itself carries a
-    /// `crypto_store_key`/`crypto_passphrase` pair — i.e. even though the
-    /// entry *claims* to have a persisted store. `restore_one` passes
-    /// `opened` from `build_client_for_restore`'s own return, which is only
-    /// `true` when it actually succeeded in opening that store (see that
-    /// function's doc comment); an earlier revision derived `Session::crypto`
-    /// straight from `entry.crypto_store_key.is_some()` instead, which would
-    /// make a session that fell back to a bare in-memory client (e.g.
-    /// because its store directory was lost on a redeploy) still *report*
-    /// having a working persisted store — wrongly exempting it from idle
-    /// eviction (`Session::has_unpersisted_encrypted_room`) and silently
-    /// losing its crypto state on the next idle sweep instead of ever
-    /// getting a chance to restore it from the recovery key.
+    /// `persisted_crypto_from_entry` must return `Some` whenever `entry` has
+    /// both fields, regardless of whether this particular restore attempt
+    /// actually managed to open the store — that's the whole point of
+    /// splitting `Session::persisted_crypto` (what to keep re-saving) from
+    /// `Session::crypto_store_open` (whether eviction is currently safe): a
+    /// Codex-flagged bug in an earlier revision derived the value re-saved
+    /// on every token refresh from "was it opened this time", which meant a
+    /// merely transient store-open failure (temporary lock, permissions
+    /// blip — not the directory being gone for good) would get *permanently*
+    /// baked in on the very next re-save, since that re-save would then
+    /// overwrite the persisted blob's `crypto_store_key`/`crypto_passphrase`
+    /// with `None` even though the on-disk store was still perfectly there.
     #[test]
-    fn crypto_handle_if_opened_is_none_when_the_store_was_not_actually_opened() {
+    fn persisted_crypto_from_entry_is_populated_regardless_of_whether_it_was_opened() {
         let entry = PersistedSession {
             token: "tok-missing-store".to_string(),
             homeserver_url: "https://example.invalid".to_string(),
@@ -1405,14 +1465,24 @@ mod tests {
             crypto_passphrase: Some("some-passphrase".to_string()),
         };
 
-        assert!(
-            crypto_handle_if_opened(&entry, false).is_none(),
-            "must be None when the store was not actually opened, regardless of what the \
-             entry itself claims"
+        let crypto = persisted_crypto_from_entry(&entry).expect(
+            "must be Some whenever the entry carries both fields, independent of whether \
+             this restore attempt actually opened the store",
         );
-        assert!(
-            crypto_handle_if_opened(&entry, true).is_some(),
-            "must be Some when the store genuinely was opened and the entry has both fields"
-        );
+        assert_eq!(crypto.store_key, "nonexistentstorekey");
+        assert_eq!(crypto.passphrase, "some-passphrase");
+    }
+
+    #[test]
+    fn persisted_crypto_from_entry_is_none_when_the_entry_never_had_a_store() {
+        let entry = PersistedSession {
+            token: "tok-legacy".to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@mallory:example.invalid"),
+            crypto_store_key: None,
+            crypto_passphrase: None,
+        };
+
+        assert!(persisted_crypto_from_entry(&entry).is_none());
     }
 }

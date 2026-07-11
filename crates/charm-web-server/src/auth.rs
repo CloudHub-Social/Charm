@@ -38,12 +38,25 @@ async fn build_client(
         passphrase: crate::crypto_store::generate_passphrase(),
     };
     let store_dir = crate::crypto_store::create_store_dir(&crypto.store_key)?;
-    let client = Client::builder()
+    let client = match Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
         .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
         .build()
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(client) => client,
+        Err(e) => {
+            // The directory above was already created by `create_store_dir`
+            // — a `?` here without this cleanup would leak it on every
+            // failed build (e.g. an invalid homeserver URL, or a sqlite
+            // open error), the same leak `cleanup_failed_crypto_store`
+            // exists to prevent for a login/register failure *after* a
+            // successful build. Best-effort for the same reason that one is:
+            // the caller already has a real error to report.
+            cleanup_failed_crypto_store(&Some(crypto));
+            return Err(e.to_string());
+        }
+    };
     Ok((client, Some(crypto)))
 }
 
@@ -113,7 +126,8 @@ pub async fn login(
     // this very first sync response is processed synchronously as part of
     // this call — never replayed later — so the handler needs somewhere to
     // push it to before this call happens, not after.
-    let session = Session::new(client.clone(), user_id.clone(), crypto);
+    let crypto_store_open = crypto.is_some();
+    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
@@ -182,7 +196,8 @@ pub async fn register(
 
     // See `login`'s doc comment on this same ordering: session (and its
     // event handlers) built before the initial sync, not after.
-    let session = Session::new(client.clone(), user_id.clone(), crypto);
+    let crypto_store_open = crypto.is_some();
+    let session = Session::new(client.clone(), user_id.clone(), crypto, crypto_store_open);
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
