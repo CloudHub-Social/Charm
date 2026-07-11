@@ -1,38 +1,76 @@
 import { useEffect, useState } from "react";
-import { getRoomMembers, type RoomMemberSummary } from "@/lib/matrix";
+import { getRoomMembers, onRoomDetailsUpdate, type RoomMemberSummary } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
+interface ParticipantsState {
+  roomId: string | null;
+  participants: RoomMemberSummary[];
+}
+
+const EMPTY_STATE: ParticipantsState = { roomId: null, participants: [] };
+
 /**
- * Active members of a room, for the "following the conversation" bar.
- * Reuses the same active-only `get_room_members` the mention autocomplete
- * uses (see its doc comment) rather than the Members-tab's full
- * `get_room_member_list` — banned/left accounts aren't "following" anything.
+ * Joined members of a room, for the "following the conversation" bar.
+ * Sourced from the same active-only `get_room_members` the mention
+ * autocomplete uses (see its doc comment — joined + invited, not the
+ * Members-tab's full `get_room_member_list`), further filtered to
+ * `membership === "join"` here: an invited-but-not-yet-joined user hasn't
+ * seen the conversation and shouldn't be counted as following it.
+ *
+ * Refetches on `room_details:update` (the same signal `useRoomDetails`
+ * invalidates the Members-tab query on) so a join/leave/kick while the room
+ * stays open updates the bar without waiting for a room switch or reload.
  */
 export function useRoomParticipants(roomId: string | null): RoomMemberSummary[] {
-  const [participants, setParticipants] = useState<RoomMemberSummary[]>([]);
+  const [state, setState] = useState<ParticipantsState>(EMPTY_STATE);
+
+  // Resets synchronously during render (not in an effect) when the room
+  // changes, so the first render of a newly-opened room never briefly shows
+  // the previous room's participants before the effect below has a chance
+  // to fetch — see https://react.dev/learn/you-might-not-need-an-effect#adjusting-some-state-when-a-prop-changes.
+  if (state.roomId !== roomId) {
+    setState({ roomId, participants: [] });
+  }
 
   useEffect(() => {
-    setParticipants([]);
     if (!roomId) return undefined;
     let cancelled = false;
-    getRoomMembers(roomId)
-      .then((members) => {
-        if (!cancelled) setParticipants(members);
-      })
-      .catch(logAndIgnore);
+
+    function load() {
+      getRoomMembers(roomId as string)
+        .then((members) => {
+          if (cancelled) return;
+          setState({
+            roomId,
+            participants: members.filter((member) => member.membership === "join"),
+          });
+        })
+        .catch(logAndIgnore);
+    }
+
+    load();
+    const unlisten = onRoomDetailsUpdate((details) => {
+      if (details.room_id === roomId) load();
+    });
+
     return () => {
       cancelled = true;
+      unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, [roomId]);
 
-  return participants;
+  return state.roomId === roomId ? state.participants : [];
 }
 
-/** "Alice, Bob, and Carol are following the conversation" (oxford-comma'd, collapsing past 3 into "and N others"). */
+/** "Alice and Bob are following the conversation" / "Alice, Bob, and Carol are…" (oxford-comma'd, collapsing past 3 into "and N others"). */
 export function followingLabel(names: string[]): string {
   if (names.length === 0) return "";
   if (names.length === 1) return `${names[0]} is following the conversation`;
-  if (names.length <= 3) return `${names.join(", ")} are following the conversation`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are following the conversation`;
+  if (names.length === 3) {
+    return `${names[0]}, ${names[1]}, and ${names[2]} are following the conversation`;
+  }
   const shown = names.slice(0, 3);
-  return `${shown.join(", ")}, and ${names.length - 3} others are following the conversation`;
+  const rest = names.length - 3;
+  return `${shown.join(", ")}, and ${rest} other${rest === 1 ? "" : "s"} are following the conversation`;
 }

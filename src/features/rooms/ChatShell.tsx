@@ -412,6 +412,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       {participants.length > 0 && (
         <button
           type="button"
+          aria-expanded={followingExpanded}
           onClick={() => setFollowingExpanded((expanded) => !expanded)}
           className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
         >
