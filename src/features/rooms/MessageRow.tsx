@@ -231,7 +231,7 @@ export function MessageRow({
               isOwn={own}
               canRedact={canRedact}
               disableRelationActions={disableRelationActions}
-              className="opacity-0 transition-opacity group-hover:opacity-100"
+              className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
               onReply={onReply}
               onReact={onReact}
               onEdit={onEdit}

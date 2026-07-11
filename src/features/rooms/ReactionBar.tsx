@@ -18,23 +18,15 @@ interface ReactionBarProps {
  * Renders a message's `ReactionGroup[]` as toggle chips, plus a trailing
  * `+` chip that opens a minimal emoji picker to add a new reaction. Own
  * reactions get an accent highlight; clicking any chip toggles it.
+ *
+ * Renders nothing when there are no reactions yet — starting a reaction is
+ * already covered by the hover-revealed React button in `MessageActions`,
+ * so an always-visible empty-state "+" here would just duplicate it and
+ * reserve dead space under every message.
  */
 export function ReactionBar({ reactions, onToggle, disabled = false }: ReactionBarProps) {
   if (reactions.length === 0) {
-    return (
-      <div className="mt-0.5">
-        <EmojiPicker onSelect={onToggle}>
-          <button
-            type="button"
-            aria-label="Add reaction"
-            disabled={disabled}
-            className="flex size-6 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
-          >
-            <Plus size={12} />
-          </button>
-        </EmojiPicker>
-      </div>
-    );
+    return null;
   }
 
   return (
