@@ -100,6 +100,7 @@ vi.mock("./Composer", () => ({
         mentions: string[] | null;
       }) => void;
       onSlashCommand: (parsed: { command: string; args: string[] }) => void;
+      onEmptyChange?: (isEmpty: boolean) => void;
     },
     ref,
   ) {
@@ -114,6 +115,7 @@ vi.mock("./Composer", () => ({
         props.onSubmit({ body: trimmed, formattedBody: null, mentions: null });
       }
       setValue("");
+      props.onEmptyChange?.(true);
     };
     useImperativeHandle(ref, () => ({ submit: commit }));
     return (
@@ -121,7 +123,11 @@ vi.mock("./Composer", () => ({
         aria-label={props.placeholder}
         placeholder={props.placeholder}
         value={value}
-        onChange={(e) => setValue(e.currentTarget.value)}
+        onChange={(e) => {
+          const next = e.currentTarget.value;
+          setValue(next);
+          props.onEmptyChange?.(next.trim().length === 0);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
@@ -199,6 +205,33 @@ describe("ChatShell", () => {
   it("prompts to select a room when none is active", () => {
     render(<ChatShell room={null} currentUserId="@me:localhost" />);
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
+  });
+
+  it("disables Send while the composer is empty, and enables it once text is typed", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    expect(sendButton).toBeDisabled();
+
+    const composer = screen.getByPlaceholderText(`Message ${room.name}`);
+    fireEvent.change(composer, { target: { value: "hello" } });
+    expect(sendButton).not.toBeDisabled();
+
+    fireEvent.change(composer, { target: { value: "   " } });
+    expect(sendButton).toBeDisabled();
+  });
+
+  it("disables Send again after a message is sent, clearing the composer", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+    const sendButton = screen.getByRole("button", { name: "Send" });
+    const composer = screen.getByPlaceholderText(`Message ${room.name}`);
+
+    fireEvent.change(composer, { target: { value: "hello" } });
+    expect(sendButton).not.toBeDisabled();
+
+    fireEvent.click(sendButton);
+    expect(sendButton).toBeDisabled();
   });
 
   it("marks the room read once it becomes active", async () => {

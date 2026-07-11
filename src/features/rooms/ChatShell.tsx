@@ -106,6 +106,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  // Drives the Send button's `disabled` state — there's no attachment
+  // concept in the composer today (files upload and send independently via
+  // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
+  const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -381,13 +385,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             }}
             onTypingInput={handleTypingInput}
             onBlur={stopTyping}
+            onEmptyChange={setIsComposerEmpty}
           />
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
-              near-white text/icon — see button.tsx's comment / tokens.css. */}
+              near-white text/icon — see button.tsx's comment / tokens.css.
+              Disabled while there's no text to send — this composer has no
+              attachment concept (files upload/send independently), so
+              trimmed text emptiness is the only signal. */}
           <button
+            type="button"
             aria-label="Send"
             onClick={() => composerRef.current?.submit()}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary-solid text-primary-foreground"
+            disabled={isComposerEmpty}
+            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Send size={16} />
           </button>
