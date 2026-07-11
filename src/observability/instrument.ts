@@ -17,9 +17,16 @@ let feedbackDialogPromiseKey: string | null = null;
 let feedbackDialogGeneration = 0;
 let feedbackSubmissionContext: SentryFeedbackDialogOptions = {};
 
+/**
+ * Two categories only for v1 (Spec 22) — a third bucket (e.g. "Question") is
+ * a future consideration, not designed in now.
+ */
+export type FeedbackCategory = "bug" | "feature_request";
+
 export interface SentryFeedbackDialogOptions {
   associatedEventId?: string;
   surface?: "crash-fallback" | "manual" | "settings";
+  category?: FeedbackCategory;
 }
 
 function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undefined): void {
@@ -32,7 +39,7 @@ function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undef
 }
 
 function feedbackOptionsKey(options: SentryFeedbackDialogOptions): string {
-  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}`;
+  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}:${options.category ?? ""}`;
 }
 
 type SentryIntegration =
@@ -148,6 +155,9 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
       ...event.tags,
       "charm.feedback.surface": surface,
       "charm.feedback.screenshot": "optional",
+      ...(feedbackSubmissionContext.category
+        ? { "charm.feedback.category": feedbackSubmissionContext.category }
+        : {}),
     };
     if (feedbackSubmissionContext.associatedEventId && event.contexts?.feedback) {
       event.contexts.feedback.associated_event_id = feedbackSubmissionContext.associatedEventId;
@@ -209,6 +219,7 @@ export async function openSentryFeedbackDialog(
           tags: {
             "charm.feedback.surface": options.surface ?? "manual",
             "charm.feedback.screenshot": "optional",
+            ...(options.category ? { "charm.feedback.category": options.category } : {}),
           },
         }),
       )

@@ -148,6 +148,63 @@ describe("Sentry instrumentation", () => {
     expect(() => beforeSendFeedback?.({})).not.toThrow();
   });
 
+  it.each([
+    ["bug", "bug"],
+    ["feature_request", "feature_request"],
+  ] as const)(
+    "tags submissions with charm.feedback.category=%s when %s is selected",
+    async (category, expectedTag) => {
+      initializeSentry({
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: true,
+      });
+
+      await openSentryFeedbackDialog({ surface: "settings", category });
+
+      expect(feedbackIntegration.createForm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tags: expect.objectContaining({
+            "charm.feedback.category": expectedTag,
+          }),
+        }),
+      );
+
+      type FeedbackHook = (event: { tags?: Record<string, string> }) => void;
+      const beforeSendFeedback = client.on.mock.calls.find(
+        ([hook]) => hook === "beforeSendFeedback",
+      )?.[1] as FeedbackHook | undefined;
+      expect(beforeSendFeedback).toBeDefined();
+
+      const event = { tags: {} };
+      beforeSendFeedback?.(event);
+
+      expect(event.tags).toEqual(
+        expect.objectContaining({
+          "charm.feedback.category": expectedTag,
+        }),
+      );
+    },
+  );
+
+  it("omits the category tag when no category was provided", async () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    await openSentryFeedbackDialog({ surface: "settings" });
+
+    type FeedbackHook = (event: { tags?: Record<string, string> }) => void;
+    const beforeSendFeedback = client.on.mock.calls.find(
+      ([hook]) => hook === "beforeSendFeedback",
+    )?.[1] as FeedbackHook | undefined;
+
+    const event = { tags: {} };
+    beforeSendFeedback?.(event);
+
+    expect(event.tags).not.toHaveProperty("charm.feedback.category");
+  });
+
   it("replaces an existing feedback dialog before creating the next one", async () => {
     await expect(openSentryFeedbackDialog()).resolves.toBe(true);
     await expect(openSentryFeedbackDialog()).resolves.toBe(true);
@@ -189,6 +246,24 @@ describe("Sentry instrumentation", () => {
       surface: "crash-fallback",
     });
     const second = openSentryFeedbackDialog({ surface: "settings" });
+    resolveForm(feedbackDialog);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, false]);
+    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.open).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not share an in-flight feedback dialog across different categories", async () => {
+    let resolveForm!: (dialog: typeof feedbackDialog) => void;
+    feedbackIntegration.createForm.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveForm = resolve;
+      }),
+    );
+
+    const first = openSentryFeedbackDialog({ surface: "settings", category: "bug" });
+    const second = openSentryFeedbackDialog({ surface: "settings", category: "feature_request" });
     resolveForm(feedbackDialog);
 
     await expect(Promise.all([first, second])).resolves.toEqual([true, false]);

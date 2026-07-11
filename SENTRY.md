@@ -186,6 +186,58 @@ Sentry's browser feedback form support rather than a custom screenshot
 attachment pipeline. If the SDK cannot create the feedback form, Charm leaves
 the button unavailable or reports that feedback requires Sentry observability.
 
+### Feedback category and GitHub label mapping (Spec 22)
+
+Sentry's GitHub integration auto-creates a GitHub issue from every feedback
+submission (and every new error issue), and as configured at the org level it
+applied a single fixed `bug` label regardless of content — see
+[issue #162](https://github.com/CloudHub-Social/Charm/issues/162), a UX nit
+that landed mislabeled `bug`. The installed `@sentry/react` build's
+`feedbackIntegration` form has no custom-field support (only
+name/email/message/screenshot — confirmed against the bundled widget source,
+not just the public docs), so Charm can't add the category as a native Sentry
+form field. Instead:
+
+- Both feedback entry points — `ObservabilityPanel`'s "Send feedback" button
+  and `ErrorFallback`'s crash-screen button, both routed through
+  `openSentryFeedbackDialog` in `src/observability/instrument.ts` — render a
+  required Bug / Feature request selector
+  (`src/observability/FeedbackCategoryField.tsx`) before the button is
+  enabled. There is no way to submit feedback without picking one.
+- The selection is threaded through `SentryFeedbackDialogOptions.category` and
+  tagged as `charm.feedback.category: "bug" | "feature_request"` in the same
+  `beforeSendFeedback` hook that already sets `charm.feedback.surface` and
+  `charm.feedback.screenshot`, plus on the `createForm` call's default tags.
+
+**What still needs Sentry-org-side configuration** (cloudhubsocial.sentry.io,
+outside this repo, not app code): the `charm.feedback.category` tag exists on
+every feedback event once this ships, but nothing on the Sentry side maps it
+to a GitHub label yet. Per Spec 22's escalation path:
+
+1. Check the GitHub integration's alert-rule action that creates the issue
+   from feedback (Project Settings → Alerts, and Integrations → GitHub) — the
+   fixed `bug` label from issue #162 most likely comes from that action's
+   configured label, not from Sentry inferring anything from content.
+2. If the alert-rule action supports templating the label from a tag value
+   (e.g. `{{ tags.charm.feedback.category }}`), configure one templated rule
+   (or two rules keyed on the tag) mapping `bug` → GitHub `bug`,
+   `feature_request` → GitHub `enhancement`.
+3. If per-item dynamic labeling isn't supported, use two separate alert rules
+   filtered on `charm.feedback.category = bug` vs. `= feature_request`, each
+   creating an issue with a different fixed label — but first confirm the
+   filter condition actually evaluates against feedback-event tags in this
+   Sentry plan/version (feedback events and error events aren't always exposed
+   identically to alert-rule conditions).
+4. Only as a last resort — if neither works for feedback events specifically —
+   consider a Sentry-side webhook/serverless relabeling step after issue
+   creation. This adds new infrastructure to maintain and should not be built
+   unless 1–3 are confirmed impossible.
+
+The `enhancement` label already exists on `CloudHub-Social/Charm`, so no
+repo-side label creation was needed for this spec. Verify end-to-end by
+submitting one test feedback item of each category and checking the resulting
+GitHub issue's label — this can't be automated from the app repo.
+
 ## Phasing
 
 This implementation covers the foundation: consent, settings UI, Sentry init,
@@ -197,6 +249,10 @@ header, and a consent-gated Rust `tracing`/Sentry Logs bridge for startup,
 attachment IPC, and push decrypt fallback events. It also covers opt-in user
 feedback from settings and the crash fallback, with optional SDK-provided
 screenshot capture when supported.
+
+Spec 22 added the required Bug / Feature request feedback category described
+above; the Sentry-org-side GitHub label mapping it depends on is tracked as an
+owner follow-up, not shipped in that PR.
 
 Broader Rust tracing/log bridges, NDK/native Android crash capture, Android
 Mobile Vitals, and signed iOS device-release dSYMs remain separate follow-up
