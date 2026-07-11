@@ -218,7 +218,12 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
           loadMoreHistory();
         }
       },
-      { rootMargin: "200px 0px 0px 0px" },
+      // `root` must be the scrollable message list itself, not the default
+      // (viewport) root — `rootMargin` only expands the *root's* box, not
+      // any clipping intermediate ancestors apply, so without this the
+      // 200px pre-load margin would expand relative to the browser window
+      // rather than this container and effectively do nothing.
+      { root: containerRef.current, rootMargin: "200px 0px 0px 0px" },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
