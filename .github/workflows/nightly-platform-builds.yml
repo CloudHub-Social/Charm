@@ -313,7 +313,18 @@ jobs:
             # `windows: {}`, dropping the thumbprint and building unsigned
             # with no error.
             $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Depth 5 -Compress
-            $configArgs = @("--config", $config)
+            # A file path, not the inline JSON string: `pnpm` on Windows is
+            # a .cmd shim, and passing the JSON straight through as a CLI
+            # arg (even via PowerShell's @configArgs splat) goes through an
+            # extra cmd.exe re-tokenization that silently stripped every
+            # double-quote inside it — confirmed on a real run, where tauri
+            # received `{bundle:{windows:{certificateThumbprint:...}}}`
+            # (no quotes around keys at all) and failed with "key must be a
+            # string". `--config <path>` accepts a JSON file directly (see
+            # `tauri build --help`), sidestepping shell requoting entirely.
+            $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-signing.json"
+            Set-Content -Path $configPath -Value $config -NoNewline
+            $configArgs = @("--config", $configPath)
           }
           pnpm tauri build --debug @configArgs
         env:

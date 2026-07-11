@@ -124,6 +124,13 @@ security export -k login.keychain-db -t identities -f pkcs12 -P "<a password>" -
 base64 -i cert.p12 -o cert.p12.b64
 ```
 
+If you script this with `openssl pkcs12 -export` instead of `security export` (e.g. to
+generate a cert without ever touching a local Keychain), add `-legacy`. OpenSSL 3.x's
+default PKCS12 encryption (AES-256/SHA-256) fails to import into macOS's Keychain with a
+misleading `MAC verification failed (wrong password?)` error even when the password is
+correct — confirmed the hard way in production. `-legacy` switches to the RC2/3DES +
+SHA-1 encryption `security import` actually understands.
+
 Add as repo secrets: `MACOS_CERT_P12` (contents of `cert.p12.b64`),
 `MACOS_CERT_PASSWORD` (the password used above), `MACOS_CERT_NAME` (the
 cert's common name, exactly as it appears in Keychain Access).
