@@ -1,10 +1,4 @@
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarGroup,
-  AvatarGroupCount,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { cn } from "@/lib/utils";
@@ -269,29 +263,43 @@ export function MessageRow({
         )}
         {readers.length > 0 && (
           <TooltipProvider>
-            <AvatarGroup className="mt-0.5 justify-end">
+            {/* Deliberately not the shared Avatar/AvatarGroup components:
+                those only offer sm/default/lg (24/32/40px), all too large
+                for a read-receipt chip — the design calls for a much
+                smaller 14px chip, matching the row's own meta text below
+                the bubble rather than another avatar-sized element.
+                Aligned with `own` (not unconditionally right-aligned) so
+                the chips sit under the same edge as the timestamp above
+                them instead of floating to the opposite side on another
+                sender's left-aligned message. */}
+            <div
+              className={cn(
+                "mt-0.5 flex items-center gap-[3px]",
+                own ? "justify-end" : "justify-start",
+              )}
+            >
               {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => {
                 const readerName = senderNameByUserId.get(userId) ?? userId;
                 return (
                   <Tooltip key={userId}>
                     <TooltipTrigger asChild>
-                      <Avatar size="sm">
-                        <AvatarFallback
-                          style={{ background: avatarColor(userId) }}
-                          className="font-bold text-white"
-                        >
-                          {initials(userId, senderNameByUserId.get(userId) ?? null)}
-                        </AvatarFallback>
-                      </Avatar>
+                      <span
+                        className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white ring-1 ring-background"
+                        style={{ background: avatarColor(userId) }}
+                      >
+                        {initials(userId, senderNameByUserId.get(userId) ?? null)}
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent>Read by {readerName}</TooltipContent>
                   </Tooltip>
                 );
               })}
               {readers.length > MAX_RECEIPT_AVATARS && (
-                <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
+                <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-muted text-[7px] font-bold text-muted-foreground ring-1 ring-background">
+                  +{readers.length - MAX_RECEIPT_AVATARS}
+                </span>
               )}
-            </AvatarGroup>
+            </div>
           </TooltipProvider>
         )}
       </div>
