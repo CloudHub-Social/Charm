@@ -14,6 +14,7 @@ function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLa
     canRedact: false,
     readers: [],
     senderNameByUserId: new Map(),
+    isNew: false,
     getActionsHandle: () => undefined,
     registerActionsRef: vi.fn(),
     onReply: vi.fn(),

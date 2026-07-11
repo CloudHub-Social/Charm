@@ -19,6 +19,7 @@ export function IrcMessageRow({
   roomId,
   own,
   canRedact,
+  isNew,
   getActionsHandle,
   registerActionsRef,
   onReply,
@@ -37,7 +38,10 @@ export function IrcMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
-      className="group flex items-baseline gap-1 py-0.5"
+      className={cn(
+        "group flex items-baseline gap-1 py-0.5",
+        isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
+      )}
       onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
       onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}
       onTouchCancel={() => getActionsHandle(rowKey)?.cancelLongPress()}

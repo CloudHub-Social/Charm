@@ -273,13 +273,16 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
-            "relative flex size-11 items-center justify-center rounded-md border transition-colors",
-            active
-              ? "border-primary/50 bg-accent"
-              : "border-transparent bg-background hover:border-border hover:bg-accent/70",
+            "relative flex size-11 items-center justify-center rounded-md border border-transparent bg-background transition-colors hover:border-border hover:bg-accent/70",
           )}
         >
-          <Avatar size="sm">
+          {/* Ring lives on the (rounded-full) avatar itself, not the
+              (rounded-md) outer button — a ring on the button would render
+              as a rounded-square around the whole tile instead of a circle
+              around the avatar. The button keeps a neutral bg-background
+              regardless of active state so a transparent avatar image can't
+              pick up the rail's own bg-muted/25 showing through. */}
+          <Avatar size="sm" className={cn(active && "ring-2 ring-primary")}>
             <AvatarImage src={resolveAvatar(space.avatar_path, space.avatar_url)} alt="" />
             <AvatarFallback
               style={{ background: avatarColor(space.room_id) }}

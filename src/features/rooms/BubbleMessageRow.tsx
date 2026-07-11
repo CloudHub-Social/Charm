@@ -27,6 +27,7 @@ export function BubbleMessageRow({
   canRedact,
   readers,
   senderNameByUserId,
+  isNew,
   getActionsHandle,
   registerActionsRef,
   onReply,
@@ -50,6 +51,7 @@ export function BubbleMessageRow({
         "group flex max-w-120 gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         own && "ml-auto flex-row-reverse",
+        isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
       onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
       onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}

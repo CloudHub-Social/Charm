@@ -17,6 +17,7 @@ const baseArgs: MessageRowLayoutProps = {
   canRedact: false,
   readers: [],
   senderNameByUserId: new Map(),
+  isNew: false,
   getActionsHandle: () => undefined,
   registerActionsRef: () => {},
   onReply: () => {},

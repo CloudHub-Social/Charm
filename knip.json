@@ -6,6 +6,7 @@
     "autoprefixer",
     "postcss",
     "tailwindcss",
+    "tw-animate-css",
     "@tauri-apps/plugin-process",
     "@tauri-apps/plugin-updater"
   ],

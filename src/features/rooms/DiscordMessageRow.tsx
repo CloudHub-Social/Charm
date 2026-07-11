@@ -29,6 +29,7 @@ export function DiscordMessageRow({
   canRedact,
   readers,
   senderNameByUserId,
+  isNew,
   getActionsHandle,
   registerActionsRef,
   onReply,
@@ -47,7 +48,11 @@ export function DiscordMessageRow({
   return (
     <div
       id={`message-${message.event_id}`}
-      className={cn("group flex max-w-160 gap-2", sameSenderAsPrev ? "mt-0.5" : "mt-3")}
+      className={cn(
+        "group flex max-w-160 gap-2",
+        sameSenderAsPrev ? "mt-0.5" : "mt-3",
+        isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
+      )}
       onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
       onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}
       onTouchCancel={() => getActionsHandle(rowKey)?.cancelLongPress()}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Info, Paperclip, Send, Settings, X } from "lucide-react";
@@ -142,6 +142,69 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const roomSettingsOpen = roomSettingsTarget !== null;
   const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
     useChatTimeline(room, roomSettingsOpen);
+  // Tracks which message rows have already been rendered once, keyed by
+  // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
+  // entrance — not every row on initial load/pagination.
+  //
+  // Seeding waits for a *transition* into `loading === false` for the
+  // active room, not just "loading currently reads false": `useChatTimeline`
+  // initializes its own `loading` state to `false` and only flips it to
+  // `true` inside an effect, which hasn't run yet on this component's very
+  // first render — so `loading` misleadingly reads `false` on that render
+  // too, alongside `messages` still being `[]`/stale. Seeding there would
+  // treat the *next* render (the room's real initial page arriving) as
+  // "seen for the first time", making every historical message look new
+  // and animate in. `hasStartedLoadingRoomIdRef` records having actually
+  // observed `loading === true` for this room first, so seeding only fires
+  // once real loading has demonstrably started and then finished.
+  //
+  // Diffed and marked-seen inside a `useMemo` keyed on `messages` itself
+  // (not a plain `useEffect` with no dependency array) so this only runs
+  // once per actual `messages` update, not on every render — ChatShell
+  // re-renders for plenty of reasons unrelated to the timeline (typing
+  // indicator ticks, the following-bar fetch, etc.), and an effect with no
+  // deps re-adding the same keys on one of those incidental re-renders would
+  // flip a message's `isNew` back to `false` before the animation ever gets
+  // committed to the DOM.
+  const seenRowKeysRef = useRef<Set<string>>(new Set());
+  const seededRoomIdRef = useRef<string | null>(null);
+  const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
+  if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
+  // Set while `loadMoreHistory` has a request in flight (`loadingMore ===
+  // true`) and consumed on the render where its response actually lands.
+  // `useChatTimeline.loadMoreHistory` calls `setMessages(page.messages)` and
+  // `setLoadingMore(false)` from the same synchronous continuation after its
+  // `await`, so React batches them into one commit — by the time this memo
+  // sees the new (prepended-with-older-history) `messages`, `loadingMore`
+  // has *already* flipped back to `false` in that same render, so it alone
+  // can't distinguish "pagination just landed" from "a live message just
+  // arrived". This ref instead remembers "pagination was in flight as of
+  // the previous render" across that boundary.
+  const pendingPaginationRef = useRef(false);
+  if (loadingMore) pendingPaginationRef.current = true;
+  const newMessageKeys = useMemo(() => {
+    const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    if (!readyToSeed) return new Set<string>();
+    if (seededRoomIdRef.current !== activeRoomId) {
+      seededRoomIdRef.current = activeRoomId;
+      seenRowKeysRef.current = new Set(messages.map(messageRowKey));
+      pendingPaginationRef.current = false;
+      return new Set<string>();
+    }
+    // A pagination response prepending older history — mark it all seen
+    // (so it doesn't animate later either) but don't flag any of it as
+    // fresh right now.
+    const isPaginationUpdate = pendingPaginationRef.current && !loadingMore;
+    if (isPaginationUpdate) pendingPaginationRef.current = false;
+    const fresh = new Set<string>();
+    for (const m of messages) {
+      const key = messageRowKey(m);
+      if (!seenRowKeysRef.current.has(key) && !isPaginationUpdate) fresh.add(key);
+    }
+    messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
+    return fresh;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, loading, loadingMore, activeRoomId]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
@@ -168,8 +231,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // boundary against a stale/empty message snapshot.
   const unreadBoundaryKeyRef = useRef<string | null>(null);
   const seededUnreadRoomIdRef = useRef<string | null>(null);
-  const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
-  if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
   if (
     !loading &&
     hasStartedLoadingRoomIdRef.current === activeRoomId &&
@@ -374,6 +435,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 canRedact={allowedToRedact}
                 readers={readers}
                 senderNameByUserId={senderNameByUserId}
+                // Excludes `own` messages: `messageRowKey` (transaction_id ??
+                // event_id) isn't stable across the local-echo -> ack
+                // transition for a message *we* sent — `transaction_id()`
+                // only returns `Some` while an item is still local (see
+                // `timeline.rs`'s `build_message_summary`), so the row's key
+                // itself changes once the homeserver ack replaces the local
+                // echo. That makes the acked row look "unseen" and replay the
+                // entrance animation a second time. Other senders' messages
+                // have no local-echo phase to begin with, so this exclusion
+                // only ever skips the case that would otherwise double-animate.
+                isNew={!own && newMessageKeys.has(messageRowKey(message))}
                 getActionsHandle={(key) => actionsRefs.current.get(key)}
                 registerActionsRef={(key, el) => {
                   if (el) actionsRefs.current.set(key, el);
