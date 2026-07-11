@@ -701,6 +701,86 @@ describe("ChatShell", () => {
     expect(document.getElementById("message-$real:localhost")).toBeInTheDocument();
   });
 
+  it("does not animate any row on initial room load", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$one:localhost", sender: "@alice:localhost", body: "hi" }),
+        summary({ event_id: "$two:localhost", sender: "@alice:localhost", body: "there" }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    await screen.findByText("hi");
+    expect(document.getElementById("message-$one:localhost")?.className).not.toMatch(/animate-in/);
+    expect(document.getElementById("message-$two:localhost")?.className).not.toMatch(/animate-in/);
+  });
+
+  it("animates a message that arrives after the initial load", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$fresh:localhost", sender: "@alice:localhost", body: "surprise" }),
+        ],
+      });
+    });
+
+    await screen.findByText("surprise");
+    expect(document.getElementById("message-$fresh:localhost")?.className).toMatch(/animate-in/);
+  });
+
+  it("does not replay the entrance animation when an own message's local echo is acked", async () => {
+    renderChatShell();
+    await screen.findByText("No messages yet");
+
+    sendDraft("hello");
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "txn-2",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: "txn-2",
+            send_state: { state: "pending" },
+          }),
+        ],
+      });
+    });
+    await screen.findByText(/sending…/);
+
+    // Matches the real backend behavior (see timeline.rs's
+    // `build_message_summary`): `transaction_id` goes back to `None` once
+    // the homeserver echo replaces the local item, so `messageRowKey`
+    // (transaction_id ?? event_id) changes from "txn-2" to the real event
+    // id on ack — this is the exact transition that could otherwise be
+    // mistaken for a brand-new row and replay the entrance animation.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$acked:localhost",
+            sender: "@me:localhost",
+            body: "hello",
+            transaction_id: null,
+            send_state: { state: "sent" },
+          }),
+        ],
+      });
+    });
+
+    await screen.findByText("hello");
+    expect(document.getElementById("message-$acked:localhost")?.className).not.toMatch(
+      /animate-in/,
+    );
+  });
+
   it("clicking a reaction chip calls toggleReaction", async () => {
     toggleReaction.mockResolvedValue({ action: "added" });
     getTimelinePage.mockResolvedValue({
