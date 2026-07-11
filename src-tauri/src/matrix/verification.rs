@@ -304,11 +304,19 @@ pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Resul
                         break;
                     }
                     Err(error) => {
-                        tracing::warn!(
-                            attempt,
-                            error = %error,
-                            "recovery-key self-verification attempt failed, retrying"
-                        );
+                        if attempt < SELF_VERIFY_RETRY_ATTEMPTS {
+                            tracing::warn!(
+                                attempt,
+                                error = %error,
+                                "recovery-key self-verification attempt failed, retrying"
+                            );
+                        } else {
+                            tracing::warn!(
+                                attempt,
+                                error = %error,
+                                "recovery-key self-verification attempt failed, no attempts left"
+                            );
+                        }
                         last_error = Some(error);
                         if attempt < SELF_VERIFY_RETRY_ATTEMPTS {
                             tokio::time::sleep(SELF_VERIFY_RETRY_BASE_DELAY * attempt).await;

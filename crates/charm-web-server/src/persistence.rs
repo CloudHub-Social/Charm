@@ -773,12 +773,16 @@ async fn restore_one(
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
     let client = build_client_for_restore(entry).await?;
     // `build_client_for_restore` only ever returns `Ok` here when either the
-    // session never had a crypto store to begin with (`crypto_store_key` is
-    // `None`) or that store was actually opened — a store that was expected
-    // but couldn't be opened is now an `Err` this function already
-    // propagated above, not a silent fallback. So "opened" reduces exactly
-    // to "was one configured at all".
-    let crypto_store_opened = entry.crypto_store_key.is_some();
+    // session never had a crypto store to begin with (both fields `None`) or
+    // that store was actually opened — a store that was expected but
+    // couldn't be opened is now an `Err` this function already propagated
+    // above, not a silent fallback. So "opened" reduces exactly to "was one
+    // configured at all" — checked the same way `build_client_for_restore`
+    // itself decides that (`zip`, both fields present), not just
+    // `crypto_store_key` alone, so a partially-populated entry (e.g.
+    // corrupt/hand-edited persisted JSON with a key but no passphrase) can't
+    // disagree with that function about whether a store was configured.
+    let crypto_store_opened = entry.crypto_store_key.is_some() && entry.crypto_passphrase.is_some();
     client
         .matrix_auth()
         .restore_session(
