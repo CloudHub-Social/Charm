@@ -163,6 +163,16 @@ describe("LoginScreen SSO callback handling", () => {
 describe("LoginScreen default homeserver URL", () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
+    getCurrentUrls = null;
+    openUrlCallback = undefined;
+    getCurrent.mockClear();
+    onOpenUrl.mockClear();
+    openUrl.mockClear().mockResolvedValue(undefined);
+    login.mockClear();
+    register.mockClear();
+    startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
+    completeSsoLogin.mockClear();
+    cancelSsoLogin.mockClear().mockResolvedValue(undefined);
   });
 
   it("prefills the homeserver field from VITE_CHARM_DEFAULT_HOMESERVER_URL when set", () => {
