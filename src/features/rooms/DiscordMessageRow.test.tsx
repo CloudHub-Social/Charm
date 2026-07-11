@@ -124,4 +124,21 @@ describe("DiscordMessageRow", () => {
     );
     expect(screen.getByText("(edited)")).toBeInTheDocument();
   });
+
+  it("shows pending/error/edited status for a message in the MIDDLE of a same-sender run", () => {
+    // Regression test: the old `showMeta && !showHeader` guard required
+    // sameSenderAsNext === false, so a message that's neither first nor
+    // last in a run (both sameSenderAsPrev and sameSenderAsNext true)
+    // never showed its status at all.
+    render(
+      <DiscordMessageRow
+        {...baseProps({
+          sameSenderAsPrev: true,
+          sameSenderAsNext: true,
+          isError: true,
+        })}
+      />,
+    );
+    expect(screen.getByText(/failed to send/)).toBeInTheDocument();
+  });
 });

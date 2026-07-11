@@ -47,8 +47,9 @@ export function IrcMessageRow({
         {formatTime(message.timestamp_ms)}
       </span>
       <span
-        className="shrink-0 font-mono text-[13px] font-semibold"
+        className="max-w-40 shrink truncate font-mono text-[13px] font-semibold"
         style={{ color: nickColor(message.sender) }}
+        title={nick}
       >
         &lt;{nick}&gt;
       </span>
@@ -85,7 +86,12 @@ export function IrcMessageRow({
               // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the span itself isn't interactive
               <span
                 className={cn(
-                  "[&_a]:underline [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1",
+                  // `sanitizeMatrixHtml` permits block markup (<p>, <blockquote>,
+                  // <ul>/<ol>, <div>-shaped output) that a real Matrix client can
+                  // send as formatted_body — forced inline here so it stays on
+                  // this row's single line rather than breaking the IRC-mode
+                  // one-line-per-message layout with a block-level line break.
+                  "[&_a]:underline [&_blockquote]:inline [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_div]:inline [&_li]:inline [&_ol]:inline [&_p]:inline [&_pre]:inline [&_ul]:inline",
                   isError && "rounded border border-destructive px-1",
                 )}
                 // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml

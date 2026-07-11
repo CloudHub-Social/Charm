@@ -125,4 +125,40 @@ describe("IrcMessageRow", () => {
     render(<IrcMessageRow {...baseProps({ isPending: true })} />);
     expect(screen.getByText(/sending…/)).toBeInTheDocument();
   });
+
+  it("truncates a long nick instead of letting it push the body off-row", () => {
+    const { container } = render(
+      <IrcMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            sender_display_name: "A Very Long Display Name That Should Not Overflow",
+            body: "hi",
+          }),
+        })}
+      />,
+    );
+    const nick = container.querySelector(".truncate");
+    expect(nick).toBeInTheDocument();
+    expect(nick).toHaveClass("shrink");
+  });
+
+  it("forces block-level formatted_body markup inline so it stays on one line", () => {
+    render(
+      <IrcMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            body: "quoted text",
+            formatted_body: "<blockquote>quoted text</blockquote>",
+          }),
+        })}
+      />,
+    );
+    const blockquote = screen.getByText("quoted text").closest("blockquote");
+    expect(blockquote).toBeInTheDocument();
+    expect(blockquote?.closest("span")).toHaveClass("[&_blockquote]:inline");
+  });
 });

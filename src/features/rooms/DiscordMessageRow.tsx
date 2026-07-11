@@ -31,7 +31,6 @@ export function DiscordMessageRow({
   roomId,
   own,
   sameSenderAsPrev,
-  sameSenderAsNext,
   canRedact,
   readers,
   getActionsHandle,
@@ -48,7 +47,6 @@ export function DiscordMessageRow({
   rowKey,
 }: MessageRowLayoutProps) {
   const showHeader = !sameSenderAsPrev;
-  const showMeta = !sameSenderAsNext;
 
   return (
     <div
@@ -159,7 +157,7 @@ export function DiscordMessageRow({
             disabled={disableRelationActions || isUndecrypted}
           />
         )}
-        {showMeta && !showHeader && (message.edited || isPending || isError) && (
+        {!showHeader && (message.edited || isPending || isError) && (
           <span className="font-mono text-[11px] text-muted-foreground">
             {message.edited && "(edited)"}
             {isPending && (message.edited ? " · sending…" : "sending…")}
