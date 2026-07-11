@@ -1,8 +1,16 @@
-import type { AppearanceState, Density, FontSize, ReducedMotion, Theme } from "./atoms";
+import type {
+  AppearanceState,
+  Density,
+  FontSize,
+  MessageLayout,
+  ReducedMotion,
+  Theme,
+} from "./atoms";
 import {
   DEFAULT_APPEARANCE,
   VALID_DENSITIES,
   VALID_FONT_SIZES,
+  VALID_MESSAGE_LAYOUTS,
   VALID_REDUCED_MOTIONS,
   VALID_THEMES,
 } from "./atoms";
@@ -179,5 +187,8 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
     reducedMotion: isValid<ReducedMotion>(partial.reducedMotion, VALID_REDUCED_MOTIONS)
       ? partial.reducedMotion
       : DEFAULT_APPEARANCE.reducedMotion,
+    messageLayout: isValid<MessageLayout>(partial.messageLayout, VALID_MESSAGE_LAYOUTS)
+      ? partial.messageLayout
+      : DEFAULT_APPEARANCE.messageLayout,
   };
 }
