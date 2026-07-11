@@ -35,7 +35,11 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   // "host:port" as a server name and attempts HTTPS discovery against it,
   // which hangs against our plain-HTTP local dev Synapse.
   const [homeserverUrl, setHomeserverUrl] = useState(
-    import.meta.env.VITE_CHARM_DEFAULT_HOMESERVER_URL ?? "http://localhost:8008",
+    // `||`, not `??`: an unset var is `undefined`, but a `.env` file that
+    // defines the key with an empty value (common when it's left blank
+    // rather than omitted) resolves to `""`, which `??` would treat as a
+    // real override and leave the field blank instead of falling back.
+    import.meta.env.VITE_CHARM_DEFAULT_HOMESERVER_URL || "http://localhost:8008",
   );
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
