@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 token: token.clone(),
                 homeserver_url,
                 initial_access_token: Some(initial_access_token),
-                crypto: session.crypto.clone(),
+                crypto: session.persisted_crypto.clone(),
             });
             let handle = sync_loop::spawn(
                 session.client.clone(),
@@ -163,7 +163,7 @@ fn spawn_idle_session_sweeper(
                 };
                 let homeserver_url = session.client.homeserver().to_string();
                 let crypto = session
-                    .crypto
+                    .persisted_crypto
                     .as_ref()
                     .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
                 if let Err(e) = persistence

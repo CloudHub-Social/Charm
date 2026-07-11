@@ -380,7 +380,7 @@ async fn finish_login(
     // `sync_loop::spawn` believing this session is already safely
     // persisted (see that field's doc comment).
     let crypto = stored
-        .crypto
+        .persisted_crypto
         .as_ref()
         .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
 
@@ -403,7 +403,7 @@ async fn finish_login(
             homeserver_url: homeserver_url.to_string(),
             initial_access_token: initial_save_succeeded
                 .then(|| matrix_session.tokens.access_token.clone()),
-            crypto: stored.crypto.clone(),
+            crypto: stored.persisted_crypto.clone(),
         })
     } else {
         None
@@ -463,6 +463,15 @@ async fn logout(
     require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
+        // Captured before the live-session branch below moves `session`
+        // into a spawned task — this is the fallback `persistence.remove`
+        // needs at the very end to still clean up this session's crypto
+        // store even when no persisted blob exists to read it from (e.g.
+        // `finish_login`'s own initial `persistence.save` failed, which it
+        // explicitly tolerates — the live session still has an on-disk
+        // crypto store in that case, just never a matching blob for
+        // `PersistenceStore::remove`'s own `read_one` to find it through).
+        let mut live_crypto = None;
         // Stop the live sync loop *before* removing the persisted entry
         // below, not after. Its `repersist_if_token_changed` can re-save a
         // refreshed token at any sync iteration — removing the persisted
@@ -474,6 +483,7 @@ async fn logout(
         // synchronously mid-poll — but from "the rest of this handler's
         // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
+            live_crypto = session.persisted_crypto.clone();
             if let Some(handle) = session
                 .sync_handle
                 .lock()
@@ -542,7 +552,10 @@ async fn logout(
         // restore failure has cleared) would restore and start syncing an
         // account the user believes they already logged out of.
         if let Some(persistence) = &state.persistence {
-            if let Err(e) = persistence.remove(&token).await {
+            let live_crypto = live_crypto
+                .as_ref()
+                .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+            if let Err(e) = persistence.remove(&token, live_crypto).await {
                 tracing::warn!("failed to remove persisted session on logout: {e}");
             }
         }
@@ -662,7 +675,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         token: token.clone(),
         homeserver_url,
         initial_access_token: Some(initial_access_token),
-        crypto: session.crypto.clone(),
+        crypto: session.persisted_crypto.clone(),
     });
     let handle = crate::sync_loop::spawn(
         session.client.clone(),
