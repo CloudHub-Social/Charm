@@ -14,6 +14,7 @@ import type {
 import { makeRoomSummary } from "./testFixtures";
 import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
+import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -825,6 +826,26 @@ describe("ChatShell", () => {
     });
 
     expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+  });
+
+  it("auto-hides the typing row after the last update with no follow-up", async () => {
+    vi.useFakeTimers();
+    try {
+      renderChatShell();
+      await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+      act(() => {
+        typingCallback?.({ room_id: room.room_id, user_ids: ["@alice:localhost"] });
+      });
+      expect(screen.getByText("@alice:localhost is typing…")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(TYPING_AUTO_HIDE_MS);
+      });
+      expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a following-the-conversation bar that expands to list participants", async () => {
