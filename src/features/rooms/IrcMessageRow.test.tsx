@@ -93,6 +93,31 @@ describe("IrcMessageRow", () => {
     expect(screen.getByText("* message deleted")).toBeInTheDocument();
   });
 
+  it("hides edited/pending/error status suffixes for a redacted message", () => {
+    // Regression test: an edited message that's later redacted must not
+    // show "(edited)" next to "* message deleted" — matches Bubble/Discord,
+    // which both gate their status suffixes on !message.redacted.
+    render(
+      <IrcMessageRow
+        {...baseProps({
+          isPending: true,
+          isError: true,
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            body: "",
+            redacted: true,
+            edited: true,
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText("* message deleted")).toBeInTheDocument();
+    expect(screen.queryByText("(edited)")).not.toBeInTheDocument();
+    expect(screen.queryByText("(sending…)")).not.toBeInTheDocument();
+    expect(screen.queryByText("(failed to send)")).not.toBeInTheDocument();
+  });
+
   it("compresses a reply into an inline (re: sender) prefix rather than a block", () => {
     render(
       <IrcMessageRow

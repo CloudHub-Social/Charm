@@ -108,11 +108,11 @@ export function IrcMessageRow({
                 {message.body}
               </span>
             )}
+            {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
+            {isError && <span className="ml-1 text-destructive">(failed to send)</span>}
+            {message.edited && <span className="ml-1 text-muted-foreground">(edited)</span>}
           </>
         )}
-        {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
-        {isError && <span className="ml-1 text-destructive">(failed to send)</span>}
-        {message.edited && <span className="ml-1 text-muted-foreground">(edited)</span>}
       </span>
       {!message.redacted && (
         <>
