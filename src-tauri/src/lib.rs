@@ -358,6 +358,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_os::init())
         .manage(matrix::MatrixState::default())
         .setup(|app| {
             if let Some(sentry_guard) = init_sentry_from_settings(app) {

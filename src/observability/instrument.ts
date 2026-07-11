@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
 import { getBuildId } from "../lib/buildId";
+import { platformTag } from "../lib/platform";
 import { readObservabilitySettings } from "./persistence";
 import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
 import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
@@ -127,8 +128,9 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     integrations: integrations(settings),
     initialScope: {
       tags: {
-        platform: "webview",
+        "charm.platform": platformTag(),
         "charm.build.id": getBuildId(),
+        "charm.build.version": packageJson.version,
       },
       user: settings.anonymousUserId ? { id: settings.anonymousUserId } : undefined,
     },
@@ -166,8 +168,9 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     }
     Object.assign(event, scrubSentryValue(event));
   });
-  Sentry.setTag("platform", "webview");
+  Sentry.setTag("charm.platform", platformTag());
   Sentry.setTag("charm.build.id", getBuildId());
+  Sentry.setTag("charm.build.version", packageJson.version);
   initialized = true;
   return true;
 }

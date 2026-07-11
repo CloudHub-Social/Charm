@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
+import * as platformModule from "../lib/platform";
 import {
   closeSentry,
   initializeSentry,
@@ -24,6 +25,10 @@ const client = {
   on: vi.fn(),
 };
 
+vi.mock("../lib/platform", () => ({
+  platformTag: vi.fn(() => "web"),
+}));
+
 vi.mock("@sentry/react", () => ({
   browserTracingIntegration: vi.fn(() => ({ name: "BrowserTracing" })),
   replayIntegration: vi.fn(() => ({ name: "Replay" })),
@@ -43,6 +48,7 @@ beforeEach(() => {
   vi.stubEnv("VITE_SENTRY_DSN", "https://public@example.invalid/1");
   clientOptions.enabled = true;
   observabilityTestHooks.reset();
+  vi.mocked(platformModule.platformTag).mockReturnValue("web");
 });
 
 describe("Sentry instrumentation", () => {
@@ -88,6 +94,40 @@ describe("Sentry instrumentation", () => {
     });
 
     expect(Sentry.setTag).toHaveBeenCalledWith("charm.build.id", packageJson.version);
+  });
+
+  it("tags events with charm.build.version from the package version", () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialScope: expect.objectContaining({
+          tags: expect.objectContaining({ "charm.build.version": packageJson.version }),
+        }),
+      }),
+    );
+    expect(Sentry.setTag).toHaveBeenCalledWith("charm.build.version", packageJson.version);
+  });
+
+  it("tags events with the real per-OS charm.platform value (Spec 23)", () => {
+    vi.mocked(platformModule.platformTag).mockReturnValue("macos");
+
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialScope: expect.objectContaining({
+          tags: expect.objectContaining({ "charm.platform": "macos" }),
+        }),
+      }),
+    );
+    expect(Sentry.setTag).toHaveBeenCalledWith("charm.platform", "macos");
   });
 
   it("registers the feedback integration without auto-injecting Sentry UI", () => {
