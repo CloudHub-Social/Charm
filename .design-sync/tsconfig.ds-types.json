@@ -8,6 +8,6 @@
     "rootDir": "../src",
     "allowImportingTsExtensions": false
   },
-  "include": ["../src/components/ui", "../src/lib"],
+  "include": ["../src/components/ui", "../src/lib", "../src/vite-env.d.ts", "../src/test/setup.ts"],
   "references": []
 }
