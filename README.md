@@ -219,7 +219,11 @@ so those still get cache hits without holding write credentials — this pair
 is deliberately never used as a fallback on `main` itself, even if the
 write-capable pair above is somehow missing, since sccache's own S3 startup
 check requires write access and would otherwise fail with a confusing
-permissions error instead of a clean "no cache configured". Neither secret
+permissions error instead of a clean "no cache configured". Every job also
+sets `SCCACHE_S3_RW_MODE=READ_ONLY` whenever it's using this key pair (it
+defaults to `READ_WRITE` regardless of which credentials are handed to it) —
+without that, a cache miss on a read-only key still attempts a write and
+gets `AccessDenied` instead of just skipping it. Neither secret
 of a pair configured is fine too — every job falls back to a local-disk-only
 cache (by leaving `RUSTC_WRAPPER` unset, so sccache is never invoked at all)
 instead of hard-failing, rather than pointing sccache at the bucket with no

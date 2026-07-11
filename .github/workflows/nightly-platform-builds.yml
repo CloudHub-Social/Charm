@@ -193,6 +193,13 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # sccache's S3 backend defaults to READ_WRITE regardless of which
+          # key it's handed — a genuinely read-only key in that mode still
+          # attempts a write on every cache miss and gets AccessDenied
+          # instead of just skipping the write, so this has to be set
+          # explicitly on any non-main ref (where AWS_* below resolves to
+          # the read-only key).
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           # main gets the read-write key; anything else gets the read-only
           # key (if configured) so cache reads still work on a
           # workflow_dispatch run against a feature branch without handing
@@ -376,6 +383,13 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # sccache's S3 backend defaults to READ_WRITE regardless of which
+          # key it's handed — a genuinely read-only key in that mode still
+          # attempts a write on every cache miss and gets AccessDenied
+          # instead of just skipping the write, so this has to be set
+          # explicitly on any non-main ref (where AWS_* below resolves to
+          # the read-only key).
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           # main gets the read-write key; anything else gets the read-only
           # key (if configured) so cache reads still work on a
           # workflow_dispatch run against a feature branch without handing
@@ -524,6 +538,13 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # sccache's S3 backend defaults to READ_WRITE regardless of which
+          # key it's handed — a genuinely read-only key in that mode still
+          # attempts a write on every cache miss and gets AccessDenied
+          # instead of just skipping the write, so this has to be set
+          # explicitly on any non-main ref (where AWS_* below resolves to
+          # the read-only key).
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           # main gets the read-write key; anything else gets the read-only
           # key (if configured) so cache reads still work on a
           # workflow_dispatch run against a feature branch without handing
@@ -687,6 +708,8 @@ jobs:
           # entirely and sccache just runs as a local-disk-only cache.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+          # See the macOS job's SCCACHE_S3_RW_MODE comment.
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           BUILD_ID: ${{ steps.build-id.outputs.build-id }}
         run: |
           set -euo pipefail
@@ -716,6 +739,7 @@ jobs:
               echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
               echo 'SCCACHE_S3_USE_SSL = "true"'
               echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
+              echo "SCCACHE_S3_RW_MODE = \"${SCCACHE_S3_RW_MODE}\""
               echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
               echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
             fi
@@ -881,6 +905,13 @@ jobs:
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # sccache's S3 backend defaults to READ_WRITE regardless of which
+          # key it's handed — a genuinely read-only key in that mode still
+          # attempts a write on every cache miss and gets AccessDenied
+          # instead of just skipping the write, so this has to be set
+          # explicitly on any non-main ref (where AWS_* below resolves to
+          # the read-only key).
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           # main gets the read-write key; anything else gets the read-only
           # key (if configured) so cache reads still work on a
           # workflow_dispatch run against a feature branch without handing
