@@ -283,12 +283,23 @@ export function MessageRow({
                 return (
                   <Tooltip key={userId}>
                     <TooltipTrigger asChild>
+                      {/* tabIndex={0}: keyboard/screen-reader users can tab
+                          to a chip and get the same "Read by {name}" info a
+                          mouse hover gives — not just decorative. This is
+                          the standard accessible-tooltip-trigger pattern
+                          (WAI-ARIA's Tooltip Widget: the trigger itself
+                          doesn't have to be a native interactive element,
+                          it just needs to be focusable), so the
+                          non-interactive-element lint rule doesn't apply. */}
+                      {/* oxlint-disable jsx-a11y/no-noninteractive-tabindex */}
                       <span
-                        className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white ring-1 ring-background"
+                        tabIndex={0}
                         style={{ background: avatarColor(userId) }}
+                        className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white ring-1 ring-background"
                       >
                         {initials(userId, senderNameByUserId.get(userId) ?? null)}
                       </span>
+                      {/* oxlint-enable jsx-a11y/no-noninteractive-tabindex */}
                     </TooltipTrigger>
                     <TooltipContent>Read by {readerName}</TooltipContent>
                   </Tooltip>

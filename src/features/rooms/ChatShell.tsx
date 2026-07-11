@@ -145,7 +145,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // bare user id in MessageRow when a reader hasn't sent anything loaded.
   const senderNameByUserId = new Map<string, string>();
   for (const m of messages) {
-    if (m.sender_display_name) senderNameByUserId.set(m.sender, m.sender_display_name);
+    if (m.sender_display_name != null) senderNameByUserId.set(m.sender, m.sender_display_name);
   }
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
