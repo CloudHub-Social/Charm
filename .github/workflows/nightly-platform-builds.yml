@@ -24,11 +24,17 @@ name: Nightly platform builds
 #
 # macOS/Windows signing is opportunistic: if MACOS_CERT_P12/WINDOWS_CERT_PFX
 # (etc., see each job) are configured as repo secrets, the build is signed
-# with a self-signed cert (removes macOS Gatekeeper's "unidentified
-# developer" block; Windows SmartScreen's warning persists regardless — only
-# a paid EV cert removes that, see README). Without those secrets, both jobs
-# fall back to their previous unsigned behavior, so this is safe to merge
-# before anyone generates a cert.
+# with a self-signed cert. This does NOT remove either OS's first-run
+# warning — macOS Gatekeeper still blocks an unnotarized app as "from an
+# unidentified developer" and Windows SmartScreen's warning is reputation-
+# based, not signature-based — see README's "Installing a nightly build"
+# for the actual bypass steps on both. The signing itself is still useful
+# (an unsigned macOS binary can trip additional integrity checks/prompts
+# beyond Gatekeeper). Without those secrets, both jobs fall back to their
+# previous unsigned behavior, so this is safe to merge before anyone
+# generates a cert. Both signing-import steps are further gated to main
+# only, so a workflow_dispatch run against an arbitrary branch never gets
+# an unlocked signing identity.
 
 on:
   schedule:
@@ -52,10 +58,14 @@ jobs:
       contents: read
       issues: write
     # Job-level (rather than referencing secrets.* directly in a step's
-    # `if:`) because the `secrets` context isn't available in step-level
-    # `if:` conditionals — only `env` is.
+    # `if:`) because actionlint rejects the `secrets` context in a
+    # step-level `if:` (only `env`/`github`/`job`/etc. are allowed there —
+    # see the context-availability table linked from actionlint's error).
+    # Also gates to main: a workflow_dispatch run against an arbitrary
+    # branch should never get an unlocked signing identity/keychain that
+    # branch's own build.rs/JS build scripts could reach.
     env:
-      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -123,7 +133,9 @@ jobs:
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
-          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          # -D (not the GNU-only --decode/-d spelling) is the flag macOS's
+          # own /usr/bin/base64 has supported across releases.
+          echo "$MACOS_CERT_P12" | base64 -D > cert.p12
           security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
           # Prepend rather than replace: the default keychain search list
@@ -131,8 +143,11 @@ jobs:
           # job (e.g. pnpm/node's own keychain reads); we're only adding to
           # it, not swapping it out. Read into an array (not a bare unquoted
           # expansion) so each existing keychain path is passed as its own
-          # arg even if one contains a space.
-          IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | tr -d '"' && printf '\0')
+          # arg even if one contains a space. `security list-keychains`
+          # indents each entry with leading whitespace in addition to
+          # quoting it, so both need stripping — passing an indented path
+          # back in would make `-s` treat it as a nonexistent keychain.
+          IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           rm -f cert.p12
           echo "APPLE_SIGNING_IDENTITY=${MACOS_CERT_NAME}" >> "$GITHUB_ENV"
@@ -169,14 +184,16 @@ jobs:
       # Only published for main — same reasoning as the AWS_* credential
       # gating above: a workflow_dispatch run against an arbitrary branch is
       # a compile check, not a build anyone should install and run.
+      # .dmg only, not the .app bundle inside it: a .app is a directory, and
+      # both actions/upload-artifact's later flattening and `gh release
+      # create`'s asset upload expect plain files. The .dmg already contains
+      # the .app, so uploading both is redundant as well as broken.
       - name: Upload macOS artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nightly-macos
-          path: |
-            target/debug/bundle/dmg/*.dmg
-            target/debug/bundle/macos/*.app
+          path: target/debug/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
 
@@ -206,9 +223,9 @@ jobs:
       contents: read
       issues: write
     # Job-level (rather than referencing secrets.* directly in a step's
-    # `if:`) — see the macOS job's HAS_MACOS_CERT comment.
+    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
     env:
-      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' }}
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -290,7 +307,12 @@ jobs:
           # an empty certificateThumbprint would make the bundler try (and
           # fail) to sign with no cert instead of falling back to unsigned.
           if ($env:WINDOWS_CERT_THUMBPRINT) {
-            $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Compress
+            # -Depth 5: ConvertTo-Json defaults to -Depth 2, which would
+            # silently truncate this 3-level-deep object
+            # (bundle -> windows -> certificateThumbprint) into an empty
+            # `windows: {}`, dropping the thumbprint and building unsigned
+            # with no error.
+            $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Depth 5 -Compress
             $configArgs = @("--config", $config)
           }
           pnpm tauri build --debug @configArgs
@@ -866,24 +888,42 @@ jobs:
             fi
           } > release-notes.md
 
-          # `gh release create` fails if the tag already exists (same day's
-          # release re-running via workflow_dispatch, or a retried schedule
-          # run) — delete-and-recreate keeps today's release a single
-          # rolling target rather than erroring or accumulating duplicates.
-          if gh release view "$date_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            gh release delete "$date_tag" --repo "${{ github.repository }}" --yes --cleanup-tag
-          fi
-
-          shopt -s nullglob
-          assets=(artifacts/*)
+          # Each nightly-* artifact preserves its uploaded directory
+          # structure (e.g. nightly-macos/target/debug/bundle/dmg/*.dmg,
+          # nightly-android/src-tauri/gen/android/.../*.apk) — after
+          # `merge-multiple` they land nested under artifacts/, not flat, so
+          # a shallow `artifacts/*` glob would only pick up top-level
+          # directories (nothing `gh release` can upload) and silently ship
+          # zero or partial assets. `find -type f` walks the nesting.
+          mapfile -d '' assets < <(find artifacts -type f -print0)
           if [ "${#assets[@]}" -eq 0 ]; then
-            echo "No artifacts downloaded — every platform job must have failed. Not creating an empty release." >&2
+            echo "No artifacts downloaded — every platform job must have failed. Not touching the existing release." >&2
             exit 1
           fi
 
-          gh release create "$date_tag" \
-            --repo "${{ github.repository }}" \
-            --title "Nightly build — $(date -u +%Y-%m-%d)" \
-            --notes-file release-notes.md \
-            --prerelease \
-            "${assets[@]}"
+          if gh release view "$date_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # Update in place rather than delete-then-recreate: if asset
+            # upload below fails partway, today's release still exists
+            # (possibly with stale assets) instead of having been deleted
+            # with nothing to replace it.
+            gh release edit "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md
+            gh release upload "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              "${assets[@]}"
+          else
+            # --target pins the tag to the exact commit these artifacts were
+            # built from; without it, a same-day push to main between this
+            # job starting and the tag being created would make the tag (and
+            # its source archive) point at a newer commit than the binaries.
+            gh release create "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              "${assets[@]}"
+          fi
