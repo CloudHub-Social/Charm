@@ -1,4 +1,4 @@
-import type { RoomSummary } from "@/lib/matrix";
+import type { RoomMessageSummary, RoomSummary } from "@/lib/matrix";
 
 /** Builds a fully-populated `RoomSummary` for tests, overriding only what a case cares about. */
 export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSummary {
@@ -20,6 +20,29 @@ export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSumma
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    ...overrides,
+  };
+}
+
+/** Minimal-but-complete `RoomMessageSummary` for tests that don't care about
+ * edit/reaction/reply/send-state/media fields — fills them with inert defaults. */
+export function makeMessageSummary(
+  overrides: Partial<RoomMessageSummary> & Pick<RoomMessageSummary, "event_id" | "sender" | "body">,
+): RoomMessageSummary {
+  return {
+    sender_display_name: null,
+    sender_avatar_url: null,
+    sender_avatar_path: null,
+    formatted_body: null,
+    timestamp_ms: 1,
+    edited: false,
+    redacted: false,
+    reactions: [],
+    in_reply_to: null,
+    transaction_id: null,
+    send_state: { state: "sent" },
+    media: null,
+    is_undecrypted: false,
     ...overrides,
   };
 }

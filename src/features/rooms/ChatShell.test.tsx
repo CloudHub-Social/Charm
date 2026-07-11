@@ -13,6 +13,7 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -930,6 +931,50 @@ describe("ChatShell", () => {
     ).toBeInTheDocument();
   });
 
+  it("excludes the current user from the following-the-conversation bar", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice is following the conversation",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the following-the-conversation bar in a solo room with only the current user", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    await waitFor(() => expect(getRoomMembers).toHaveBeenCalled());
+    expect(
+      screen.queryByRole("button", { name: /following the conversation/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("freezes the unread divider above the message that was first unread, not a live index", async () => {
     const unreadRoom = makeRoomSummary({ unread_messages: 1 });
     getTimelinePage.mockResolvedValueOnce({
@@ -1411,5 +1456,27 @@ describe("ChatShell", () => {
     fireEvent.click(link);
 
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the layout component matching the messageLayout appearance setting", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "hi there",
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    store.set(messageLayoutAtom, "irc");
+    renderChatShell(store);
+
+    // IRC mode's distinguishing structure: `<nick>` prefix, not a bubble.
+    expect(await screen.findByText("<Alice>")).toBeInTheDocument();
   });
 });
