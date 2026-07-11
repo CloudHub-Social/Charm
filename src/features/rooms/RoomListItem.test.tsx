@@ -86,6 +86,10 @@ describe("RoomListItem", () => {
     );
     expect(screen.getByText("general")).toHaveClass("font-bold");
     expect(screen.getByText("Marked unread")).toBeInTheDocument();
+    // `has_unread` is derived true whenever `is_marked_unread` is true (see
+    // `has_unread` in rooms.rs), so without the `!is_marked_unread` guard the
+    // plain unread dot would also render alongside "Marked unread" here.
+    expect(screen.queryByText("Unread")).not.toBeInTheDocument();
   });
 
   it("shows the numeric badge (not the plain dot) when unread_count > 0", () => {

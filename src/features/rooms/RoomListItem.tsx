@@ -88,12 +88,17 @@ export function RoomListItem({
             Precedence: numeric badge (unread_count > 0) > plain unread dot
             (has_unread but nothing counts as a notification) > bold
             room-name text alone. The dot is additive — bold text still
-            applies whenever `unread` is true. */}
+            applies whenever `unread` is true. Suppressed when
+            `is_marked_unread` is true: `has_unread` is already true in that
+            case (see `has_unread` in rooms.rs), and the name-prefix "Marked
+            unread" dot above already covers it — without this guard both
+            dots would render for the same room. */}
         {room.unread_count > 0 ? (
           <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground">
             {room.unread_count}
           </span>
         ) : (
+          !room.is_marked_unread &&
           room.has_unread && (
             <span className="flex shrink-0 items-center">
               <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
