@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
@@ -67,6 +68,10 @@ interface RoomListProps {
 // Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
 // spacing — used to translate a drag's pixel delta into a target index.
 const ROW_HEIGHT_PX = 46;
+
+function unreadBadgeLabel(totalUnread: number, totalHighlight: number): string {
+  return `${totalUnread} unread rooms${totalHighlight > 0 ? `, ${totalHighlight} mentions` : ""}`;
+}
 
 function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex: number) {
   const updates = planManualReorder(sectionRooms, roomId, targetIndex);
@@ -324,221 +329,228 @@ export function RoomList({
         : "Home";
 
   return (
-    <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
-      <div className="flex items-center justify-between gap-2 p-4">
-        {ownProfile ? (
-          <div className="flex min-w-0 items-center gap-2">
-            <Avatar size="sm">
-              <AvatarImage
-                src={resolveAvatar(ownProfile.avatar_path, ownProfile.avatar_url)}
-                alt=""
-              />
-              <AvatarFallback
-                style={{ background: avatarColor(ownProfile.user_id) }}
-                className="font-bold text-white"
-              >
-                {initials(ownProfile.user_id, ownProfile.display_name)}
-              </AvatarFallback>
-              <PresenceDot presence={ownProfile.presence} />
-            </Avatar>
-            <span className="truncate text-base font-bold text-foreground">
-              {ownProfile.display_name ?? ownProfile.user_id}
-            </span>
-          </div>
-        ) : (
-          <span className="text-base font-bold text-foreground">Charm</span>
-        )}
-        <div className="flex shrink-0 items-center gap-2">
-          {badge && badge.total_unread > 0 && (
-            <span
-              className={cn(
-                "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
-                badge.total_highlight > 0
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted text-muted-foreground",
-              )}
-              aria-label={`${badge.total_unread} unread rooms${
-                badge.total_highlight > 0 ? `, ${badge.total_highlight} mentions` : ""
-              }`}
-            >
-              {badge.total_highlight > 0 ? badge.total_highlight : badge.total_unread}
-            </span>
+    <TooltipProvider>
+      <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
+        <div className="flex items-center justify-between gap-2 p-4">
+          {ownProfile ? (
+            <div className="flex min-w-0 items-center gap-2">
+              <Avatar size="sm">
+                <AvatarImage
+                  src={resolveAvatar(ownProfile.avatar_path, ownProfile.avatar_url)}
+                  alt=""
+                />
+                <AvatarFallback
+                  style={{ background: avatarColor(ownProfile.user_id) }}
+                  className="font-bold text-white"
+                >
+                  {initials(ownProfile.user_id, ownProfile.display_name)}
+                </AvatarFallback>
+                <PresenceDot presence={ownProfile.presence} />
+              </Avatar>
+              <span className="truncate text-base font-bold text-foreground">
+                {ownProfile.display_name ?? ownProfile.user_id}
+              </span>
+            </div>
+          ) : (
+            <span className="text-base font-bold text-foreground">Charm</span>
           )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Open settings"
-            onClick={() => openSettings("account")}
-          >
-            <SettingsIcon />
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {badge && badge.total_unread > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className={cn(
+                      "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
+                      badge.total_highlight > 0
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                    aria-label={unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
+                  >
+                    {badge.total_highlight > 0 ? badge.total_highlight : badge.total_unread}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  {unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Open settings"
+              onClick={() => openSettings("account")}
+            >
+              <SettingsIcon />
+            </Button>
+          </div>
         </div>
-      </div>
-      <div className="border-b border-border px-4 pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
-          {mode === "home" && (
-            <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+        <div className="border-b border-border px-4 pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="truncate text-sm font-semibold text-foreground">{title}</h2>
+            {mode === "home" && (
+              <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-3.5 accent-primary"
+                  checked={showAllRooms}
+                  onChange={(event) => onShowAllRoomsChange(event.target.checked)}
+                />
+                Show all rooms
+              </label>
+            )}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <div className="relative min-w-0 flex-1">
+              <SearchIcon
+                className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
+                aria-hidden="true"
+              />
+              <Input
+                type="search"
+                placeholder="Search rooms"
+                aria-label="Search rooms"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                className="h-8 pl-8 text-sm"
+              />
+            </div>
+          </div>
+          {isSearching && (
+            <label className="mt-2 flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
               <input
                 type="checkbox"
                 className="size-3.5 accent-primary"
-                checked={showAllRooms}
-                onChange={(event) => onShowAllRoomsChange(event.target.checked)}
+                checked={searchEverywhere}
+                onChange={(event) => setSearchEverywhere(event.target.checked)}
               />
-              Show all rooms
+              Search everywhere
             </label>
           )}
         </div>
-        <div className="mt-2 flex items-center gap-2">
-          <div className="relative min-w-0 flex-1">
-            <SearchIcon
-              className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <Input
-              type="search"
-              placeholder="Search rooms"
-              aria-label="Search rooms"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              className="h-8 pl-8 text-sm"
-            />
-          </div>
-        </div>
-        {isSearching && (
-          <label className="mt-2 flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-            <input
-              type="checkbox"
-              className="size-3.5 accent-primary"
-              checked={searchEverywhere}
-              onChange={(event) => setSearchEverywhere(event.target.checked)}
-            />
-            Search everywhere
-          </label>
-        )}
-      </div>
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {mode === "space" && !selectedSpace ? (
-          // Space mode with nothing selected has nothing to search *in* —
-          // this guard wins over an active query rather than showing search
-          // results (or "No matching rooms") for an undefined scope.
-          <p className="px-3 py-2 text-sm text-muted-foreground">
-            {intendedSpaceId ? "Loading space…" : "Select a space."}
-          </p>
-        ) : mode === "space" && spaceLoading && !(isSearching && searchEverywhere) ? (
-          // Same reasoning: a search over an as-yet-empty `scopedRooms` while
-          // the space is still loading would otherwise misreport "No
-          // matching rooms" for a query that hasn't actually been evaluated
-          // against the space's real contents yet. Exempted when "Search
-          // everywhere" is on: that pool is `rooms`, not the space's
-          // hierarchy, so it doesn't depend on this load finishing.
-          <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
-        ) : mode === "space" && spaceError && !(isSearching && searchEverywhere) ? (
-          // A failed hierarchy fetch should stay visible instead of a scoped
-          // search silently reporting "No matching rooms" against contents
-          // that were never actually loaded. Global search is unaffected —
-          // it doesn't read the hierarchy either. Deliberately checks
-          // `spaceError` (the hierarchy fetch) only, not `joinError` — a
-          // failed join/knock doesn't mean the hierarchy that already loaded
-          // can't be searched, so it must not hide scoped search results.
-          <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
-        ) : isSearching ? (
-          searchResults.length === 0 && unjoinedHierarchyMatches.length === 0 ? (
-            <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
-          ) : (
-            <div className="flex flex-col gap-0.5">
-              {renderSearchResults(searchResults)}
-              {unjoinedHierarchyMatches.map((child) => (
-                <HierarchyRow
-                  key={child.room_id}
-                  child={child}
-                  joinedRoom={undefined}
-                  depth={0}
-                  active={false}
-                  pending={pendingRoomId === child.room_id}
-                  onSelectRoom={onSelectRoom}
-                  onSelectSpace={onSelectSpace}
-                  onJoin={handleJoin}
-                />
-              ))}
-            </div>
-          )
-        ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
-          <p className="px-3 py-2 text-sm text-muted-foreground">
-            {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {(spaceError || joinError) && (
-              <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
-            )}
-            <RoomListSection
-              title="Favourites"
-              count={sections.favourites.length}
-              expanded={isExpanded("favourites")}
-              onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, favourites: v }))}
-            >
-              {renderSectionRooms(sections.favourites, fullFavouriteSectionRooms)}
-            </RoomListSection>
-
-            {mode === "space" && selectedSpace ? (
-              <RoomListSection
-                title="Space rooms"
-                count={visibleHierarchyCount}
-                expanded={isExpanded("spaceRooms")}
-                onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
-              >
-                {renderHierarchy(spaceHierarchy, {
-                  roomById,
-                  activeRoomId,
-                  onSelectRoom,
-                  onSelectSpace,
-                  onJoin: handleJoin,
-                  pendingRoomId,
-                })}
-              </RoomListSection>
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
+          {mode === "space" && !selectedSpace ? (
+            // Space mode with nothing selected has nothing to search *in* —
+            // this guard wins over an active query rather than showing search
+            // results (or "No matching rooms") for an undefined scope.
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              {intendedSpaceId ? "Loading space…" : "Select a space."}
+            </p>
+          ) : mode === "space" && spaceLoading && !(isSearching && searchEverywhere) ? (
+            // Same reasoning: a search over an as-yet-empty `scopedRooms` while
+            // the space is still loading would otherwise misreport "No
+            // matching rooms" for a query that hasn't actually been evaluated
+            // against the space's real contents yet. Exempted when "Search
+            // everywhere" is on: that pool is `rooms`, not the space's
+            // hierarchy, so it doesn't depend on this load finishing.
+            <p className="px-3 py-2 text-sm text-muted-foreground">Loading space…</p>
+          ) : mode === "space" && spaceError && !(isSearching && searchEverywhere) ? (
+            // A failed hierarchy fetch should stay visible instead of a scoped
+            // search silently reporting "No matching rooms" against contents
+            // that were never actually loaded. Global search is unaffected —
+            // it doesn't read the hierarchy either. Deliberately checks
+            // `spaceError` (the hierarchy fetch) only, not `joinError` — a
+            // failed join/knock doesn't mean the hierarchy that already loaded
+            // can't be searched, so it must not hide scoped search results.
+            <p className="px-3 py-2 text-sm text-destructive">{spaceError}</p>
+          ) : isSearching ? (
+            searchResults.length === 0 && unjoinedHierarchyMatches.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-muted-foreground">No matching rooms</p>
             ) : (
-              sections.spaceGroups.map(({ space, rooms: spaceRooms }) => {
-                const fullSpaceRooms =
-                  fullSections.spaceGroups.find((group) => group.space.room_id === space.room_id)
-                    ?.rooms ?? spaceRooms;
-                return (
-                  <RoomListSection
-                    key={space.room_id}
-                    title={displayName(space.room_id, space.name)}
-                    count={spaceRooms.length}
-                    expanded={isExpanded(space.room_id)}
-                    onExpandedChange={(v) =>
-                      setExpanded((prev) => ({ ...prev, [space.room_id]: v }))
-                    }
-                  >
-                    {renderSectionRooms(spaceRooms, fullSpaceRooms)}
-                  </RoomListSection>
-                );
-              })
-            )}
+              <div className="flex flex-col gap-0.5">
+                {renderSearchResults(searchResults)}
+                {unjoinedHierarchyMatches.map((child) => (
+                  <HierarchyRow
+                    key={child.room_id}
+                    child={child}
+                    joinedRoom={undefined}
+                    depth={0}
+                    active={false}
+                    pending={pendingRoomId === child.room_id}
+                    onSelectRoom={onSelectRoom}
+                    onSelectSpace={onSelectSpace}
+                    onJoin={handleJoin}
+                  />
+                ))}
+              </div>
+            )
+          ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground">
+              {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {(spaceError || joinError) && (
+                <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
+              )}
+              <RoomListSection
+                title="Favourites"
+                count={sections.favourites.length}
+                expanded={isExpanded("favourites")}
+                onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, favourites: v }))}
+              >
+                {renderSectionRooms(sections.favourites, fullFavouriteSectionRooms)}
+              </RoomListSection>
 
-            <RoomListSection
-              title={mode === "home" && showAllRooms ? "All rooms" : "Rooms"}
-              count={roomSectionRooms.length}
-              expanded={isExpanded("rooms")}
-              onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, rooms: v }))}
-            >
-              {renderSectionRooms(roomSectionRooms, fullRoomSectionRooms)}
-            </RoomListSection>
+              {mode === "space" && selectedSpace ? (
+                <RoomListSection
+                  title="Space rooms"
+                  count={visibleHierarchyCount}
+                  expanded={isExpanded("spaceRooms")}
+                  onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
+                >
+                  {renderHierarchy(spaceHierarchy, {
+                    roomById,
+                    activeRoomId,
+                    onSelectRoom,
+                    onSelectSpace,
+                    onJoin: handleJoin,
+                    pendingRoomId,
+                  })}
+                </RoomListSection>
+              ) : (
+                sections.spaceGroups.map(({ space, rooms: spaceRooms }) => {
+                  const fullSpaceRooms =
+                    fullSections.spaceGroups.find((group) => group.space.room_id === space.room_id)
+                      ?.rooms ?? spaceRooms;
+                  return (
+                    <RoomListSection
+                      key={space.room_id}
+                      title={displayName(space.room_id, space.name)}
+                      count={spaceRooms.length}
+                      expanded={isExpanded(space.room_id)}
+                      onExpandedChange={(v) =>
+                        setExpanded((prev) => ({ ...prev, [space.room_id]: v }))
+                      }
+                    >
+                      {renderSectionRooms(spaceRooms, fullSpaceRooms)}
+                    </RoomListSection>
+                  );
+                })
+              )}
 
-            <RoomListSection
-              title="Low priority"
-              count={sections.lowPriority.length}
-              expanded={isExpanded("lowPriority")}
-              onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, lowPriority: v }))}
-            >
-              {renderSectionRooms(sections.lowPriority, fullLowPrioritySectionRooms)}
-            </RoomListSection>
-          </div>
-        )}
-      </div>
-    </aside>
+              <RoomListSection
+                title={mode === "home" && showAllRooms ? "All rooms" : "Rooms"}
+                count={roomSectionRooms.length}
+                expanded={isExpanded("rooms")}
+                onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, rooms: v }))}
+              >
+                {renderSectionRooms(roomSectionRooms, fullRoomSectionRooms)}
+              </RoomListSection>
+
+              <RoomListSection
+                title="Low priority"
+                count={sections.lowPriority.length}
+                expanded={isExpanded("lowPriority")}
+                onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, lowPriority: v }))}
+              >
+                {renderSectionRooms(sections.lowPriority, fullLowPrioritySectionRooms)}
+              </RoomListSection>
+            </div>
+          )}
+        </div>
+      </aside>
+    </TooltipProvider>
   );
 }
 

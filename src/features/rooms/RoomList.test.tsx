@@ -7,6 +7,16 @@ import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
 
+// Radix's Tooltip.Content measures itself via ResizeObserver, which jsdom
+// doesn't implement — stub it so the tooltip-hover test below can render the
+// portal content without crashing.
+class StubResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", StubResizeObserver);
+
 // RoomList's header now fetches the signed-in user's own profile via
 // `useOwnProfile` (TanStack Query), which needs a `QueryClientProvider`
 // ancestor — a fresh, retry-disabled client per render, same as
@@ -215,6 +225,17 @@ describe("RoomList", () => {
     store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
     renderRoomList(<RoomList {...roomListProps()} />, store);
     expect(screen.getByLabelText("5 unread rooms, 2 mentions")).toHaveTextContent("2");
+  });
+
+  it("shows a tooltip with the same text as the badge's aria-label on hover", async () => {
+    const store = createStore();
+    store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
+    renderRoomList(<RoomList {...roomListProps()} />, store);
+
+    fireEvent.focus(screen.getByLabelText("5 unread rooms, 2 mentions"));
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent("5 unread rooms, 2 mentions");
   });
 
   it("renders recursive space hierarchy with indentation and inline join actions", async () => {
