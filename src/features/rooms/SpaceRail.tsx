@@ -199,7 +199,7 @@ export function SpaceRail({
             </div>
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
-          <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2">
+          <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1">
             {topLevelSpaces.map((space) => renderSpaceEntry(space))}
           </div>
         </nav>
