@@ -15,8 +15,9 @@ function BuildIdControl({ buildId }: { buildId: string }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
+    if (!navigator.clipboard?.writeText) return;
     try {
-      await navigator.clipboard?.writeText(buildId);
+      await navigator.clipboard.writeText(buildId);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {

@@ -56,4 +56,18 @@ describe("AboutPanel", () => {
       screen.getByRole("button", { name: `Copy build identifier ${packageJson.version}` }),
     ).toBeInTheDocument();
   });
+
+  it("does not show Copied when the Clipboard API is unavailable", async () => {
+    Object.assign(navigator, { clipboard: undefined });
+    vi.stubEnv("VITE_BUILD_ID", "0.4.2+a1b2c3d");
+    render(<AboutPanel />);
+
+    const buildButton = screen.getByRole("button", {
+      name: "Copy build identifier 0.4.2+a1b2c3d",
+    });
+    fireEvent.click(buildButton);
+
+    expect(writeText).not.toHaveBeenCalled();
+    expect(screen.queryByText("Copied")).not.toBeInTheDocument();
+  });
 });

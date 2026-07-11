@@ -71,7 +71,7 @@ function readPackageVersion() {
 }
 
 function isMainModule() {
-  return import.meta.url === `file://${process.argv[1]}`;
+  return process.argv[1] != null && fileURLToPath(import.meta.url) === process.argv[1];
 }
 
 // CLI entry point — reads inputs from the environment so every workflow can
