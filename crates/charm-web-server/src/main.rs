@@ -51,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 token: token.clone(),
                 homeserver_url,
                 initial_access_token: Some(initial_access_token),
+                crypto: session.crypto.clone(),
             });
             let handle = sync_loop::spawn(
                 session.client.clone(),
@@ -161,8 +162,12 @@ fn spawn_idle_session_sweeper(
                     continue;
                 };
                 let homeserver_url = session.client.homeserver().to_string();
+                let crypto = session
+                    .crypto
+                    .as_ref()
+                    .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
                 if let Err(e) = persistence
-                    .save(&token, &homeserver_url, &matrix_session)
+                    .save(&token, &homeserver_url, &matrix_session, crypto)
                     .await
                 {
                     // Evicted anyway — an earlier version of this tried to
