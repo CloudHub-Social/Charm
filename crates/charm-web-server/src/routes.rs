@@ -515,22 +515,31 @@ async fn logout(
             // nothing below this rebuilds a `Client` to revoke it — only
             // deletes the local persisted copy. Restore just far enough to
             // call `logout()` on the homeserver before that persisted copy
-            // is gone. The restore itself is awaited (not spawned) and
-            // *before* the unconditional `remove` below — `restore_by_token`
-            // reads the same persisted object `remove` is about to delete,
-            // so this has to run first, not race it — and it's already
-            // bounded by `RESTORE_TIMEOUT`, so a slow/unreachable homeserver
-            // can't hang on *that* part. The actual `logout()` call is
-            // spawned rather than awaited, same as the live-session branch
-            // above and for the same reason: it's a second, independent
-            // network call with no timeout of its own, so awaiting it
-            // inline here would let a slow/unreachable homeserver hang this
-            // response even after the bounded restore already succeeded.
-            // No presence to carry forward here — this session is being
-            // logged out, not restored for continued use.
-            if let Some((_, session, _, _)) = persistence.restore_by_token(&token, None).await {
+            // is gone. `restore_client_for_revocation`, not the full
+            // `restore_by_token` — revoking a token needs no crypto identity
+            // at all, and `restore_by_token` now deliberately fails closed
+            // when a session's crypto store is missing/unopenable (to stop a
+            // *live* session from silently continuing under a fresh, empty
+            // crypto identity — see `build_client_for_restore`'s doc
+            // comment), which would otherwise skip this homeserver
+            // revocation entirely for exactly that session and leave its
+            // token valid forever even though the browser's logout
+            // succeeded. The restore itself is awaited (not spawned) and
+            // *before* the unconditional `remove` below — it reads the same
+            // persisted object `remove` is about to delete, so this has to
+            // run first, not race it — and it's already bounded by
+            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
+            // on *that* part. The actual `logout()` call is spawned rather
+            // than awaited, same as the live-session branch above and for
+            // the same reason: it's a second, independent network call with
+            // no timeout of its own, so awaiting it inline here would let a
+            // slow/unreachable homeserver hang this response even after the
+            // bounded restore already succeeded. No presence to carry
+            // forward here — this session is being logged out, not restored
+            // for continued use.
+            if let Some(client) = persistence.restore_client_for_revocation(&token).await {
                 tokio::spawn(async move {
-                    let _ = session.client.matrix_auth().logout().await;
+                    let _ = client.matrix_auth().logout().await;
                 });
             }
             // This token's cached presence (if any — see

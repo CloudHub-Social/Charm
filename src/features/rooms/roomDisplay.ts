@@ -18,6 +18,23 @@ const AVATAR_COLORS = [
   "var(--muted-solid)",
 ];
 
+// Deliberately the canvas-tuned TEXT tokens (--color-accent/-warning/
+// -success/-danger — see the `-solid` comment above), not AVATAR_COLORS'
+// `-solid` fill variants: those are calibrated for white-on-solid-fill
+// avatar backgrounds and read as low as 4.18:1 as plain text on the dark
+// canvas, under the 4.5:1 WCAG AA floor axe enforces in CI (Charm 2.0 Spec
+// 27's IRC-mode nick color found this the hard way — `storybook-a11y`
+// caught it). `--color-text-muted` stands in for `-muted-solid`'s slot for
+// the same reason as `-muted-solid` itself: a 5th value distinct from the
+// four semantic accents.
+const NICK_TEXT_COLORS = [
+  "var(--color-accent)",
+  "var(--color-warning)",
+  "var(--color-success)",
+  "var(--color-danger)",
+  "var(--color-text-muted)",
+];
+
 function hash(input: string): number {
   let h = 0;
   for (let i = 0; i < input.length; i++) {
@@ -38,6 +55,14 @@ export function initials(roomId: string, name: string | null): string {
 
 export function avatarColor(roomId: string): string {
   return AVATAR_COLORS[hash(roomId) % AVATAR_COLORS.length];
+}
+
+/** Per-sender text color for contexts that render directly on the canvas
+ * (IRC-mode nicks, Charm 2.0 Spec 27) — unlike `avatarColor`, whose
+ * `-solid` palette is only contrast-safe under fixed white avatar-fallback
+ * text. See `NICK_TEXT_COLORS`'s comment. */
+export function nickColor(userId: string): string {
+  return NICK_TEXT_COLORS[hash(userId) % NICK_TEXT_COLORS.length];
 }
 
 function webApiUrl(path: string): string {

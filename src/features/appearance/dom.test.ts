@@ -88,6 +88,7 @@ describe("applyAppearanceToDom", () => {
       fontSize: "lg",
       density: "compact",
       reducedMotion: "on",
+      messageLayout: "bubble",
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");
