@@ -8,10 +8,16 @@ Avatar, Button, Dialog, DropdownMenu, Input, Label, Popover, **Switch**, Tabs, T
 - **Switch** (added #81) wired into scope this run: `ds-entry.ts` export + `gen-types.mjs`
   `modules` array. 4 stories (Off/On/Disabled/Disabled On), single grid cell, no `cardMode`.
   Renders `match` on all 4 (off = gray track + ×-thumb, on = purple knob-right, disabled dimmed).
-- **This branch also carries the PR #192 tsconfig fix** (`tsconfig.ds-types.json` `include`
-  gains `../src/vite-env.d.ts` + `../src/test/setup.ts`). #192 was still OPEN at sync time;
-  without it `gen-types.mjs`'s `tsc` exits non-zero and `execFileSync` throws. Identical
-  one-line change, so it merges conflict-free whichever of #192 / this PR lands first.
+- **`gen-types.mjs` tsc crash fix (supersedes the open PR #192 approach).** The declaration
+  build failed because `../src/components/ui` pulls in `*.test.tsx`/`*.stories.tsx`, whose
+  ambient types (vitest globals, `@testing-library/jest-dom/vitest`) weren't in scope. PR #192
+  fixed it by *adding* `../src/test/setup.ts` to `include` — but that coupled the type-gen to a
+  test-only devDependency (flagged by Copilot + Sentry review bots on #199). This branch instead
+  **excludes** `**/*.test.{ts,tsx}` + `**/*.stories.{ts,tsx}` from the tsconfig (keeping
+  `../src/vite-env.d.ts` for `import.meta` types). Cleaner: the declaration build covers only the
+  component/lib modules the converter needs, needs no test ambient types, and emits zero stray
+  story/test `.d.ts`. Verified: `gen-types` exits 0, emits all 10 component decls + barrel. If #192
+  lands first, drop its `test/setup.ts` include in favour of this exclude.
 - **Canary re-samples per driver run.** Adding Switch churned the Tailwind-JIT bundle CSS →
   every render hash moved → all 9 existing components arrived as `verification.canary`
   (`render_churn`), sources stable. The canary spot-check picks a *different* ~5-component

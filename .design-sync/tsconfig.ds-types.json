@@ -8,6 +8,12 @@
     "rootDir": "../src",
     "allowImportingTsExtensions": false
   },
-  "include": ["../src/components/ui", "../src/lib", "../src/vite-env.d.ts", "../src/test/setup.ts"],
+  "include": ["../src/components/ui", "../src/lib", "../src/vite-env.d.ts"],
+  "exclude": [
+    "../src/**/*.test.ts",
+    "../src/**/*.test.tsx",
+    "../src/**/*.stories.ts",
+    "../src/**/*.stories.tsx"
+  ],
   "references": []
 }
