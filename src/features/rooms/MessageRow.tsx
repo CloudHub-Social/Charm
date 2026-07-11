@@ -92,6 +92,8 @@ interface MessageRowProps {
   canRedact: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
+  /** Whether this message just arrived (not part of the initial/paginated load) — plays a slide-up+fade entrance. */
+  isNew: boolean;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */
   getActionsHandle: (key: string) => MessageActionsHandle | undefined;
   /** Registers/unregisters this row's `MessageActions` handle as it mounts/unmounts. */
@@ -112,6 +114,7 @@ export function MessageRow({
   sameSenderAsNext,
   canRedact,
   readers,
+  isNew,
   getActionsHandle,
   registerActionsRef,
   onReply,
@@ -148,6 +151,7 @@ export function MessageRow({
         "group flex max-w-120 gap-2",
         sameSenderAsPrev ? "mt-0.5" : "mt-3",
         own && "ml-auto flex-row-reverse",
+        isNew && "animate-in fade-in slide-in-from-bottom-2 duration-300 ease-out",
       )}
       onTouchStart={() => getActionsHandle(rowKey)?.startLongPress()}
       onTouchEnd={() => getActionsHandle(rowKey)?.cancelLongPress()}

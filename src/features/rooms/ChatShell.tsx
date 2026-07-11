@@ -134,6 +134,20 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
   const { messages, loading, bottomSentinelRef } = useChatTimeline(room, roomSettingsOpen);
+  // Tracks which message rows have already been rendered once, keyed by the
+  // same stable local-echo/ack identity as `messageRowKey`, so only genuinely
+  // new arrivals get the slide-up+fade entrance — not every row on initial
+  // load/pagination, and not a pending message replaying it when its
+  // transaction id reconciles to a real event id.
+  const seenRowKeysRef = useRef<Set<string>>(new Set());
+  const seenRoomIdRef = useRef<string | null>(null);
+  if (seenRoomIdRef.current !== activeRoomId) {
+    seenRoomIdRef.current = activeRoomId;
+    seenRowKeysRef.current = new Set(messages.map(messageRowKey));
+  }
+  useEffect(() => {
+    messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
+  });
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
@@ -280,6 +294,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               sameSenderAsNext={next?.sender === message.sender}
               canRedact={allowedToRedact}
               readers={readers}
+              isNew={!seenRowKeysRef.current.has(messageRowKey(message))}
               getActionsHandle={(key) => actionsRefs.current.get(key)}
               registerActionsRef={(key, el) => {
                 if (el) actionsRefs.current.set(key, el);
