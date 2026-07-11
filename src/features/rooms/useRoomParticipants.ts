@@ -10,18 +10,21 @@ interface ParticipantsState {
 const EMPTY_STATE: ParticipantsState = { roomId: null, participants: [] };
 
 /**
- * Joined members of a room, for the "following the conversation" bar.
- * Sourced from the same active-only `get_room_members` the mention
- * autocomplete uses (see its doc comment — joined + invited, not the
- * Members-tab's full `get_room_member_list`), further filtered to
- * `membership === "join"` here: an invited-but-not-yet-joined user hasn't
- * seen the conversation and shouldn't be counted as following it.
+ * Joined members of a room, other than the viewer, for the "following the
+ * conversation" bar. Sourced from the same active-only `get_room_members`
+ * the mention autocomplete uses (see its doc comment — joined + invited, not
+ * the Members-tab's full `get_room_member_list`), filtered to
+ * `membership === "join"` (an invited-but-not-yet-joined user hasn't seen
+ * the conversation and shouldn't be counted as following it) and to exclude
+ * `ownUserId` (a viewer never "follows" their own presence in a room — in a
+ * solo/near-empty room this also avoids the bar rendering only the viewer's
+ * own name).
  *
  * Refetches on `room_details:update` (the same signal `useRoomDetails`
  * invalidates the Members-tab query on) so a join/leave/kick while the room
  * stays open updates the bar without waiting for a room switch or reload.
  */
-export function useRoomParticipants(roomId: string | null): RoomMemberSummary[] {
+export function useRoomParticipants(roomId: string | null, ownUserId: string): RoomMemberSummary[] {
   const [state, setState] = useState<ParticipantsState>(EMPTY_STATE);
 
   // Resets synchronously during render (not in an effect) when the room
@@ -42,7 +45,9 @@ export function useRoomParticipants(roomId: string | null): RoomMemberSummary[] 
           if (cancelled) return;
           setState({
             roomId,
-            participants: members.filter((member) => member.membership === "join"),
+            participants: members.filter(
+              (member) => member.membership === "join" && member.user_id !== ownUserId,
+            ),
           });
         })
         .catch(logAndIgnore);
@@ -57,7 +62,7 @@ export function useRoomParticipants(roomId: string | null): RoomMemberSummary[] 
       cancelled = true;
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
-  }, [roomId]);
+  }, [roomId, ownUserId]);
 
   return state.roomId === roomId ? state.participants : [];
 }

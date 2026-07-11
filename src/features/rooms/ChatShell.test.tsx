@@ -903,6 +903,50 @@ describe("ChatShell", () => {
     ).toBeInTheDocument();
   });
 
+  it("excludes the current user from the following-the-conversation bar", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice is following the conversation",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the following-the-conversation bar in a solo room with only the current user", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    await waitFor(() => expect(getRoomMembers).toHaveBeenCalled());
+    expect(
+      screen.queryByRole("button", { name: /following the conversation/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
     // canRedact is only ever queried for *other* senders' messages — an own
     // message must be immediately deletable, not flash hidden until this
