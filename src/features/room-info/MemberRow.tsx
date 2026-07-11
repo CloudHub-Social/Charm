@@ -158,7 +158,9 @@ function GatedItem({ allowed, variant, onSelect, children }: GatedItemProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="block">{item}</span>
+        <span className="block" tabIndex={0}>
+          {item}
+        </span>
       </TooltipTrigger>
       <TooltipContent side="left">You need a higher power level to do this</TooltipContent>
     </Tooltip>

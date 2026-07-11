@@ -359,6 +359,7 @@ export function RoomList({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
+                    tabIndex={0}
                     className={cn(
                       "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
                       badge.total_highlight > 0

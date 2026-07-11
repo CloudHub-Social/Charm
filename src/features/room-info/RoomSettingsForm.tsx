@@ -57,7 +57,9 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex">{children}</span>
+        <span className="inline-flex" tabIndex={0}>
+          {children}
+        </span>
       </TooltipTrigger>
       <TooltipContent>{reason ?? "You need a higher power level to do this"}</TooltipContent>
     </Tooltip>
