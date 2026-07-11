@@ -73,5 +73,13 @@ if [ "${WRITE_RUST_DEBUG_ENV:-false}" = "true" ]; then
     # runtime env var alone isn't enough (an installed app's launch
     # environment won't have this set).
     printf 'BUILD_ID=%s\n' "$release"
+    # Native release/debug-file jobs (e.g. apple-debug-files) run Tauri's
+    # own frontend build via beforeBuildCommand, bundling the JS AboutPanel
+    # straight into the native app — that build needs VITE_BUILD_ID too, not
+    # just the Rust-side BUILD_ID above, or it falls back to the bare
+    # package version even though this job doesn't set
+    # WRITE_FRONTEND_UPLOAD_ENV (that flag is for the separate web/desktop
+    # sourcemap-upload job, which is a different frontend build entirely).
+    printf 'VITE_BUILD_ID=%s\n' "$release"
   } >> "$GITHUB_ENV"
 fi

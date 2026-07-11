@@ -146,6 +146,24 @@ describeWithBash("configure-sentry-release-env.sh", () => {
     expect(result.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+pr187.a1b2c3d");
   });
 
+  it("writes both BUILD_ID and VITE_BUILD_ID when WRITE_RUST_DEBUG_ENV is set", () => {
+    // Native release/debug-file jobs (e.g. apple-debug-files) don't set
+    // WRITE_FRONTEND_UPLOAD_ENV — that's the separate web/desktop sourcemap-
+    // upload job's flag — but they still run Tauri's own frontend build via
+    // beforeBuildCommand, bundling the JS AboutPanel straight into the
+    // native app. That build needs VITE_BUILD_ID too, or it silently falls
+    // back to the bare package version even with BUILD_ID correctly baked
+    // into the Rust binary.
+    const result = configureSentryReleaseEnv({
+      GITHUB_SHA: "abc1234567",
+      WRITE_RUST_DEBUG_ENV: "true",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.githubEnvContents).toContain("BUILD_ID=0.1.0+abc1234");
+    expect(result.githubEnvContents).toContain("VITE_BUILD_ID=0.1.0+abc1234");
+  });
+
   it("fails before upload when required Sentry secrets are missing", () => {
     const result = configureSentryReleaseEnv({
       SENTRY_AUTH_TOKEN: "",
