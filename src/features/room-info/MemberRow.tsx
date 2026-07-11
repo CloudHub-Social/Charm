@@ -153,20 +153,20 @@ function GatedItem({ allowed, variant, onSelect, children }: GatedItemProps) {
   // `DropdownMenuItem`'s disabled state sets `pointer-events: none` on the
   // item itself, so a `TooltipTrigger asChild` wrapping it directly never
   // sees the hover — wrap it in a plain (non-disabled), keyboard-focusable
-  // button instead so the tooltip actually triggers on hover/focus, same
-  // pattern as `RoomSettingsForm`'s `PermissionGate`. The inner item is
-  // disabled (pointer-events: none), so only this outer button is ever
-  // reachable/interactive; the repo's a11y lint requires a real `<button>`
-  // over a `role="button"` span.
+  // span instead, same pattern as `RoomSettingsForm`'s `PermissionGate`. A
+  // real `<button>` wrapper was tried first but rejected: `item` carries its
+  // own interactive `role="menuitem"`, and nesting one interactive element
+  // inside another is an HTML semantic violation regardless of the inner
+  // one being disabled. The span+tabIndex pattern is the documented Radix
+  // approach for a tooltip on a disabled control; the repo's a11y lint
+  // doesn't special-case it, hence the scoped disable below.
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="block w-full cursor-default border-0 bg-transparent p-0 text-left"
-        >
+        {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+        <span className="block" tabIndex={0}>
           {item}
-        </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent side="left">You need a higher power level to do this</TooltipContent>
     </Tooltip>
