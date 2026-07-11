@@ -17,7 +17,8 @@ export function getBuildId(): string {
   return import.meta.env.VITE_BUILD_ID || packageJson.version;
 }
 
-const BUILD_ID_PATTERN = /^(?<version>.+)\+(?:pr(?<pr>\d+)\.|(?<nightly>nightly)\.)?(?<sha>[0-9a-f]{7})$/;
+const BUILD_ID_PATTERN =
+  /^(?<version>.+)\+(?:pr(?<pr>\d+)\.|(?<nightly>nightly)\.)?(?<sha>[0-9a-f]{7})$/;
 
 /**
  * Human-friendly rendering of {@link getBuildId}'s canonical id, e.g.
