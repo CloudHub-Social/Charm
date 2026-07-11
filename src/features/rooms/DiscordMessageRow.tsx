@@ -79,11 +79,11 @@ export function DiscordMessageRow({
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         {showHeader && (
-          <span className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-secondary-foreground">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="min-w-0 truncate text-sm font-semibold text-secondary-foreground">
               {message.sender_display_name ?? message.sender}
             </span>
-            <span className="font-mono text-[11px] text-muted-foreground">
+            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
               {formatTime(message.timestamp_ms)}
               {message.edited && " (edited)"}
               {isPending && " · sending…"}
@@ -101,7 +101,7 @@ export function DiscordMessageRow({
             }}
           />
         )}
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1">
           {message.redacted ? (
             <div className="text-[15px] italic text-muted-foreground">Message deleted</div>
           ) : message.media ? (
@@ -115,7 +115,7 @@ export function DiscordMessageRow({
             // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the div itself isn't interactive
             <div
               className={cn(
-                "text-[15px] text-foreground [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
+                "min-w-0 break-words text-[15px] text-foreground [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
                 isError && "rounded-md border border-destructive px-1",
               )}
               // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
@@ -127,7 +127,7 @@ export function DiscordMessageRow({
           ) : (
             <div
               className={cn(
-                "text-[15px] text-foreground",
+                "min-w-0 break-words text-[15px] text-foreground",
                 isError && "rounded-md border border-destructive px-1",
               )}
             >

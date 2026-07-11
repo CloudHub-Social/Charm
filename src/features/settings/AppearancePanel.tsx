@@ -96,7 +96,7 @@ function MessageLayoutControl({
   onChange: (next: MessageLayout) => void;
 }) {
   return (
-    <fieldset className="flex gap-2 border-0 p-0">
+    <fieldset className="flex flex-wrap gap-2 border-0 p-0">
       <legend className="sr-only">Message layout mode</legend>
       {MESSAGE_LAYOUT_ORDER.map((mode) => (
         <button
@@ -201,11 +201,15 @@ export function AppearancePanel() {
             />
           }
         />
-        <SettingTile
-          title="Message layout"
-          description="Bubble, Discord-style, or IRC-style density."
-          control={<MessageLayoutControl value={messageLayout} onChange={setMessageLayout} />}
-        />
+        <SettingTile>
+          <div className="text-sm font-medium text-foreground">Message layout</div>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Bubble, Discord-style, or IRC-style density.
+          </p>
+          <div className="mt-3">
+            <MessageLayoutControl value={messageLayout} onChange={setMessageLayout} />
+          </div>
+        </SettingTile>
       </SettingsCard>
     </div>
   );

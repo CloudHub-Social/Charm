@@ -141,4 +141,29 @@ describe("DiscordMessageRow", () => {
     );
     expect(screen.getByText(/failed to send/)).toBeInTheDocument();
   });
+
+  it("lets a long sender name truncate instead of pushing the timestamp off-row", () => {
+    render(
+      <DiscordMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            sender_display_name: "A Very Long Display Name That Should Not Overflow The Header",
+            body: "hi",
+          }),
+        })}
+      />,
+    );
+    const name = screen.getByText(/A Very Long Display Name/);
+    expect(name).toHaveClass("truncate");
+    expect(name).toHaveClass("min-w-0");
+  });
+
+  it("wraps a long plain-text body instead of letting it overflow the row", () => {
+    render(<DiscordMessageRow {...baseProps()} />);
+    const body = screen.getByText("hello");
+    expect(body).toHaveClass("break-words");
+    expect(body).toHaveClass("min-w-0");
+  });
 });

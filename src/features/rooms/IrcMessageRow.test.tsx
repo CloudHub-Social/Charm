@@ -145,6 +145,10 @@ describe("IrcMessageRow", () => {
   });
 
   it("forces block-level formatted_body markup inline so it stays on one line", () => {
+    // Uses a `[&_*]:inline` wildcard rather than naming each block tag, so
+    // this stays correct against the sanitizer's full allowlist (headings,
+    // tables, details/summary, hr, etc.) — not just the originally-cited
+    // p/blockquote/list/div/pre subset.
     render(
       <IrcMessageRow
         {...baseProps({
@@ -152,13 +156,15 @@ describe("IrcMessageRow", () => {
             event_id: "$1",
             sender: "@bob:localhost",
             body: "quoted text",
-            formatted_body: "<blockquote>quoted text</blockquote>",
+            formatted_body: "<blockquote>quoted text</blockquote><h1>a heading</h1>",
           }),
         })}
       />,
     );
     const blockquote = screen.getByText("quoted text").closest("blockquote");
+    const heading = screen.getByText("a heading").closest("h1");
     expect(blockquote).toBeInTheDocument();
-    expect(blockquote?.closest("span")).toHaveClass("[&_blockquote]:inline");
+    expect(heading).toBeInTheDocument();
+    expect(blockquote?.closest("span")).toHaveClass("[&_*]:inline");
   });
 });

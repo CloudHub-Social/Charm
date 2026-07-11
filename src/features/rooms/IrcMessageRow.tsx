@@ -86,12 +86,15 @@ export function IrcMessageRow({
               // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the span itself isn't interactive
               <span
                 className={cn(
-                  // `sanitizeMatrixHtml` permits block markup (<p>, <blockquote>,
-                  // <ul>/<ol>, <div>-shaped output) that a real Matrix client can
-                  // send as formatted_body — forced inline here so it stays on
-                  // this row's single line rather than breaking the IRC-mode
-                  // one-line-per-message layout with a block-level line break.
-                  "[&_a]:underline [&_blockquote]:inline [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_div]:inline [&_li]:inline [&_ol]:inline [&_p]:inline [&_pre]:inline [&_ul]:inline",
+                  // `sanitizeMatrixHtml`'s full allowlist (composerSanitize.ts)
+                  // includes block-level tags — p, blockquote, headings, lists,
+                  // div, table and its children, details/summary, hr, pre — that
+                  // a real Matrix client can legitimately send as formatted_body.
+                  // Forcing every descendant inline (rather than naming each
+                  // block tag) stays correct as the sanitizer's allowlist
+                  // changes, and keeps the row on IRC mode's single line
+                  // instead of taking a block-level line break.
+                  "[&_*]:inline [&_a]:underline [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1",
                   isError && "rounded border border-destructive px-1",
                 )}
                 // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml

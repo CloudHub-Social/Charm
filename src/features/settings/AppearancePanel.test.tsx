@@ -74,4 +74,11 @@ describe("AppearancePanel", () => {
     expect(discordButton).toHaveAttribute("aria-pressed", "true");
     expect(bubbleButton).toHaveAttribute("aria-pressed", "false");
   });
+
+  it("lets the message layout picker wrap instead of overflowing a narrow pane", () => {
+    renderPanel();
+    const bubbleButton = screen.getByRole("button", { name: /Bubble/ });
+    const fieldset = bubbleButton.closest("fieldset");
+    expect(fieldset).toHaveClass("flex-wrap");
+  });
 });
