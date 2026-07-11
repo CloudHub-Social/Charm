@@ -65,6 +65,11 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
 
   const originalRow = originalBubble.locator("xpath=ancestor::*[contains(@class, 'group')][1]");
 
+  // Regression coverage for issue #162: an unreacted message renders no
+  // reaction-bar row at all (no persistent "+" chip wasting space) — only
+  // the hover-revealed "React" button below is present.
+  await expect(originalRow.getByRole("button", { name: "Add reaction" })).toHaveCount(0);
+
   // --- react ---
   await originalRow.getByRole("button", { name: "React", exact: true }).click();
   await page.getByRole("button", { name: "React with 👍" }).click();
