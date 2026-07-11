@@ -5,6 +5,7 @@ import {
   AvatarGroupCount,
   AvatarImage,
 } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { cn } from "@/lib/utils";
 import type { RoomMessageSummary } from "@/lib/matrix";
@@ -92,6 +93,8 @@ interface MessageRowProps {
   canRedact: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
+  /** Best-effort user id -> display name lookup for the "Read by {name}" tooltip; falls back to the user id when absent. */
+  senderNameByUserId: Map<string, string>;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */
   getActionsHandle: (key: string) => MessageActionsHandle | undefined;
   /** Registers/unregisters this row's `MessageActions` handle as it mounts/unmounts. */
@@ -112,6 +115,7 @@ export function MessageRow({
   sameSenderAsNext,
   canRedact,
   readers,
+  senderNameByUserId,
   getActionsHandle,
   registerActionsRef,
   onReply,
@@ -264,21 +268,31 @@ export function MessageRow({
           </span>
         )}
         {readers.length > 0 && (
-          <AvatarGroup className="mt-0.5 justify-end">
-            {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => (
-              <Avatar key={userId} size="sm">
-                <AvatarFallback
-                  style={{ background: avatarColor(userId) }}
-                  className="font-bold text-white"
-                >
-                  {initials(userId, null)}
-                </AvatarFallback>
-              </Avatar>
-            ))}
-            {readers.length > MAX_RECEIPT_AVATARS && (
-              <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
-            )}
-          </AvatarGroup>
+          <TooltipProvider>
+            <AvatarGroup className="mt-0.5 justify-end">
+              {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => {
+                const readerName = senderNameByUserId.get(userId) ?? userId;
+                return (
+                  <Tooltip key={userId}>
+                    <TooltipTrigger asChild>
+                      <Avatar size="sm">
+                        <AvatarFallback
+                          style={{ background: avatarColor(userId) }}
+                          className="font-bold text-white"
+                        >
+                          {initials(userId, senderNameByUserId.get(userId) ?? null)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </TooltipTrigger>
+                    <TooltipContent>Read by {readerName}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
+              {readers.length > MAX_RECEIPT_AVATARS && (
+                <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
+              )}
+            </AvatarGroup>
+          </TooltipProvider>
         )}
       </div>
     </div>
