@@ -565,6 +565,26 @@ describe("ChatShell", () => {
     expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
   });
 
+  it("auto-hides the typing row 4s after the last update with no follow-up", async () => {
+    vi.useFakeTimers();
+    try {
+      renderChatShell();
+      await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+      act(() => {
+        typingCallback?.({ room_id: room.room_id, user_ids: ["@alice:localhost"] });
+      });
+      expect(screen.getByText("@alice:localhost is typing…")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
     // canRedact is only ever queried for *other* senders' messages — an own
     // message must be immediately deletable, not flash hidden until this

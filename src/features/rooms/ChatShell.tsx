@@ -300,7 +300,23 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       </div>
 
       {typingText && (
-        <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
+        <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">
+          <span className="flex items-center gap-[3px]" aria-hidden="true">
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0s" }}
+            />
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0.2s" }}
+            />
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0.4s" }}
+            />
+          </span>
+          <span>{typingText}</span>
+        </output>
       )}
 
       <UploadTray uploads={uploads} onDismiss={dismissUpload} />
