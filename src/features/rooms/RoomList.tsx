@@ -70,7 +70,10 @@ interface RoomListProps {
 const ROW_HEIGHT_PX = 46;
 
 function unreadBadgeLabel(totalUnread: number, totalHighlight: number): string {
-  return `${totalUnread} unread rooms${totalHighlight > 0 ? `, ${totalHighlight} mentions` : ""}`;
+  const rooms = `${totalUnread} unread room${totalUnread === 1 ? "" : "s"}`;
+  const mentions =
+    totalHighlight > 0 ? `, ${totalHighlight} mention${totalHighlight === 1 ? "" : "s"}` : "";
+  return `${rooms}${mentions}`;
 }
 
 function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex: number) {
