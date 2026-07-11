@@ -1,4 +1,4 @@
-import { platform } from "@tauri-apps/plugin-os";
+import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Whether this build is running inside the Tauri shell (desktop or mobile
@@ -18,21 +18,50 @@ export function isWebBuild(): boolean {
   );
 }
 
+let cachedPlatformTag = "web";
+let platformTagPromise: Promise<string> | null = null;
+
 /**
  * Real per-OS platform for the `charm.platform` Sentry tag (Spec 23):
- * `macos`/`windows`/`linux`/`android`/`ios` on native builds, `web` for the
- * plain-browser companion client. `@tauri-apps/plugin-os`'s `platform()`
- * reads a `window.__TAURI_OS_PLUGIN_INTERNALS__` global the Rust plugin
- * injects at startup rather than making an IPC call, so it throws if that
- * global isn't present — true for the web build, and for any test/mock
- * environment (jsdom, Playwright's `mockTauri.ts`) that fakes
- * `__TAURI_INTERNALS__` without also faking the OS plugin's internals.
+ * `macos`/`windows`/`linux`/`android`/`ios` on native builds (via a plain
+ * `get_platform` Tauri command returning `std::env::consts::OS` — a single
+ * app command rather than the whole `@tauri-apps/plugin-os` plugin, which
+ * would also expose arch/exe-extension/family/locale/version fingerprinting
+ * to the frontend for a single tag's worth of need; see PR #169 review
+ * discussion), `web` outside the Tauri shell.
+ *
+ * The underlying `invoke` call is async, but `initializeSentry` needs a
+ * synchronous value to put in `Sentry.init`'s `initialScope`. `main.tsx`
+ * awaits {@link preloadPlatformTag} as part of `bootstrapSentry` before the
+ * app renders, so by the time `initializeSentry` runs (both on that initial
+ * bootstrap and later Observability-panel toggles) the cache is already
+ * warm; this synchronous getter just reads it.
  */
 export function platformTag(): string {
-  if (!isTauri()) return "web";
-  try {
-    return platform();
-  } catch {
-    return "webview";
-  }
+  return cachedPlatformTag;
 }
+
+/** Warms {@link platformTag}'s cache. Safe to call more than once — later calls reuse the first in-flight/resolved request. */
+export function preloadPlatformTag(): Promise<string> {
+  if (!isTauri()) {
+    cachedPlatformTag = "web";
+    return Promise.resolve(cachedPlatformTag);
+  }
+  platformTagPromise ??= invoke<string>("get_platform")
+    .then((value) => {
+      cachedPlatformTag = value;
+      return value;
+    })
+    .catch(() => {
+      cachedPlatformTag = "webview";
+      return cachedPlatformTag;
+    });
+  return platformTagPromise;
+}
+
+export const platformTestHooks = {
+  reset() {
+    cachedPlatformTag = "web";
+    platformTagPromise = null;
+  },
+};

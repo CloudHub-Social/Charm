@@ -27,6 +27,7 @@ const client = {
 
 vi.mock("../lib/platform", () => ({
   platformTag: vi.fn(() => "web"),
+  preloadPlatformTag: vi.fn(() => Promise.resolve("web")),
 }));
 
 vi.mock("@sentry/react", () => ({

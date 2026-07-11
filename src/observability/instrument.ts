@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
 import { getBuildId } from "../lib/buildId";
-import { platformTag } from "../lib/platform";
+import { platformTag, preloadPlatformTag } from "../lib/platform";
 import { readObservabilitySettings } from "./persistence";
 import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
 import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
@@ -182,7 +182,7 @@ function setSentryClientEnabled(enabled: boolean): void {
 }
 
 export async function bootstrapSentry(): Promise<ObservabilitySettings> {
-  const settings = await readObservabilitySettings();
+  const [settings] = await Promise.all([readObservabilitySettings(), preloadPlatformTag()]);
   initializeSentry(settings);
   return settings;
 }

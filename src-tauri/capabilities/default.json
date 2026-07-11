@@ -26,7 +26,6 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "window-state:default",
-    "store:default",
-    "os:allow-platform"
+    "store:default"
   ]
 }
