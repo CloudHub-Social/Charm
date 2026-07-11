@@ -47,12 +47,7 @@ a one-time bypass per download:
   warning is reputation-based and persists even with our self-signed cert —
   only a paid EV/OV certificate with an established reputation removes it.
 - **Linux**: install the `.deb`/`.rpm` normally (`dpkg -i` / `rpm -i` or
-  your distro's package manager) — no publisher-trust gate to bypass. If
-  the release includes `.deb.asc`/`.rpm.asc` signatures and
-  `charm-nightly-signing-key.asc`, you can optionally verify provenance
-  first: `gpg --import charm-nightly-signing-key.asc && gpg --verify
-  Charm_<version>.deb.asc Charm_<version>.deb`. There's no install-time
-  enforcement of this — it's a manual check, not a gate.
+  your distro's package manager) — no publisher-trust gate to bypass.
 - **Android**: enable "Install unknown apps" for whatever app you used to
   download the `.apk` (Settings → Apps → Special access → Install unknown
   apps), then open the file. Signed with our persistent nightly keystore
@@ -64,15 +59,59 @@ a one-time bypass per download:
   regenerated fresh on every CI run — every "nightly" would need a manual
   uninstall+reinstall in that case.
 
+### Verifying a nightly download
+
+Every asset attached to a nightly release (`.dmg`, `.msi`/`.exe`, `.deb`,
+`.rpm`, `.apk`) can be checked two independent ways, both optional — neither
+is enforced at install time the way the per-OS gates above are:
+
+**Checksums** — `SHA256SUMS.txt` and `SHA1SUMS.txt` are attached to every
+release, one line per artifact in standard `sha256sum`/`sha1sum` output
+format. From the directory you downloaded into:
+
+```sh
+sha256sum -c SHA256SUMS.txt --ignore-missing   # Linux
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # macOS
+```
+
+(`--ignore-missing` skips lines for platforms you didn't download; drop it
+if you grabbed everything.) SHA1 is provided because it was asked for, not
+because it adds any real security over SHA256 — SHA1 is broken for
+collision resistance. Treat `SHA256SUMS.txt` and the GPG signatures below as
+the actual integrity checks, and `SHA1SUMS.txt` as compatibility-only.
+
+**GPG signatures** — attached when the `GPG_PRIVATE_KEY` repo secret is
+configured (see below): every artifact gets its own detached
+`<filename>.asc`, and `SHA256SUMS.txt`/`SHA1SUMS.txt` are signed too (so
+verifying `SHA256SUMS.txt.asc` alone vouches for every artifact's hash,
+without checking each `.asc` individually — either approach works). The
+public key ships alongside every signed release as
+`charm-nightly-signing-key.asc`:
+
+```sh
+gpg --import charm-nightly-signing-key.asc
+gpg --verify SHA256SUMS.txt.asc SHA256SUMS.txt
+# or, for one specific artifact:
+gpg --verify Charm_<version>_amd64.deb.asc Charm_<version>_amd64.deb
+```
+
+This is a self-issued key, not backed by a CA or Apple/Microsoft's
+notarization chains — it proves the file matches what this pipeline
+produced, not that "this pipeline" is an identity you already trust from
+anywhere else. Compare `gpg`'s reported key fingerprint against the one
+recorded when the key was generated (ask a maintainer) if you want that
+assurance too.
+
 ### Generating a nightly signing cert (maintainers)
 
 macOS/Windows/Android nightly builds are signed automatically once the
 relevant repo secrets exist; until then, each platform falls back to its
 previous unsigned/ephemeral-keystore behavior (the workflow degrades
-gracefully either way). Linux nightlies are GPG-signed the same way, purely
-for download provenance — deb/rpm have no OS-level publisher-trust gate the
-way macOS/Windows do, so this doesn't change the install experience, only
-whether a `.asc` signature is available to verify against.
+gracefully either way). All platforms' artifacts are GPG-signed the same
+way (centrally, once every artifact has been built — see
+nightly-platform-builds.yml's publish-nightly job), purely for download
+provenance — none of the OS-level publisher-trust gates above are affected
+by it, only whether a `.asc` signature is available to verify against.
 
 **macOS** — Keychain Access → **Certificate Assistant → Create a
 Certificate…** → Identity Type **Self-Signed Root**, Certificate Type

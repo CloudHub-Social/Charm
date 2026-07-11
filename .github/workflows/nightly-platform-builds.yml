@@ -373,10 +373,6 @@ jobs:
     permissions:
       contents: read
       issues: write
-    # Job-level (rather than referencing secrets.* directly in a step's
-    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
-    env:
-      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -508,43 +504,11 @@ jobs:
           echo "All $max_attempts attempts timed out — giving up."
           exit 1
 
-      # Unlike macOS/Windows, deb/rpm have no Gatekeeper/SmartScreen-
-      # equivalent unidentified-publisher block to work around — apt/rpm
-      # install unsigned packages fine. GPG-signing here is purely so a
-      # tester can verify a downloaded package actually came from this
-      # pipeline (`gpg --verify`), iff GPG_PRIVATE_KEY/GPG_PASSPHRASE secrets
-      # are configured (see README.md's "Generating a nightly signing cert").
-      # Detached ASCII-armored signatures (`gpg --detach-sign --armor`)
-      # rather than dpkg-sig/rpm --addsign: verifiable with plain gpg on any
-      # platform, no extra package-format-specific tooling needed on the
-      # runner or the tester's machine.
-      - name: Sign Linux artifacts
-        if: ${{ env.HAS_GPG_KEY == 'true' }}
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: |
-          set -euo pipefail
-          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
-          mkdir -p "$GNUPGHOME"
-          chmod 700 "$GNUPGHOME"
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
-          for f in target/debug/bundle/deb/*.deb target/debug/bundle/rpm/*.rpm; do
-            [ -e "$f" ] || continue
-            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
-              --local-user "$key_id" --detach-sign --armor "$f"
-          done
-          # Ships alongside the packages every run (small, and guarantees
-          # the verification key is available even for the very first
-          # signed release) rather than being published once out-of-band.
-          gpg --batch --armor --export "$key_id" > target/debug/bundle/charm-nightly-signing-key.asc
-
-      # Only published for main — see the macOS job's "Upload macOS
-      # artifacts" step for the same reasoning. Split from the signature
-      # upload below (rather than one glob set) so a missing .deb/.rpm still
-      # hard-fails the job, while the GPG files — which only exist when
-      # HAS_GPG_KEY is true — don't need to.
+      # GPG-signing (when configured) happens centrally in publish-nightly,
+      # not per-platform-job — see that job's "Sign artifacts and generate
+      # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
+      # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
+      # begin with — apt/rpm install unsigned packages fine.
       - name: Upload Linux artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -554,18 +518,6 @@ jobs:
             target/debug/bundle/deb/*.deb
             target/debug/bundle/rpm/*.rpm
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload Linux signatures
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: nightly-linux-signatures
-          path: |
-            target/debug/bundle/deb/*.deb.asc
-            target/debug/bundle/rpm/*.rpm.asc
-            target/debug/bundle/charm-nightly-signing-key.asc
-          if-no-files-found: warn
           retention-days: 14
 
       - name: Track failure as a GitHub issue
@@ -922,12 +874,81 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) — see the macOS job's HAS_MACOS_CERT comment. No ref check
+    # needed here (unlike the per-platform jobs) since this whole job is
+    # already gated to main via the `if:` above.
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: nightly-*
           path: artifacts
           merge-multiple: true
+
+      # Centralized here (one ubuntu-latest job, where gpg is already known
+      # to be present — this workflow used it for the same purpose on this
+      # same runner image before this refactor) rather than duplicated
+      # per-platform-job: signing every binary once every platform's
+      # artifact has already landed avoids needing gpg on macos-latest/
+      # windows-latest too (unverified whether either image ships it), and
+      # avoids repeating the import+sign step 4 times over.
+      #
+      # Checksums always run (they don't need a key); GPG signing is
+      # opportunistic on GPG_PRIVATE_KEY/GPG_PASSPHRASE, same
+      # degrade-gracefully pattern as every other cert secret in this
+      # workflow. Detached ASCII-armored per-file signatures
+      # (`gpg --detach-sign --armor`) rather than format-specific tooling
+      # (dpkg-sig, rpm --addsign, etc.) — one verification method
+      # (`gpg --verify`) across every platform's artifact.
+      - name: Sign artifacts and generate checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # SHA256SUMS.txt/SHA1SUMS.txt: standard `sha256sum`/`sha1sum`
+          # output format, so `sha256sum -c SHA256SUMS.txt` (or `shasum -a
+          # 256 -c` on macOS) verifies directly against the file — no custom
+          # parsing needed. Computed over the binaries only, before any
+          # signature files exist, so the checksum files never end up
+          # hashing themselves or each other. SHA1 is included because it
+          # was asked for, not because it adds security over SHA256 (it
+          # doesn't — MD5/SHA1 are broken for collision resistance); treat
+          # SHA256SUMS.txt/the GPG signatures as the actual integrity checks
+          # and SHA1SUMS.txt as compatibility-only.
+          cd artifacts
+          find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          find . -type f -print0 | sort -z | xargs -0 sha1sum > SHA1SUMS.txt
+          cd ..
+
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+            mkdir -p "$GNUPGHOME"
+            chmod 700 "$GNUPGHOME"
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+
+            # Sign every downloaded binary plus both checksum files — signing
+            # the checksum files means one signature attests to every
+            # artifact's hash, so verifying SHA256SUMS.txt.asc is enough to
+            # trust every entry in it without checking each binary's own
+            # .asc individually (both are provided; use whichever's more
+            # convenient).
+            mapfile -d '' to_sign < <(find artifacts -type f -print0)
+            for f in "${to_sign[@]}"; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$key_id" --detach-sign --armor "$f"
+            done
+
+            # Ships alongside the artifacts every signed run (small, and
+            # guarantees the verification key is available even for the
+            # very first signed release) rather than being published once
+            # out-of-band.
+            gpg --batch --armor --export "$key_id" > artifacts/charm-nightly-signing-key.asc
+          fi
 
       - name: Create/update dated nightly release
         env:
@@ -959,7 +980,8 @@ jobs:
             echo ""
             echo "**Unsigned/self-signed test builds — not for production use.**"
             echo "See README.md's \"Installing a nightly build\" section for per-platform install steps"
-            echo "(macOS Gatekeeper / Windows SmartScreen / Android \"install unknown apps\" workarounds)."
+            echo "(macOS Gatekeeper / Windows SmartScreen / Android \"install unknown apps\" workarounds)"
+            echo "and \"Verifying a nightly download\" for checking SHA256SUMS.txt / GPG signatures."
             if [ -n "$missing" ]; then
               echo ""
               echo "**Missing from this run:**"
