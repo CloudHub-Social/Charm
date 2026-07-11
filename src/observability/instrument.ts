@@ -39,7 +39,7 @@ function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undef
 }
 
 function feedbackOptionsKey(options: SentryFeedbackDialogOptions): string {
-  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}`;
+  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}:${options.category ?? ""}`;
 }
 
 type SentryIntegration =

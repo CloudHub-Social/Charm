@@ -254,6 +254,24 @@ describe("Sentry instrumentation", () => {
     expect(feedbackDialog.open).toHaveBeenCalledTimes(1);
   });
 
+  it("does not share an in-flight feedback dialog across different categories", async () => {
+    let resolveForm!: (dialog: typeof feedbackDialog) => void;
+    feedbackIntegration.createForm.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveForm = resolve;
+      }),
+    );
+
+    const first = openSentryFeedbackDialog({ surface: "settings", category: "bug" });
+    const second = openSentryFeedbackDialog({ surface: "settings", category: "feature_request" });
+    resolveForm(feedbackDialog);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, false]);
+    expect(feedbackIntegration.createForm).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.appendToDom).toHaveBeenCalledTimes(1);
+    expect(feedbackDialog.open).toHaveBeenCalledTimes(1);
+  });
+
   it("removes the feedback dialog when Sentry is closed", async () => {
     initializeSentry({
       ...DEFAULT_OBSERVABILITY_SETTINGS,
