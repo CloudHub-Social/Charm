@@ -227,9 +227,13 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
         .or_else(|| sentry::release_name!());
 
     // charm.build.id mirrors `release` (or BUILD_ID directly when no
-    // SENTRY_RELEASE override is present) so a Sentry event's tag always
-    // matches what AboutPanel displays for the same build — see Spec 23,
-    // which consumes this tag for feedback/error context.
+    // SENTRY_RELEASE override is present) so a Sentry event's tag matches
+    // what AboutPanel displays for the same build — see Spec 23, which
+    // consumes this tag for feedback/error context. Exception: local/dev
+    // builds where neither SENTRY_RELEASE nor BUILD_ID is set. There, this
+    // tag is absent (`None`) while AboutPanel's `formatBuildIdForDisplay`
+    // still renders a `{version}-dev` fallback from the bare Cargo/package
+    // version — so the two surfaces diverge in that one case.
     let build_id_tag = resolve_build_id_tag(std::env::var("SENTRY_RELEASE").ok(), BUILD_ID);
 
     let client = sentry::init((
