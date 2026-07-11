@@ -150,7 +150,27 @@ jobs:
           IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           rm -f cert.p12
-          echo "APPLE_SIGNING_IDENTITY=${MACOS_CERT_NAME}" >> "$GITHUB_ENV"
+          # Trim: a MACOS_CERT_NAME secret copied from Keychain Access or a
+          # terminal (e.g. via pbcopy, or a text file with a trailing
+          # newline) commonly picks up leading/trailing whitespace. That
+          # whitespace makes it into $GITHUB_ENV verbatim and then into
+          # codesign's -s argument, where it no longer exact-matches the
+          # identity's actual common name — codesign fails late with an
+          # opaque "no identity found" instead of failing here with a clear
+          # diagnostic.
+          identity_name="$(printf '%s' "$MACOS_CERT_NAME" | xargs)"
+          # Verify the trimmed name actually resolves to an identity in this
+          # keychain before handing it to the build step — codesign's own
+          # "no identity found" error doesn't say what it expected instead,
+          # which makes a name mismatch (typo, stale MACOS_CERT_NAME secret
+          # after regenerating the cert, wrong keychain search order) far
+          # harder to diagnose than catching it right after import.
+          if ! security find-identity -v -p codesigning "$keychain" | grep -qF "\"$identity_name\""; then
+            echo "::error::MACOS_CERT_NAME (\"$identity_name\") does not match any codesigning identity in the imported keychain. Available identities:"
+            security find-identity -v -p codesigning "$keychain"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
 
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
       # the macOS .app/.dmg bundler. Signed with APPLE_SIGNING_IDENTITY when
