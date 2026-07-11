@@ -21,6 +21,18 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// The `charm.platform` Sentry tag's real per-OS value (Spec 23):
+/// `std::env::consts::OS` returns the same `linux`/`macos`/`ios`/`android`/
+/// `windows` set `@tauri-apps/plugin-os`'s `platform()` does — a plain app
+/// command exposing just this one string, rather than registering the whole
+/// OS plugin (which also injects arch/exe-extension/family/locale/version
+/// fingerprinting into the frontend for a single tag's worth of need; see
+/// PR #169 review discussion).
+#[tauri::command]
+fn get_platform() -> &'static str {
+    std::env::consts::OS
+}
+
 /// Crate targets the desktop Sentry tracing bridge forwards — see
 /// `observability_scrub::is_tracing_target_allowed`.
 const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
@@ -415,6 +427,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_platform,
             update_observability_log_consent,
             matrix::auth::login,
             matrix::auth::register,
