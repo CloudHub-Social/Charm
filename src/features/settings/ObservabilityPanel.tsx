@@ -182,7 +182,7 @@ export function ObservabilityPanel() {
           />
         </SettingTile>
         <SettingTile
-          title="Report a problem"
+          title="Send feedback"
           description="Open Sentry's feedback form. Optional screenshots may include visible room names, Matrix IDs, or message text and are not scrubbed like text fields."
           control={
             <Button
