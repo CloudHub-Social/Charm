@@ -153,6 +153,7 @@ function summary(
     transaction_id: null,
     send_state: { state: "sent" },
     media: null,
+    is_undecrypted: false,
     ...overrides,
   };
 }
