@@ -213,13 +213,18 @@ The nightly workflow's Rust builds are cached in a shared DigitalOcean Spaces
 (scheduled runs and `main`-branch dispatches) to populate the cache.
 
 `SCCACHE_S3_READONLY_ACCESS_KEY_ID` / `SCCACHE_S3_READONLY_SECRET_ACCESS_KEY`
-are an optional read-only key (create one scoped to read-only access on the
-same Space) used for `workflow_dispatch` runs against any other branch, so
-those still get cache hits without holding write credentials. Neither
-read-only secret configured is fine too — every job falls back to a
-local-disk-only cache instead of hard-failing, rather than pointing sccache
-at the bucket with no credentials at all (which used to abort the build with
-an S3 "InvalidArgument" error).
+are an optional read-only key pair (create one scoped to read-only access on
+the same Space) used for `workflow_dispatch` runs against any other branch,
+so those still get cache hits without holding write credentials — this pair
+is deliberately never used as a fallback on `main` itself, even if the
+write-capable pair above is somehow missing, since sccache's own S3 startup
+check requires write access and would otherwise fail with a confusing
+permissions error instead of a clean "no cache configured". Neither secret
+of a pair configured is fine too — every job falls back to a local-disk-only
+cache (by leaving `RUSTC_WRAPPER` unset, so sccache is never invoked at all)
+instead of hard-failing, rather than pointing sccache at the bucket with no
+credentials (which used to abort the build with an S3 "InvalidArgument"
+error).
 
 ## Identity — keep it clean
 
