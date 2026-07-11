@@ -24,11 +24,17 @@ describe("formatDateDividerLabel", () => {
   });
 
   it("falls back to a formatted date for older messages", () => {
-    expect(formatDateDividerLabel(new Date(2026, 6, 1, 12, 0, 0).getTime(), now)).toBe("July 1");
+    // Pinned to "en-US" — the default (`undefined`) locale formats the
+    // month/day differently on a machine/CI runner configured with a
+    // different default, which would make this assertion's hard-coded
+    // English string flaky.
+    expect(formatDateDividerLabel(new Date(2026, 6, 1, 12, 0, 0).getTime(), now, "en-US")).toBe(
+      "July 1",
+    );
   });
 
   it("includes the year for a date in a different year", () => {
-    expect(formatDateDividerLabel(new Date(2025, 6, 1, 12, 0, 0).getTime(), now)).toBe(
+    expect(formatDateDividerLabel(new Date(2025, 6, 1, 12, 0, 0).getTime(), now, "en-US")).toBe(
       "July 1, 2025",
     );
   });

@@ -219,12 +219,18 @@ function summary(
   };
 }
 
-function renderChatShell(store = createStore()) {
+// `a.compareDocumentPosition(b) & DOCUMENT_POSITION_FOLLOWING` is truthy
+// when `b` comes after `a` in the document.
+function isBefore(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function renderChatShell(store = createStore(), roomOverride: RoomSummary = room) {
   return {
     store,
     ...render(
       <JotaiProvider store={store}>
-        <ChatShell room={room} currentUserId="@me:localhost" />
+        <ChatShell room={roomOverride} currentUserId="@me:localhost" />
       </JotaiProvider>,
     ),
   };
@@ -922,6 +928,78 @@ describe("ChatShell", () => {
         name: "Alice is following the conversation",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("freezes the unread divider above the message that was first unread, not a live index", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "one", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "two", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("New messages");
+    const messageA = document.getElementById("message-$a") as HTMLElement;
+    const messageB = document.getElementById("message-$b") as HTMLElement;
+    const divider = screen.getByText("New messages");
+    // Divider sits between $a and $b.
+    expect(isBefore(messageA, divider)).toBe(true);
+    expect(isBefore(divider, messageB)).toBe(true);
+
+    // A new message arrives while the room stays open — a naive live
+    // recompute (messages.length - frozen count) would move the divider to
+    // sit above this new message instead of staying above $b.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: unreadRoom.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "one", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "two", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "three", timestamp_ms: 3 }),
+        ],
+      });
+    });
+
+    await screen.findByText("three");
+    expect(screen.getAllByText("New messages")).toHaveLength(1);
+    const dividerAfterUpdate = screen.getByText("New messages");
+    const messageAAfter = document.getElementById("message-$a") as HTMLElement;
+    const messageBAfter = document.getElementById("message-$b") as HTMLElement;
+    expect(isBefore(messageAAfter, dividerAfterUpdate)).toBe(true);
+    expect(isBefore(dividerAfterUpdate, messageBAfter)).toBe(true);
+  });
+
+  it("breaks a same-sender message group across the unread divider", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "one",
+          timestamp_ms: 1,
+        }),
+        summary({
+          event_id: "$b",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "two",
+          timestamp_ms: 2,
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("New messages");
+    // Same sender on both sides of the divider — without the group break,
+    // message $b (right after the divider) would render without its own
+    // avatar/name, looking like a continuation of $a's group above it.
+    expect(screen.getAllByText("Alice")).toHaveLength(2);
   });
 
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {

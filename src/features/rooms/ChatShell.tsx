@@ -142,19 +142,56 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const roomSettingsOpen = roomSettingsTarget !== null;
   const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
     useChatTimeline(room, roomSettingsOpen);
-  // Snapshot of `room.unread_count` as of opening this room, frozen rather
-  // than tracked live — `useChatTimeline` marks the room read as soon as it
-  // becomes active, which asynchronously drives `unread_count` back to 0 via
-  // a later `room_list:update`. Using the live value would make the "New
-  // messages" divider flash in and immediately disappear instead of staying
-  // put until the user switches away.
-  const frozenUnreadCountRef = useRef(0);
-  const unreadRoomIdRef = useRef<string | null>(null);
-  if (unreadRoomIdRef.current !== activeRoomId) {
-    unreadRoomIdRef.current = activeRoomId;
-    frozenUnreadCountRef.current = room?.unread_count ?? 0;
+  // The "New messages" divider's position is frozen at the *identity* of
+  // the first unread message as of opening this room — not re-derived from
+  // live `messages.length` on every render. `useChatTimeline` marks the
+  // room read as soon as it becomes active, which asynchronously drives the
+  // room's unread count back to 0 via a later `room_list:update`, so using
+  // a live count/index would make the divider flash in and immediately
+  // disappear (or, worse, silently drift forward) instead of staying put
+  // above the same message until the user switches rooms. Freezing by
+  // message key (not a frozen index recomputed against a growing array)
+  // also survives new messages appending and older history prepending via
+  // backward pagination — both change every live index without changing
+  // which message was first unread.
+  //
+  // Uses `room.unread_messages` (ambient unread message count), not
+  // `room.unread_count` (notifications/mentions only, per RoomSummary's own
+  // doc comment) — a room can have unread messages with zero notifications,
+  // or a mention buried mid-page, and `unread_count` reflects neither
+  // correctly for "where does the unread history start".
+  //
+  // Seeding waits for a `loading` transition (via
+  // hasStartedLoadingRoomIdRef), not just "loading currently reads false":
+  // `useChatTimeline`'s `loading` state starts at `false` before its fetch
+  // effect has run, so seeding on that premature render would freeze the
+  // boundary against a stale/empty message snapshot.
+  const unreadBoundaryKeyRef = useRef<string | null>(null);
+  const seededUnreadRoomIdRef = useRef<string | null>(null);
+  const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
+  if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
+  if (
+    !loading &&
+    hasStartedLoadingRoomIdRef.current === activeRoomId &&
+    seededUnreadRoomIdRef.current !== activeRoomId
+  ) {
+    seededUnreadRoomIdRef.current = activeRoomId;
+    const unreadCount = room?.unread_messages ?? 0;
+    const boundaryIdx = unreadDividerIndex(messages.length, unreadCount);
+    const boundaryMessage = boundaryIdx >= 0 ? messages[boundaryIdx] : undefined;
+    unreadBoundaryKeyRef.current = boundaryMessage ? messageRowKey(boundaryMessage) : null;
   }
-  const unreadStartIdx = unreadDividerIndex(messages.length, frozenUnreadCountRef.current);
+  const unreadStartIdx = unreadBoundaryKeyRef.current
+    ? messages.findIndex((m) => messageRowKey(m) === unreadBoundaryKeyRef.current)
+    : -1;
+  // A date divider or the frozen unread divider breaks a consecutive-sender
+  // run, even when the surrounding messages are literally from the same
+  // sender — otherwise the message right after the divider renders without
+  // its own avatar/name (looking like a continuation of the group above the
+  // divider), and the message right before it can lose its timestamp.
+  function isGroupBreakAt(index: number): boolean {
+    return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
+  }
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
@@ -323,8 +360,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 message={message}
                 roomId={room.room_id}
                 own={own}
-                sameSenderAsPrev={prev?.sender === message.sender}
-                sameSenderAsNext={next?.sender === message.sender}
+                sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
+                sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
                 canRedact={allowedToRedact}
                 readers={readers}
                 getActionsHandle={(key) => actionsRefs.current.get(key)}

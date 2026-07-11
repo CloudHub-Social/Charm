@@ -6,14 +6,25 @@ function isSameDay(a: Date, b: Date): boolean {
   );
 }
 
-/** "Today" / "Yesterday" / a full date, for the date divider above the first message of a day. */
-export function formatDateDividerLabel(timestampMs: number, now = new Date()): string {
+/**
+ * "Today" / "Yesterday" / a full date, for the date divider above the first
+ * message of a day. `locale` defaults to `undefined` (the runtime's default
+ * locale, same as before) — real callers never pass it; it exists so tests
+ * can pin `en-US` and assert deterministic English month/day names instead
+ * of depending on whatever locale happens to be configured on the machine
+ * or CI runner.
+ */
+export function formatDateDividerLabel(
+  timestampMs: number,
+  now = new Date(),
+  locale?: string,
+): string {
   const date = new Date(timestampMs);
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (isSameDay(date, now)) return "Today";
   if (isSameDay(date, yesterday)) return "Yesterday";
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     month: "long",
     day: "numeric",
     year: date.getFullYear() === now.getFullYear() ? undefined : "numeric",
