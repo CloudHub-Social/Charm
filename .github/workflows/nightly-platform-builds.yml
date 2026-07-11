@@ -272,16 +272,28 @@ jobs:
       # bundling is also prone to an *intermittent* hang of its own —
       # tauri-apps/tauri#11478 describes the same symptom (rpm bundling
       # stuck indefinitely, no error) and was closed upstream as
-      # unresolved. An extensive investigation here (FUSE mounting, an
-      # untimed network download, a libuv io_uring kernel bug, a recent
-      # Node regression, a byte-for-byte repro of the pre-sccache job,
-      # ubuntu-22.04 as a fallback image — all tested and ruled out)
-      # narrowed it to something at or below the rpm-rs crate / kernel
-      # boundary, not anything in this repo's control. Retry on a
-      # timeout rather than a real build failure: rerunning is the
-      # practical mitigation until upstream has a fix.
+      # unresolved; a follow-up, tauri-apps/tauri#15698 (still open as of
+      # this writing, current versions `@tauri-apps/cli` 2.11.4 /
+      # `tauri-bundler` 2.9.4 — matching what this repo pulls in via the
+      # unpinned `"2"` cli/tauri deps, so there's no newer release to pin
+      # to yet), narrowed the hang to a genuine non-deterministic race in
+      # the `rpm` crate's in-process bundling (hang lands right after
+      # `.desktop` file template rendering for the rpm target, before any
+      # further logged output) rather than anything environment- or
+      # version-specific — the same commit on the same runner image/kernel
+      # was observed to both hang and complete in seconds. An extensive
+      # investigation here (FUSE mounting, an untimed network download, a
+      # libuv io_uring kernel bug, a recent Node regression, a byte-for-
+      # byte repro of the pre-sccache job, ubuntu-22.04 as a fallback
+      # image — all tested and ruled out) reached the same conclusion.
+      # Retry on a timeout rather than a real build failure: rerunning is
+      # the practical mitigation until upstream has a fix. Run
+      # 29132329507 hit 3 hangs in a row (non-deterministic, but
+      # apparently not vanishingly rare) and exhausted the previous
+      # 3-attempt budget, so this bumps to 5 attempts (worst case 75m of
+      # build time) with the step timeout raised to match.
       - name: Build (retry on hang, not on a real failure)
-        timeout-minutes: 60
+        timeout-minutes: 100
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -306,7 +318,7 @@ jobs:
           # `|| true; status=$?` — that captures true's exit code, always 0,
           # not timeout's) sets status only on failure, leaving it unset
           # (defaulted to 0 below) on success, without ever tripping -e.
-          max_attempts=3
+          max_attempts=5
           per_attempt_timeout=900 # 15 minutes
           attempt=1
           while [ "$attempt" -le "$max_attempts" ]; do

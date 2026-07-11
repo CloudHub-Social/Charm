@@ -64,6 +64,24 @@ export function computeBuildId({ version, sha, kind = "", prNumber } = {}) {
   }
 }
 
+/**
+ * Coerces a caught value (which may not be an Error instance, since any
+ * value can be thrown in JS) into a safe, human-readable string for logging.
+ * @param {unknown} error
+ * @returns {string}
+ */
+export function describeCaughtError(error) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    const json = JSON.stringify(error);
+    if (json !== undefined) return json;
+  } catch {
+    // fall through to String() below
+  }
+  return String(error);
+}
+
 function readPackageVersion() {
   const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
   const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -102,7 +120,7 @@ function main() {
   try {
     buildId = computeBuildId({ version, sha, kind, prNumber });
   } catch (error) {
-    console.error(`::error::${error.message}`);
+    console.error(`::error::${describeCaughtError(error)}`);
     process.exitCode = 1;
     return;
   }
