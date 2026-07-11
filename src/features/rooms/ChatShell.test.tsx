@@ -780,6 +780,59 @@ describe("ChatShell", () => {
     expect(screen.queryByText("ME")).not.toBeInTheDocument();
   });
 
+  it("shows a 'Read by {name}' tooltip when hovering a read-receipt chip", async () => {
+    renderChatShell();
+    await vi.waitFor(() => expect(timelineUpdateCallback).toBeDefined());
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$from-alice",
+            sender: "@alice:localhost",
+            sender_display_name: "Alice",
+            body: "hello from alice",
+            timestamp_ms: 1,
+          }),
+          summary({ event_id: "$b", sender: "@me:localhost", body: "hi", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await vi.waitFor(() => expect(receiptsCallback).toBeDefined());
+
+    act(() => {
+      receiptsCallback?.({
+        room_id: room.room_id,
+        receipts: [
+          { event_id: "$b", user_id: "@alice:localhost", receipt_type: "read", ts_ms: 100 },
+        ],
+      });
+    });
+
+    // Distinguishes the read-receipt chip from Alice's own (also "AL")
+    // sender-avatar initials elsewhere on the row — the chip is the small
+    // 14px span, the sender avatar renders inside a size-8 Avatar.
+    const chip = (await screen.findAllByText("AL")).find((el) =>
+      el.className.includes("text-[7px]"),
+    );
+    if (!chip) throw new Error("read-receipt chip not found");
+    // Real DOM focus (not `fireEvent.focus`, which dispatches a plain
+    // non-bubbling `focus` event that React's `focusin`-based delegation
+    // never sees) — the chip is `tabIndex={0}` specifically so keyboard/
+    // screen-reader users can reach it, and Radix's TooltipTrigger opens
+    // instantly on focus, which doubles as the simplest reliable way to
+    // exercise the Radix wiring here without simulating pointer hover.
+    await act(async () => {
+      chip.focus();
+      // Radix's Tooltip Presence/Portal content needs a tick beyond the
+      // synchronous `open` state flip to actually mount into the portal.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getAllByText(/Read by Alice/).length).toBeGreaterThan(0);
+  });
+
   it("shows a singular typing row for one other user", async () => {
     renderChatShell();
     await vi.waitFor(() => expect(typingCallback).toBeDefined());

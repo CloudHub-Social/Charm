@@ -27,6 +27,20 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
     MockIntersectionObserver as unknown as typeof IntersectionObserver;
 }
 
+// jsdom doesn't implement ResizeObserver either — Radix's Tooltip/Popover
+// content (`@radix-ui/react-use-size`) uses one internally as soon as its
+// content actually mounts (i.e. once open), so any test that opens a
+// Tooltip/Popover needs at least a no-op stub to avoid a ReferenceError.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  class MockResizeObserver implements ResizeObserver {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+
+  globalThis.ResizeObserver = MockResizeObserver;
+}
+
 // jsdom's `localStorage` needs `--localstorage-file` to actually persist and
 // is otherwise `undefined` in this project's config — but Charm 2.0 Spec 09's
 // appearance persistence write-throughs to `localStorage` as a synchronous

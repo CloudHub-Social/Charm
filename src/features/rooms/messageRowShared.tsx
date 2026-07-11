@@ -83,6 +83,8 @@ export interface MessageRowLayoutProps {
   canRedact: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
+  /** Best-effort user id -> display name lookup for the "Read by {name}" tooltip; falls back to the user id when absent. */
+  senderNameByUserId: Map<string, string>;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */
   getActionsHandle: (key: string) => MessageActionsHandle | undefined;
   /** Registers/unregisters this row's `MessageActions` handle as it mounts/unmounts. */

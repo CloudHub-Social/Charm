@@ -193,6 +193,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
   }
   const senders = messages.map((m) => m.sender);
+  // Best-effort display-name lookup for read-receipt tooltips ("Read by
+  // {name}") — built from senders already present in the loaded timeline
+  // rather than a dedicated member-list fetch, since a reader is virtually
+  // always someone who has also sent a message in view. Falls back to the
+  // bare user id in MessageRow when a reader hasn't sent anything loaded.
+  const senderNameByUserId = new Map<string, string>();
+  for (const m of messages) {
+    if (m.sender_display_name != null) senderNameByUserId.set(m.sender, m.sender_display_name);
+  }
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
@@ -364,6 +373,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
                 canRedact={allowedToRedact}
                 readers={readers}
+                senderNameByUserId={senderNameByUserId}
                 getActionsHandle={(key) => actionsRefs.current.get(key)}
                 registerActionsRef={(key, el) => {
                   if (el) actionsRefs.current.set(key, el);

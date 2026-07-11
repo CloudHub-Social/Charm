@@ -24,6 +24,7 @@ function renderRow(messageLayout: MessageLayout) {
         sameSenderAsNext={false}
         canRedact={false}
         readers={[]}
+        senderNameByUserId={new Map()}
         getActionsHandle={() => undefined}
         registerActionsRef={vi.fn()}
         onReply={vi.fn()}
