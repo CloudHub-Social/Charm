@@ -35,6 +35,42 @@ describe("MediaMessage", () => {
     expect(screen.getByRole("button", { name: "Open image cat.png" })).toBeInTheDocument();
   });
 
+  it("reserves an aspect-ratio box from known image dimensions, to prevent reflow on load", () => {
+    const content: MediaContent = {
+      type: "Image",
+      mime: "image/png",
+      size: 1024,
+      width: 800,
+      height: 600,
+      has_thumbnail: false,
+      blurhash: null,
+    };
+    renderWithClient(
+      <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="cat.png" />,
+    );
+    expect(screen.getByRole("button", { name: "Open image cat.png" })).toHaveStyle({
+      aspectRatio: "800 / 600",
+    });
+  });
+
+  it("falls back to a fixed aspect ratio when an image's dimensions are unknown", () => {
+    const content: MediaContent = {
+      type: "Image",
+      mime: "image/png",
+      size: 1024,
+      width: null,
+      height: null,
+      has_thumbnail: false,
+      blurhash: null,
+    };
+    renderWithClient(
+      <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="cat.png" />,
+    );
+    expect(screen.getByRole("button", { name: "Open image cat.png" })).toHaveStyle({
+      aspectRatio: "280 / 160",
+    });
+  });
+
   it("renders a play button for a Video variant", () => {
     const content: MediaContent = {
       type: "Video",
