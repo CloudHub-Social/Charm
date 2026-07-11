@@ -31,6 +31,11 @@ import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
+import {
+  formatDateDividerLabel,
+  isDateDividerBoundary,
+  unreadDividerIndex,
+} from "./timelineDividers";
 import { useChatTyping } from "./useChatTyping";
 import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
@@ -137,6 +142,56 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const roomSettingsOpen = roomSettingsTarget !== null;
   const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
     useChatTimeline(room, roomSettingsOpen);
+  // The "New messages" divider's position is frozen at the *identity* of
+  // the first unread message as of opening this room — not re-derived from
+  // live `messages.length` on every render. `useChatTimeline` marks the
+  // room read as soon as it becomes active, which asynchronously drives the
+  // room's unread count back to 0 via a later `room_list:update`, so using
+  // a live count/index would make the divider flash in and immediately
+  // disappear (or, worse, silently drift forward) instead of staying put
+  // above the same message until the user switches rooms. Freezing by
+  // message key (not a frozen index recomputed against a growing array)
+  // also survives new messages appending and older history prepending via
+  // backward pagination — both change every live index without changing
+  // which message was first unread.
+  //
+  // Uses `room.unread_messages` (ambient unread message count), not
+  // `room.unread_count` (notifications/mentions only, per RoomSummary's own
+  // doc comment) — a room can have unread messages with zero notifications,
+  // or a mention buried mid-page, and `unread_count` reflects neither
+  // correctly for "where does the unread history start".
+  //
+  // Seeding waits for a `loading` transition (via
+  // hasStartedLoadingRoomIdRef), not just "loading currently reads false":
+  // `useChatTimeline`'s `loading` state starts at `false` before its fetch
+  // effect has run, so seeding on that premature render would freeze the
+  // boundary against a stale/empty message snapshot.
+  const unreadBoundaryKeyRef = useRef<string | null>(null);
+  const seededUnreadRoomIdRef = useRef<string | null>(null);
+  const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
+  if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
+  if (
+    !loading &&
+    hasStartedLoadingRoomIdRef.current === activeRoomId &&
+    seededUnreadRoomIdRef.current !== activeRoomId
+  ) {
+    seededUnreadRoomIdRef.current = activeRoomId;
+    const unreadCount = room?.unread_messages ?? 0;
+    const boundaryIdx = unreadDividerIndex(messages.length, unreadCount);
+    const boundaryMessage = boundaryIdx >= 0 ? messages[boundaryIdx] : undefined;
+    unreadBoundaryKeyRef.current = boundaryMessage ? messageRowKey(boundaryMessage) : null;
+  }
+  const unreadStartIdx = unreadBoundaryKeyRef.current
+    ? messages.findIndex((m) => messageRowKey(m) === unreadBoundaryKeyRef.current)
+    : -1;
+  // A date divider or the frozen unread divider breaks a consecutive-sender
+  // run, even when the surrounding messages are literally from the same
+  // sender — otherwise the message right after the divider renders without
+  // its own avatar/name (looking like a continuation of the group above the
+  // divider), and the message right before it can lose its timestamp.
+  function isGroupBreakAt(index: number): boolean {
+    return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
+  }
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
@@ -286,26 +341,41 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const readers = receiptsByEvent.get(message.event_id) ?? [];
 
           return (
-            <MessageRow
-              key={messageRowKey(message)}
-              message={message}
-              roomId={room.room_id}
-              own={own}
-              sameSenderAsPrev={prev?.sender === message.sender}
-              sameSenderAsNext={next?.sender === message.sender}
-              canRedact={allowedToRedact}
-              readers={readers}
-              getActionsHandle={(key) => actionsRefs.current.get(key)}
-              registerActionsRef={(key, el) => {
-                if (el) actionsRefs.current.set(key, el);
-                else actionsRefs.current.delete(key);
-              }}
-              onReply={() => handleReply(message)}
-              onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-              onEdit={() => handleEdit(message.event_id)}
-              onDelete={() => handleDelete(message.event_id)}
-              onCopy={() => navigator.clipboard?.writeText(message.body)}
-            />
+            <div key={messageRowKey(message)}>
+              {isDateDividerBoundary(messages, i) && (
+                <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
+                  {formatDateDividerLabel(message.timestamp_ms)}
+                </div>
+              )}
+              {i === unreadStartIdx && (
+                <div className="my-2 flex items-center gap-2">
+                  <div className="h-px flex-1 bg-destructive-solid" />
+                  <span className="text-[11px] font-semibold text-destructive-solid">
+                    New messages
+                  </span>
+                  <div className="h-px flex-1 bg-destructive-solid" />
+                </div>
+              )}
+              <MessageRow
+                message={message}
+                roomId={room.room_id}
+                own={own}
+                sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
+                sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
+                canRedact={allowedToRedact}
+                readers={readers}
+                getActionsHandle={(key) => actionsRefs.current.get(key)}
+                registerActionsRef={(key, el) => {
+                  if (el) actionsRefs.current.set(key, el);
+                  else actionsRefs.current.delete(key);
+                }}
+                onReply={() => handleReply(message)}
+                onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
+                onEdit={() => handleEdit(message.event_id)}
+                onDelete={() => handleDelete(message.event_id)}
+                onCopy={() => navigator.clipboard?.writeText(message.body)}
+              />
+            </div>
           );
         })}
         {/* Block-level sibling of the flex message rows above (not a flex
