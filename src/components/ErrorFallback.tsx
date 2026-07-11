@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { openSentryFeedbackDialog } from "@/observability/instrument";
+import { openSentryFeedbackDialog, type FeedbackCategory } from "@/observability/instrument";
+import { FeedbackCategoryField } from "@/observability/FeedbackCategoryField";
 import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "@/observability/messages";
 
 /**
@@ -20,12 +21,15 @@ export function ErrorFallback({
   sentryEventId?: string;
 }) {
   const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+  const [feedbackCategory, setFeedbackCategory] = useState<FeedbackCategory | null>(null);
 
   const sendFeedback = async () => {
+    if (!feedbackCategory) return;
     setFeedbackStatus(null);
     const opened = await openSentryFeedbackDialog({
       associatedEventId: sentryEventId,
       surface: "crash-fallback",
+      category: feedbackCategory,
     });
     if (!opened) {
       setFeedbackStatus(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE);
@@ -43,8 +47,19 @@ export function ErrorFallback({
         Optional feedback screenshots may include visible room names, Matrix IDs, or message text
         and are not scrubbed like text fields.
       </p>
+      <FeedbackCategoryField
+        name="crash-feedback-category"
+        value={feedbackCategory}
+        onChange={setFeedbackCategory}
+        className="w-full max-w-sm text-left"
+      />
       <div className="flex flex-col gap-2 sm:flex-row">
-        <Button type="button" variant="outline" onClick={() => void sendFeedback()}>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!feedbackCategory}
+          onClick={() => void sendFeedback()}
+        >
           Send feedback
         </Button>
         <Button
