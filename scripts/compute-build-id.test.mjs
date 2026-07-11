@@ -85,3 +85,8 @@ test("describeCaughtError falls back to String() for values JSON.stringify can't
   circular.self = circular;
   assert.equal(describeCaughtError(circular), "[object Object]");
 });
+
+test("describeCaughtError falls back to String() when JSON.stringify returns undefined", () => {
+  assert.equal(describeCaughtError(undefined), "undefined");
+  assert.equal(describeCaughtError(Symbol("boom")), "Symbol(boom)");
+});

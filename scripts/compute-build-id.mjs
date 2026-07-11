@@ -74,10 +74,12 @@ export function describeCaughtError(error) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   try {
-    return JSON.stringify(error);
+    const json = JSON.stringify(error);
+    if (json !== undefined) return json;
   } catch {
-    return String(error);
+    // fall through to String() below
   }
+  return String(error);
 }
 
 function readPackageVersion() {
