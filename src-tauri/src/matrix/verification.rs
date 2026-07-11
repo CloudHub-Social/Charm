@@ -241,6 +241,20 @@ pub async fn recover_from_key(
     recover_from_key_impl(&client, &recovery_key).await
 }
 
+/// How many times [`recover_from_key_impl`] retries self-verification after
+/// a successful `recover()`, and how long it waits between attempts.
+/// `recover()` returning `Ok` only guarantees the account's private
+/// cross-signing secrets were *imported*; matrix-sdk-crypto persists that
+/// import to its local store asynchronously, so a `device.verify()` called
+/// immediately afterward can observe a store that hasn't caught up yet and
+/// fail with what looks like a missing self-signing key, even though the
+/// recovery itself genuinely succeeded. Retrying a few times with a short
+/// backoff resolves that ordinary race; a real failure (revoked device,
+/// corrupt secret storage) still fails every attempt and falls through to
+/// the existing best-effort log below.
+const SELF_VERIFY_RETRY_ATTEMPTS: u32 = 4;
+const SELF_VERIFY_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Core logic behind [`recover_from_key`]. Never logs `recovery_key` itself —
 /// only whether the attempt succeeded and, on failure, the SDK's error
 /// display — matching the redaction `src/observability/ipc.ts` already
@@ -255,10 +269,13 @@ pub async fn recover_from_key(
 /// step. This self-verify step is best-effort: its failure is logged but
 /// does not fail this call (the recovery itself already succeeded by that
 /// point), so the device can still end up unverified despite a successful
-/// recovery — see the fallback branches below. This is shared code (both the
-/// Tauri desktop command and `charm-web-server`'s `/api/verification/recovery`
-/// route call this same function), so it applies to both clients identically
-/// rather than only fixing the web client's copy of the same gap.
+/// recovery — see the fallback branches below. Retried up to
+/// [`SELF_VERIFY_RETRY_ATTEMPTS`] times first (see that constant's doc
+/// comment for why a single attempt right after `recover()` can spuriously
+/// fail). This is shared code (both the Tauri desktop command and
+/// `charm-web-server`'s `/api/verification/recovery` route call this same
+/// function), so it applies to both clients identically rather than only
+/// fixing the web client's copy of the same gap.
 pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Result<(), String> {
     let result = client.encryption().recovery().recover(recovery_key).await;
     match &result {
@@ -278,12 +295,33 @@ pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Resul
     // simply stays unverified until the next successful recovery/bootstrap.
     match client.encryption().get_own_device().await {
         Ok(Some(device)) if !device.is_verified_with_cross_signing() => {
-            match device.verify().await {
-                Ok(()) => tracing::info!("recovery-key self-verification succeeded"),
-                Err(error) => tracing::warn!(
+            let mut last_error = None;
+            for attempt in 1..=SELF_VERIFY_RETRY_ATTEMPTS {
+                match device.verify().await {
+                    Ok(()) => {
+                        tracing::info!(attempt, "recovery-key self-verification succeeded");
+                        last_error = None;
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            attempt,
+                            error = %error,
+                            "recovery-key self-verification attempt failed, retrying"
+                        );
+                        last_error = Some(error);
+                        if attempt < SELF_VERIFY_RETRY_ATTEMPTS {
+                            tokio::time::sleep(SELF_VERIFY_RETRY_BASE_DELAY * attempt).await;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                tracing::warn!(
                     error = %error,
-                    "recovery-key restore succeeded but self-verification failed"
-                ),
+                    attempts = SELF_VERIFY_RETRY_ATTEMPTS,
+                    "recovery-key restore succeeded but self-verification failed after all retries"
+                );
             }
         }
         Ok(_) => {}
