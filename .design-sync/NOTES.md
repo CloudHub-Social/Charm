@@ -1,7 +1,26 @@
 # design-sync notes — Charm
 
 Synced to claude.ai/design project `82fcc48e-45b8-4e8f-9496-83645ae4236a`
-("Charm Design System"). Shape: **storybook**. 9 components, all graded `match`.
+("Charm Design System"). Shape: **storybook**. 10 components, all graded `match`:
+Avatar, Button, Dialog, DropdownMenu, Input, Label, Popover, **Switch**, Tabs, Tooltip.
+
+## 2026-07-11 re-sync — Switch onboarded
+- **Switch** (added #81) wired into scope this run: `ds-entry.ts` export + `gen-types.mjs`
+  `modules` array. 4 stories (Off/On/Disabled/Disabled On), single grid cell, no `cardMode`.
+  Renders `match` on all 4 (off = gray track + ×-thumb, on = purple knob-right, disabled dimmed).
+- **This branch also carries the PR #192 tsconfig fix** (`tsconfig.ds-types.json` `include`
+  gains `../src/vite-env.d.ts` + `../src/test/setup.ts`). #192 was still OPEN at sync time;
+  without it `gen-types.mjs`'s `tsc` exits non-zero and `execFileSync` throws. Identical
+  one-line change, so it merges conflict-free whichever of #192 / this PR lands first.
+- **Canary re-samples per driver run.** Adding Switch churned the Tailwind-JIT bundle CSS →
+  every render hash moved → all 9 existing components arrived as `verification.canary`
+  (`render_churn`), sources stable. The canary spot-check picks a *different* ~5-component
+  sample each `resync.mjs` run. A re-sync from a **fresh worktree** has no local
+  `.design-sync/.cache/compare/*.grade.json` (grades live only in the remote `_ds_sync.json`
+  anchor), so any picked-but-ungraded component lands in `pendingGrade`. Fix: grade **all**
+  churned components (view each compare sheet, confirm `match`), not just one run's sampled
+  picks — else the next driver run re-picks another ungraded one and the gate never goes
+  clean. All 10 graded this run.
 
 ## Repo shape (why the config looks unusual)
 - Charm is a **Tauri app**, not a published component library: no dist, no barrel,
@@ -54,7 +73,10 @@ Synced to claude.ai/design project `82fcc48e-45b8-4e8f-9496-83645ae4236a`
   `text-accent-foreground`, `border-destructive`, `ring-ring` were dropped — present only
   in variant/modifier form). Re-validate the header's class table against the fresh build
   each sync.
-- **Story caps:** Button has 8 stories (all captured/graded). Others ≤6.
+- **Story caps:** Button has 8 stories, Avatar 7; the default compare cap captures the
+  first 6. The 2026-07-11 canary re-sync graded those 6 each (all `match`); the tail
+  stories are verified-by-upload (carried via the anchor). Pass `--max-stories 8`/`7` to
+  individually re-grade Button/Avatar's tail. Other components ≤6 (fully graded).
 - **`package.json` `"types"` field** exists solely for design-sync discovery; don't
   remove it. It points at a gitignored generated file (`buildCmd` regenerates it).
 - **`buildCmd` (`gen-types.mjs`) leaks `.d.ts` into `src-tauri/src/bindings/`.** The
