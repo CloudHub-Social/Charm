@@ -26,7 +26,10 @@ export function isDateDividerBoundary(
   index: number,
 ): boolean {
   if (index === 0) return true;
-  return !isSameDay(new Date(messages[index - 1].timestamp_ms), new Date(messages[index].timestamp_ms));
+  return !isSameDay(
+    new Date(messages[index - 1].timestamp_ms),
+    new Date(messages[index].timestamp_ms),
+  );
 }
 
 /**

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { formatDateDividerLabel, isDateDividerBoundary, unreadDividerIndex } from "./timelineDividers";
+import {
+  formatDateDividerLabel,
+  isDateDividerBoundary,
+  unreadDividerIndex,
+} from "./timelineDividers";
 
 // Constructed with the local-time `Date(year, month, day, ...)` form (not
 // ISO/`Z` strings) throughout, matching `timelineDividers.ts`'s use of local
