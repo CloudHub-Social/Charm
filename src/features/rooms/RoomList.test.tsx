@@ -2,10 +2,27 @@ import type { ComponentProps, ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
+
+// Radix's Tooltip.Content measures itself via ResizeObserver, which jsdom
+// doesn't implement — stub it so the tooltip-hover test below can render the
+// portal content without crashing. Scoped to this file's beforeAll/afterAll
+// (not a module-level vi.stubGlobal) so the stub can't leak into other test
+// files sharing this Vitest worker.
+class StubResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+beforeAll(() => {
+  vi.stubGlobal("ResizeObserver", StubResizeObserver);
+});
+afterAll(() => {
+  vi.unstubAllGlobals();
+});
 
 // RoomList's header now fetches the signed-in user's own profile via
 // `useOwnProfile` (TanStack Query), which needs a `QueryClientProvider`
@@ -215,6 +232,20 @@ describe("RoomList", () => {
     store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
     renderRoomList(<RoomList {...roomListProps()} />, store);
     expect(screen.getByLabelText("5 unread rooms, 2 mentions")).toHaveTextContent("2");
+  });
+
+  it("shows a tooltip with the same text as the badge's aria-label on hover", async () => {
+    const store = createStore();
+    store.set(badgeAtom, { total_unread: 5, total_highlight: 2, spaces: {} });
+    renderRoomList(<RoomList {...roomListProps()} />, store);
+
+    const badge = screen.getByLabelText("5 unread rooms, 2 mentions");
+    fireEvent.pointerOver(badge, { pointerType: "mouse" });
+    fireEvent.pointerEnter(badge, { pointerType: "mouse" });
+    fireEvent.pointerMove(badge, { pointerType: "mouse" });
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip).toHaveTextContent(badge.getAttribute("aria-label") ?? "");
   });
 
   it("renders recursive space hierarchy with indentation and inline join actions", async () => {
