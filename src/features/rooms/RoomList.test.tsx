@@ -254,7 +254,7 @@ describe("RoomList", () => {
     renderRoomList(<RoomList {...roomListProps()} />, store);
 
     const badge = screen.getByLabelText("1 unread room, 1 mention");
-    expect(badge).toHaveAttribute("tabIndex", "0");
+    expect(badge.tagName).toBe("BUTTON");
     fireEvent.focus(badge);
 
     const tooltip = await screen.findByRole("tooltip");

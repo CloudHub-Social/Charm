@@ -152,15 +152,21 @@ function GatedItem({ allowed, variant, onSelect, children }: GatedItemProps) {
   if (allowed) return item;
   // `DropdownMenuItem`'s disabled state sets `pointer-events: none` on the
   // item itself, so a `TooltipTrigger asChild` wrapping it directly never
-  // sees the hover — wrap it in a plain (non-disabled) span instead so the
-  // tooltip actually triggers, same pattern as `RoomSettingsForm`'s
-  // `PermissionGate`.
+  // sees the hover — wrap it in a plain (non-disabled), keyboard-focusable
+  // button instead so the tooltip actually triggers on hover/focus, same
+  // pattern as `RoomSettingsForm`'s `PermissionGate`. The inner item is
+  // disabled (pointer-events: none), so only this outer button is ever
+  // reachable/interactive; the repo's a11y lint requires a real `<button>`
+  // over a `role="button"` span.
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="block" tabIndex={0}>
+        <button
+          type="button"
+          className="block w-full cursor-default border-0 bg-transparent p-0 text-left"
+        >
           {item}
-        </span>
+        </button>
       </TooltipTrigger>
       <TooltipContent side="left">You need a higher power level to do this</TooltipContent>
     </Tooltip>
