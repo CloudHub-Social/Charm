@@ -13,6 +13,7 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -1377,5 +1378,27 @@ describe("ChatShell", () => {
     fireEvent.click(link);
 
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the layout component matching the messageLayout appearance setting", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "hi there",
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    store.set(messageLayoutAtom, "irc");
+    renderChatShell(store);
+
+    // IRC mode's distinguishing structure: `<nick>` prefix, not a bubble.
+    expect(await screen.findByText("<Alice>")).toBeInTheDocument();
   });
 });

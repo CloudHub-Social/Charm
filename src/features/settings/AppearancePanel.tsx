@@ -6,7 +6,14 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { Density, FontSize, ReducedMotion, Theme } from "@/features/appearance/atoms";
+import { cn } from "@/lib/utils";
+import type {
+  Density,
+  FontSize,
+  MessageLayout,
+  ReducedMotion,
+  Theme,
+} from "@/features/appearance/atoms";
 import { useAppearance } from "@/features/appearance/useAppearance";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
@@ -34,6 +41,83 @@ const REDUCED_MOTION_LABELS: Record<ReducedMotion, string> = {
   on: "Reduced",
   off: "Full motion",
 };
+
+const MESSAGE_LAYOUT_LABELS: Record<MessageLayout, string> = {
+  bubble: "Bubble",
+  discord: "Discord",
+  irc: "IRC",
+};
+
+const MESSAGE_LAYOUT_ORDER: MessageLayout[] = ["bubble", "discord", "irc"];
+
+/** Tiny CSS-drawn preview of what each layout looks like — two stacked
+ * lines standing in for two messages, shaped per mode (rounded pill for
+ * bubble, flat left-aligned block for discord, single dense line for irc) —
+ * cheap enough to keep inline rather than importing/rendering real message
+ * components for a decorative thumbnail. */
+function MessageLayoutPreview({ mode }: { mode: MessageLayout }) {
+  if (mode === "bubble") {
+    return (
+      <svg viewBox="0 0 64 32" className="h-8 w-16" aria-hidden="true">
+        <rect x="4" y="4" width="32" height="8" rx="4" className="fill-secondary" />
+        <rect x="28" y="18" width="32" height="8" rx="4" className="fill-primary-solid" />
+      </svg>
+    );
+  }
+  if (mode === "discord") {
+    return (
+      <svg viewBox="0 0 64 32" className="h-8 w-16" aria-hidden="true">
+        <circle cx="8" cy="8" r="4" className="fill-secondary" />
+        <rect x="16" y="5" width="30" height="3" rx="1.5" className="fill-secondary" />
+        <rect x="16" y="10" width="40" height="3" rx="1.5" className="fill-muted-foreground/40" />
+        <rect x="4" y="20" width="44" height="3" rx="1.5" className="fill-muted-foreground/40" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 64 32" className="h-8 w-16" aria-hidden="true">
+      <rect x="4" y="8" width="10" height="3" rx="1" className="fill-muted-foreground/40" />
+      <rect x="16" y="8" width="12" height="3" rx="1" className="fill-secondary" />
+      <rect x="30" y="8" width="30" height="3" rx="1" className="fill-muted-foreground/40" />
+      <rect x="4" y="18" width="10" height="3" rx="1" className="fill-muted-foreground/40" />
+      <rect x="16" y="18" width="10" height="3" rx="1" className="fill-secondary" />
+      <rect x="28" y="18" width="24" height="3" rx="1" className="fill-muted-foreground/40" />
+    </svg>
+  );
+}
+
+/** Segmented control (Charm 2.0 Spec 27): three options, each with a small
+ * live preview thumbnail, for the `messageLayout` appearance setting. */
+function MessageLayoutControl({
+  value,
+  onChange,
+}: {
+  value: MessageLayout;
+  onChange: (next: MessageLayout) => void;
+}) {
+  return (
+    <fieldset className="flex flex-wrap gap-2 border-0 p-0">
+      <legend className="sr-only">Message layout mode</legend>
+      {MESSAGE_LAYOUT_ORDER.map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          aria-pressed={value === mode}
+          onClick={() => onChange(mode)}
+          className={cn(
+            "flex flex-col items-center gap-1 rounded-md border px-2 py-2 text-xs",
+            value === mode
+              ? "border-primary-solid bg-accent text-accent-foreground"
+              : "border-border text-muted-foreground hover:bg-accent/50",
+          )}
+        >
+          <MessageLayoutPreview mode={mode} />
+          {MESSAGE_LAYOUT_LABELS[mode]}
+        </button>
+      ))}
+    </fieldset>
+  );
+}
 
 function PickerControl<T extends string>({
   value,
@@ -76,10 +160,12 @@ export function AppearancePanel() {
     fontSize,
     density,
     reducedMotion,
+    messageLayout,
     setTheme,
     setFontSize,
     setDensity,
     setReducedMotion,
+    setMessageLayout,
   } = useAppearance();
 
   return (
@@ -115,6 +201,25 @@ export function AppearancePanel() {
             />
           }
         />
+        <SettingTile>
+          <div className="text-sm font-medium text-foreground">Message layout</div>
+          <p className="mt-0.5 text-sm text-muted-foreground">
+            Bubble, Discord-style, or IRC-style density.
+          </p>
+          <div className="mt-3">
+            <MessageLayoutControl value={messageLayout} onChange={setMessageLayout} />
+          </div>
+          {messageLayout === "irc" && (
+            // IRC mode has no avatar column, so it doesn't render the
+            // avatar-stack read-receipt indicator Bubble/Discord use —
+            // rather than silently drop the feature with no explanation,
+            // disclose it here until an IRC-appropriate indicator design
+            // lands (tracked as a follow-up, not built speculatively now).
+            <p className="mt-2 text-sm text-warning">
+              IRC mode doesn't show read receipts yet — this is planned but not built.
+            </p>
+          )}
+        </SettingTile>
       </SettingsCard>
     </div>
   );
