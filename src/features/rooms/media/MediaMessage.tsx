@@ -100,7 +100,7 @@ function ImageThumbnail({
         type="button"
         aria-label={`Open image ${alt}`}
         onClick={() => setLightboxOpen(true)}
-        className="block max-h-70 max-w-70 overflow-hidden rounded-md border border-border"
+        className="block h-auto w-70 max-h-70 overflow-hidden rounded-md border border-border"
         style={aspectRatioStyle(width, height)}
       >
         {thumbSrc ? (
@@ -146,7 +146,7 @@ function VideoThumbnail({
         type="button"
         aria-label={`Play video ${alt}`}
         onClick={() => setLightboxOpen(true)}
-        className="relative block max-h-70 max-w-70 overflow-hidden rounded-md border border-border"
+        className="relative block h-auto w-70 max-h-70 overflow-hidden rounded-md border border-border"
         style={aspectRatioStyle(width, height)}
       >
         {thumbSrc ? (

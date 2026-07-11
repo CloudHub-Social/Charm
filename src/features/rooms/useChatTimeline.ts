@@ -30,6 +30,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // messages to the wrong room — same reasoning as `ChatShell`'s
   // `requestedRoomIdRef` for `canRedact`.
   const currentRoomIdRef = useRef<string | null>(null);
+  // A plain room-id comparison isn't enough to catch a *revisit* to the same
+  // room: if the user leaves room A mid-`loadMoreHistory`, then returns to A
+  // before that request resolves, `currentRoomIdRef.current` reads "A" again
+  // even though the revisit's own fresh initial load has since run. This
+  // counter increments on every "a room became active" transition (below),
+  // including same-id revisits, so `loadMoreHistory` can tell its own
+  // request apart from a later, unrelated one for the same room id.
+  const visitGenerationRef = useRef(0);
   // `TimelinePage.next_cursor` sentinel from the most recent page fetched
   // for this room: `null` once the room's history start has been reached
   // (see `TimelinePage`'s doc comment), so `loadMoreHistory` becomes a no-op.
@@ -49,6 +57,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // walk further back into history each time instead of just loading the
     // room once.
     const timelineRoomId = room?.room_id;
+    visitGenerationRef.current += 1;
     // A new room always opens scrolled to bottom, regardless of whether the
     // previously active room was scrolled up reading history.
     isAtBottomRef.current = true;
@@ -179,22 +188,32 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     if (!roomId || loadingMoreRef.current || !nextCursorRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
+    const generation = visitGenerationRef.current;
+    // Captured synchronously, *before* the request even starts — not after
+    // awaiting it. The backend's long-lived timeline listener can push a
+    // `timeline:update` for this same `paginate_backwards` diff before this
+    // command's own response resolves; if the "before" snapshot were taken
+    // after the await, that live update would apply the prepended messages
+    // first, and by the time this response landed `container.scrollHeight`
+    // would already reflect the grown list — producing a zero-delta restore
+    // that fails to prevent the jump it was meant to guard against.
+    const container = containerRef.current;
+    pendingAnchorRef.current = container
+      ? { scrollHeight: container.scrollHeight, scrollTop: container.scrollTop }
+      : null;
     try {
       const page = await getTimelinePage(roomId);
-      // The user may have switched rooms (or this room issued a newer
-      // request) while this one was in flight — don't apply a stale
-      // response's messages or scroll anchor.
-      if (currentRoomIdRef.current !== roomId) return;
-      const container = containerRef.current;
-      pendingAnchorRef.current = container
-        ? { scrollHeight: container.scrollHeight, scrollTop: container.scrollTop }
-        : null;
+      // Stale if the room has changed since this request was issued —
+      // including a revisit to the same room id, which `visitGenerationRef`
+      // (unlike a plain `currentRoomIdRef` comparison) still distinguishes.
+      // Don't apply this response's messages or scroll anchor in that case.
+      if (visitGenerationRef.current !== generation) return;
       nextCursorRef.current = page.next_cursor;
       setMessages(page.messages);
     } catch (err) {
       logAndIgnore(err);
     } finally {
-      if (currentRoomIdRef.current === roomId) {
+      if (visitGenerationRef.current === generation) {
         loadingMoreRef.current = false;
         setLoadingMore(false);
       }
