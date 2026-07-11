@@ -105,4 +105,23 @@ describe("DiscordMessageRow", () => {
     render(<DiscordMessageRow {...baseProps({ isPending: true })} />);
     expect(screen.getByText(/sending…/)).toBeInTheDocument();
   });
+
+  it("shows the (edited) indicator on a follow-up message in a same-sender run", () => {
+    // Regression test: the follow-up meta line only checked isPending/isError
+    // and silently dropped the edited indicator for grouped messages.
+    render(
+      <DiscordMessageRow
+        {...baseProps({
+          sameSenderAsPrev: true,
+          message: makeMessageSummary({
+            event_id: "$2",
+            sender: "@bob:localhost",
+            body: "follow-up, edited",
+            edited: true,
+          }),
+        })}
+      />,
+    );
+    expect(screen.getByText("(edited)")).toBeInTheDocument();
+  });
 });

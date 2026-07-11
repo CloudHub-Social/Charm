@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomMessageSummary } from "@/lib/matrix";
 import { openExternalUrl } from "@/lib/openExternalUrl";
@@ -28,7 +29,7 @@ export const ALLOWED_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:", "te
  * `ALLOWED_LINK_PROTOCOLS` — a relative/fragment href (both valid per the
  * sanitizer's allowlist) is simply left alone rather than resolved and opened.
  */
-export function handleMessageLinkClick(event: React.MouseEvent<HTMLElement>) {
+export function handleMessageLinkClick(event: MouseEvent<HTMLElement>) {
   // `event.target` is normally an Element for a real click, but isn't
   // guaranteed to be one (e.g. a synthetic/dispatched event) — this is a
   // type assertion away from a runtime throw on `.closest`.

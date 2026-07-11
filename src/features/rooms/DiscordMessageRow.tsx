@@ -159,10 +159,11 @@ export function DiscordMessageRow({
             disabled={disableRelationActions || isUndecrypted}
           />
         )}
-        {showMeta && !showHeader && (isPending || isError) && (
+        {showMeta && !showHeader && (message.edited || isPending || isError) && (
           <span className="font-mono text-[11px] text-muted-foreground">
-            {isPending && "sending…"}
-            {isError && "failed to send"}
+            {message.edited && "(edited)"}
+            {isPending && (message.edited ? " · sending…" : "sending…")}
+            {isError && (message.edited ? " · failed to send" : "failed to send")}
           </span>
         )}
         {readers.length > 0 && (
