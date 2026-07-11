@@ -45,4 +45,12 @@ formatted_body: string | null, timestamp_ms: number, edited: boolean, redacted: 
  * how the frontend turns this into an actual displayable/downloadable
  * local path.
  */
-media: MediaContent | null, };
+media: MediaContent | null, 
+/**
+ * `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
+ * signal for "this is the undecrypted placeholder", set server-side.
+ * Never derive this by comparing `body` against the placeholder text: a
+ * real decrypted message can legitimately contain that exact string,
+ * which would otherwise false-positive as undecrypted.
+ */
+is_undecrypted: boolean, };

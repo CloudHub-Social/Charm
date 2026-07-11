@@ -29,6 +29,16 @@ export interface MessageActionsProps {
    * needs the body text.
    */
   disableRelationActions?: boolean;
+  /**
+   * Set when the message's `body` is still the fixed "Unable to decrypt
+   * message" placeholder (see `UNABLE_TO_DECRYPT_BODY` in
+   * `src-tauri/src/matrix/timeline.rs`) — there's no real content yet to
+   * edit, copy, reply to, or react to. Delete/redact stays available: the
+   * user can still want a message they can't read gone from the room, and
+   * redacting doesn't need the plaintext. If the key later arrives, the
+   * timeline emits a fresh diff with real content and this flips back off.
+   */
+  isUndecrypted?: boolean;
 }
 
 /** Imperative handle so a parent can drive the long-press-to-open behavior
@@ -63,6 +73,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onCopy,
       className,
       disableRelationActions = false,
+      isUndecrypted = false,
     },
     ref,
   ) {
@@ -124,7 +135,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
           <button
             type="button"
             aria-label="React"
-            disabled={disableRelationActions}
+            disabled={disableRelationActions || isUndecrypted}
             className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary disabled:pointer-events-none disabled:opacity-40"
           >
             <SmilePlus size={16} />
@@ -142,17 +153,20 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onReply} disabled={disableRelationActions}>
+            <DropdownMenuItem onSelect={onReply} disabled={disableRelationActions || isUndecrypted}>
               <Reply />
               Reply
             </DropdownMenuItem>
             {isOwn && (
-              <DropdownMenuItem onSelect={onEdit} disabled={disableRelationActions}>
+              <DropdownMenuItem
+                onSelect={onEdit}
+                disabled={disableRelationActions || isUndecrypted}
+              >
                 <Pencil />
                 Edit
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem onSelect={onCopy}>
+            <DropdownMenuItem onSelect={onCopy} disabled={isUndecrypted}>
               <Copy />
               Copy
             </DropdownMenuItem>

@@ -132,6 +132,13 @@ export function MessageRow({
   // reliable way to tell the two apart without depending on send_state timing.
   const hasRealEventId = message.event_id.startsWith("$");
   const disableRelationActions = isPending || !hasRealEventId;
+  // `is_undecrypted` is the authoritative signal, set server-side only for a
+  // `MsgLikeKind::UnableToDecrypt` timeline item — never derive this from
+  // `body` text (a real decrypted message can legitimately contain the
+  // placeholder string). If the room key arrives later,
+  // `Timeline::retry_decryption` re-emits the item with real content and
+  // `is_undecrypted` flips back to `false`.
+  const isUndecrypted = message.is_undecrypted;
   const rowKey = messageRowKey(message);
 
   return (
@@ -231,6 +238,7 @@ export function MessageRow({
               isOwn={own}
               canRedact={canRedact}
               disableRelationActions={disableRelationActions}
+              isUndecrypted={isUndecrypted}
               className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
               onReply={onReply}
               onReact={onReact}
@@ -244,7 +252,7 @@ export function MessageRow({
           <ReactionBar
             reactions={message.reactions}
             onToggle={onReact}
-            disabled={disableRelationActions}
+            disabled={disableRelationActions || isUndecrypted}
           />
         )}
         {showMeta && (
