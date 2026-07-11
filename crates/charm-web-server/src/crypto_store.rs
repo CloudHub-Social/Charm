@@ -96,3 +96,66 @@ pub fn existing_store_dir(store_key: &str) -> Result<Option<PathBuf>, String> {
     let dir = store_path(store_key)?;
     Ok(dir.is_dir().then_some(dir))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards every test below that reads/writes `DATA_DIR_ENV` — same
+    /// rationale as `persistence.rs`'s own `ENV_LOCK`: `cargo test` runs
+    /// `#[test]`s concurrently within one process by default, and this env
+    /// var is process-wide.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn scratch_data_dir(name: &str) -> std::path::PathBuf {
+        let suffix: String = format!("{:x}", rand::random::<u64>());
+        let path =
+            std::env::temp_dir().join(format!("charm-web-server-crypto-store-{name}-{suffix}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    /// Regression test for the Sentry-flagged bug this split fixed:
+    /// `existing_store_dir` must never create the directory it reports on —
+    /// unlike the old, single `store_dir` (which always `create_dir_all`'d,
+    /// even when just checking for restore/logout), a directory that
+    /// genuinely doesn't exist yet must come back as `Ok(None)` with nothing
+    /// left behind on disk afterward.
+    #[test]
+    fn existing_store_dir_never_creates_a_missing_directory() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let data_dir = scratch_data_dir("missing");
+        std::env::set_var(crate::persistence::DATA_DIR_ENV, data_dir.to_str().unwrap());
+
+        let result = existing_store_dir("somemissingstorekey").unwrap();
+
+        assert!(result.is_none());
+        assert!(
+            !data_dir.join("crypto").exists(),
+            "existing_store_dir must not create the crypto/ directory as a side effect"
+        );
+        std::env::remove_var(crate::persistence::DATA_DIR_ENV);
+    }
+
+    /// The counterpart: once `create_store_dir` has actually established a
+    /// store, `existing_store_dir` must find it.
+    #[test]
+    fn existing_store_dir_finds_a_directory_create_store_dir_made() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let data_dir = scratch_data_dir("present");
+        std::env::set_var(crate::persistence::DATA_DIR_ENV, data_dir.to_str().unwrap());
+
+        let created = create_store_dir("somepresentstorekey").unwrap();
+        let found = existing_store_dir("somepresentstorekey").unwrap();
+
+        assert_eq!(found, Some(created));
+        std::env::remove_var(crate::persistence::DATA_DIR_ENV);
+    }
+
+    #[test]
+    fn store_path_rejects_non_alphanumeric_keys() {
+        assert!(existing_store_dir("../../etc/passwd").is_err());
+        assert!(existing_store_dir("has spaces").is_err());
+        assert!(existing_store_dir("").is_err());
+    }
+}

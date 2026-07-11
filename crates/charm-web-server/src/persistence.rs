@@ -649,7 +649,21 @@ impl PersistenceStore {
 /// `sqlite_store` open it as a legitimate-looking-but-empty store instead of
 /// erroring, which would skip this fallback entirely and hand back a client
 /// that looks restored but has silently lost all its crypto state.
-async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk::Client, String> {
+///
+/// Returns whether the persisted crypto store was actually opened, not just
+/// whether `entry` claims one exists — [`restore_one`] must only set the
+/// resulting `Session::crypto` when this is `true`. Getting this wrong
+/// (setting it unconditionally off `entry.crypto_store_key.is_some()`
+/// regardless of which branch below actually ran) would make a session that
+/// fell back to a bare in-memory client still *report* having a working
+/// persisted store — which `session::Session::has_unpersisted_encrypted_room`
+/// trusts to decide whether idle eviction can safely restore this session
+/// again later. A false "yes, persisted" here would make that session
+/// idle-evictable despite having no way back, silently losing its crypto
+/// state on the next idle sweep instead of being correctly exempted.
+async fn build_client_for_restore(
+    entry: &PersistedSession,
+) -> Result<(matrix_sdk::Client, bool), String> {
     if let (Some(store_key), Some(passphrase)) = (&entry.crypto_store_key, &entry.crypto_passphrase)
     {
         match crate::crypto_store::existing_store_dir(store_key) {
@@ -660,7 +674,7 @@ async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk
                     .build()
                     .await
                 {
-                    Ok(client) => return Ok(client),
+                    Ok(client) => return Ok((client, true)),
                     Err(e) => tracing::warn!(
                         "failed to open crypto store, falling back to a fresh in-memory \
                          client for this session: {e}"
@@ -674,11 +688,38 @@ async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk
             Err(e) => tracing::warn!("failed to resolve crypto store directory: {e}"),
         }
     }
-    matrix_sdk::Client::builder()
+    let client = matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
         .build()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok((client, false))
+}
+
+/// The `Session::crypto` [`restore_one`] should carry for a restored client
+/// — `Some` only when `opened` is true, i.e. [`build_client_for_restore`]
+/// actually opened `entry`'s persisted store, never merely because `entry`
+/// *claims* to have one (`entry.crypto_store_key.is_some()`). Pulled out as
+/// its own pure function (no `Client`/network involved) specifically so this
+/// mapping is unit-testable on its own — see the regression test below for
+/// the bug this guards against.
+fn crypto_handle_if_opened(
+    entry: &PersistedSession,
+    opened: bool,
+) -> Option<crate::session::CryptoStoreHandle> {
+    if !opened {
+        return None;
+    }
+    entry
+        .crypto_store_key
+        .clone()
+        .zip(entry.crypto_passphrase.clone())
+        .map(
+            |(store_key, passphrase)| crate::session::CryptoStoreHandle {
+                store_key,
+                passphrase,
+            },
+        )
 }
 
 /// `initial_presence`, when given, is applied to the freshly built
@@ -697,7 +738,7 @@ async fn restore_one(
     entry: &PersistedSession,
     initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
-    let client = build_client_for_restore(entry).await?;
+    let (client, crypto_store_opened) = build_client_for_restore(entry).await?;
     client
         .matrix_auth()
         .restore_session(
@@ -712,16 +753,7 @@ async fn restore_one(
     // why: a to-device verification event landing in this restore's own
     // initial sync is processed synchronously as part of it and never
     // replayed later, so the handler must already be registered.
-    let crypto = entry
-        .crypto_store_key
-        .clone()
-        .zip(entry.crypto_passphrase.clone())
-        .map(
-            |(store_key, passphrase)| crate::session::CryptoStoreHandle {
-                store_key,
-                passphrase,
-            },
-        );
+    let crypto = crypto_handle_if_opened(entry, crypto_store_opened);
     let session = crate::session::Session::new(
         client.clone(),
         entry.session.meta.user_id.to_string(),
@@ -1346,5 +1378,41 @@ mod tests {
             .restore_by_token("tok-unreachable", None)
             .await
             .is_none());
+    }
+
+    /// Regression test for a Sentry-flagged bug in an earlier revision of
+    /// this same PR: `crypto_handle_if_opened` must return `None` when
+    /// `opened` is `false`, even though `entry` itself carries a
+    /// `crypto_store_key`/`crypto_passphrase` pair — i.e. even though the
+    /// entry *claims* to have a persisted store. `restore_one` passes
+    /// `opened` from `build_client_for_restore`'s own return, which is only
+    /// `true` when it actually succeeded in opening that store (see that
+    /// function's doc comment); an earlier revision derived `Session::crypto`
+    /// straight from `entry.crypto_store_key.is_some()` instead, which would
+    /// make a session that fell back to a bare in-memory client (e.g.
+    /// because its store directory was lost on a redeploy) still *report*
+    /// having a working persisted store — wrongly exempting it from idle
+    /// eviction (`Session::has_unpersisted_encrypted_room`) and silently
+    /// losing its crypto state on the next idle sweep instead of ever
+    /// getting a chance to restore it from the recovery key.
+    #[test]
+    fn crypto_handle_if_opened_is_none_when_the_store_was_not_actually_opened() {
+        let entry = PersistedSession {
+            token: "tok-missing-store".to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@laura:example.invalid"),
+            crypto_store_key: Some("nonexistentstorekey".to_string()),
+            crypto_passphrase: Some("some-passphrase".to_string()),
+        };
+
+        assert!(
+            crypto_handle_if_opened(&entry, false).is_none(),
+            "must be None when the store was not actually opened, regardless of what the \
+             entry itself claims"
+        );
+        assert!(
+            crypto_handle_if_opened(&entry, true).is_some(),
+            "must be Some when the store genuinely was opened and the entry has both fields"
+        );
     }
 }
