@@ -17,9 +17,9 @@ afterEach(() => {
 describe("AboutPanel", () => {
   it("shows the app version and a link to the source repo", () => {
     render(<AboutPanel />);
-    // Scoped to the <span> (Version row) — without a selector this also
-    // matches the Build row's fallback button when VITE_BUILD_ID is unset,
-    // since both show the bare package version in that case.
+    // Scoped to the <span> (Version row) — the Build row's fallback button
+    // renders "{version}-dev" (formatBuildIdForDisplay), not the bare
+    // version, so this selector is no longer ambiguous between the two rows.
     expect(screen.getByText(packageJson.version, { selector: "span" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute(
       "href",
@@ -27,14 +27,17 @@ describe("AboutPanel", () => {
     );
   });
 
-  it("shows a Build row with a copyable build identifier (Spec 24)", () => {
+  it("shows a Build row with a human-friendly, copyable build identifier (Spec 24)", () => {
     vi.stubEnv("VITE_BUILD_ID", "0.4.2+pr187.a1b2c3d");
     render(<AboutPanel />);
 
+    // The button's accessible name/copy value stay the raw canonical id (what
+    // a reporter needs to paste), but the visible label is the friendlier
+    // "{version}-pr{n} (sha-{sha})" rendering from formatBuildIdForDisplay.
     const buildButton = screen.getByRole("button", {
       name: "Copy build identifier 0.4.2+pr187.a1b2c3d",
     });
-    expect(buildButton).toHaveTextContent("0.4.2+pr187.a1b2c3d");
+    expect(buildButton).toHaveTextContent("0.4.2-pr187 (sha-a1b2c3d)");
   });
 
   it("copies the build identifier to the clipboard when clicked", async () => {
@@ -52,9 +55,10 @@ describe("AboutPanel", () => {
 
   it("falls back to the package version when VITE_BUILD_ID is unset", () => {
     render(<AboutPanel />);
-    expect(
-      screen.getByRole("button", { name: `Copy build identifier ${packageJson.version}` }),
-    ).toBeInTheDocument();
+    const buildButton = screen.getByRole("button", {
+      name: `Copy build identifier ${packageJson.version}`,
+    });
+    expect(buildButton).toHaveTextContent(`${packageJson.version}-dev`);
   });
 
   it("does not show Copied when the Clipboard API is unavailable", async () => {

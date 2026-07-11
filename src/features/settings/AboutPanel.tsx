@@ -1,15 +1,16 @@
 import { useState } from "react";
 import packageJson from "../../../package.json";
-import { getBuildId } from "@/lib/buildId";
+import { formatBuildIdForDisplay, getBuildId } from "@/lib/buildId";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const REPO_URL = "https://github.com/CloudHub-Social/Charm";
 
 /**
- * Copyable build identifier (Spec 24) — e.g. `0.4.2+a1b2c3d` for an ordinary
- * build, `0.4.2+pr187.a1b2c3d` for a PR preview, `0.4.2+nightly.a1b2c3d` for
- * a nightly build. Click-to-copy so a bug reporter can paste it into the
- * feedback form or a GitHub issue without retyping it.
+ * Copyable build identifier (Spec 24). Displays a friendlier rendering of
+ * the canonical id — e.g. `0.4.2 (sha-a1b2c3d)`, `0.4.2-pr187 (sha-a1b2c3d)`,
+ * `0.4.2-nightly (sha-a1b2c3d)`, or `0.4.2-dev` for a local build with no
+ * CI-supplied id — but copies the raw canonical id (`buildId`), since that's
+ * the exact string a reporter needs to paste into an issue/feedback form.
  */
 function BuildIdControl({ buildId }: { buildId: string }) {
   const [copied, setCopied] = useState(false);
@@ -33,7 +34,7 @@ function BuildIdControl({ buildId }: { buildId: string }) {
       className="rounded text-sm text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
       aria-label={`Copy build identifier ${buildId}`}
     >
-      {copied ? "Copied" : buildId}
+      {copied ? "Copied" : formatBuildIdForDisplay(buildId)}
     </button>
   );
 }
