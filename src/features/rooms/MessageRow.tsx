@@ -20,6 +20,22 @@ import { sanitizeMatrixHtml } from "./composerSanitize";
 const MAX_RECEIPT_AVATARS = 3;
 
 /**
+ * Mirrors `UNABLE_TO_DECRYPT_BODY` in `src-tauri/src/matrix/timeline.rs` — the
+ * fixed placeholder `body` the backend substitutes for a `MsgLikeKind::
+ * UnableToDecrypt` timeline item. `RoomMessageSummary` has no dedicated
+ * decryption-state field; this placeholder text is the only signal exposed
+ * to the frontend that a message hasn't been decrypted yet. If the room key
+ * arrives later, `Timeline::retry_decryption` re-emits the item with real
+ * content and `body` no longer matches this constant.
+ */
+const UNABLE_TO_DECRYPT_BODY = "Unable to decrypt message";
+
+/** Whether `message` is still showing the backend's undecrypted placeholder. */
+function isUndecryptedMessage(message: RoomMessageSummary): boolean {
+  return !message.redacted && !message.media && message.body === UNABLE_TO_DECRYPT_BODY;
+}
+
+/**
  * Schemes a rendered `formatted_body` link is allowed to actually open —
  * matches the sanitizer's own URI allowlist (`composerSanitize.ts`) minus
  * `mxc:`, which isn't meaningful for `<a href>` (only `<img src>`), and
@@ -132,6 +148,7 @@ export function MessageRow({
   // reliable way to tell the two apart without depending on send_state timing.
   const hasRealEventId = message.event_id.startsWith("$");
   const disableRelationActions = isPending || !hasRealEventId;
+  const isUndecrypted = isUndecryptedMessage(message);
   const rowKey = messageRowKey(message);
 
   return (
@@ -231,6 +248,7 @@ export function MessageRow({
               isOwn={own}
               canRedact={canRedact}
               disableRelationActions={disableRelationActions}
+              isUndecrypted={isUndecrypted}
               className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
               onReply={onReply}
               onReact={onReact}
@@ -244,7 +262,7 @@ export function MessageRow({
           <ReactionBar
             reactions={message.reactions}
             onToggle={onReact}
-            disabled={disableRelationActions}
+            disabled={disableRelationActions || isUndecrypted}
           />
         )}
         {showMeta && (

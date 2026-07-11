@@ -111,6 +111,32 @@ describe("MessageActions", () => {
     expect(copy).not.toHaveAttribute("data-disabled");
   });
 
+  it("disables Edit, Copy, Reply, and React for an undecrypted message, but not Delete", async () => {
+    renderActions({ isOwn: true, canRedact: true, isUndecrypted: true });
+    openMenu();
+
+    expect(screen.getByRole("button", { name: "React" })).toBeDisabled();
+    const reply = (await screen.findByText("Reply")).closest('[role="menuitem"]');
+    const edit = screen.getByText("Edit").closest('[role="menuitem"]');
+    const copy = screen.getByText("Copy").closest('[role="menuitem"]');
+    const del = screen.getByText("Delete").closest('[role="menuitem"]');
+
+    expect(reply).toHaveAttribute("data-disabled");
+    expect(edit).toHaveAttribute("data-disabled");
+    expect(copy).toHaveAttribute("data-disabled");
+    // Redacting doesn't need the plaintext, so Delete stays available even
+    // though the message never decrypted.
+    expect(del).not.toHaveAttribute("data-disabled");
+  });
+
+  it("does not call onCopy when Copy is selected for an undecrypted message", async () => {
+    const { onCopy } = renderActions({ isUndecrypted: true });
+    openMenu();
+    fireEvent.click(await screen.findByText("Copy"));
+
+    expect(onCopy).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
