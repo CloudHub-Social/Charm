@@ -5,7 +5,7 @@
 // `pnpm test:coverage`'s include glob or its coverage floor.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeBuildId } from "./compute-build-id.mjs";
+import { computeBuildId, describeCaughtError } from "./compute-build-id.mjs";
 
 test("ordinary commit: {version}+{short_sha}", () => {
   const id = computeBuildId({ version: "0.4.2", sha: "a1b2c3d4e5f6" });
@@ -69,4 +69,13 @@ test("pr number accepts a numeric string (as GitHub Actions env vars are always 
     prNumber: "187",
   });
   assert.equal(id, "0.4.2+pr187.a1b2c3d");
+});
+
+test("describeCaughtError returns the message for an Error instance", () => {
+  assert.equal(describeCaughtError(new Error("boom")), "boom");
+});
+
+test("describeCaughtError stringifies a non-Error thrown value", () => {
+  assert.equal(describeCaughtError("just a string"), "just a string");
+  assert.equal(describeCaughtError({ code: "EBADF" }), "[object Object]");
 });
