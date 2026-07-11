@@ -113,21 +113,55 @@ describeWithBash("configure-sentry-release-env.sh", () => {
     expect(result.githubEnvContents).toContain("VITE_SENTRY_ENVIRONMENT=staging");
   });
 
-  it("defaults tag releases to the tag and manual releases to the commit SHA", () => {
+  it("defaults to the Spec 24 canonical build id ({version}+{short_sha}) for both tag and branch builds", () => {
+    // Spec 24 unifies release naming across tag pushes and ordinary commits
+    // — both now use the same {version}+{short_sha} format computed by
+    // scripts/compute-build-id.mjs, rather than the tag name (this
+    // previously special-cased GITHUB_REF_TYPE=tag to use GITHUB_REF_NAME).
     const tagResult = configureSentryReleaseEnv({
       GITHUB_REF_TYPE: "tag",
-      GITHUB_REF_NAME: "v2.0.0",
-      GITHUB_SHA: "abc123",
+      GITHUB_REF_NAME: "v0.1.0",
+      GITHUB_SHA: "abc1234567",
     });
     const shaResult = configureSentryReleaseEnv({
       GITHUB_REF_TYPE: "branch",
-      GITHUB_SHA: "def456",
+      GITHUB_SHA: "def4567890",
     });
 
     expect(tagResult.status).toBe(0);
-    expect(tagResult.githubEnvContents).toContain("SENTRY_RELEASE=v2.0.0");
+    expect(tagResult.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+abc1234");
     expect(shaResult.status).toBe(0);
-    expect(shaResult.githubEnvContents).toContain("SENTRY_RELEASE=def456");
+    expect(shaResult.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+def4567");
+  });
+
+  it("computes a PR-preview build id via BUILD_ID_KIND/BUILD_ID_SHA/BUILD_ID_PR_NUMBER", () => {
+    const result = configureSentryReleaseEnv({
+      GITHUB_SHA: "merge-ref-sha-not-used",
+      BUILD_ID_KIND: "pr",
+      BUILD_ID_SHA: "a1b2c3d4e5",
+      BUILD_ID_PR_NUMBER: "187",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.githubEnvContents).toContain("SENTRY_RELEASE=0.1.0+pr187.a1b2c3d");
+  });
+
+  it("writes both BUILD_ID and VITE_BUILD_ID when WRITE_RUST_DEBUG_ENV is set", () => {
+    // Native release/debug-file jobs (e.g. apple-debug-files) don't set
+    // WRITE_FRONTEND_UPLOAD_ENV — that's the separate web/desktop sourcemap-
+    // upload job's flag — but they still run Tauri's own frontend build via
+    // beforeBuildCommand, bundling the JS AboutPanel straight into the
+    // native app. That build needs VITE_BUILD_ID too, or it silently falls
+    // back to the bare package version even with BUILD_ID correctly baked
+    // into the Rust binary.
+    const result = configureSentryReleaseEnv({
+      GITHUB_SHA: "abc1234567",
+      WRITE_RUST_DEBUG_ENV: "true",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.githubEnvContents).toContain("BUILD_ID=0.1.0+abc1234");
+    expect(result.githubEnvContents).toContain("VITE_BUILD_ID=0.1.0+abc1234");
   });
 
   it("fails before upload when required Sentry secrets are missing", () => {

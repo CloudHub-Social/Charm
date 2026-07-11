@@ -241,6 +241,36 @@ jobs:
       - name: Build Tauri macOS app with release debuginfo
         run: pnpm tauri build
 
+      # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
+      # `cargo build` runs inside a generated Xcode "Run Script" build phase
+      # (`tauri ios xcode-script`) that does not forward this step's env into
+      # it — the same env-forwarding gap nightly-platform-builds.yml's iOS
+      # job already documents for sccache. BUILD_ID (written to $GITHUB_ENV
+      # by the Sentry config step above) reaches the macOS build fine but
+      # would silently be missing for this one, leaving
+      # option_env!("BUILD_ID") unset and the Rust Sentry release/build tag
+      # falling back to the bare Cargo version. Write it into cargo's own
+      # config.toml instead, same as that nightly job, so cargo forwards it
+      # to rustc regardless of what env xcodebuild's wrapper process handed
+      # down.
+      - name: Persist BUILD_ID for cargo (xcodebuild doesn't forward step env into its Run Script phase)
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          config="$cargo_home/config.toml"
+          # Guard against a duplicate [env] table (a TOML parse error) in
+          # case some earlier step/action already created this file with its
+          # own [env] section.
+          if [ -f "$config" ] && grep -q '^\[env\]' "$config"; then
+            echo "BUILD_ID = \"${BUILD_ID}\"" >> "$config"
+          else
+            {
+              echo '[env]'
+              echo "BUILD_ID = \"${BUILD_ID}\""
+            } >> "$config"
+          fi
+
       - name: Build Tauri iOS simulator app with debuginfo
         run: pnpm tauri ios build --target aarch64-sim --debug --ci
 
