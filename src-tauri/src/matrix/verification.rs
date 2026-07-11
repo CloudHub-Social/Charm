@@ -246,16 +246,19 @@ pub async fn recover_from_key(
 /// display — matching the redaction `src/observability/ipc.ts` already
 /// applies to this same argument on the frontend side of this same call.
 ///
-/// Recovering via a valid recovery key alone is sufficient to mark this
-/// session's own device verified — mirrors [`bootstrap_cross_signing_impl`]'s
-/// existing get_own_device/verify pattern (Charm 2.0 Spec 25, requirement 3):
-/// a successful `recover()` has already loaded the account's private
+/// After a successful recovery, also attempts to mark this session's own
+/// device verified — mirrors [`bootstrap_cross_signing_impl`]'s existing
+/// get_own_device/verify pattern (Charm 2.0 Spec 25, requirement 3): a
+/// successful `recover()` has already loaded the account's private
 /// self-signing key locally, so `device.verify()` can locally cross-sign this
 /// device the same way bootstrap's self-verify does, with no separate SAS
-/// step. This is shared code (both the Tauri desktop command and
-/// `charm-web-server`'s `/api/verification/recovery` route call this same
-/// function), so it applies to both clients identically rather than only
-/// fixing the web client's copy of the same gap.
+/// step. This self-verify step is best-effort: its failure is logged but
+/// does not fail this call (the recovery itself already succeeded by that
+/// point), so the device can still end up unverified despite a successful
+/// recovery — see the fallback branches below. This is shared code (both the
+/// Tauri desktop command and `charm-web-server`'s `/api/verification/recovery`
+/// route call this same function), so it applies to both clients identically
+/// rather than only fixing the web client's copy of the same gap.
 pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Result<(), String> {
     let result = client.encryption().recovery().recover(recovery_key).await;
     match &result {
@@ -275,11 +278,12 @@ pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Resul
     // simply stays unverified until the next successful recovery/bootstrap.
     match client.encryption().get_own_device().await {
         Ok(Some(device)) if !device.is_verified_with_cross_signing() => {
-            if let Err(error) = device.verify().await {
-                tracing::warn!(
+            match device.verify().await {
+                Ok(()) => tracing::info!("recovery-key self-verification succeeded"),
+                Err(error) => tracing::warn!(
                     error = %error,
                     "recovery-key restore succeeded but self-verification failed"
-                );
+                ),
             }
         }
         Ok(_) => {}
