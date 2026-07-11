@@ -90,12 +90,42 @@ android {
             buildConfigString(System.getenv("SENTRY_RELEASE") ?: System.getenv("VITE_SENTRY_RELEASE") ?: ""),
         )
     }
+    // Nightly CI signs the debug build type (not release — that also flips
+    // on minify/proguard, a bigger risk surface than a nightly compile-check
+    // pipeline should take on) with a persistent keystore when one is
+    // configured via ANDROID_RELEASE_STORE_FILE and friends (see
+    // nightly-platform-builds.yml's Android job). Without those env vars,
+    // `getByName("nightly")`'s fields stay null and nothing references the
+    // config, so a local `pnpm tauri android build --debug` is unaffected —
+    // it keeps using the Android Gradle Plugin's own auto-generated
+    // ~/.android/debug.keystore, same as before this existed.
+    //
+    // Why this needs to exist at all: without an explicit signingConfig,
+    // every CI run signs with a *freshly regenerated* debug keystore (each
+    // GitHub Actions runner is a clean VM), so consecutive nightly APKs
+    // never share a signing identity. Android refuses to install an update
+    // over an existing app when the signature doesn't match, so every
+    // nightly forced an uninstall+reinstall instead of an in-place upgrade.
+    signingConfigs {
+        create("nightly") {
+            val storeFilePath = System.getenv("ANDROID_RELEASE_STORE_FILE")
+            if (storeFilePath != null) {
+                storeFile = file(storeFilePath)
+                storePassword = System.getenv("ANDROID_RELEASE_STORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
+            if (System.getenv("ANDROID_RELEASE_STORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("nightly")
+            }
             packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
                 jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86/*.so")

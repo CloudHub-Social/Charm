@@ -12,6 +12,29 @@ name: Nightly platform builds
 # Tier 1 (PR gate) and Tier 2 (merge queue) — quality-checks.yml's fmt/
 # clippy/nextest/frontend/storybook/e2e checks — are unaffected by this
 # change and remain the actual required checks.
+#
+# macOS/Windows/Linux/Android artifacts are also published to a rolling,
+# date-tagged GitHub Release (see the publish-nightly job) so anyone can
+# grab and install a build without cloning/compiling — see README.md's
+# "Installing a nightly build" section for the per-platform install steps.
+# iOS is deliberately excluded from publishing: Apple requires a paid
+# Developer Program membership (TestFlight or per-device provisioning) to
+# install on a real device, so the iOS job stays simulator-only, compile
+# verification only, same as before.
+#
+# macOS/Windows signing is opportunistic: if MACOS_CERT_P12/WINDOWS_CERT_PFX
+# (etc., see each job) are configured as repo secrets, the build is signed
+# with a self-signed cert. This does NOT remove either OS's first-run
+# warning — macOS Gatekeeper still blocks an unnotarized app as "from an
+# unidentified developer" and Windows SmartScreen's warning is reputation-
+# based, not signature-based — see README's "Installing a nightly build"
+# for the actual bypass steps on both. The signing itself is still useful
+# (an unsigned macOS binary can trip additional integrity checks/prompts
+# beyond Gatekeeper). Without those secrets, both jobs fall back to their
+# previous unsigned behavior, so this is safe to merge before anyone
+# generates a cert. Both signing-import steps are further gated to main
+# only, so a workflow_dispatch run against an arbitrary branch never gets
+# an unlocked signing identity.
 
 on:
   schedule:
@@ -34,6 +57,15 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) because actionlint rejects the `secrets` context in a
+    # step-level `if:` (only `env`/`github`/`job`/etc. are allowed there —
+    # see the context-availability table linked from actionlint's error).
+    # Also gates to main: a workflow_dispatch run against an arbitrary
+    # branch should never get an unlocked signing identity/keychain that
+    # branch's own build.rs/JS build scripts could reach.
+    env:
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -78,13 +110,60 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
+      # Imports a self-signed Code Signing cert into a throwaway keychain and
+      # exports its identity name for the build step below, iff the repo has
+      # MACOS_CERT_P12/MACOS_CERT_PASSWORD/MACOS_CERT_NAME secrets configured
+      # (see README.md's "Generating a nightly signing cert" for how to make
+      # one — same Keychain Access flow as CLAUDE.md's local-dev cert, just
+      # exported and uploaded as a secret instead of kept in the local
+      # keychain). No-ops (leaves APPLE_SIGNING_IDENTITY unset) when the
+      # secret isn't present, so this is safe to merge before anyone
+      # generates a cert — the build below just falls back to the previous
+      # unsigned/ad-hoc-equivalent behavior.
+      - name: Import macOS signing certificate
+        if: ${{ env.HAS_MACOS_CERT == 'true' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
+        run: |
+          set -euo pipefail
+          keychain="nightly-signing.keychain-db"
+          keychain_password=$(uuidgen)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          # -D (not the GNU-only --decode/-d spelling) is the flag macOS's
+          # own /usr/bin/base64 has supported across releases.
+          echo "$MACOS_CERT_P12" | base64 -D > cert.p12
+          security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          # Prepend rather than replace: the default keychain search list
+          # still needs to include login.keychain for other tools in this
+          # job (e.g. pnpm/node's own keychain reads); we're only adding to
+          # it, not swapping it out. Read into an array (not a bare unquoted
+          # expansion) so each existing keychain path is passed as its own
+          # arg even if one contains a space. `security list-keychains`
+          # indents each entry with leading whitespace in addition to
+          # quoting it, so both need stripping — passing an indented path
+          # back in would make `-s` treat it as a nonexistent keychain.
+          IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
+          security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
+          rm -f cert.p12
+          echo "APPLE_SIGNING_IDENTITY=${MACOS_CERT_NAME}" >> "$GITHUB_ENV"
+
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
-      # the macOS .app/.dmg bundler. Not signed or notarized — that's a
-      # separate concern from "does it build". sccache credentials scoped to
+      # the macOS .app/.dmg bundler. Signed with APPLE_SIGNING_IDENTITY when
+      # the step above set it (self-signed cert, not notarized — notarization
+      # needs a paid Apple Developer account); otherwise the previous
+      # unsigned/ad-hoc-equivalent behavior. sccache credentials scoped to
       # just this step, not job-level, so earlier steps (checkout, pnpm
       # install, etc.) never see the write key.
       - run: pnpm tauri build --debug
         env:
+          # Set by the "Import macOS signing certificate" step above via
+          # $GITHUB_ENV when a cert secret is configured; otherwise unset
+          # (falls back to unsigned/ad-hoc-equivalent).
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -101,6 +180,22 @@ jobs:
           # feature branch.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+
+      # Only published for main — same reasoning as the AWS_* credential
+      # gating above: a workflow_dispatch run against an arbitrary branch is
+      # a compile check, not a build anyone should install and run.
+      # .dmg only, not the .app bundle inside it: a .app is a directory, and
+      # both actions/upload-artifact's later flattening and `gh release
+      # create`'s asset upload expect plain files. The .dmg already contains
+      # the .app, so uploading both is redundant as well as broken.
+      - name: Upload macOS artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-macos
+          path: target/debug/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a
@@ -127,6 +222,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -168,11 +267,55 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
+      # Imports a self-signed Authenticode cert into the Windows cert store
+      # and captures its thumbprint for the build step below, iff the repo
+      # has WINDOWS_CERT_PFX/WINDOWS_CERT_PASSWORD secrets configured (see
+      # README.md's "Generating a nightly signing cert" for how to make one
+      # with New-SelfSignedCertificate). No-ops when the secret isn't
+      # present, so this is safe to merge before anyone generates a cert.
+      # Note this only signs the binary — SmartScreen's "Windows protected
+      # your PC" warning is reputation-based and persists regardless (only a
+      # paid EV cert removes it); see README for the user-facing workaround.
+      - name: Import Windows signing certificate
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_PFX)
+          $pfxPath = Join-Path $env:RUNNER_TEMP "nightly-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, $bytes)
+          $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+          Remove-Item $pfxPath
+          "WINDOWS_CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
       # have no system sqlite3 on PATH, so this is the one platform where
       # linking against the vendored copy is actually load-bearing.
-      # sccache credentials scoped to just this step — see the macOS job.
-      - run: pnpm tauri build --debug
+      # Signed via a --config override (bundle.windows.certificateThumbprint)
+      # when the step above set WINDOWS_CERT_THUMBPRINT; the cert must
+      # already be in Cert:\CurrentUser\My for the Tauri bundler's signtool
+      # invocation to find it by thumbprint. sccache credentials scoped to
+      # just this step — see the macOS job.
+      - name: Build
+        shell: pwsh
+        run: |
+          $configArgs = @()
+          # Only pass a --config override when a cert was actually imported;
+          # an empty certificateThumbprint would make the bundler try (and
+          # fail) to sign with no cert instead of falling back to unsigned.
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            # -Depth 5: ConvertTo-Json defaults to -Depth 2, which would
+            # silently truncate this 3-level-deep object
+            # (bundle -> windows -> certificateThumbprint) into an empty
+            # `windows: {}`, dropping the thumbprint and building unsigned
+            # with no error.
+            $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Depth 5 -Compress
+            $configArgs = @("--config", $config)
+          }
+          pnpm tauri build --debug @configArgs
         env:
           RUSTC_WRAPPER: sccache
           SCCACHE_BUCKET: charm-sccache-storage
@@ -190,6 +333,19 @@ jobs:
           # feature branch.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning.
+      - name: Upload Windows artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-windows
+          path: |
+            target/debug/bundle/msi/*.msi
+            target/debug/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a
@@ -348,6 +504,22 @@ jobs:
           echo "All $max_attempts attempts timed out — giving up."
           exit 1
 
+      # GPG-signing (when configured) happens centrally in publish-nightly,
+      # not per-platform-job — see that job's "Sign artifacts and generate
+      # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
+      # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
+      # begin with — apt/rpm install unsigned packages fine.
+      - name: Upload Linux artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-linux
+          path: |
+            target/debug/bundle/deb/*.deb
+            target/debug/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Track failure as a GitHub issue
         # Excludes workflow_dispatch against a non-main branch — a
         # branch-local breakage shouldn't be reported as main/nightly drift
@@ -503,6 +675,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
+    env:
+      HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_JKS != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -572,11 +748,28 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
+      # Decodes ANDROID_KEYSTORE_JKS into a file and exports the env vars
+      # app/build.gradle.kts's "nightly" signingConfig reads (see that
+      # file's comment), iff ANDROID_KEYSTORE_JKS/_PASSWORD/ANDROID_KEY_ALIAS
+      # /_PASSWORD secrets are configured (see README.md's "Generating a
+      # nightly signing cert" for how to make one with keytool). Without
+      # them, the build falls back to the AGP's own auto-generated debug
+      # keystore, same as before this existed — a fresh, different keystore
+      # every CI run, which is exactly the bug a persistent one fixes (see
+      # the build.gradle.kts comment for why that matters).
+      - name: Import Android signing keystore
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+        env:
+          ANDROID_KEYSTORE_JKS: ${{ secrets.ANDROID_KEYSTORE_JKS }}
+        run: |
+          set -euo pipefail
+          keystore_path="${RUNNER_TEMP}/nightly-signing.keystore"
+          echo "$ANDROID_KEYSTORE_JKS" | base64 -d > "$keystore_path"
+          echo "ANDROID_RELEASE_STORE_FILE=${keystore_path}" >> "$GITHUB_ENV"
+
       # Single arch (aarch64) — this is a compile check, not a release
       # artifact, so building all 4 ABIs would just burn CI time for no
-      # extra coverage. No release keystore is configured (build.gradle.kts
-      # has no signingConfig for the release build type), which is fine: an
-      # unsigned APK still proves the Rust/Kotlin/NDK toolchain compiles.
+      # extra coverage.
       - name: Build
         # ANDROID_HOME is set by android-actions/setup-android via
         # $GITHUB_ENV, which only becomes a real shell variable in later
@@ -602,6 +795,14 @@ jobs:
           # feature branch.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Read by app/build.gradle.kts's "nightly" signingConfig.
+          # ANDROID_RELEASE_STORE_FILE itself comes from $GITHUB_ENV (set by
+          # the import step above), not repeated here. Empty/unset when
+          # HAS_ANDROID_KEYSTORE is false, same fallback behavior as the
+          # AWS_* vars above.
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           # openssl-sys vendors OpenSSL from source for the Android target
@@ -613,6 +814,23 @@ jobs:
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           pnpm tauri android build --target aarch64 --debug --ci
+
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning. Signed with the persistent
+      # nightly keystore when ANDROID_KEYSTORE_JKS is configured (see
+      # app/build.gradle.kts's "nightly" signingConfig comment); otherwise
+      # falls back to the AGP's auto-generated debug keystore. Either way,
+      # Android happily installs the APK once the device has "install
+      # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
+      # equivalent block to work around.
+      - name: Upload Android artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-android
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
       # Only main saves — see the Restore Gradle cache step's comment above.
       - name: Save Gradle cache
@@ -641,4 +859,208 @@ jobs:
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
             gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly platform build failed. First occurrence: $run_url"
+          fi
+
+  publish-nightly:
+    name: Publish nightly release
+    # Waits on every artifact-producing job, not just the ones that changed —
+    # a partial release (e.g. macOS present, Windows silently missing because
+    # its job failed) would be worse than no release: it looks complete but
+    # isn't. `if: always()` plus the per-need `result` check below lets this
+    # still run and report which platforms are missing, rather than being
+    # skipped outright by one failed dependency (GitHub Actions' default).
+    needs: [macos, windows, linux, android]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) — see the macOS job's HAS_MACOS_CERT comment. No ref check
+    # needed here (unlike the per-platform jobs) since this whole job is
+    # already gated to main via the `if:` above.
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nightly-*
+          path: artifacts
+          merge-multiple: true
+
+      # Centralized here (one ubuntu-latest job, where gpg is already known
+      # to be present — this workflow used it for the same purpose on this
+      # same runner image before this refactor) rather than duplicated
+      # per-platform-job: signing every binary once every platform's
+      # artifact has already landed avoids needing gpg on macos-latest/
+      # windows-latest too (unverified whether either image ships it), and
+      # avoids repeating the import+sign step 4 times over.
+      #
+      # Checksums always run (they don't need a key); GPG signing is
+      # opportunistic on GPG_PRIVATE_KEY/GPG_PASSPHRASE, same
+      # degrade-gracefully pattern as every other cert secret in this
+      # workflow. Detached ASCII-armored per-file signatures
+      # (`gpg --detach-sign --armor`) rather than format-specific tooling
+      # (dpkg-sig, rpm --addsign, etc.) — one verification method
+      # (`gpg --verify`) across every platform's artifact.
+      - name: Sign artifacts and generate checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # SHA256SUMS.txt/SHA1SUMS.txt: standard `sha256sum`/`sha1sum`
+          # output format, so `sha256sum -c SHA256SUMS.txt` (or `shasum -a
+          # 256 -c` on macOS) verifies directly against the file — no custom
+          # parsing needed. Computed over the binaries only, before any
+          # signature files exist, so the checksum files never end up
+          # hashing themselves or each other. SHA1 is included because it
+          # was asked for, not because it adds security over SHA256 (it
+          # doesn't — MD5/SHA1 are broken for collision resistance); treat
+          # SHA256SUMS.txt/the GPG signatures as the actual integrity checks
+          # and SHA1SUMS.txt as compatibility-only.
+          #
+          # Each entry must record just the basename (`sha256sum -c` fails
+          # to find "./nightly-macos/target/debug/bundle/dmg/Charm.dmg" —
+          # that nested path only exists on the runner; `gh release upload`
+          # below strips it down to "Charm.dmg" as the actual asset name,
+          # which is what a downloader has on disk). Hashing from within
+          # each file's own directory (rather than xargs-ing the full
+          # relative path straight into sha256sum) is what makes the
+          # recorded name just the basename.
+          cd artifacts
+          duplicate_names=$(find . -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicate_names" ]; then
+            # Same collision `gh release upload` would hit further down
+            # (it also uses basename as the asset name) — fail here with a
+            # clear reason instead of a confusing gh error, or worse, a
+            # checksum file silently missing one of the colliding entries.
+            echo "Artifact basenames collide across platforms — gh release upload would overwrite one with the other:" >&2
+            echo "$duplicate_names" >&2
+            exit 1
+          fi
+          # Written to a temp path first, then moved into place, rather than
+          # `> SHA256SUMS.txt` directly inside artifacts/: bash opens (and
+          # truncates) that redirect's target before the `find` inside the
+          # process substitution below it actually walks the directory, so
+          # a direct-into-place redirect makes the checksum file list
+          # itself as a 0-byte entry — confirmed empirically, not
+          # theoretical. Both temp files are written before either is moved
+          # into artifacts/, so the SHA1 pass's `find` doesn't see
+          # SHA256SUMS.txt already sitting there either.
+          sha256_tmp=$(mktemp)
+          sha1_tmp=$(mktemp)
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha256_tmp"
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha1sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha1_tmp"
+          mv "$sha256_tmp" SHA256SUMS.txt
+          mv "$sha1_tmp" SHA1SUMS.txt
+          cd ..
+
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+            mkdir -p "$GNUPGHOME"
+            chmod 700 "$GNUPGHOME"
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+
+            # Sign every downloaded binary plus both checksum files — signing
+            # the checksum files means one signature attests to every
+            # artifact's hash, so verifying SHA256SUMS.txt.asc is enough to
+            # trust every entry in it without checking each binary's own
+            # .asc individually (both are provided; use whichever's more
+            # convenient).
+            mapfile -d '' to_sign < <(find artifacts -type f -print0)
+            for f in "${to_sign[@]}"; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$key_id" --detach-sign --armor "$f"
+            done
+
+            # Ships alongside the artifacts every signed run (small, and
+            # guarantees the verification key is available even for the
+            # very first signed release) rather than being published once
+            # out-of-band.
+            gpg --batch --armor --export "$key_id" > artifacts/charm-nightly-signing-key.asc
+          fi
+
+      - name: Create/update dated nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Empty string (rather than omitting the var) for any job that
+          # didn't succeed, so the release body can call out exactly which
+          # platform's artifact is missing instead of silently under-shipping.
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          set -euo pipefail
+          date_tag="nightly-$(date -u +%Y-%m-%d)"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+
+          missing=""
+          for pair in "macOS:$MACOS_RESULT" "Windows:$WINDOWS_RESULT" "Linux:$LINUX_RESULT" "Android:$ANDROID_RESULT"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then
+              missing="${missing}- ${name}: job ${result} (no artifact published this run)\n"
+            fi
+          done
+
+          {
+            echo "Automated nightly build from commit \`${sha_short}\` ($run_url)."
+            echo ""
+            echo "**Unsigned/self-signed test builds — not for production use.**"
+            echo "See README.md's \"Installing a nightly build\" section for per-platform install steps"
+            echo "(macOS Gatekeeper / Windows SmartScreen / Android \"install unknown apps\" workarounds)"
+            echo "and \"Verifying a nightly download\" for checking SHA256SUMS.txt / GPG signatures."
+            if [ -n "$missing" ]; then
+              echo ""
+              echo "**Missing from this run:**"
+              printf '%b' "$missing"
+            fi
+          } > release-notes.md
+
+          # Each nightly-* artifact preserves its uploaded directory
+          # structure (e.g. nightly-macos/target/debug/bundle/dmg/*.dmg,
+          # nightly-android/src-tauri/gen/android/.../*.apk) — after
+          # `merge-multiple` they land nested under artifacts/, not flat, so
+          # a shallow `artifacts/*` glob would only pick up top-level
+          # directories (nothing `gh release` can upload) and silently ship
+          # zero or partial assets. `find -type f` walks the nesting.
+          mapfile -d '' assets < <(find artifacts -type f -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No artifacts downloaded — every platform job must have failed. Not touching the existing release." >&2
+            exit 1
+          fi
+
+          if gh release view "$date_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # Update in place rather than delete-then-recreate: if asset
+            # upload below fails partway, today's release still exists
+            # (possibly with stale assets) instead of having been deleted
+            # with nothing to replace it.
+            gh release edit "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md
+            gh release upload "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              "${assets[@]}"
+          else
+            # --target pins the tag to the exact commit these artifacts were
+            # built from; without it, a same-day push to main between this
+            # job starting and the tag being created would make the tag (and
+            # its source archive) point at a newer commit than the binaries.
+            gh release create "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              "${assets[@]}"
           fi
