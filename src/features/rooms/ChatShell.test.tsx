@@ -82,6 +82,7 @@ vi.mock("@/lib/matrix", () => ({
     uploadProgressCallback = callback;
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUpdate: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -563,6 +564,83 @@ describe("ChatShell", () => {
     });
 
     expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+  });
+
+  it("shows a following-the-conversation bar that expands to list participants", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@bob:localhost",
+        display_name: "Bob",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    const bar = await screen.findByRole("button", {
+      name: "Alice and Bob are following the conversation",
+    });
+    expect(bar).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Alice", { selector: "span" })).not.toBeInTheDocument();
+
+    fireEvent.click(bar);
+
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.getByText("Bob")).toBeInTheDocument();
+    expect(bar).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("pluralizes the following-the-conversation bar past 3 participants", async () => {
+    getRoomMembers.mockResolvedValueOnce(
+      ["Alice", "Bob", "Carol", "Dave"].map((name) => ({
+        user_id: `@${name.toLowerCase()}:localhost`,
+        display_name: name,
+        avatar_url: null,
+        power_level: 0,
+        membership: "join" as const,
+      })),
+    );
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice, Bob, Carol, and 1 other are following the conversation",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("excludes invited-but-not-joined members from the following-the-conversation bar", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@bob:localhost",
+        display_name: "Bob",
+        avatar_url: null,
+        power_level: 0,
+        membership: "invite",
+      },
+    ]);
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice is following the conversation",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
