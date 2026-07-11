@@ -190,15 +190,21 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // older rows.
   const pendingPaginationRef = useRef(false);
   if (loadingMore) pendingPaginationRef.current = true;
-  // Pure by design — no ref mutation in here. `React.StrictMode` (see
-  // `src/main.tsx`) double-invokes memo callbacks for the same commit;
-  // mutating `seenRowKeysRef`/`pendingPaginationRef` inside this memo would
-  // make the second invocation see state already consumed by the first,
-  // silently returning an empty `fresh` set for a message that should have
-  // animated. All ref writes happen in the paired `useEffect` below, which
-  // — sharing this memo's exact dependency list — fires exactly once per
-  // committed `messages`/`loading`/`loadingMore`/`activeRoomId` change, not
-  // on every incidental re-render.
+  // The memo callback below is pure — no ref mutation inside it. `React.
+  // StrictMode` (see `src/main.tsx`) double-invokes memo callbacks for the
+  // same commit; mutating `seenRowKeysRef`/`pendingPaginationRef`/
+  // `seededRoomIdRef` *inside this memo* would make the second invocation
+  // see state already consumed by the first, silently returning an empty
+  // `fresh` set for a message that should have animated. (The plain
+  // assignments above and in the paired `useEffect` below are fine under
+  // double-invocation — they're unconditional/idempotent, not reads of this
+  // memo's own prior output — it's specifically conditional mutation from
+  // inside the memo body that's unsafe.) The consuming writes that depend on
+  // this render's `fresh` diff (marking rows seen, clearing the pagination
+  // flag once resolved) happen in the `useEffect` below, which — sharing
+  // this memo's exact dependency list — fires exactly once per committed
+  // `messages`/`loading`/`loadingMore`/`activeRoomId` change, not on every
+  // incidental re-render.
   const newMessageKeys = useMemo(() => {
     const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
     if (!readyToSeed) return new Set<string>();
