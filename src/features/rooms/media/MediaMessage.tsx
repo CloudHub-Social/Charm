@@ -24,6 +24,8 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
         alt={body}
         roomId={roomId}
         eventId={eventId}
+        width={content.width}
+        height={content.height}
         lightboxOpen={lightboxOpen}
         setLightboxOpen={setLightboxOpen}
       />
@@ -36,6 +38,8 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
         alt={body}
         roomId={roomId}
         eventId={eventId}
+        width={content.width}
+        height={content.height}
         lightboxOpen={lightboxOpen}
         setLightboxOpen={setLightboxOpen}
       />
@@ -57,16 +61,34 @@ export function MediaMessage({ content, roomId, eventId, body }: MediaMessagePro
   );
 }
 
+// Matches the previous fixed `h-40 w-70` placeholder box (280x160) so rooms
+// with only unknown-dimension media see no layout change from before.
+const FALLBACK_ASPECT_RATIO = "280 / 160";
+
+/**
+ * CSS `aspect-ratio` for a media thumbnail's placeholder box, reserved before
+ * the image/video finishes loading so its arrival doesn't reflow the
+ * timeline (Spec 26 Phase 1, Charm 1.0 issue #445). Falls back to a fixed
+ * ratio when the event didn't carry known dimensions.
+ */
+function aspectRatioStyle(width: number | null, height: number | null) {
+  return { aspectRatio: width && height ? `${width} / ${height}` : FALLBACK_ASPECT_RATIO };
+}
+
 function ImageThumbnail({
   alt,
   roomId,
   eventId,
+  width,
+  height,
   lightboxOpen,
   setLightboxOpen,
 }: {
   alt: string;
   roomId: string;
   eventId: string;
+  width: number | null;
+  height: number | null;
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
 }) {
@@ -78,12 +100,13 @@ function ImageThumbnail({
         type="button"
         aria-label={`Open image ${alt}`}
         onClick={() => setLightboxOpen(true)}
-        className="block max-w-70 overflow-hidden rounded-md border border-border"
+        className="block h-auto w-70 max-h-70 overflow-hidden rounded-md border border-border"
+        style={aspectRatioStyle(width, height)}
       >
         {thumbSrc ? (
-          <img src={thumbSrc} alt={alt} className="max-h-70 w-full object-cover" />
+          <img src={thumbSrc} alt={alt} className="size-full object-cover" />
         ) : (
-          <div className="h-40 w-70 animate-pulse bg-secondary" />
+          <div className="size-full animate-pulse bg-secondary" />
         )}
       </button>
       <Lightbox
@@ -102,12 +125,16 @@ function VideoThumbnail({
   alt,
   roomId,
   eventId,
+  width,
+  height,
   lightboxOpen,
   setLightboxOpen,
 }: {
   alt: string;
   roomId: string;
   eventId: string;
+  width: number | null;
+  height: number | null;
   lightboxOpen: boolean;
   setLightboxOpen: (open: boolean) => void;
 }) {
@@ -119,12 +146,13 @@ function VideoThumbnail({
         type="button"
         aria-label={`Play video ${alt}`}
         onClick={() => setLightboxOpen(true)}
-        className="relative block max-w-70 overflow-hidden rounded-md border border-border"
+        className="relative block h-auto w-70 max-h-70 overflow-hidden rounded-md border border-border"
+        style={aspectRatioStyle(width, height)}
       >
         {thumbSrc ? (
-          <img src={thumbSrc} alt={alt} className="max-h-70 w-full object-cover" />
+          <img src={thumbSrc} alt={alt} className="size-full object-cover" />
         ) : (
-          <div className="h-40 w-70 animate-pulse bg-secondary" />
+          <div className="size-full animate-pulse bg-secondary" />
         )}
         <span className="absolute inset-0 flex items-center justify-center bg-black/20">
           <Play size={36} className="fill-white text-white" />
