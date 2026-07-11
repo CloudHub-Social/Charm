@@ -68,7 +68,11 @@ test("renders a message sender's resolved display name, not the raw MXID", async
     { roomId: ROOM.room_id, sender: ALICE },
   );
 
-  await expect(page.getByText("Alice Anderson")).toBeVisible();
+  // `exact: true`: the "following the conversation" bar below the composer
+  // also renders participant names (e.g. "Alice Anderson is following the
+  // conversation"), so a substring match on the sender name resolves to two
+  // elements once that bar has active participants.
+  await expect(page.getByText("Alice Anderson", { exact: true })).toBeVisible();
   await expect(page.getByText(ALICE)).toHaveCount(0);
   await captureSnapshot(page, "identity-resolved-sender-name");
 });

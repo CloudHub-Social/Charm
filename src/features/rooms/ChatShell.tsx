@@ -415,9 +415,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           onClick={() => setFollowingExpanded((expanded) => !expanded)}
           className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
         >
-          {followingLabel(
-            participants.map((p) => p.display_name ?? p.user_id),
-          )}
+          {followingLabel(participants.map((p) => p.display_name ?? p.user_id))}
           {followingExpanded && (
             <div className="mt-1.5 flex flex-col gap-1">
               {participants.map((p) => (

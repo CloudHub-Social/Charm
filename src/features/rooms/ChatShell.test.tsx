@@ -567,8 +567,20 @@ describe("ChatShell", () => {
 
   it("shows a following-the-conversation bar that expands to list participants", async () => {
     getRoomMembers.mockResolvedValueOnce([
-      { user_id: "@alice:localhost", display_name: "Alice", avatar_url: null, power_level: 0, membership: "join" },
-      { user_id: "@bob:localhost", display_name: "Bob", avatar_url: null, power_level: 0, membership: "join" },
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@bob:localhost",
+        display_name: "Bob",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
     ]);
     renderChatShell();
 
