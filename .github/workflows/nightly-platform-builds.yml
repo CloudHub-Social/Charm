@@ -158,16 +158,32 @@ jobs:
           # identity's actual common name — codesign fails late with an
           # opaque "no identity found" instead of failing here with a clear
           # diagnostic.
-          identity_name="$(printf '%s' "$MACOS_CERT_NAME" | xargs)"
+          # sed, not xargs: xargs re-parses its input for shell quoting
+          # metacharacters, so a name containing an apostrophe (a real
+          # possibility in a cert common name) would abort with an
+          # "unterminated quote" error under `set -euo pipefail` instead of
+          # just being trimmed.
+          identity_name="$(printf '%s' "$MACOS_CERT_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          # The trimmed name is still derived from a secret; GitHub only
+          # auto-masks the literal secret value, not this transformed copy
+          # of it, so register it explicitly before it can reach any log
+          # line below (the error diagnostic, the available-identities
+          # listing, or step env dumps).
+          echo "::add-mask::$identity_name"
           # Verify the trimmed name actually resolves to an identity in this
           # keychain before handing it to the build step — codesign's own
           # "no identity found" error doesn't say what it expected instead,
           # which makes a name mismatch (typo, stale MACOS_CERT_NAME secret
           # after regenerating the cert, wrong keychain search order) far
-          # harder to diagnose than catching it right after import.
-          if ! security find-identity -v -p codesigning "$keychain" | grep -qF "\"$identity_name\""; then
-            echo "::error::MACOS_CERT_NAME (\"$identity_name\") does not match any codesigning identity in the imported keychain. Available identities:"
-            security find-identity -v -p codesigning "$keychain"
+          # harder to diagnose than catching it right after import. Extract
+          # each identity's own quoted name and compare exactly rather than
+          # grepping the raw `security find-identity` output for a
+          # substring match — that could false-positive if one identity's
+          # name happens to contain another's as a substring.
+          available_identities="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^[[:space:]]*[0-9]*)[[:space:]]*[A-F0-9]*[[:space:]]*"\(.*\)"$/\1/p')"
+          if ! grep -qxF "$identity_name" <<< "$available_identities"; then
+            echo "::error::MACOS_CERT_NAME does not match any codesigning identity in the imported keychain. Available identity names:"
+            printf '%s\n' "$available_identities"
             exit 1
           fi
           echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
