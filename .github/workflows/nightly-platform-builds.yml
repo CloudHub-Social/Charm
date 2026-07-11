@@ -919,9 +919,45 @@ jobs:
           # doesn't — MD5/SHA1 are broken for collision resistance); treat
           # SHA256SUMS.txt/the GPG signatures as the actual integrity checks
           # and SHA1SUMS.txt as compatibility-only.
+          #
+          # Each entry must record just the basename (`sha256sum -c` fails
+          # to find "./nightly-macos/target/debug/bundle/dmg/Charm.dmg" —
+          # that nested path only exists on the runner; `gh release upload`
+          # below strips it down to "Charm.dmg" as the actual asset name,
+          # which is what a downloader has on disk). Hashing from within
+          # each file's own directory (rather than xargs-ing the full
+          # relative path straight into sha256sum) is what makes the
+          # recorded name just the basename.
           cd artifacts
-          find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
-          find . -type f -print0 | sort -z | xargs -0 sha1sum > SHA1SUMS.txt
+          duplicate_names=$(find . -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicate_names" ]; then
+            # Same collision `gh release upload` would hit further down
+            # (it also uses basename as the asset name) — fail here with a
+            # clear reason instead of a confusing gh error, or worse, a
+            # checksum file silently missing one of the colliding entries.
+            echo "Artifact basenames collide across platforms — gh release upload would overwrite one with the other:" >&2
+            echo "$duplicate_names" >&2
+            exit 1
+          fi
+          # Written to a temp path first, then moved into place, rather than
+          # `> SHA256SUMS.txt` directly inside artifacts/: bash opens (and
+          # truncates) that redirect's target before the `find` inside the
+          # process substitution below it actually walks the directory, so
+          # a direct-into-place redirect makes the checksum file list
+          # itself as a 0-byte entry — confirmed empirically, not
+          # theoretical. Both temp files are written before either is moved
+          # into artifacts/, so the SHA1 pass's `find` doesn't see
+          # SHA256SUMS.txt already sitting there either.
+          sha256_tmp=$(mktemp)
+          sha1_tmp=$(mktemp)
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha256_tmp"
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha1sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha1_tmp"
+          mv "$sha256_tmp" SHA256SUMS.txt
+          mv "$sha1_tmp" SHA1SUMS.txt
           cd ..
 
           if [ -n "$GPG_PRIVATE_KEY" ]; then
