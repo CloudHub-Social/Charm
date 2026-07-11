@@ -110,36 +110,38 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: 
         </div>
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`}>
-            ⋮
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {!device.is_verified && !device.is_current && (
-            <DropdownMenuItem onClick={handleVerify} disabled={verifying}>
-              Verify
-            </DropdownMenuItem>
-          )}
-          {/* `delete_device`'s password-only UIA retry can't satisfy an
-              OAuth-managed session's challenge — for those, offer the
-              account-management deep link (once resolved) instead of an
-              in-app "Sign out" that can never complete. Both branches below
-              require `usesOAuth` to be resolved (not `undefined`) before
-              rendering either action. */}
-          {!device.is_current && usesOAuth === false && (
-            <DropdownMenuItem variant="destructive" onClick={() => setRevokeOpen(true)}>
-              Sign out
-            </DropdownMenuItem>
-          )}
-          {!device.is_current && usesOAuth === true && deleteUrl && (
-            <DropdownMenuItem onClick={() => openExternalUrl(deleteUrl).catch(logAndIgnore)}>
-              Manage in account settings
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {!device.is_current && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`}>
+              ⋮
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {!device.is_verified && (
+              <DropdownMenuItem onClick={handleVerify} disabled={verifying}>
+                Verify
+              </DropdownMenuItem>
+            )}
+            {/* `delete_device`'s password-only UIA retry can't satisfy an
+                OAuth-managed session's challenge — for those, offer the
+                account-management deep link (once resolved) instead of an
+                in-app "Sign out" that can never complete. Both branches below
+                require `usesOAuth` to be resolved (not `undefined`) before
+                rendering either action. */}
+            {usesOAuth === false && (
+              <DropdownMenuItem variant="destructive" onClick={() => setRevokeOpen(true)}>
+                Sign out
+              </DropdownMenuItem>
+            )}
+            {usesOAuth === true && deleteUrl && (
+              <DropdownMenuItem onClick={() => openExternalUrl(deleteUrl).catch(logAndIgnore)}>
+                Manage in account settings
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       <Dialog
         open={revokeOpen}
