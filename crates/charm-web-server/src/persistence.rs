@@ -514,39 +514,49 @@ impl PersistenceStore {
     /// if it has one (Open Question 4: an explicit logout shouldn't leave
     /// that directory behind, unboundedly growing the host's local disk over
     /// a long-lived deploy's worth of login/logout cycles) — best-effort,
-    /// logged rather than propagated, since the session-token object below
-    /// is the part that actually matters for correctness (an orphaned crypto
-    /// store is disk waste, not a security or correctness issue on its own).
+    /// logged rather than propagated, since the session-token object is the
+    /// part that actually matters for correctness (an orphaned crypto store
+    /// is disk waste, not a security or correctness issue on its own).
+    ///
+    /// The token object is deleted *before* the crypto-store directory, not
+    /// after: if the crypto-store removal below ran first and then this
+    /// object's delete failed, the persisted session would survive pointing
+    /// at a now-missing store — a later restore would only discover that via
+    /// [`crate::crypto_store::existing_store_dir`] returning `None`, falling
+    /// back to a fresh in-memory client (correct, if surprising) rather than
+    /// losing anything silently, but there's no reason to accept even that
+    /// degraded case when doing the deletes in the other order avoids it: a
+    /// failed crypto-store removal after the token object is already gone
+    /// just leaves an orphaned directory for the next `remove` of an
+    /// unrelated session to no-op past — pure disk waste, not a dangling
+    /// reference.
     pub async fn remove(&self, token: &str) -> Result<(), String> {
-        if let Some(store_key) = self
-            .read_one(token)
-            .await
-            .and_then(|entry| entry.crypto_store_key)
-        {
-            match crate::crypto_store::store_dir(&store_key) {
-                Ok(dir) => {
+        let entry = self.read_one(token).await;
+
+        match self.store.delete(&object_path_for_token(token)).await {
+            Ok(()) => {}
+            // Backends disagree on whether deleting an absent key errors
+            // (`LocalFileSystem`, mirroring POSIX `unlink`) or succeeds
+            // silently (S3-compatible `DELETE` is idempotent) — treat both
+            // the same, since either way there's nothing left to remove.
+            Err(object_store::Error::NotFound { .. }) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+
+        if let Some(store_key) = entry.and_then(|entry| entry.crypto_store_key) {
+            match crate::crypto_store::existing_store_dir(&store_key) {
+                Ok(Some(dir)) => {
                     if let Err(e) = std::fs::remove_dir_all(&dir) {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            tracing::warn!(
-                                "failed to remove crypto store directory on logout: {e}"
-                            );
-                        }
+                        tracing::warn!("failed to remove crypto store directory on logout: {e}");
                     }
                 }
+                Ok(None) => {}
                 Err(e) => tracing::warn!(
                     "failed to resolve crypto store directory for removal on logout: {e}"
                 ),
             }
         }
-        match self.store.delete(&object_path_for_token(token)).await {
-            Ok(()) => Ok(()),
-            // Backends disagree on whether deleting an absent key errors
-            // (`LocalFileSystem`, mirroring POSIX `unlink`) or succeeds
-            // silently (S3-compatible `DELETE` is idempotent) — treat both
-            // the same, since either way there's nothing left to remove.
-            Err(object_store::Error::NotFound { .. }) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
+        Ok(())
     }
 
     /// Rebuilds a live `Client` (and runs an initial sync, same as
@@ -626,30 +636,24 @@ impl PersistenceStore {
     }
 }
 
-/// `initial_presence`, when given, is applied to the freshly built
-/// `Session`'s `sync_presence` *before* the initial `sync_once` below, and
-/// used as that same call's own `SyncSettings::set_presence` — not just
-/// stored for some later push. Setting it only afterwards (an earlier
-/// version of this — see `routes::require_session` — set `sync_presence`
-/// only after `restore_by_token` had already returned) would be too late:
-/// this function's own initial sync already completes, reporting whatever
-/// presence `SyncSettings::default()` implies (`Online`), before a caller
-/// ever gets anything back to act on. A restored `unavailable`/`offline`
-/// user would therefore flash `Online` to the homeserver for the length of
-/// this sync, no matter how quickly the caller corrected `sync_presence`
-/// afterward.
 /// Builds the `Client` [`restore_one`] restores its session into — backed by
 /// `entry`'s crypto store when it has one, matching requirement 5's fail-open
-/// contract: a store that fails to open (corrupt, permissions, whatever)
-/// falls back to a bare in-memory `Client` for *this one session* rather than
-/// failing its restore outright — same tolerance `entry.crypto_store_key`
-/// being `None` already gets (a pre-Spec-25 persisted session, requirement
-/// 9's backfill).
+/// contract: a store directory that's missing (e.g. lost on a redeploy — see
+/// [`crate::crypto_store`]'s doc comment) or that fails to open (corrupt,
+/// permissions, whatever) falls back to a bare in-memory `Client` for *this
+/// one session* rather than failing its restore outright — same tolerance
+/// `entry.crypto_store_key` being `None` already gets (a pre-Spec-25
+/// persisted session, requirement 9's backfill). Deliberately uses
+/// [`crate::crypto_store::existing_store_dir`], not a directory-creating
+/// variant: silently creating a fresh empty directory here would let
+/// `sqlite_store` open it as a legitimate-looking-but-empty store instead of
+/// erroring, which would skip this fallback entirely and hand back a client
+/// that looks restored but has silently lost all its crypto state.
 async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk::Client, String> {
     if let (Some(store_key), Some(passphrase)) = (&entry.crypto_store_key, &entry.crypto_passphrase)
     {
-        match crate::crypto_store::store_dir(store_key) {
-            Ok(dir) => {
+        match crate::crypto_store::existing_store_dir(store_key) {
+            Ok(Some(dir)) => {
                 match matrix_sdk::Client::builder()
                     .server_name_or_homeserver_url(&entry.homeserver_url)
                     .sqlite_store(&dir, Some(passphrase.as_str()))
@@ -663,6 +667,10 @@ async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk
                     ),
                 }
             }
+            Ok(None) => tracing::warn!(
+                "crypto store directory is missing (e.g. lost on a redeploy) — falling back \
+                 to a fresh in-memory client for this session"
+            ),
             Err(e) => tracing::warn!("failed to resolve crypto store directory: {e}"),
         }
     }
@@ -673,6 +681,18 @@ async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk
         .map_err(|e| e.to_string())
 }
 
+/// `initial_presence`, when given, is applied to the freshly built
+/// `Session`'s `sync_presence` *before* the initial `sync_once` below, and
+/// used as that same call's own `SyncSettings::set_presence` — not just
+/// stored for some later push. Setting it only afterwards (an earlier
+/// version of this — see `routes::require_session` — set `sync_presence`
+/// only after `restore_by_token` had already returned) would be too late:
+/// this function's own initial sync already completes, reporting whatever
+/// presence `SyncSettings::default()` implies (`Online`), before a caller
+/// ever gets anything back to act on. A restored `unavailable`/`offline`
+/// user would therefore flash `Online` to the homeserver for the length of
+/// this sync, no matter how quickly the caller corrected `sync_presence`
+/// afterward.
 async fn restore_one(
     entry: &PersistedSession,
     initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
@@ -1123,17 +1143,24 @@ mod tests {
         };
         let store = PersistenceStore::new_for_test(&dir, [12u8; 32]);
 
+        // `save` only ever persists the key/passphrase *pair* into the
+        // encrypted blob — it never touches the crypto store directory
+        // itself (that's `crypto_store::create_store_dir`, called once at
+        // login). Create it here to simulate that, so this test actually
+        // exercises "logout removes a real, previously-created directory"
+        // rather than trivially passing because nothing existed to begin
+        // with.
+        let crypto_dir = crate::crypto_store::create_store_dir("storeKeyLogout").unwrap();
+        assert!(crypto_dir.exists());
         store
             .save(
                 "tok-logout",
                 "https://example.invalid",
                 &dummy_session("@kevin:example.invalid"),
-                Some(("store-key-logout", "passphrase-logout")),
+                Some(("storeKeyLogout", "passphrase-logout")),
             )
             .await
             .unwrap();
-        let crypto_dir = crate::crypto_store::store_dir("store-key-logout").unwrap();
-        assert!(crypto_dir.exists());
 
         store.remove("tok-logout").await.unwrap();
 

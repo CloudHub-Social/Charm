@@ -74,10 +74,26 @@ const MAX_LIVE_TIMELINES: usize = 20;
 /// so a later re-save (token refresh, idle-eviction) can keep writing the
 /// same crypto fields rather than losing them on the very first re-save
 /// after login.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CryptoStoreHandle {
     pub store_key: String,
     pub passphrase: String,
+}
+
+/// Manual, not derived: the default `Debug` for a struct with a plaintext
+/// `passphrase: String` field would print that passphrase verbatim on any
+/// `{:?}` of a `Session`/`PersistHandle` that embeds this (e.g. an
+/// unguarded debug log or panic message) — a secret capable of unlocking
+/// this session's on-disk crypto store. `store_key` isn't secret on its own
+/// (it's a directory name, not a credential), but there's no reason to log
+/// it either.
+impl std::fmt::Debug for CryptoStoreHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CryptoStoreHandle")
+            .field("store_key", &self.store_key)
+            .field("passphrase", &"<redacted>")
+            .finish()
+    }
 }
 
 /// One authenticated web-client session: the logged-in `Client`, the account
@@ -403,29 +419,37 @@ impl Session {
     }
 
     /// Whether this session belongs to at least one end-to-end-encrypted
-    /// room — a cheap, synchronous check (`Room::encryption_state` reads
-    /// already-synced local state, no network call) used as a proxy for
-    /// "this session's in-memory `matrix_sdk::Client` holds Megolm/Olm state
-    /// that idle eviction would irrecoverably lose."
+    /// room *and* has no on-disk crypto store to fall back on — a cheap,
+    /// synchronous check (`Room::encryption_state` reads already-synced
+    /// local state, no network call) used as a proxy for "evicting this
+    /// session's in-memory `matrix_sdk::Client` would irrecoverably lose
+    /// Megolm/Olm state, not just require a homeserver round-trip to rebuild
+    /// it."
     ///
-    /// `persistence.rs`'s own module doc comment already documents that the
-    /// Olm/Megolm crypto store isn't persisted — restoring a session (there,
-    /// only ever after a full process restart) rebuilds a bare in-memory
-    /// `Client` that can no longer decrypt history it had already learned,
-    /// or continue an established verification. Idle eviction hits the exact
-    /// same gap, just far more often (a normal 30-minute idle gap during the
-    /// same process's uptime, not only a restart) — the real fix is giving
-    /// each persisted session its own encrypted `matrix-sdk-sqlite` store
-    /// (same doc comment), which is real, standalone work out of scope for
-    /// idle eviction itself. Until that exists, `SessionStore::sweep_idle`
-    /// treats *any* encrypted-room membership as reason enough to keep a
-    /// session alive regardless of idle time — narrower than "never evict,"
-    /// since a session that's never touched E2EE has nothing at risk here.
-    fn has_encrypted_room(&self) -> bool {
-        self.client
-            .rooms()
-            .iter()
-            .any(|room| room.encryption_state().is_encrypted())
+    /// Before Spec 25, `charm-web-server` never persisted the Olm/Megolm
+    /// crypto store at all — restoring a session (there, only ever after a
+    /// full process restart) rebuilt a bare in-memory `Client` that could no
+    /// longer decrypt history it had already learned, or continue an
+    /// established verification. Idle eviction hit the exact same gap, just
+    /// far more often (a normal 30-minute idle gap during the same process's
+    /// uptime, not only a restart), so this exempted *any* encrypted-room
+    /// session from idle eviction entirely — narrower than "never evict,"
+    /// since a session that's never touched E2EE has nothing at risk, but
+    /// still meant every E2EE session held its full `Client` (event cache,
+    /// crypto state, timelines) in memory indefinitely regardless of how
+    /// long it sat idle. Now that a session's crypto store is
+    /// (`session.crypto`, see `crypto_store.rs`) persisted, eviction can
+    /// restore it from disk via `build_client_for_restore` — same as any
+    /// other persisted session — so this exemption only still applies when
+    /// there's no store to fall back on (persistence disabled, or a
+    /// pre-Spec-25 session that hasn't re-established one yet).
+    fn has_unpersisted_encrypted_room(&self) -> bool {
+        self.crypto.is_none()
+            && self
+                .client
+                .rooms()
+                .iter()
+                .any(|room| room.encryption_state().is_encrypted())
     }
 
     /// Returns this session's cached `Timeline` for `room_id`, building and
@@ -759,7 +783,7 @@ impl SessionStore {
         inner.retain(|token, session| {
             if session.has_open_connection()
                 || session.has_pending_verification_events()
-                || session.has_encrypted_room()
+                || session.has_unpersisted_encrypted_room()
                 || session.idle_for() < idle_timeout
             {
                 true

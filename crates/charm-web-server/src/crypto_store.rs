@@ -54,13 +54,45 @@ pub fn generate_passphrase() -> String {
         .collect()
 }
 
-/// Where a session's crypto store lives on disk, keyed by
-/// [`generate_store_key`]'s output. Mirrors `media_cache.rs`'s use of
-/// [`crate::persistence::DATA_DIR_ENV`] for the same base directory.
-pub fn store_dir(store_key: &str) -> Result<PathBuf, String> {
+/// Computes (but never creates) where a session's crypto store lives on
+/// disk, keyed by [`generate_store_key`]'s output. Mirrors `media_cache.rs`'s
+/// use of [`crate::persistence::DATA_DIR_ENV`] for the same base directory.
+///
+/// Rejects a `store_key` containing anything other than ASCII alphanumerics
+/// — every key this module itself generates already satisfies that (see
+/// [`generate_store_key`]), but `store_key` also round-trips through
+/// encrypted-at-rest persisted state (`persistence.rs`'s
+/// `PersistedSession::crypto_store_key`), so a corrupted or (if ever
+/// generalized) externally-influenced value must never reach
+/// `PathBuf::join` unvalidated — same reasoning `media_cache.rs` hashes a
+/// homeserver-controlled device id for before using it as a path component.
+fn store_path(store_key: &str) -> Result<PathBuf, String> {
+    if store_key.is_empty() || !store_key.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("invalid crypto store key: {store_key:?}"));
+    }
     let base =
         std::env::var(crate::persistence::DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
-    let dir = PathBuf::from(base).join("crypto").join(store_key);
+    Ok(PathBuf::from(base).join("crypto").join(store_key))
+}
+
+/// The directory for a *new* session's crypto store, creating it if
+/// necessary — only called when establishing a fresh store at login/
+/// registration (see `auth.rs::build_client`), where "doesn't exist yet" is
+/// the expected, correct state to create it from.
+pub fn create_store_dir(store_key: &str) -> Result<PathBuf, String> {
+    let dir = store_path(store_key)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+/// The directory for a previously-established session's crypto store —
+/// `Ok(None)` (not an error, and never created) if it isn't there. Used by
+/// restore (a missing directory, e.g. lost on a DO App Platform redeploy —
+/// see this module's doc comment — must fall back to a fresh in-memory
+/// client, never silently open/create an empty store in its place and have
+/// that look like a legitimately-empty-but-real crypto store) and by logout
+/// cleanup (nothing to remove if it was never there).
+pub fn existing_store_dir(store_key: &str) -> Result<Option<PathBuf>, String> {
+    let dir = store_path(store_key)?;
+    Ok(dir.is_dir().then_some(dir))
 }

@@ -37,7 +37,7 @@ async fn build_client(
         store_key: crate::crypto_store::generate_store_key(),
         passphrase: crate::crypto_store::generate_passphrase(),
     };
-    let store_dir = crate::crypto_store::store_dir(&crypto.store_key)?;
+    let store_dir = crate::crypto_store::create_store_dir(&crypto.store_key)?;
     let client = Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
         .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
@@ -45,6 +45,29 @@ async fn build_client(
         .await
         .map_err(|e| e.to_string())?;
     Ok((client, Some(crypto)))
+}
+
+/// Removes a just-created crypto-store directory when the login/register
+/// attempt that created it (via [`build_client`]) fails partway through —
+/// otherwise a repeated failed login/register (wrong password, UIAA
+/// rejection, homeserver hiccup) leaks one `data/crypto/<random>/`
+/// directory per attempt, since nothing else ever learns that random key to
+/// clean it up later (it's never returned to a caller or persisted). No-op
+/// when `crypto` is `None` (persistence disabled). Best-effort: logged, not
+/// propagated — the caller already has a real auth error to report, and
+/// leftover disk usage from a rare cleanup failure is far less urgent than
+/// surfacing that.
+fn cleanup_failed_crypto_store(crypto: &Option<CryptoStoreHandle>) {
+    let Some(crypto) = crypto else { return };
+    match crate::crypto_store::existing_store_dir(&crypto.store_key) {
+        Ok(Some(dir)) => {
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!("failed to remove crypto store after failed auth: {e}");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("failed to resolve crypto store directory for cleanup: {e}"),
+    }
 }
 
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
@@ -66,17 +89,20 @@ pub async fn login(
 ) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
     let (client, crypto) = build_client(&request.homeserver_url, has_persistence).await?;
 
-    client
+    if let Err(e) = client
         .matrix_auth()
         .login_username(&request.username, &request.password)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        cleanup_failed_crypto_store(&crypto);
+        return Err(e.to_string());
+    }
 
-    let session_meta = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
+    let Some(session_meta) = client.matrix_auth().session() else {
+        cleanup_failed_crypto_store(&crypto);
+        return Err("login succeeded but no session was returned".to_string());
+    };
     let user_id = session_meta.meta.user_id.to_string();
 
     // Built (and its event handlers registered — see
@@ -143,12 +169,15 @@ pub async fn register(
     // (it's already `Client`-only, no `AppHandle` dependency) rather than
     // sending a bare `Dummy::new()` with no server-issued UIAA session,
     // which Synapse's normal `m.login.dummy` flow rejects.
-    register_with_dummy_auth(&client, &request.username, &request.password).await?;
+    if let Err(e) = register_with_dummy_auth(&client, &request.username, &request.password).await {
+        cleanup_failed_crypto_store(&crypto);
+        return Err(e);
+    }
 
-    let session_meta = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "registration succeeded but no session was returned".to_string())?;
+    let Some(session_meta) = client.matrix_auth().session() else {
+        cleanup_failed_crypto_store(&crypto);
+        return Err("registration succeeded but no session was returned".to_string());
+    };
     let user_id = session_meta.meta.user_id.to_string();
 
     // See `login`'s doc comment on this same ordering: session (and its
