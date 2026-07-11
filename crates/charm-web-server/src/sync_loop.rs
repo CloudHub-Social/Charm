@@ -80,6 +80,11 @@ pub struct PersistHandle {
     /// would otherwise leave it persisted nowhere until the token later
     /// happened to rotate.
     pub initial_access_token: Option<String>,
+    /// This session's crypto-store identity, if it has one — threaded
+    /// through unchanged into every re-save below (see `PersistenceStore::
+    /// save`'s doc comment on why a re-save must reuse, not regenerate, the
+    /// pair a session was first persisted with).
+    pub crypto: Option<crate::session::CryptoStoreHandle>,
 }
 
 /// Re-saves the session if (and only if) its access token has changed since
@@ -96,9 +101,13 @@ async fn repersist_if_token_changed(
         return last_saved_access_token;
     }
     let access_token = session.tokens.access_token.clone();
+    let crypto = persist
+        .crypto
+        .as_ref()
+        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
     if let Err(e) = persist
         .store
-        .save(&persist.token, &persist.homeserver_url, &session)
+        .save(&persist.token, &persist.homeserver_url, &session, crypto)
         .await
     {
         tracing::warn!("failed to re-persist refreshed session: {e}");

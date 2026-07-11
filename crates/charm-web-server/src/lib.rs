@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod crypto_store;
 pub mod events;
 pub mod media_cache;
 pub mod observability;

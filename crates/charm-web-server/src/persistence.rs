@@ -34,23 +34,22 @@
 //! back to sub-PR A's in-memory-only behavior rather than refusing to start
 //! — this keeps local dev and the test suite working with zero setup.
 //!
-//! **Known gap: the Olm/Megolm crypto store is not persisted.** This only
-//! saves the `MatrixSession` (access/refresh tokens + device id) — on
-//! restart, [`restore_one`] rebuilds a fresh in-memory `Client` and restores
-//! just that token, so the *cookie* stays valid, but the crypto state that
-//! client had learned before the restart (room keys, device/cross-signing
-//! trust) is gone. Encrypted-room history a session had already decrypted,
-//! and any established verification, don't survive a restart even though
-//! the session nominally does. Desktop avoids this because its `Client` is
-//! always backed by matrix-sdk's encrypted SQLite store (see
-//! `src-tauri/src/matrix/persistence.rs`'s `matrix_store/` layout), which
-//! this crate doesn't yet provision per web session. Fixing this properly
-//! means giving each persisted session its own encrypted `matrix-sdk-sqlite`
-//! store directory (keyed the same way as [`crate::media_cache`], via
-//! `charm_lib::matrix::persistence::account_key`) and building the restored
-//! `Client` against that store instead of a bare in-memory one — a real
-//! slice of work in its own right, not a one-line fix, so it's called out
-//! here rather than silently shipped incomplete.
+//! **The Olm/Megolm crypto store is now also persisted (Spec 25).** Each
+//! session's `PersistedSession` additionally carries a `crypto_store_key` /
+//! `crypto_passphrase` pair identifying an on-disk `matrix-sdk-sqlite` store
+//! (see [`crate::crypto_store`]) — [`restore_one`] rebuilds the `Client`
+//! against that store instead of a bare in-memory one, so room keys,
+//! cross-signing identity, and device trust survive a restart along with the
+//! session token. Both fields are `Option`: `None` for a session persisted
+//! before this shipped (falls back to the pre-Spec-25 bare in-memory
+//! behavior for that one session, same fail-open tolerance as any other
+//! unreadable/corrupt entry) or when persistence was configured without ever
+//! successfully opening a store.
+//!
+//! **The crypto store itself lives on local disk only** — see
+//! [`crate::crypto_store`]'s module doc comment for why it isn't synced
+//! through the `object_store`/DO Spaces backend this file's session-token
+//! blob uses, and what that means for the DO App Platform deploy target.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -101,6 +100,16 @@ struct PersistedSession {
     token: String,
     homeserver_url: String,
     session: MatrixSession,
+    /// Directory key (`crypto_store::generate_store_key`) for this session's
+    /// on-disk crypto store — see the module doc comment. `#[serde(default)]`
+    /// so a session persisted before Spec 25 shipped deserializes with `None`
+    /// here instead of failing to parse at all (requirement 9's backfill).
+    #[serde(default)]
+    crypto_store_key: Option<String>,
+    /// SQLCipher passphrase for the store at `crypto_store_key`. Always
+    /// `None` exactly when `crypto_store_key` is `None`, for the same reason.
+    #[serde(default)]
+    crypto_passphrase: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -464,16 +473,30 @@ impl PersistenceStore {
     /// refresh racing a fresh login of that exact session during a deploy)
     /// — resolves to last-write-wins on that one object, the same outcome a
     /// single process's own concurrent calls would already have.
+    /// `crypto`, when given, is `(store_key, passphrase)` for the session's
+    /// on-disk crypto store — see `session::CryptoStoreHandle`. Callers pass
+    /// the *same* pair on every re-save of a given token (a token refresh,
+    /// an idle-eviction re-save): the crypto store itself is only ever
+    /// created once, at login, so persisting a different key/passphrase pair
+    /// later would just orphan that original store and make a subsequent
+    /// restore point at a store that was never actually used.
     pub async fn save(
         &self,
         token: &str,
         homeserver_url: &str,
         session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
     ) -> Result<(), String> {
+        let (crypto_store_key, crypto_passphrase) = match crypto {
+            Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
+            None => (None, None),
+        };
         let blob = self.encrypt(&PersistedSession {
             token: token.to_string(),
             homeserver_url: homeserver_url.to_string(),
             session: session.clone(),
+            crypto_store_key,
+            crypto_passphrase,
         })?;
         let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
         self.store
@@ -487,8 +510,34 @@ impl PersistenceStore {
     /// if it was never persisted (e.g. persistence was enabled after this
     /// session logged in). Deleting one session's own object can never
     /// affect any other session's, for the same reason [`Self::save`]
-    /// doesn't need a lock.
+    /// doesn't need a lock. Also deletes the session's on-disk crypto store,
+    /// if it has one (Open Question 4: an explicit logout shouldn't leave
+    /// that directory behind, unboundedly growing the host's local disk over
+    /// a long-lived deploy's worth of login/logout cycles) — best-effort,
+    /// logged rather than propagated, since the session-token object below
+    /// is the part that actually matters for correctness (an orphaned crypto
+    /// store is disk waste, not a security or correctness issue on its own).
     pub async fn remove(&self, token: &str) -> Result<(), String> {
+        if let Some(store_key) = self
+            .read_one(token)
+            .await
+            .and_then(|entry| entry.crypto_store_key)
+        {
+            match crate::crypto_store::store_dir(&store_key) {
+                Ok(dir) => {
+                    if let Err(e) = std::fs::remove_dir_all(&dir) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            tracing::warn!(
+                                "failed to remove crypto store directory on logout: {e}"
+                            );
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    "failed to resolve crypto store directory for removal on logout: {e}"
+                ),
+            }
+        }
         match self.store.delete(&object_path_for_token(token)).await {
             Ok(()) => Ok(()),
             // Backends disagree on whether deleting an absent key errors
@@ -589,15 +638,46 @@ impl PersistenceStore {
 /// user would therefore flash `Online` to the homeserver for the length of
 /// this sync, no matter how quickly the caller corrected `sync_presence`
 /// afterward.
+/// Builds the `Client` [`restore_one`] restores its session into — backed by
+/// `entry`'s crypto store when it has one, matching requirement 5's fail-open
+/// contract: a store that fails to open (corrupt, permissions, whatever)
+/// falls back to a bare in-memory `Client` for *this one session* rather than
+/// failing its restore outright — same tolerance `entry.crypto_store_key`
+/// being `None` already gets (a pre-Spec-25 persisted session, requirement
+/// 9's backfill).
+async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk::Client, String> {
+    if let (Some(store_key), Some(passphrase)) = (&entry.crypto_store_key, &entry.crypto_passphrase)
+    {
+        match crate::crypto_store::store_dir(store_key) {
+            Ok(dir) => {
+                match matrix_sdk::Client::builder()
+                    .server_name_or_homeserver_url(&entry.homeserver_url)
+                    .sqlite_store(&dir, Some(passphrase.as_str()))
+                    .build()
+                    .await
+                {
+                    Ok(client) => return Ok(client),
+                    Err(e) => tracing::warn!(
+                        "failed to open crypto store, falling back to a fresh in-memory \
+                         client for this session: {e}"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!("failed to resolve crypto store directory: {e}"),
+        }
+    }
+    matrix_sdk::Client::builder()
+        .server_name_or_homeserver_url(&entry.homeserver_url)
+        .build()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn restore_one(
     entry: &PersistedSession,
     initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
-    let client = matrix_sdk::Client::builder()
-        .server_name_or_homeserver_url(&entry.homeserver_url)
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = build_client_for_restore(entry).await?;
     client
         .matrix_auth()
         .restore_session(
@@ -612,8 +692,21 @@ async fn restore_one(
     // why: a to-device verification event landing in this restore's own
     // initial sync is processed synchronously as part of it and never
     // replayed later, so the handler must already be registered.
-    let session =
-        crate::session::Session::new(client.clone(), entry.session.meta.user_id.to_string());
+    let crypto = entry
+        .crypto_store_key
+        .clone()
+        .zip(entry.crypto_passphrase.clone())
+        .map(
+            |(store_key, passphrase)| crate::session::CryptoStoreHandle {
+                store_key,
+                passphrase,
+            },
+        );
+    let session = crate::session::Session::new(
+        client.clone(),
+        entry.session.meta.user_id.to_string(),
+        crypto,
+    );
     if let Some(presence) = initial_presence {
         *session
             .sync_presence
@@ -692,6 +785,7 @@ mod tests {
                 "tok-a",
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -717,6 +811,7 @@ mod tests {
                 "tok-restart",
                 "https://example.invalid",
                 &dummy_session("@restart:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -745,6 +840,7 @@ mod tests {
                 "tok-secret",
                 "https://example.invalid",
                 &dummy_session("@bob:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -765,6 +861,7 @@ mod tests {
                 "tok-a",
                 "https://example.invalid",
                 &dummy_session("@carol:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -782,6 +879,7 @@ mod tests {
                 "tok-a",
                 "https://example.invalid",
                 &dummy_session("@dave:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -790,6 +888,7 @@ mod tests {
                 "tok-b",
                 "https://example.invalid",
                 &dummy_session("@erin:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -810,6 +909,7 @@ mod tests {
                 "tok-a",
                 "https://old.example.invalid",
                 &dummy_session("@frank:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -818,6 +918,7 @@ mod tests {
                 "tok-a",
                 "https://new.example.invalid",
                 &dummy_session("@frank:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -840,6 +941,7 @@ mod tests {
                 "tok-good",
                 "https://example.invalid",
                 &dummy_session("@grace:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -882,6 +984,7 @@ mod tests {
                 "tok-real",
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -909,6 +1012,7 @@ mod tests {
                 "tok-other",
                 "https://example.invalid",
                 &dummy_session("@iris:example.invalid"),
+                None,
             )
             .await
             .unwrap();
@@ -925,6 +1029,118 @@ mod tests {
         // The real, decryptable entry must also still be there.
         let all = store.read_all().await;
         assert!(all.iter().any(|s| s.token == "tok-real"));
+    }
+
+    /// Spec 25 requirement 1: a session saved with a crypto-store key/
+    /// passphrase must round-trip both fields, not just the token/session
+    /// fields the pre-Spec-25 tests above already cover.
+    #[tokio::test]
+    async fn save_and_reload_round_trips_the_crypto_store_pair() {
+        let dir = scratch_dir("crypto-round-trip");
+        let store = PersistenceStore::new_for_test(&dir, [10u8; 32]);
+
+        store
+            .save(
+                "tok-crypto",
+                "https://example.invalid",
+                &dummy_session("@judy:example.invalid"),
+                Some(("store-key-abc", "passphrase-xyz")),
+            )
+            .await
+            .unwrap();
+
+        let all = store.read_all().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].crypto_store_key.as_deref(), Some("store-key-abc"));
+        assert_eq!(all[0].crypto_passphrase.as_deref(), Some("passphrase-xyz"));
+    }
+
+    /// Spec 25 requirement 9: an entry persisted before this shipped — whose
+    /// plaintext JSON has no `crypto_store_key`/`crypto_passphrase` keys at
+    /// all, not merely `null` values — must still deserialize (as `None` for
+    /// both), not be dropped as unreadable the way
+    /// `a_malformed_nonce_is_dropped_*` exercises for genuine corruption.
+    /// Encrypts a hand-built plaintext (bypassing `PersistedSession`, which
+    /// always has both fields present) to faithfully reproduce the exact
+    /// on-disk shape a pre-Spec-25 deploy would have written.
+    #[tokio::test]
+    async fn a_pre_spec_25_entry_with_no_crypto_fields_still_deserializes() {
+        let dir = scratch_dir("legacy-entry");
+        let store = PersistenceStore::new_for_test(&dir, [11u8; 32]);
+
+        let legacy_plaintext = serde_json::to_vec(&serde_json::json!({
+            "token": "tok-legacy",
+            "homeserver_url": "https://example.invalid",
+            "session": {
+                "user_id": "@legacy:example.invalid",
+                "device_id": "TESTDEVICE",
+                "access_token": "legacy-access-token",
+            },
+        }))
+        .unwrap();
+        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let ciphertext = store
+            .key
+            .encrypt(&nonce, legacy_plaintext.as_ref())
+            .unwrap();
+        let blob = EncryptedBlob {
+            nonce: BASE64.encode(nonce),
+            ciphertext: BASE64.encode(ciphertext),
+        };
+        let path = object_file_path(&dir, "tok-legacy");
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&path, serde_json::to_vec(&blob).unwrap())
+            .await
+            .unwrap();
+
+        let all = store.read_all().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].token, "tok-legacy");
+        assert_eq!(all[0].crypto_store_key, None);
+        assert_eq!(all[0].crypto_passphrase, None);
+    }
+
+    /// Open Question 4: an explicit logout (`remove`) must also delete the
+    /// session's on-disk crypto-store directory, not just its persisted
+    /// token blob — otherwise every login/logout cycle leaks one directory.
+    #[tokio::test]
+    async fn remove_also_deletes_the_crypto_store_directory() {
+        let dir = scratch_dir("remove-crypto");
+        let data_dir = scratch_dir("remove-crypto-data");
+        // Only the *setup* of `DATA_DIR_ENV` needs `ENV_LOCK` (so it can't be
+        // clobbered mid-set-up by another env-mutating test running in
+        // parallel) — held here as a plain synchronous scope, not across the
+        // `.await`s below, since clippy (rightly) disallows holding a
+        // `std::sync::MutexGuard` across an await point. `EnvVarGuard`
+        // itself stays alive for the rest of the test regardless (its
+        // restore-on-drop doesn't need the lock, same as every other
+        // `EnvVarGuard` use in this file).
+        let _data_dir_env = {
+            let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap())
+        };
+        let store = PersistenceStore::new_for_test(&dir, [12u8; 32]);
+
+        store
+            .save(
+                "tok-logout",
+                "https://example.invalid",
+                &dummy_session("@kevin:example.invalid"),
+                Some(("store-key-logout", "passphrase-logout")),
+            )
+            .await
+            .unwrap();
+        let crypto_dir = crate::crypto_store::store_dir("store-key-logout").unwrap();
+        assert!(crypto_dir.exists());
+
+        store.remove("tok-logout").await.unwrap();
+
+        assert!(
+            !crypto_dir.exists(),
+            "logout must remove the crypto store directory, not just the session blob"
+        );
     }
 
     // The two `from_env_*` tests below mutate process-wide env vars
@@ -1094,6 +1310,7 @@ mod tests {
                 "tok-unreachable",
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
+                None,
             )
             .await
             .unwrap();

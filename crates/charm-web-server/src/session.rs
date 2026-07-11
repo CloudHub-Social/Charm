@@ -67,6 +67,19 @@ const EVICTED_PRESENCE_MAX_AGE: std::time::Duration =
 /// timelines without limit. LRU-evicted.
 const MAX_LIVE_TIMELINES: usize = 20;
 
+/// Identifies this session's on-disk crypto store (`crypto_store.rs`) —
+/// `None` when persistence isn't configured, or for a session restored from
+/// a `PersistedSession` written before Spec 25 shipped (requirement 9's
+/// fail-open backfill). Cloned into `sync_loop::PersistHandle` at spawn time
+/// so a later re-save (token refresh, idle-eviction) can keep writing the
+/// same crypto fields rather than losing them on the very first re-save
+/// after login.
+#[derive(Debug, Clone)]
+pub struct CryptoStoreHandle {
+    pub store_key: String,
+    pub passphrase: String,
+}
+
 /// One authenticated web-client session: the logged-in `Client`, the account
 /// id it belongs to (used only for diagnostics/logging — every lookup is
 /// keyed by the opaque token, never by user id, so there's no path from a
@@ -75,6 +88,7 @@ const MAX_LIVE_TIMELINES: usize = 20;
 pub struct Session {
     pub client: Client,
     pub user_id: String,
+    pub crypto: Option<CryptoStoreHandle>,
     /// Mirrors desktop's `MatrixState::get_or_create_timeline`: a `Timeline`
     /// carries its own pagination cursor, so building a fresh one on every
     /// `get_timeline_page` request (as sub-PR A originally did) silently
@@ -310,11 +324,12 @@ impl Session {
 pub(crate) const MAX_PENDING_VERIFICATION_EVENTS: usize = 20;
 
 impl Session {
-    pub fn new(client: Client, user_id: String) -> Self {
+    pub fn new(client: Client, user_id: String, crypto: Option<CryptoStoreHandle>) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             client,
             user_id,
+            crypto,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
             )),
@@ -876,7 +891,7 @@ mod tests {
                 "building a client against an unreachable homeserver shouldn't require network \
                  access",
             );
-        Session::new(client, user_id.to_string())
+        Session::new(client, user_id.to_string(), None)
     }
 
     /// Backdates a session's `last_active` so tests don't need to actually

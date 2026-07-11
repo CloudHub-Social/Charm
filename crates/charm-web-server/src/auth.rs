@@ -10,7 +10,42 @@ use charm_lib::matrix::auth::{
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
 
-use crate::session::Session;
+use crate::session::{CryptoStoreHandle, Session};
+
+/// Generates a fresh crypto-store key/passphrase and builds a `Client`
+/// against it when `has_persistence` is true (mirroring desktop's
+/// `sqlite_store`-backed client); otherwise builds the same bare in-memory
+/// `Client` as before Spec 25. Shared by [`login`]/[`register`] so a fresh
+/// login's crypto state (device keys, etc.) lands directly in the persisted
+/// store from the very first `Client::builder().build()` call, rather than
+/// being established in-memory and needing a separate migration into a store
+/// afterward.
+async fn build_client(
+    homeserver_url: &str,
+    has_persistence: bool,
+) -> Result<(Client, Option<CryptoStoreHandle>), String> {
+    if !has_persistence {
+        let client = Client::builder()
+            .server_name_or_homeserver_url(homeserver_url)
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok((client, None));
+    }
+
+    let crypto = CryptoStoreHandle {
+        store_key: crate::crypto_store::generate_store_key(),
+        passphrase: crate::crypto_store::generate_passphrase(),
+    };
+    let store_dir = crate::crypto_store::store_dir(&crypto.store_key)?;
+    let client = Client::builder()
+        .server_name_or_homeserver_url(homeserver_url)
+        .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((client, Some(crypto)))
+}
 
 /// Builds a fresh in-memory `Client` against `homeserver_url` (a server name
 /// or full URL — matrix-rust-sdk's `.well-known` discovery handles both, same
@@ -27,12 +62,9 @@ use crate::session::Session;
 /// whole long-poll for no reason on every fresh login.
 pub async fn login(
     request: LoginRequest,
+    has_persistence: bool,
 ) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
-    let client = Client::builder()
-        .server_name_or_homeserver_url(&request.homeserver_url)
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
+    let (client, crypto) = build_client(&request.homeserver_url, has_persistence).await?;
 
     client
         .matrix_auth()
@@ -55,7 +87,7 @@ pub async fn login(
     // this very first sync response is processed synchronously as part of
     // this call — never replayed later — so the handler needs somewhere to
     // push it to before this call happens, not after.
-    let session = Session::new(client.clone(), user_id.clone());
+    let session = Session::new(client.clone(), user_id.clone(), crypto);
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),
@@ -103,12 +135,9 @@ pub async fn login(
 /// comment for why).
 pub async fn register(
     request: RegisterRequest,
+    has_persistence: bool,
 ) -> Result<(LoginResponse, Session, matrix_sdk::sync::SyncResponse), String> {
-    let client = Client::builder()
-        .server_name_or_homeserver_url(&request.homeserver_url)
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
+    let (client, crypto) = build_client(&request.homeserver_url, has_persistence).await?;
 
     // Reuses `charm_lib`'s UIAA-session-aware dummy-auth flow directly
     // (it's already `Client`-only, no `AppHandle` dependency) rather than
@@ -124,7 +153,7 @@ pub async fn register(
 
     // See `login`'s doc comment on this same ordering: session (and its
     // event handlers) built before the initial sync, not after.
-    let session = Session::new(client.clone(), user_id.clone());
+    let session = Session::new(client.clone(), user_id.clone(), crypto);
     crate::sync_loop::register_event_handlers(
         &client,
         session.events.clone(),

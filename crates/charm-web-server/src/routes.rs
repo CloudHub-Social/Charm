@@ -379,10 +379,15 @@ async fn finish_login(
     // that, not just assume it, so a transient failure here doesn't leave
     // `sync_loop::spawn` believing this session is already safely
     // persisted (see that field's doc comment).
+    let crypto = stored
+        .crypto
+        .as_ref()
+        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+
     let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         match persistence
-            .save(&token, homeserver_url, matrix_session)
+            .save(&token, homeserver_url, matrix_session, crypto)
             .await
         {
             Ok(()) => initial_save_succeeded = true,
@@ -398,6 +403,7 @@ async fn finish_login(
             homeserver_url: homeserver_url.to_string(),
             initial_access_token: initial_save_succeeded
                 .then(|| matrix_session.tokens.access_token.clone()),
+            crypto: stored.crypto.clone(),
         })
     } else {
         None
@@ -421,9 +427,10 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session, initial_response) = crate::auth::login(request)
-        .await
-        .map_err(ApiError::unauthorized)?;
+    let (response, session, initial_response) =
+        crate::auth::login(request, state.persistence.is_some())
+            .await
+            .map_err(ApiError::unauthorized)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
@@ -434,9 +441,10 @@ async fn register(
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session, initial_response) = crate::auth::register(request)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let (response, session, initial_response) =
+        crate::auth::register(request, state.persistence.is_some())
+            .await
+            .map_err(ApiError::bad_request)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
@@ -654,6 +662,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         token: token.clone(),
         homeserver_url,
         initial_access_token: Some(initial_access_token),
+        crypto: session.crypto.clone(),
     });
     let handle = crate::sync_loop::spawn(
         session.client.clone(),
