@@ -13,6 +13,7 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -43,6 +44,59 @@ let typingCallback: ((update: TypingUpdate) => void) | undefined;
 let uploadProgressCallback:
   | ((progress: { txn_id: string; room_id: string; sent: number; total: number }) => void)
   | undefined;
+
+// Scroll-anchoring (Spec 26) is driven off two IntersectionObservers in
+// `useChatTimeline.ts`: the bottom sentinel (also Spec 05's mark-as-read
+// signal, constructed with `{ threshold: 1 }`) and the top sentinel that
+// triggers backward-pagination (constructed with a `rootMargin`, no
+// `threshold`). `src/test/setup.ts`'s global stub never invokes its
+// callback, so tests that need to simulate "the user is/isn't scrolled to
+// bottom/top" install this one instead, which records each constructor's
+// callback — keyed by that same `threshold` distinction — for tests to fire
+// directly.
+let bottomIntersectionCallback: IntersectionObserverCallback | undefined;
+let topIntersectionCallback: IntersectionObserverCallback | undefined;
+
+class FakeIntersectionObserver implements IntersectionObserver {
+  readonly root = null;
+  readonly rootMargin = "";
+  readonly thresholds: ReadonlyArray<number>;
+  constructor(callback: IntersectionObserverCallback, options: IntersectionObserverInit = {}) {
+    if (options.threshold === 1) {
+      bottomIntersectionCallback = callback;
+    } else {
+      topIntersectionCallback = callback;
+    }
+    const threshold = options.threshold ?? 0;
+    this.thresholds = Array.isArray(threshold) ? threshold : [threshold];
+  }
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+}
+
+let scrollIntoViewMock: ReturnType<typeof vi.fn<Element["scrollIntoView"]>>;
+
+function fireBottomIntersection(isIntersecting: boolean) {
+  act(() => {
+    bottomIntersectionCallback?.(
+      [{ isIntersecting } as IntersectionObserverEntry],
+      undefined as unknown as IntersectionObserver,
+    );
+  });
+}
+
+function fireTopIntersection(isIntersecting: boolean) {
+  act(() => {
+    topIntersectionCallback?.(
+      [{ isIntersecting } as IntersectionObserverEntry],
+      undefined as unknown as IntersectionObserver,
+    );
+  });
+}
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openFileDialog(...args),
@@ -82,6 +136,7 @@ vi.mock("@/lib/matrix", () => ({
     uploadProgressCallback = callback;
     return Promise.resolve(() => {});
   }),
+  onRoomDetailsUpdate: vi.fn(() => Promise.resolve(() => {})),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -200,6 +255,14 @@ describe("ChatShell", () => {
     receiptsCallback = undefined;
     typingCallback = undefined;
     uploadProgressCallback = undefined;
+    bottomIntersectionCallback = undefined;
+    topIntersectionCallback = undefined;
+    globalThis.IntersectionObserver =
+      FakeIntersectionObserver as unknown as typeof IntersectionObserver;
+    // jsdom doesn't implement `scrollIntoView` at all (useChatTimeline.ts
+    // guards the call with `?.()` for exactly this reason).
+    scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock;
   });
 
   it("prompts to select a room when none is active", () => {
@@ -237,6 +300,205 @@ describe("ChatShell", () => {
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("scrolls to the bottom once the initial page of messages renders", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "hi", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(scrollIntoViewMock).toHaveBeenCalledWith({ block: "end" }));
+  });
+
+  it("keeps the view pinned to bottom when a live message arrives while already at bottom", async () => {
+    // The bottom-sentinel observer (which `fireBottomIntersection` drives)
+    // only mounts once there's a `latestEventId` to observe for — start with
+    // a non-empty timeline so it's actually wired up before asserting on it.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireBottomIntersection(true);
+    scrollIntoViewMock.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+
+    await screen.findByText("second");
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ block: "end" });
+  });
+
+  it("does not force-scroll when a live message arrives while the user has scrolled away from bottom", async () => {
+    // Regression guard for Charm 1.0 issue #328 ("Jump to Present is overly
+    // sticky") — yanking the view down while the user is deliberately
+    // reading history is the exact failure mode Spec 26 calls out to avoid.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireBottomIntersection(false);
+    scrollIntoViewMock.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+
+    await screen.findByText("second");
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+  });
+
+  it("opens a newly-selected room scrolled to bottom, even if the previous room was scrolled up", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "room A msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room A msg");
+    fireBottomIntersection(false); // user scrolled up in room A
+    scrollIntoViewMock.mockClear();
+
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$b",
+          sender: "@alice:localhost",
+          body: "room B msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    await screen.findByText("room B msg");
+    expect(scrollIntoViewMock).toHaveBeenCalledWith({ block: "end" });
+  });
+
+  it("loads and prepends older history, preserving scroll position, when the top sentinel scrolls into view", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    const container = screen.getByText("second").closest("div.overflow-y-auto");
+    if (!container) throw new Error("expected a scroll container");
+    // jsdom never computes real layout, so fake `scrollHeight` as a function
+    // of how many message rows are actually in the DOM right now — this
+    // naturally differs between the anchor capture (before the older page's
+    // rows are added) and the restore effect's read (after), the same way a
+    // real browser's `scrollHeight` would grow once the taller list paints.
+    Object.defineProperty(container, "scrollHeight", {
+      configurable: true,
+      get: () => 250 + container.querySelectorAll('[id^="message-"]').length * 150,
+    });
+    Object.defineProperty(container, "scrollTop", {
+      value: 20,
+      writable: true,
+      configurable: true,
+    });
+
+    let resolveOlderPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOlderPage = resolve;
+      }),
+    );
+    fireTopIntersection(true);
+    // The older-history request is in flight — the loading indicator shows,
+    // and a second intersection shouldn't kick off a duplicate request.
+    expect(await screen.findByText("Loading older messages…")).toBeInTheDocument();
+    fireTopIntersection(true);
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      resolveOlderPage?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: null,
+      });
+    });
+
+    await screen.findByText("first");
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    // scrollHeight grew by 150px (one more message row) once the older page
+    // rendered above the previously-visible content; scrollTop should have
+    // been nudged by that same delta so "second" stays visually in place.
+    expect(container.scrollTop).toBe(170);
+  });
+
+  it("does not request another page once the room's history start has been reached", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "only message",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("only message");
+
+    getTimelinePage.mockClear();
+    fireTopIntersection(true);
+
+    expect(getTimelinePage).not.toHaveBeenCalled();
   });
 
   it("does not mark the room read while room settings covers the chat, but does once it closes", async () => {
@@ -563,6 +825,103 @@ describe("ChatShell", () => {
     });
 
     expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+  });
+
+  it("auto-hides the typing row after the last update with no follow-up", async () => {
+    vi.useFakeTimers();
+    try {
+      renderChatShell();
+      await vi.waitFor(() => expect(typingCallback).toBeDefined());
+
+      act(() => {
+        typingCallback?.({ room_id: room.room_id, user_ids: ["@alice:localhost"] });
+      });
+      expect(screen.getByText("@alice:localhost is typing…")).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(TYPING_AUTO_HIDE_MS);
+      });
+      expect(screen.queryByText(/is typing/)).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a following-the-conversation bar that expands to list participants", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@bob:localhost",
+        display_name: "Bob",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    const bar = await screen.findByRole("button", {
+      name: "Alice and Bob are following the conversation",
+    });
+    expect(bar).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Alice", { selector: "span" })).not.toBeInTheDocument();
+
+    fireEvent.click(bar);
+
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    expect(screen.getByText("Bob")).toBeInTheDocument();
+    expect(bar).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("pluralizes the following-the-conversation bar past 3 participants", async () => {
+    getRoomMembers.mockResolvedValueOnce(
+      ["Alice", "Bob", "Carol", "Dave"].map((name) => ({
+        user_id: `@${name.toLowerCase()}:localhost`,
+        display_name: name,
+        avatar_url: null,
+        power_level: 0,
+        membership: "join" as const,
+      })),
+    );
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice, Bob, Carol, and 1 other are following the conversation",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("excludes invited-but-not-joined members from the following-the-conversation bar", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@bob:localhost",
+        display_name: "Bob",
+        avatar_url: null,
+        power_level: 0,
+        membership: "invite",
+      },
+    ]);
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice is following the conversation",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {

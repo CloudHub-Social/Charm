@@ -27,6 +27,7 @@ import {
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
+import { followingLabel, useRoomParticipants } from "./useRoomParticipants";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
@@ -110,6 +111,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // concept in the composer today (files upload and send independently via
   // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
   const [isComposerEmpty, setIsComposerEmpty] = useState(true);
+  const [followingExpanded, setFollowingExpanded] = useState(false);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -133,7 +135,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // already at the bottom) behind it shouldn't be silently marked read, same
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
-  const { messages, loading, bottomSentinelRef } = useChatTimeline(room, roomSettingsOpen);
+  const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
+    useChatTimeline(room, roomSettingsOpen);
   const senders = messages.map((m) => m.sender);
   // Best-effort display-name lookup for read-receipt tooltips ("Read by
   // {name}") — built from senders already present in the loaded timeline
@@ -148,6 +151,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
   const { typingText, handleTypingInput, stopTyping } = useChatTyping(activeRoomId, currentUserId);
+  const participants = useRoomParticipants(activeRoomId);
+  useEffect(() => {
+    setFollowingExpanded(false);
+  }, [activeRoomId]);
   const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
   const { commandFeedback, setCommandFeedback, handleComposerSubmit, handleSlashCommand } =
     useMessageSend({
@@ -264,10 +271,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
+      <div ref={containerRef} className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
         {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {!loading && messages.length === 0 && (
           <p className="text-sm text-muted-foreground">No messages yet</p>
+        )}
+        {/* Block-level sibling of the flex message rows below (not a flex
+            item within one), same reasoning as the bottom sentinel — scrolling
+            this near the top of the viewport loads one more page of older
+            history (Spec 26 Phase 1). */}
+        <div ref={topSentinelRef} className="h-px w-full shrink-0" />
+        {loadingMore && (
+          <p className="text-center text-xs text-muted-foreground">Loading older messages…</p>
         )}
         {messages.map((message, i) => {
           const own = message.sender === currentUserId;
@@ -310,7 +325,23 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       </div>
 
       {typingText && (
-        <output className="block px-4 pb-1 text-sm text-muted-foreground">{typingText}</output>
+        <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">
+          <span className="flex items-center gap-[3px]" aria-hidden="true">
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0s" }}
+            />
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0.2s" }}
+            />
+            <span
+              className="typing-dot size-[5px] rounded-full bg-muted-foreground"
+              style={{ animationDelay: "0.4s" }}
+            />
+          </span>
+          <span>{typingText}</span>
+        </output>
       )}
 
       <UploadTray uploads={uploads} onDismiss={dismissUpload} />
@@ -413,6 +444,31 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           </button>
         </div>
       </div>
+      {participants.length > 0 && (
+        <button
+          type="button"
+          aria-expanded={followingExpanded}
+          onClick={() => setFollowingExpanded((expanded) => !expanded)}
+          className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
+        >
+          {followingLabel(participants.map((p) => p.display_name ?? p.user_id))}
+          {followingExpanded && (
+            <div className="mt-1.5 flex flex-col gap-1">
+              {participants.map((p) => (
+                <span key={p.user_id} className="flex items-center gap-2 text-foreground">
+                  <span
+                    className="flex size-4 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white"
+                    style={{ background: avatarColor(p.user_id) }}
+                  >
+                    {initials(p.user_id, p.display_name)}
+                  </span>
+                  {p.display_name ?? p.user_id}
+                </span>
+              ))}
+            </div>
+          )}
+        </button>
+      )}
     </div>
   );
 }
