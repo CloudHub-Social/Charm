@@ -77,5 +77,11 @@ test("describeCaughtError returns the message for an Error instance", () => {
 
 test("describeCaughtError stringifies a non-Error thrown value", () => {
   assert.equal(describeCaughtError("just a string"), "just a string");
-  assert.equal(describeCaughtError({ code: "EBADF" }), "[object Object]");
+  assert.equal(describeCaughtError({ code: "EBADF" }), '{"code":"EBADF"}');
+});
+
+test("describeCaughtError falls back to String() for values JSON.stringify can't handle", () => {
+  const circular = {};
+  circular.self = circular;
+  assert.equal(describeCaughtError(circular), "[object Object]");
 });
