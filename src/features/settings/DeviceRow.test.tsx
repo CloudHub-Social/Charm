@@ -103,10 +103,22 @@ describe("DeviceRow", () => {
     expect(onVerify).toHaveBeenCalled();
   });
 
-  it("does not offer Verify for the current device or an already-verified one", () => {
+  it("hides the actions menu entirely for the current device", () => {
     renderWithProviders(
       <DeviceRow
         device={makeDevice({ is_current: true, is_verified: true })}
+        onVerify={vi.fn()}
+        onRevoke={vi.fn()}
+        usesOAuth={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Actions for/ })).not.toBeInTheDocument();
+  });
+
+  it("does not offer Verify for an already-verified, non-current device", () => {
+    renderWithProviders(
+      <DeviceRow
+        device={makeDevice({ is_current: false, is_verified: true })}
         onVerify={vi.fn()}
         onRevoke={vi.fn()}
         usesOAuth={false}
