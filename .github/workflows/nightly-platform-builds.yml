@@ -67,6 +67,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Spec 24: computed once by scripts/compute-build-id.mjs, exported as
+      # BUILD_ID/VITE_BUILD_ID via $GITHUB_ENV, so both the JS build below
+      # (Vite auto-exposes VITE_-prefixed vars) and the Rust build (which
+      # bakes BUILD_ID in at compile time via option_env!(), see
+      # src-tauri/src/lib.rs) pick it up without recomputing it.
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
       # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
       # the macOS .app/.dmg bundler. Not signed or notarized — that's a
       # separate concern from "does it build". sccache credentials scoped to
@@ -148,6 +159,14 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # Spec 24: see the macOS job's "Compute build id" step comment.
+      - name: Compute build id
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
 
       # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
       # have no system sqlite3 on PATH, so this is the one platform where
@@ -235,6 +254,13 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      # Spec 24: see the macOS job's "Compute build id" step comment.
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
 
       # rust-integration (quality-checks.yml) already covers `cargo test` on
       # Linux; this is the full app bundle (deb/rpm via the Tauri bundler
@@ -370,6 +396,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Spec 24: see the macOS job's "Compute build id" step comment. Written
+      # into cargo's config.toml [env] table below (not just $GITHUB_ENV, as
+      # every other platform job does) for the same xcodebuild-doesn't-
+      # forward-step-env reason as the sccache credentials right after this.
+      - name: Compute build id
+        id: build-id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
       # NOT a step-level `env:` on the build command below, unlike every
       # other platform job in this workflow. `pnpm tauri ios build` shells
       # out to `xcodebuild`, and the actual `cargo build` runs inside a
@@ -393,6 +430,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          BUILD_ID: ${{ steps.build-id.outputs.build-id }}
         run: |
           set -euo pipefail
           cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -416,6 +454,10 @@ jobs:
             echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
             echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
             echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            # Baked into the Rust binary at compile time via
+            # option_env!("BUILD_ID") in src-tauri/src/lib.rs — see that
+            # file for why this can't just be a runtime env var.
+            echo "BUILD_ID = \"${BUILD_ID}\""
           } >> "$config"
 
       # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
@@ -510,6 +552,13 @@ jobs:
         run: sdkmanager --install "ndk;27.0.12077973"
 
       - run: pnpm install --frozen-lockfile
+
+      # Spec 24: see the macOS job's "Compute build id" step comment.
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
 
       # Single arch (aarch64) — this is a compile check, not a release
       # artifact, so building all 4 ABIs would just burn CI time for no

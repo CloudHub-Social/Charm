@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/react";
+import packageJson from "../../package.json";
 import {
   closeSentry,
   initializeSentry,
@@ -38,6 +39,7 @@ vi.mock("@sentry/react", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
   vi.stubEnv("VITE_SENTRY_DSN", "https://public@example.invalid/1");
   clientOptions.enabled = true;
   observabilityTestHooks.reset();
@@ -59,6 +61,33 @@ describe("Sentry instrumentation", () => {
     expect(initializeSentry(enabledSettings)).toBe(true);
     expect(clientOptions.enabled).toBe(true);
     expect(Sentry.init).toHaveBeenCalledTimes(1);
+  });
+
+  it("tags events with charm.build.id from VITE_BUILD_ID (Spec 24)", () => {
+    vi.stubEnv("VITE_BUILD_ID", "0.4.2+pr187.a1b2c3d");
+
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialScope: expect.objectContaining({
+          tags: expect.objectContaining({ "charm.build.id": "0.4.2+pr187.a1b2c3d" }),
+        }),
+      }),
+    );
+    expect(Sentry.setTag).toHaveBeenCalledWith("charm.build.id", "0.4.2+pr187.a1b2c3d");
+  });
+
+  it("falls back to the package version for charm.build.id when VITE_BUILD_ID is unset", () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.setTag).toHaveBeenCalledWith("charm.build.id", packageJson.version);
   });
 
   it("registers the feedback integration without auto-injecting Sentry UI", () => {

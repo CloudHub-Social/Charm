@@ -25,6 +25,22 @@ fn greet(name: &str) -> String {
 /// `observability_scrub::is_tracing_target_allowed`.
 const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
 
+/// Spec 24's canonical build identifier (`{version}+{short_sha}`,
+/// `{version}+pr{number}.{short_sha}`, or `{version}+nightly.{short_sha}`),
+/// baked in at *compile* time via `option_env!` — mirroring how
+/// `sentry::release_name!()` below captures `CARGO_PKG_VERSION` at compile
+/// time. A runtime `std::env::var` lookup (like `SENTRY_RELEASE` still
+/// supports, for explicit overrides) isn't enough on its own: an installed
+/// app's launch environment won't have CI's `BUILD_ID` set, so without this
+/// compile-time capture every shipped binary would silently fall back to the
+/// bare Cargo version and never show the SHA. CI sets `BUILD_ID` before
+/// invoking `cargo build`/`pnpm tauri build` — see
+/// `.github/scripts/configure-sentry-release-env.sh` and the
+/// nightly-platform-builds.yml / sentry-release-artifacts.yml workflow
+/// steps. Absent (e.g. a local dev build), this is `None` and every
+/// consumer below falls back the same way `release_name!()` already did.
+const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
+
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 
@@ -157,6 +173,21 @@ fn runtime_observability_logs_enabled() -> bool {
     RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
 }
 
+/// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):
+/// an explicit runtime `SENTRY_RELEASE` override wins (empty values from
+/// `std::env::var` are treated as unset), otherwise fall back to the
+/// compile-time-baked `BUILD_ID` (see the `BUILD_ID` const doc comment).
+/// Pulled out as a pure function so the priority order is unit-testable
+/// without needing an actual Sentry client or process environment.
+fn resolve_build_id_tag(
+    sentry_release_env: Option<String>,
+    build_id: Option<&str>,
+) -> Option<String> {
+    sentry_release_env
+        .filter(|value| !value.is_empty())
+        .or_else(|| build_id.map(str::to_owned))
+}
+
 fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
     let dsn = std::env::var("SENTRY_DSN")
         .ok()
@@ -172,11 +203,22 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
         .ok()
         .filter(|value| !value.is_empty())
         .map(Cow::Owned);
+    // Priority: an explicit runtime SENTRY_RELEASE override, then the
+    // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
+    // binary), then the bare Cargo-version fallback release_name!() already
+    // provided before this spec.
     let release = std::env::var("SENTRY_RELEASE")
         .ok()
         .filter(|value| !value.is_empty())
         .map(Cow::Owned)
+        .or_else(|| BUILD_ID.map(Cow::Borrowed))
         .or_else(|| sentry::release_name!());
+
+    // charm.build.id mirrors `release` (or BUILD_ID directly when no
+    // SENTRY_RELEASE override is present) so a Sentry event's tag always
+    // matches what AboutPanel displays for the same build — see Spec 23,
+    // which consumes this tag for feedback/error context.
+    let build_id_tag = resolve_build_id_tag(std::env::var("SENTRY_RELEASE").ok(), BUILD_ID);
 
     let client = sentry::init((
         dsn,
@@ -195,6 +237,9 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             ..Default::default()
         },
     ));
+    if let Some(build_id) = build_id_tag {
+        sentry::configure_scope(|scope| scope.set_tag("charm.build.id", build_id));
+    }
     let tracing_installed = install_sentry_tracing();
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
@@ -571,5 +616,34 @@ mod observability_tests {
         update_runtime_observability_logs_enabled(false);
 
         assert!(!runtime_observability_logs_enabled());
+    }
+
+    // Spec 24: charm.build.id tag resolution — an explicit runtime
+    // SENTRY_RELEASE always wins over the compile-time BUILD_ID constant,
+    // and an empty-string env value (std::env::var returns "" rather than
+    // None when a var is set-but-empty) is treated the same as unset.
+
+    #[test]
+    fn build_id_tag_prefers_runtime_sentry_release_override() {
+        let resolved =
+            resolve_build_id_tag(Some("charm@override".to_owned()), Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("charm@override"));
+    }
+
+    #[test]
+    fn build_id_tag_falls_back_to_compile_time_build_id() {
+        let resolved = resolve_build_id_tag(None, Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("0.1.0+a1b2c3d"));
+    }
+
+    #[test]
+    fn build_id_tag_treats_empty_env_value_as_unset() {
+        let resolved = resolve_build_id_tag(Some(String::new()), Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("0.1.0+a1b2c3d"));
+    }
+
+    #[test]
+    fn build_id_tag_is_none_without_release_env_or_compile_time_build_id() {
+        assert_eq!(resolve_build_id_tag(None, None), None);
     }
 }

@@ -157,6 +157,34 @@ jobs:
       # browser bundle regardless), so preview deploys still get runtime
       # Sentry error reporting — they just skip source-map upload and
       # release tagging, which need the token.
+      #
+      # The build id (Spec 24), unlike the Sentry upload token, is not a
+      # secret and carries no risk of exfiltration, so it's computed and
+      # exposed here unconditionally — this is what lets a PR preview build's
+      # AboutPanel show `{version}+pr{number}.{short_sha}` even though this
+      # job never touches SENTRY_AUTH_TOKEN. Node is set up here (rather than
+      # relying on the composite action's own setup-node, which runs later)
+      # so this step can call the shared script directly.
+      - if: steps.config.outputs.enabled == 'true'
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - if: steps.config.outputs.enabled == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Compute build id
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          # github.event.pull_request.head.sha (NOT github.sha/GITHUB_SHA) —
+          # on `pull_request` events GITHUB_SHA resolves to a synthetic
+          # merge-ref commit, not the commit this preview actually contains.
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BUILD_KIND: ${{ github.event.pull_request.number && 'pr' || '' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/compute-build-id.mjs
+
       - if: steps.config.outputs.enabled == 'true'
         uses: ./.github/actions/build-web-worker
         env:
