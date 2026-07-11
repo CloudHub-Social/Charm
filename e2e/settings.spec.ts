@@ -102,6 +102,9 @@ test("settings: observability panel is default-off and snapshot-covered", async 
   await expect(page.getByRole("switch", { name: "Enable Sentry session replay" })).toBeEnabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry profiling" })).toBeEnabled();
   await expect(page.getByRole("switch", { name: "Enable Sentry structured logs" })).toBeEnabled();
+  // Send feedback stays disabled until a category is picked (Spec 22).
+  await expect(page.getByRole("button", { name: "Send feedback" })).toBeDisabled();
+  await page.getByLabel("Bug", { exact: true }).check();
   await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
 
   await page.getByRole("switch", { name: "Enable Sentry session replay" }).click();
