@@ -71,7 +71,13 @@ function readPackageVersion() {
 }
 
 function isMainModule() {
-  return process.argv[1] != null && fileURLToPath(import.meta.url) === process.argv[1];
+  // path.resolve() is a no-op on the already-absolute path Node puts in
+  // process.argv[1] (verified across relative, ./-prefixed, subdirectory,
+  // and shebang-direct invocation) — kept as cheap defense against any
+  // invocation style that isn't already normalized.
+  return (
+    process.argv[1] != null && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  );
 }
 
 // CLI entry point — reads inputs from the environment so every workflow can
