@@ -274,9 +274,7 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
           onClick={onClick}
           className={cn(
             "relative flex size-11 items-center justify-center rounded-md border border-transparent transition-colors",
-            active
-              ? "ring-2 ring-primary"
-              : "bg-background hover:border-border hover:bg-accent/70",
+            active ? "ring-2 ring-primary" : "bg-background hover:border-border hover:bg-accent/70",
           )}
         >
           <Avatar size="sm">
