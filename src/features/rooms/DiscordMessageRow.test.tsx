@@ -168,4 +168,14 @@ describe("DiscordMessageRow", () => {
     expect(body).toHaveClass("break-words");
     expect(body).toHaveClass("min-w-0");
   });
+
+  it("plays the entrance animation for a new message", () => {
+    const { container } = render(<DiscordMessageRow {...baseProps({ isNew: true })} />);
+    expect(container.firstChild).toHaveClass("animate-in");
+  });
+
+  it("does not animate a message that isn't new", () => {
+    const { container } = render(<DiscordMessageRow {...baseProps({ isNew: false })} />);
+    expect(container.firstChild).not.toHaveClass("animate-in");
+  });
 });

@@ -194,4 +194,14 @@ describe("IrcMessageRow", () => {
     expect(heading).toBeInTheDocument();
     expect(blockquote?.closest("span")).toHaveClass("[&_*]:inline");
   });
+
+  it("plays the entrance animation for a new message", () => {
+    const { container } = render(<IrcMessageRow {...baseProps({ isNew: true })} />);
+    expect(container.firstChild).toHaveClass("animate-in");
+  });
+
+  it("does not animate a message that isn't new", () => {
+    const { container } = render(<IrcMessageRow {...baseProps({ isNew: false })} />);
+    expect(container.firstChild).not.toHaveClass("animate-in");
+  });
 });
