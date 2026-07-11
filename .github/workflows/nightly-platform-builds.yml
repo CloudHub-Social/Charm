@@ -373,6 +373,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -504,10 +508,43 @@ jobs:
           echo "All $max_attempts attempts timed out — giving up."
           exit 1
 
+      # Unlike macOS/Windows, deb/rpm have no Gatekeeper/SmartScreen-
+      # equivalent unidentified-publisher block to work around — apt/rpm
+      # install unsigned packages fine. GPG-signing here is purely so a
+      # tester can verify a downloaded package actually came from this
+      # pipeline (`gpg --verify`), iff GPG_PRIVATE_KEY/GPG_PASSPHRASE secrets
+      # are configured (see README.md's "Generating a nightly signing cert").
+      # Detached ASCII-armored signatures (`gpg --detach-sign --armor`)
+      # rather than dpkg-sig/rpm --addsign: verifiable with plain gpg on any
+      # platform, no extra package-format-specific tooling needed on the
+      # runner or the tester's machine.
+      - name: Sign Linux artifacts
+        if: ${{ env.HAS_GPG_KEY == 'true' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+          for f in target/debug/bundle/deb/*.deb target/debug/bundle/rpm/*.rpm; do
+            [ -e "$f" ] || continue
+            gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+              --local-user "$key_id" --detach-sign --armor "$f"
+          done
+          # Ships alongside the packages every run (small, and guarantees
+          # the verification key is available even for the very first
+          # signed release) rather than being published once out-of-band.
+          gpg --batch --armor --export "$key_id" > target/debug/bundle/charm-nightly-signing-key.asc
+
       # Only published for main — see the macOS job's "Upload macOS
-      # artifacts" step for the same reasoning. No signing story here: deb/
-      # rpm installers don't have a Gatekeeper/SmartScreen-equivalent
-      # unidentified-publisher warning to work around.
+      # artifacts" step for the same reasoning. Split from the signature
+      # upload below (rather than one glob set) so a missing .deb/.rpm still
+      # hard-fails the job, while the GPG files — which only exist when
+      # HAS_GPG_KEY is true — don't need to.
       - name: Upload Linux artifacts
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -517,6 +554,18 @@ jobs:
             target/debug/bundle/deb/*.deb
             target/debug/bundle/rpm/*.rpm
           if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Linux signatures
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-linux-signatures
+          path: |
+            target/debug/bundle/deb/*.deb.asc
+            target/debug/bundle/rpm/*.rpm.asc
+            target/debug/bundle/charm-nightly-signing-key.asc
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Track failure as a GitHub issue
@@ -674,6 +723,10 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
+    env:
+      HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_JKS != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -743,11 +796,28 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
+      # Decodes ANDROID_KEYSTORE_JKS into a file and exports the env vars
+      # app/build.gradle.kts's "nightly" signingConfig reads (see that
+      # file's comment), iff ANDROID_KEYSTORE_JKS/_PASSWORD/ANDROID_KEY_ALIAS
+      # /_PASSWORD secrets are configured (see README.md's "Generating a
+      # nightly signing cert" for how to make one with keytool). Without
+      # them, the build falls back to the AGP's own auto-generated debug
+      # keystore, same as before this existed — a fresh, different keystore
+      # every CI run, which is exactly the bug a persistent one fixes (see
+      # the build.gradle.kts comment for why that matters).
+      - name: Import Android signing keystore
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+        env:
+          ANDROID_KEYSTORE_JKS: ${{ secrets.ANDROID_KEYSTORE_JKS }}
+        run: |
+          set -euo pipefail
+          keystore_path="${RUNNER_TEMP}/nightly-signing.keystore"
+          echo "$ANDROID_KEYSTORE_JKS" | base64 -d > "$keystore_path"
+          echo "ANDROID_RELEASE_STORE_FILE=${keystore_path}" >> "$GITHUB_ENV"
+
       # Single arch (aarch64) — this is a compile check, not a release
       # artifact, so building all 4 ABIs would just burn CI time for no
-      # extra coverage. No release keystore is configured (build.gradle.kts
-      # has no signingConfig for the release build type), which is fine: an
-      # unsigned APK still proves the Rust/Kotlin/NDK toolchain compiles.
+      # extra coverage.
       - name: Build
         # ANDROID_HOME is set by android-actions/setup-android via
         # $GITHUB_ENV, which only becomes a real shell variable in later
@@ -773,6 +843,14 @@ jobs:
           # feature branch.
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # Read by app/build.gradle.kts's "nightly" signingConfig.
+          # ANDROID_RELEASE_STORE_FILE itself comes from $GITHUB_ENV (set by
+          # the import step above), not repeated here. Empty/unset when
+          # HAS_ANDROID_KEYSTORE is false, same fallback behavior as the
+          # AWS_* vars above.
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           # openssl-sys vendors OpenSSL from source for the Android target
@@ -786,12 +864,13 @@ jobs:
           pnpm tauri android build --target aarch64 --debug --ci
 
       # Only published for main — see the macOS job's "Upload macOS
-      # artifacts" step for the same reasoning. Already debug-signed by the
-      # Android build tools' auto-generated debug keystore (no signingConfig
-      # is set for release, so `--debug` here doubles as the signing story:
-      # Android happily installs a debug-signed APK once the device has
-      # "install unknown apps" enabled for the source — no separate
-      # self-signed-cert plumbing needed, unlike macOS/Windows).
+      # artifacts" step for the same reasoning. Signed with the persistent
+      # nightly keystore when ANDROID_KEYSTORE_JKS is configured (see
+      # app/build.gradle.kts's "nightly" signingConfig comment); otherwise
+      # falls back to the AGP's auto-generated debug keystore. Either way,
+      # Android happily installs the APK once the device has "install
+      # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
+      # equivalent block to work around.
       - name: Upload Android artifact
         if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -47,17 +47,32 @@ a one-time bypass per download:
   warning is reputation-based and persists even with our self-signed cert —
   only a paid EV/OV certificate with an established reputation removes it.
 - **Linux**: install the `.deb`/`.rpm` normally (`dpkg -i` / `rpm -i` or
-  your distro's package manager) — no publisher-trust gate to bypass.
+  your distro's package manager) — no publisher-trust gate to bypass. If
+  the release includes `.deb.asc`/`.rpm.asc` signatures and
+  `charm-nightly-signing-key.asc`, you can optionally verify provenance
+  first: `gpg --import charm-nightly-signing-key.asc && gpg --verify
+  Charm_<version>.deb.asc Charm_<version>.deb`. There's no install-time
+  enforcement of this — it's a manual check, not a gate.
 - **Android**: enable "Install unknown apps" for whatever app you used to
   download the `.apk` (Settings → Apps → Special access → Install unknown
-  apps), then open the file. The APK is signed with Android's auto-generated
-  debug keystore, which is sufficient to install — no separate cert needed.
+  apps), then open the file. Signed with our persistent nightly keystore
+  when configured (see below), which is what lets each night's APK install
+  as an *update* over the previous one instead of requiring an uninstall
+  first — Android refuses to install over an app it can't verify was signed
+  by the same key. Without that keystore configured, it falls back to the
+  Android Gradle Plugin's own auto-generated debug keystore, which is
+  regenerated fresh on every CI run — every "nightly" would need a manual
+  uninstall+reinstall in that case.
 
 ### Generating a nightly signing cert (maintainers)
 
-macOS/Windows nightly builds are signed automatically once the following
-repo secrets exist; until then, both platforms fall back to unsigned builds
-(the workflow degrades gracefully either way).
+macOS/Windows/Android nightly builds are signed automatically once the
+relevant repo secrets exist; until then, each platform falls back to its
+previous unsigned/ephemeral-keystore behavior (the workflow degrades
+gracefully either way). Linux nightlies are GPG-signed the same way, purely
+for download provenance — deb/rpm have no OS-level publisher-trust gate the
+way macOS/Windows do, so this doesn't change the install experience, only
+whether a `.asc` signature is available to verify against.
 
 **macOS** — Keychain Access → **Certificate Assistant → Create a
 Certificate…** → Identity Type **Self-Signed Root**, Certificate Type
@@ -90,6 +105,59 @@ Add as repo secrets: `WINDOWS_CERT_PFX` (contents of `cert.pfx.b64`),
 Neither cert needs to be trusted by anyone else's machine ahead of time —
 they only remove the "unidentified publisher" badge, not the OS's
 first-run friction described above.
+
+**Android** — a normal Java keystore via `keytool` (bundled with any JDK).
+Unlike the macOS/Windows certs, this one's identity *must* stay stable
+release over release — regenerating it later breaks in-place updates for
+anyone who already installed a nightly, the same way losing it would:
+
+```sh
+keytool -genkeypair -v -keystore charm-nightly.keystore -alias charm-nightly \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass "<a password>" -keypass "<a password>" \
+  -dname "CN=Charm Nightly, O=CloudHub Social"
+base64 -i charm-nightly.keystore -o charm-nightly.keystore.b64   # macOS
+# base64 -w0 charm-nightly.keystore > charm-nightly.keystore.b64  # Linux
+```
+
+Add as repo secrets: `ANDROID_KEYSTORE_JKS` (contents of
+`charm-nightly.keystore.b64`), `ANDROID_KEYSTORE_PASSWORD` and
+`ANDROID_KEY_PASSWORD` (the password used above — keytool above sets both
+to the same value, but they can differ), `ANDROID_KEY_ALIAS` (`charm-nightly`
+above). **Back up `charm-nightly.keystore` and its passwords somewhere
+durable (e.g. Bitwarden) before deleting the local copy** — there's no
+recovery path if it's lost, only starting over with a new identity that
+breaks upgrades for existing installs.
+
+**Linux (GPG)** — any GPG keypair; a passphrase-protected one since it's
+going into repo secrets either way:
+
+```sh
+gpg --batch --full-generate-key <<'EOF'
+%no-protection
+Key-Type: RSA
+Key-Length: 4096
+Name-Real: Charm Nightly
+Name-Email: nightly@cloudhub.social
+Expire-Date: 2y
+EOF
+```
+
+(Use a real passphrase-protected key instead of `%no-protection` if you'd
+rather not rely on repo-secret confidentiality alone — swap in `Passphrase:
+<a password>` and drop `%no-protection`.) Then export both halves:
+
+```sh
+key_id=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+gpg --export-secret-keys --armor "$key_id" > charm-nightly-gpg-private.asc
+```
+
+Add as repo secrets: `GPG_PRIVATE_KEY` (contents of
+`charm-nightly-gpg-private.asc`), `GPG_PASSPHRASE` (empty string is fine if
+you used `%no-protection` above). The public key is re-exported and
+published as a release asset (`charm-nightly-signing-key.asc`) by the
+workflow itself on every signed run, so there's nothing else to distribute
+by hand.
 
 ## Identity — keep it clean
 
