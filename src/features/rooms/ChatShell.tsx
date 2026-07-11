@@ -393,6 +393,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               attachment concept (files upload/send independently), so
               trimmed text emptiness is the only signal. */}
           <button
+            type="button"
             aria-label="Send"
             onClick={() => composerRef.current?.submit()}
             disabled={isComposerEmpty}
