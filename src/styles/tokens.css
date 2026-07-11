@@ -353,3 +353,20 @@ body {
   pointer-events: none;
   color: var(--color-text-muted);
 }
+
+/* Bouncing dots in the chat typing indicator (ChatShell). */
+@keyframes typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+.typing-dot {
+  animation: typing-dot 1.2s infinite ease-in-out;
+}
