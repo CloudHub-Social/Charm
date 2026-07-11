@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { MediaMessage } from "./media/MediaMessage";
-import { avatarColor } from "./roomDisplay";
+import { nickColor } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { sanitizeMatrixHtml } from "./composerSanitize";
@@ -48,7 +48,7 @@ export function IrcMessageRow({
       </span>
       <span
         className="shrink-0 font-mono text-[13px] font-semibold"
-        style={{ color: avatarColor(message.sender) }}
+        style={{ color: nickColor(message.sender) }}
       >
         &lt;{nick}&gt;
       </span>

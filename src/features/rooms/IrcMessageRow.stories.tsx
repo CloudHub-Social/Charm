@@ -52,7 +52,14 @@ export const RepeatedNick: Story = {
 };
 
 export const Redacted: Story = {
-  args: { message: makeMessageSummary({ event_id: "$1", sender: "@bob:localhost", body: "", redacted: true }) },
+  args: {
+    message: makeMessageSummary({
+      event_id: "$1",
+      sender: "@bob:localhost",
+      body: "",
+      redacted: true,
+    }),
+  },
 };
 
 export const Reply: Story = {

@@ -31,9 +31,7 @@ function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLa
 
 describe("BubbleMessageRow", () => {
   it("right-aligns own messages and left-aligns others'", () => {
-    const { container: ownContainer } = render(
-      <BubbleMessageRow {...baseProps({ own: true })} />,
-    );
+    const { container: ownContainer } = render(<BubbleMessageRow {...baseProps({ own: true })} />);
     expect(ownContainer.querySelector(".ml-auto.flex-row-reverse")).toBeInTheDocument();
 
     const { container: otherContainer } = render(
@@ -43,9 +41,7 @@ describe("BubbleMessageRow", () => {
   });
 
   it("uses the primary-solid bubble for own messages, secondary for others'", () => {
-    const { container: ownContainer } = render(
-      <BubbleMessageRow {...baseProps({ own: true })} />,
-    );
+    const { container: ownContainer } = render(<BubbleMessageRow {...baseProps({ own: true })} />);
     expect(ownContainer.querySelector(".bg-primary-solid")).toBeInTheDocument();
 
     const { container: otherContainer } = render(
