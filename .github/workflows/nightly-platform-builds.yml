@@ -323,7 +323,13 @@ jobs:
             # string". `--config <path>` accepts a JSON file directly (see
             # `tauri build --help`), sidestepping shell requoting entirely.
             $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-signing.json"
-            Set-Content -Path $configPath -Value $config -NoNewline
+            # Explicit encoding rather than relying on the current default
+            # (PowerShell's Set-Content default has changed across versions
+            # — pwsh 6+ defaults to UTF-8, but not consistently BOM-less)
+            # since this file feeds straight into tauri's JSON parser, and a
+            # stray BOM would reintroduce the same class of "config fails to
+            # parse" failure this step exists to avoid.
+            Set-Content -Path $configPath -Value $config -NoNewline -Encoding utf8NoBOM
             $configArgs = @("--config", $configPath)
           }
           pnpm tauri build --debug @configArgs
