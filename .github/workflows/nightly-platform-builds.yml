@@ -181,6 +181,16 @@ jobs:
           # substring match — that could false-positive if one identity's
           # name happens to contain another's as a substring.
           available_identities="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^[[:space:]]*[0-9]*)[[:space:]]*[A-F0-9]*[[:space:]]*"\(.*\)"$/\1/p')"
+          # An empty identity_name (blank MACOS_CERT_NAME secret) must not
+          # be allowed through even if available_identities also comes back
+          # empty — `grep -qxF ""` matches the empty line a bare here-string
+          # always produces, so the check below would otherwise silently
+          # pass on two empty strings instead of catching a misconfigured
+          # secret right here.
+          if [ -z "$identity_name" ]; then
+            echo "::error::MACOS_CERT_NAME is empty after trimming."
+            exit 1
+          fi
           if ! grep -qxF "$identity_name" <<< "$available_identities"; then
             echo "::error::MACOS_CERT_NAME does not match any codesigning identity in the imported keychain. Available identity names:"
             printf '%s\n' "$available_identities"
