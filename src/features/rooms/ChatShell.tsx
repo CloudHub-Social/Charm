@@ -170,23 +170,41 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const seededRoomIdRef = useRef<string | null>(null);
   const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
   if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
+  // Set while `loadMoreHistory` has a request in flight (`loadingMore ===
+  // true`) and consumed on the render where its response actually lands.
+  // `useChatTimeline.loadMoreHistory` calls `setMessages(page.messages)` and
+  // `setLoadingMore(false)` from the same synchronous continuation after its
+  // `await`, so React batches them into one commit — by the time this memo
+  // sees the new (prepended-with-older-history) `messages`, `loadingMore`
+  // has *already* flipped back to `false` in that same render, so it alone
+  // can't distinguish "pagination just landed" from "a live message just
+  // arrived". This ref instead remembers "pagination was in flight as of
+  // the previous render" across that boundary.
+  const pendingPaginationRef = useRef(false);
+  if (loadingMore) pendingPaginationRef.current = true;
   const newMessageKeys = useMemo(() => {
     const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
     if (!readyToSeed) return new Set<string>();
     if (seededRoomIdRef.current !== activeRoomId) {
       seededRoomIdRef.current = activeRoomId;
       seenRowKeysRef.current = new Set(messages.map(messageRowKey));
+      pendingPaginationRef.current = false;
       return new Set<string>();
     }
+    // A pagination response prepending older history — mark it all seen
+    // (so it doesn't animate later either) but don't flag any of it as
+    // fresh right now.
+    const isPaginationUpdate = pendingPaginationRef.current && !loadingMore;
+    if (isPaginationUpdate) pendingPaginationRef.current = false;
     const fresh = new Set<string>();
     for (const m of messages) {
       const key = messageRowKey(m);
-      if (!seenRowKeysRef.current.has(key)) fresh.add(key);
+      if (!seenRowKeysRef.current.has(key) && !isPaginationUpdate) fresh.add(key);
     }
     messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
     return fresh;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, loading, activeRoomId]);
+  }, [messages, loading, loadingMore, activeRoomId]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
@@ -236,6 +254,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
   }
   const senders = messages.map((m) => m.sender);
+  // Best-effort display-name lookup for read-receipt tooltips ("Read by
+  // {name}") — built from senders already present in the loaded timeline
+  // rather than a dedicated member-list fetch, since a reader is virtually
+  // always someone who has also sent a message in view. Falls back to the
+  // bare user id in MessageRow when a reader hasn't sent anything loaded.
+  const senderNameByUserId = new Map<string, string>();
+  for (const m of messages) {
+    if (m.sender_display_name != null) senderNameByUserId.set(m.sender, m.sender_display_name);
+  }
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
   const headerPresence = usePresence(room?.is_direct ? (room.dm_peer_user_id ?? null) : null);
@@ -407,6 +434,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
                 canRedact={allowedToRedact}
                 readers={readers}
+                senderNameByUserId={senderNameByUserId}
                 // Excludes `own` messages: `messageRowKey` (transaction_id ??
                 // event_id) isn't stable across the local-echo -> ack
                 // transition for a message *we* sent — `transaction_id()`

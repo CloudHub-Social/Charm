@@ -1,4 +1,11 @@
 @import "tailwindcss";
+/* Provides the `animate-in`/`animate-out` family (`fade-in-0`, `zoom-in-95`,
+   `slide-in-from-*`, etc.) that dialog.tsx/popover.tsx/tooltip.tsx/
+   dropdown-menu.tsx/context-menu.tsx and MessageRow's own entrance animation
+   already reference as plain Tailwind utility classes — Tailwind v4 has no
+   built-in equivalent, so without this import those classes compile to
+   nothing and every one of those animations is silently a no-op. */
+@import "tw-animate-css";
 
 /*
  * Redefines Tailwind's `dark:` variant to key off `[data-theme]` instead of

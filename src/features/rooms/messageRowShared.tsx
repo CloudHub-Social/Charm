@@ -83,6 +83,8 @@ export interface MessageRowLayoutProps {
   canRedact: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
+  /** Best-effort user id -> display name lookup for the "Read by {name}" tooltip; falls back to the user id when absent. */
+  senderNameByUserId: Map<string, string>;
   /** Whether this message just arrived (not part of the initial/paginated load) — plays a slide-up+fade entrance. */
   isNew: boolean;
   /** Looks up this row's mounted `MessageActions` handle, for forwarding a long-press. */

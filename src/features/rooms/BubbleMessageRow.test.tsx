@@ -13,6 +13,7 @@ function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLa
     sameSenderAsNext: false,
     canRedact: false,
     readers: [],
+    senderNameByUserId: new Map(),
     isNew: false,
     getActionsHandle: () => undefined,
     registerActionsRef: vi.fn(),

@@ -1,10 +1,5 @@
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarGroup,
-  AvatarGroupCount,
-  AvatarImage,
-} from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
@@ -31,6 +26,7 @@ export function BubbleMessageRow({
   sameSenderAsNext,
   canRedact,
   readers,
+  senderNameByUserId,
   isNew,
   getActionsHandle,
   registerActionsRef,
@@ -172,21 +168,56 @@ export function BubbleMessageRow({
           </span>
         )}
         {readers.length > 0 && (
-          <AvatarGroup className="mt-0.5 justify-end">
-            {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => (
-              <Avatar key={userId} size="sm">
-                <AvatarFallback
-                  style={{ background: avatarColor(userId) }}
-                  className="font-bold text-white"
-                >
-                  {initials(userId, null)}
-                </AvatarFallback>
-              </Avatar>
-            ))}
-            {readers.length > MAX_RECEIPT_AVATARS && (
-              <AvatarGroupCount>+{readers.length - MAX_RECEIPT_AVATARS}</AvatarGroupCount>
-            )}
-          </AvatarGroup>
+          <TooltipProvider>
+            {/* Deliberately not the shared Avatar/AvatarGroup components:
+                those only offer sm/default/lg (24/32/40px), all too large
+                for a read-receipt chip — the design calls for a much
+                smaller 14px chip, matching the row's own meta text below
+                the bubble rather than another avatar-sized element.
+                Aligned with `own` (not unconditionally right-aligned) so
+                the chips sit under the same edge as the timestamp above
+                them instead of floating to the opposite side on another
+                sender's left-aligned message. */}
+            <div
+              className={cn(
+                "mt-0.5 flex items-center gap-[3px]",
+                own ? "justify-end" : "justify-start",
+              )}
+            >
+              {readers.slice(0, MAX_RECEIPT_AVATARS).map((userId) => {
+                const readerName = senderNameByUserId.get(userId) ?? userId;
+                return (
+                  <Tooltip key={userId}>
+                    <TooltipTrigger asChild>
+                      {/* tabIndex={0}: keyboard/screen-reader users can tab
+                          to a chip and get the same "Read by {name}" info a
+                          mouse hover gives — not just decorative. This is
+                          the standard accessible-tooltip-trigger pattern
+                          (WAI-ARIA's Tooltip Widget: the trigger itself
+                          doesn't have to be a native interactive element,
+                          it just needs to be focusable), so the
+                          non-interactive-element lint rule doesn't apply. */}
+                      {/* oxlint-disable jsx-a11y/no-noninteractive-tabindex */}
+                      <span
+                        tabIndex={0}
+                        style={{ background: avatarColor(userId) }}
+                        className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white ring-1 ring-background"
+                      >
+                        {initials(userId, senderNameByUserId.get(userId) ?? null)}
+                      </span>
+                      {/* oxlint-enable jsx-a11y/no-noninteractive-tabindex */}
+                    </TooltipTrigger>
+                    <TooltipContent>Read by {readerName}</TooltipContent>
+                  </Tooltip>
+                );
+              })}
+              {readers.length > MAX_RECEIPT_AVATARS && (
+                <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full bg-muted text-[7px] font-bold text-muted-foreground ring-1 ring-background">
+                  +{readers.length - MAX_RECEIPT_AVATARS}
+                </span>
+              )}
+            </div>
+          </TooltipProvider>
         )}
       </div>
     </div>
