@@ -420,6 +420,60 @@ impl PersistenceStore {
         }
     }
 
+    /// Lighter counterpart to [`Self::restore_by_token`], for the one case
+    /// that doesn't need a working crypto identity at all: revoking a
+    /// session's access/refresh token on the homeserver during logout (see
+    /// `routes::logout`). Rebuilding a *bare* client and restoring just the
+    /// token pair is enough for `matrix_auth().logout()` — no crypto store,
+    /// no initial sync, no event handlers. Deliberately bypasses
+    /// [`build_client_for_restore`]'s now-fail-closed behavior for a missing/
+    /// unopenable crypto store: that behavior exists to stop a *live* session
+    /// from silently continuing under a fresh, empty crypto identity, which
+    /// doesn't apply here — this client is used once, to revoke, and thrown
+    /// away. Skipping that check here specifically avoids reintroducing the
+    /// bug it fixed by another path: before this existed, a logout for a
+    /// session whose crypto store was lost (e.g. after a redeploy) fell
+    /// through `restore_by_token` returning `None`, silently skipping the
+    /// homeserver revocation and leaving that access/refresh token valid
+    /// indefinitely even though the browser's own logout succeeded.
+    pub async fn restore_client_for_revocation(&self, token: &str) -> Option<matrix_sdk::Client> {
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            // `.homeserver_url(...)`, not `.server_name_or_homeserver_url(...)`
+            // (unlike `build_client_for_restore`): `entry.homeserver_url` is
+            // already the fully-resolved URL from this session's original
+            // login discovery, not a bare server name, so there's no
+            // discovery step left to do — skipping it also means this
+            // revoke-only path doesn't need a reachable `.well-known` lookup
+            // just to build a client whose only job is one `logout()` call.
+            let client = matrix_sdk::Client::builder()
+                .homeserver_url(&entry.homeserver_url)
+                .build()
+                .await
+                .ok()?;
+            client
+                .matrix_auth()
+                .restore_session(
+                    entry.session,
+                    matrix_sdk::store::RoomLoadSettings::default(),
+                )
+                .await
+                .ok()?;
+            Some(client)
+        })
+        .await;
+
+        match outcome {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    "restoring a client for revocation timed out after {RESTORE_TIMEOUT:?}"
+                );
+                None
+            }
+        }
+    }
+
     fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
         // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
@@ -1463,6 +1517,47 @@ mod tests {
 
         assert!(store
             .restore_by_token("tok-unreachable", None)
+            .await
+            .is_none());
+    }
+
+    /// Regression test: revocation must still work for a session whose
+    /// crypto store is missing — `restore_by_token` (see the test right
+    /// below this one) now deliberately fails closed for that case, but
+    /// `restore_client_for_revocation` must not, or `routes::logout` would
+    /// silently skip revoking the homeserver token for exactly the sessions
+    /// this whole fix was about, leaving them valid forever even though the
+    /// browser's own logout succeeded.
+    #[tokio::test]
+    async fn restore_client_for_revocation_succeeds_even_with_a_missing_crypto_store() {
+        let dir = scratch_dir("revoke-missing-crypto-store");
+        let store = PersistenceStore::new_for_test(&dir, [14u8; 32]);
+        store
+            .save(
+                "tok-revoke-missing-crypto",
+                "https://example.invalid",
+                &dummy_session("@nadia:example.invalid"),
+                Some(("nonexistentstorekey", "some-passphrase")),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .restore_client_for_revocation("tok-revoke-missing-crypto")
+                .await
+                .is_some(),
+            "revocation must not require a working crypto store"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_client_for_revocation_is_none_for_a_token_that_was_never_persisted() {
+        let dir = scratch_dir("revoke-never-persisted");
+        let store = PersistenceStore::new_for_test(&dir, [15u8; 32]);
+
+        assert!(store
+            .restore_client_for_revocation("never-saved")
             .await
             .is_none());
     }
