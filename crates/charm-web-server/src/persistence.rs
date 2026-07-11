@@ -420,6 +420,60 @@ impl PersistenceStore {
         }
     }
 
+    /// Lighter counterpart to [`Self::restore_by_token`], for the one case
+    /// that doesn't need a working crypto identity at all: revoking a
+    /// session's access/refresh token on the homeserver during logout (see
+    /// `routes::logout`). Rebuilding a *bare* client and restoring just the
+    /// token pair is enough for `matrix_auth().logout()` — no crypto store,
+    /// no initial sync, no event handlers. Deliberately bypasses
+    /// [`build_client_for_restore`]'s now-fail-closed behavior for a missing/
+    /// unopenable crypto store: that behavior exists to stop a *live* session
+    /// from silently continuing under a fresh, empty crypto identity, which
+    /// doesn't apply here — this client is used once, to revoke, and thrown
+    /// away. Skipping that check here specifically avoids reintroducing the
+    /// bug it fixed by another path: before this existed, a logout for a
+    /// session whose crypto store was lost (e.g. after a redeploy) fell
+    /// through `restore_by_token` returning `None`, silently skipping the
+    /// homeserver revocation and leaving that access/refresh token valid
+    /// indefinitely even though the browser's own logout succeeded.
+    pub async fn restore_client_for_revocation(&self, token: &str) -> Option<matrix_sdk::Client> {
+        let outcome = tokio::time::timeout(RESTORE_TIMEOUT, async {
+            let entry = self.read_one(token).await?;
+            // `.homeserver_url(...)`, not `.server_name_or_homeserver_url(...)`
+            // (unlike `build_client_for_restore`): `entry.homeserver_url` is
+            // already the fully-resolved URL from this session's original
+            // login discovery, not a bare server name, so there's no
+            // discovery step left to do — skipping it also means this
+            // revoke-only path doesn't need a reachable `.well-known` lookup
+            // just to build a client whose only job is one `logout()` call.
+            let client = matrix_sdk::Client::builder()
+                .homeserver_url(&entry.homeserver_url)
+                .build()
+                .await
+                .ok()?;
+            client
+                .matrix_auth()
+                .restore_session(
+                    entry.session,
+                    matrix_sdk::store::RoomLoadSettings::default(),
+                )
+                .await
+                .ok()?;
+            Some(client)
+        })
+        .await;
+
+        match outcome {
+            Ok(client) => client,
+            Err(_) => {
+                tracing::warn!(
+                    "restoring a client for revocation timed out after {RESTORE_TIMEOUT:?}"
+                );
+                None
+            }
+        }
+    }
+
     fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
         // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
@@ -657,63 +711,76 @@ impl PersistenceStore {
 }
 
 /// Builds the `Client` [`restore_one`] restores its session into — backed by
-/// `entry`'s crypto store when it has one, matching requirement 5's fail-open
-/// contract: a store directory that's missing (e.g. lost on a redeploy — see
-/// [`crate::crypto_store`]'s doc comment) or that fails to open (corrupt,
-/// permissions, whatever) falls back to a bare in-memory `Client` for *this
-/// one session* rather than failing its restore outright — same tolerance
-/// `entry.crypto_store_key` being `None` already gets (a pre-Spec-25
-/// persisted session, requirement 9's backfill). Deliberately uses
-/// [`crate::crypto_store::existing_store_dir`], not a directory-creating
-/// variant: silently creating a fresh empty directory here would let
-/// `sqlite_store` open it as a legitimate-looking-but-empty store instead of
-/// erroring, which would skip this fallback entirely and hand back a client
-/// that looks restored but has silently lost all its crypto state.
+/// `entry`'s crypto store when it has one.
 ///
-/// Returns whether the persisted crypto store was actually opened, not just
-/// whether `entry` claims one exists — [`restore_one`] must only set the
-/// resulting `Session::crypto` when this is `true`. Getting this wrong
-/// (setting it unconditionally off `entry.crypto_store_key.is_some()`
-/// regardless of which branch below actually ran) would make a session that
-/// fell back to a bare in-memory client still *report* having a working
-/// persisted store — which `session::Session::has_unpersisted_encrypted_room`
-/// trusts to decide whether idle eviction can safely restore this session
-/// again later. A false "yes, persisted" here would make that session
-/// idle-evictable despite having no way back, silently losing its crypto
-/// state on the next idle sweep instead of being correctly exempted.
-async fn build_client_for_restore(
-    entry: &PersistedSession,
-) -> Result<(matrix_sdk::Client, bool), String> {
-    if let (Some(store_key), Some(passphrase)) = (&entry.crypto_store_key, &entry.crypto_passphrase)
-    {
-        match crate::crypto_store::existing_store_dir(store_key) {
-            Ok(Some(dir)) => {
-                match matrix_sdk::Client::builder()
-                    .server_name_or_homeserver_url(&entry.homeserver_url)
-                    .sqlite_store(&dir, Some(passphrase.as_str()))
-                    .build()
-                    .await
-                {
-                    Ok(client) => return Ok((client, true)),
-                    Err(e) => tracing::warn!(
-                        "failed to open crypto store, falling back to a fresh in-memory \
-                         client for this session: {e}"
-                    ),
-                }
-            }
-            Ok(None) => tracing::warn!(
-                "crypto store directory is missing (e.g. lost on a redeploy) — falling back \
-                 to a fresh in-memory client for this session"
-            ),
-            Err(e) => tracing::warn!("failed to resolve crypto store directory: {e}"),
+/// **A session that was never given a crypto store** (`entry.crypto_store_key`
+/// is `None` — a pre-Spec-25 persisted session, requirement 9's backfill)
+/// falls back to a bare in-memory `Client`, same as before: there was never
+/// any crypto state for it to lose.
+///
+/// **A session that *was* given a crypto store, but that store can't be
+/// opened** (directory missing — e.g. lost on a DO App Platform redeploy, see
+/// [`crate::crypto_store`]'s doc comment — or open failed: corrupt,
+/// permissions, whatever) now fails this restore outright instead of quietly
+/// falling back to a bare in-memory client. An earlier version of this
+/// function treated that fallback as fail-open, but it isn't: it hands back a
+/// client carrying the *same* `device_id` the homeserver and every peer
+/// already know as previously verified, paired with a brand-new, empty local
+/// Olm/Megolm store that remembers none of that history — cross-signing
+/// trust, room keys, everything. The device looks unverified with no local
+/// record of why, and can't decrypt any past message, while still presenting
+/// as "this session" rather than a fresh login a user could reasonably expect
+/// to re-verify. Failing the restore instead routes back through
+/// `routes::require_session`'s existing "unknown or expired session" 401,
+/// which forces an honest fresh login — a genuinely new device_id the user
+/// verifies once, rather than a zombie identity stuck unverified forever
+/// (previously reported as: hard refresh leaves the browser session
+/// permanently unable to decrypt, even after re-entering the recovery key,
+/// because recovery only ever re-trusts *other* devices — this one was never
+/// the same device as before, just wearing its old device_id).
+///
+/// Deliberately uses [`crate::crypto_store::existing_store_dir`], not a
+/// directory-creating variant: silently creating a fresh empty directory here
+/// would let `sqlite_store` open it as a legitimate-looking-but-empty store
+/// instead of erroring, which would skip this failure path entirely and hand
+/// back a client that looks restored but has silently lost all its crypto
+/// state.
+async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk::Client, String> {
+    let Some((store_key, passphrase)) = entry
+        .crypto_store_key
+        .as_ref()
+        .zip(entry.crypto_passphrase.as_ref())
+    else {
+        return matrix_sdk::Client::builder()
+            .server_name_or_homeserver_url(&entry.homeserver_url)
+            .build()
+            .await
+            .map_err(|e| e.to_string());
+    };
+
+    let dir = match crate::crypto_store::existing_store_dir(store_key) {
+        Ok(Some(dir)) => dir,
+        Ok(None) => {
+            return Err(
+                "crypto store directory is missing (e.g. lost on a redeploy) — refusing to \
+                 restore this session with a fresh, empty crypto identity under its existing \
+                 device_id"
+                    .to_string(),
+            )
         }
-    }
-    let client = matrix_sdk::Client::builder()
+        Err(e) => return Err(format!("failed to resolve crypto store directory: {e}")),
+    };
+    matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
+        .sqlite_store(&dir, Some(passphrase.as_str()))
         .build()
         .await
-        .map_err(|e| e.to_string())?;
-    Ok((client, false))
+        .map_err(|e| {
+            format!(
+                "failed to open crypto store, refusing to restore this session with a fresh, \
+                 empty crypto identity under its existing device_id: {e}"
+            )
+        })
 }
 
 /// The `Session::persisted_crypto` [`restore_one`] should carry for a
@@ -758,7 +825,18 @@ async fn restore_one(
     entry: &PersistedSession,
     initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
-    let (client, crypto_store_opened) = build_client_for_restore(entry).await?;
+    let client = build_client_for_restore(entry).await?;
+    // `build_client_for_restore` only ever returns `Ok` here when either the
+    // session never had a crypto store to begin with (both fields `None`) or
+    // that store was actually opened — a store that was expected but
+    // couldn't be opened is now an `Err` this function already propagated
+    // above, not a silent fallback. So "opened" reduces exactly to "was one
+    // configured at all" — checked the same way `build_client_for_restore`
+    // itself decides that (`zip`, both fields present), not just
+    // `crypto_store_key` alone, so a partially-populated entry (e.g.
+    // corrupt/hand-edited persisted JSON with a key but no passphrase) can't
+    // disagree with that function about whether a store was configured.
+    let crypto_store_opened = entry.crypto_store_key.is_some() && entry.crypto_passphrase.is_some();
     client
         .matrix_auth()
         .restore_session(
@@ -1441,6 +1519,80 @@ mod tests {
             .restore_by_token("tok-unreachable", None)
             .await
             .is_none());
+    }
+
+    /// Regression test: revocation must still work for a session whose
+    /// crypto store is missing — `restore_by_token` (see the test right
+    /// below this one) now deliberately fails closed for that case, but
+    /// `restore_client_for_revocation` must not, or `routes::logout` would
+    /// silently skip revoking the homeserver token for exactly the sessions
+    /// this whole fix was about, leaving them valid forever even though the
+    /// browser's own logout succeeded.
+    #[tokio::test]
+    async fn restore_client_for_revocation_succeeds_even_with_a_missing_crypto_store() {
+        let dir = scratch_dir("revoke-missing-crypto-store");
+        let store = PersistenceStore::new_for_test(&dir, [14u8; 32]);
+        store
+            .save(
+                "tok-revoke-missing-crypto",
+                "https://example.invalid",
+                &dummy_session("@nadia:example.invalid"),
+                Some(("nonexistentstorekey", "some-passphrase")),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .restore_client_for_revocation("tok-revoke-missing-crypto")
+                .await
+                .is_some(),
+            "revocation must not require a working crypto store"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_client_for_revocation_is_none_for_a_token_that_was_never_persisted() {
+        let dir = scratch_dir("revoke-never-persisted");
+        let store = PersistenceStore::new_for_test(&dir, [15u8; 32]);
+
+        assert!(store
+            .restore_client_for_revocation("never-saved")
+            .await
+            .is_none());
+    }
+
+    /// Regression test for the hard-refresh-breaks-encryption bug: a session
+    /// that *had* a crypto store (`crypto_store_key`/`crypto_passphrase` both
+    /// set) but whose directory is gone (e.g. lost on a DO App Platform
+    /// redeploy — this crate has no persistent volume) must fail the whole
+    /// restore, not silently hand back a working session under the same
+    /// `device_id` backed by a fresh, empty crypto identity. The old
+    /// behavior looked like a successful restore to the caller while
+    /// actually producing a device that's unverified with no way back short
+    /// of a fresh login — see `build_client_for_restore`'s doc comment.
+    #[tokio::test]
+    async fn restore_by_token_is_none_when_the_crypto_store_directory_is_missing() {
+        let dir = scratch_dir("restore-missing-crypto-store");
+        let store = PersistenceStore::new_for_test(&dir, [13u8; 32]);
+        store
+            .save(
+                "tok-missing-crypto",
+                "https://example.invalid",
+                &dummy_session("@mallory:example.invalid"),
+                Some(("nonexistentstorekey", "some-passphrase")),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .restore_by_token("tok-missing-crypto", None)
+                .await
+                .is_none(),
+            "restore must fail outright rather than fall back to a fresh in-memory crypto \
+             identity under the session's existing device_id"
+        );
     }
 
     /// `persisted_crypto_from_entry` must return `Some` whenever `entry` has

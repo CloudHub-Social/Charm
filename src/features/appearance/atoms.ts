@@ -4,12 +4,19 @@ export type Theme = "dark" | "light" | "midnight" | "system";
 export type FontSize = "sm" | "md" | "lg" | "xl";
 export type Density = "compact" | "cozy";
 export type ReducedMotion = "system" | "on" | "off";
+/** Charm 2.0 Spec 27: how message rows are shelled — bubble (default),
+ * flat Discord-style, or single-line-per-message IRC-style. Unlike the
+ * other appearance fields this never applies to `<html>`'s dataset (see
+ * `dom.ts`) — it's a structural JSX choice consumed directly by
+ * `MessageRow`, not a CSS variable. */
+export type MessageLayout = "bubble" | "discord" | "irc";
 
 export interface AppearanceState {
   theme: Theme;
   fontSize: FontSize;
   density: Density;
   reducedMotion: ReducedMotion;
+  messageLayout: MessageLayout;
 }
 
 /**
@@ -29,14 +36,18 @@ export const VALID_THEMES: readonly Theme[] = ["dark", "light", "midnight", "sys
 export const VALID_FONT_SIZES: readonly FontSize[] = ["sm", "md", "lg", "xl"];
 export const VALID_DENSITIES: readonly Density[] = ["compact", "cozy"];
 export const VALID_REDUCED_MOTIONS: readonly ReducedMotion[] = ["system", "on", "off"];
+export const VALID_MESSAGE_LAYOUTS: readonly MessageLayout[] = ["bubble", "discord", "irc"];
 
 /** Matches the defaults baked into `index.html`'s inline boot script and
- * `tokens.css` (dark-first, cozy density, M font size, system motion). */
+ * `tokens.css` (dark-first, cozy density, M font size, system motion).
+ * `messageLayout` defaults to `"bubble"` — Spec 27 is additive, matching
+ * current/shipped behavior for existing users. */
 export const DEFAULT_APPEARANCE: AppearanceState = {
   theme: "dark",
   fontSize: "md",
   density: "cozy",
   reducedMotion: "system",
+  messageLayout: "bubble",
 };
 
 /**
@@ -49,3 +60,4 @@ export const themeAtom = atom<Theme>(DEFAULT_APPEARANCE.theme);
 export const fontSizeAtom = atom<FontSize>(DEFAULT_APPEARANCE.fontSize);
 export const densityAtom = atom<Density>(DEFAULT_APPEARANCE.density);
 export const reducedMotionAtom = atom<ReducedMotion>(DEFAULT_APPEARANCE.reducedMotion);
+export const messageLayoutAtom = atom<MessageLayout>(DEFAULT_APPEARANCE.messageLayout);

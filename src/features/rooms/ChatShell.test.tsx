@@ -13,6 +13,7 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
@@ -219,12 +220,18 @@ function summary(
   };
 }
 
-function renderChatShell(store = createStore()) {
+// `a.compareDocumentPosition(b) & DOCUMENT_POSITION_FOLLOWING` is truthy
+// when `b` comes after `a` in the document.
+function isBefore(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function renderChatShell(store = createStore(), roomOverride: RoomSummary = room) {
   return {
     store,
     ...render(
       <JotaiProvider store={store}>
-        <ChatShell room={room} currentUserId="@me:localhost" />
+        <ChatShell room={roomOverride} currentUserId="@me:localhost" />
       </JotaiProvider>,
     ),
   };
@@ -977,6 +984,122 @@ describe("ChatShell", () => {
     ).toBeInTheDocument();
   });
 
+  it("excludes the current user from the following-the-conversation bar", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+      {
+        user_id: "@alice:localhost",
+        display_name: "Alice",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Alice is following the conversation",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the following-the-conversation bar in a solo room with only the current user", async () => {
+    getRoomMembers.mockResolvedValueOnce([
+      {
+        user_id: "@me:localhost",
+        display_name: "Me",
+        avatar_url: null,
+        power_level: 0,
+        membership: "join",
+      },
+    ]);
+    renderChatShell();
+
+    await waitFor(() => expect(getRoomMembers).toHaveBeenCalled());
+    expect(
+      screen.queryByRole("button", { name: /following the conversation/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("freezes the unread divider above the message that was first unread, not a live index", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "one", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "two", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("New messages");
+    const messageA = document.getElementById("message-$a") as HTMLElement;
+    const messageB = document.getElementById("message-$b") as HTMLElement;
+    const divider = screen.getByText("New messages");
+    // Divider sits between $a and $b.
+    expect(isBefore(messageA, divider)).toBe(true);
+    expect(isBefore(divider, messageB)).toBe(true);
+
+    // A new message arrives while the room stays open — a naive live
+    // recompute (messages.length - frozen count) would move the divider to
+    // sit above this new message instead of staying above $b.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: unreadRoom.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "one", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "two", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "three", timestamp_ms: 3 }),
+        ],
+      });
+    });
+
+    await screen.findByText("three");
+    expect(screen.getAllByText("New messages")).toHaveLength(1);
+    const dividerAfterUpdate = screen.getByText("New messages");
+    const messageAAfter = document.getElementById("message-$a") as HTMLElement;
+    const messageBAfter = document.getElementById("message-$b") as HTMLElement;
+    expect(isBefore(messageAAfter, dividerAfterUpdate)).toBe(true);
+    expect(isBefore(dividerAfterUpdate, messageBAfter)).toBe(true);
+  });
+
+  it("breaks a same-sender message group across the unread divider", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "one",
+          timestamp_ms: 1,
+        }),
+        summary({
+          event_id: "$b",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "two",
+          timestamp_ms: 2,
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("New messages");
+    // Same sender on both sides of the divider — without the group break,
+    // message $b (right after the divider) would render without its own
+    // avatar/name, looking like a continuation of $a's group above it.
+    expect(screen.getAllByText("Alice")).toHaveLength(2);
+  });
+
   it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
     // canRedact is only ever queried for *other* senders' messages — an own
     // message must be immediately deletable, not flash hidden until this
@@ -1386,5 +1509,27 @@ describe("ChatShell", () => {
     fireEvent.click(link);
 
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the layout component matching the messageLayout appearance setting", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$msg:localhost",
+          sender: "@alice:localhost",
+          sender_display_name: "Alice",
+          body: "hi there",
+          timestamp_ms: Date.now(),
+        }),
+      ],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    store.set(messageLayoutAtom, "irc");
+    renderChatShell(store);
+
+    // IRC mode's distinguishing structure: `<nick>` prefix, not a bubble.
+    expect(await screen.findByText("<Alice>")).toBeInTheDocument();
   });
 });
