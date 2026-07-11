@@ -510,6 +510,61 @@ describe("ChatShell", () => {
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
   });
 
+  it("does not animate history prepended by a live update racing an in-flight pagination request", async () => {
+    // Regression test: if a `timeline:update` pushes the same
+    // paginate_backwards diff before `loadMoreHistory`'s own await resolves,
+    // that snapshot arrives with `loadingMore` still `true`. It must still
+    // be treated as a pagination update, not a live arrival.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolveOlderPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOlderPage = resolve;
+      }),
+    );
+    fireTopIntersection(true);
+    expect(await screen.findByText("Loading older messages…")).toBeInTheDocument();
+
+    // A live timeline:update lands with the same prepended history while
+    // `loadMoreHistory`'s own request is still in flight (loadingMore still
+    // true at this point).
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("first");
+    expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+
+    act(() => {
+      resolveOlderPage?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: null,
+      });
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+  });
+
   it("does not request another page once the room's history start has been reached", async () => {
     getTimelinePage.mockResolvedValueOnce({
       messages: [
@@ -761,6 +816,47 @@ describe("ChatShell", () => {
 
     await screen.findByText("surprise");
     expect(document.getElementById("message-$fresh:localhost")?.className).toMatch(/animate-in/);
+  });
+
+  it("re-runs the seed dance when a room is closed and the same room id is reopened", async () => {
+    // Regression test: closing a room (activeRoomId -> null) then reopening
+    // the *same* room id must reseed from scratch, not skip straight to
+    // diffing against the previous visit's stale seenRowKeysRef.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$one:localhost", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    const store = createStore();
+    const { rerender } = renderChatShell(store);
+    await screen.findByText("hi");
+    expect(document.getElementById("message-$one:localhost")?.className).not.toMatch(/animate-in/);
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={null} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("Select a room to start chatting");
+
+    // Reopen the same room; it now has an extra message that "arrived"
+    // while it was closed. Neither row should animate — this is a normal
+    // initial load, not a live arrival.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$one:localhost", sender: "@alice:localhost", body: "hi" }),
+        summary({ event_id: "$two:localhost", sender: "@alice:localhost", body: "there" }),
+      ],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    await screen.findByText("there");
+    expect(document.getElementById("message-$one:localhost")?.className).not.toMatch(/animate-in/);
+    expect(document.getElementById("message-$two:localhost")?.className).not.toMatch(/animate-in/);
   });
 
   it("does not replay the entrance animation when an own message's local echo is acked", async () => {

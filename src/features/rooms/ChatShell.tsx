@@ -170,39 +170,59 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   const seededRoomIdRef = useRef<string | null>(null);
   const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
   if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
+  // Closing a room (activeRoomId -> null) and later reopening the *same*
+  // room id must go through the seed dance again from scratch: messages
+  // that arrived while it was closed were never diffed against
+  // `seenRowKeysRef`, so without this reset the stale refs from the prior
+  // visit would either skip reseeding (letting old-but-unseen messages
+  // animate) or diff against a now-irrelevant baseline.
+  if (activeRoomId === null) {
+    seededRoomIdRef.current = null;
+    hasStartedLoadingRoomIdRef.current = null;
+  }
   // Set while `loadMoreHistory` has a request in flight (`loadingMore ===
-  // true`) and consumed on the render where its response actually lands.
-  // `useChatTimeline.loadMoreHistory` calls `setMessages(page.messages)` and
-  // `setLoadingMore(false)` from the same synchronous continuation after its
-  // `await`, so React batches them into one commit — by the time this memo
-  // sees the new (prepended-with-older-history) `messages`, `loadingMore`
-  // has *already* flipped back to `false` in that same render, so it alone
-  // can't distinguish "pagination just landed" from "a live message just
-  // arrived". This ref instead remembers "pagination was in flight as of
-  // the previous render" across that boundary.
+  // true`) and only cleared once that request has *fully* resolved
+  // (`loadingMore` false again). A live `timeline:update` can push a new
+  // `messages` snapshot while the pagination request is still in flight —
+  // that render also reads `loadingMore === true`, so gating suppression on
+  // `!loadingMore` (as opposed to just `pendingPaginationRef.current`) would
+  // treat that race as a normal update and animate the prepended-but-unseen
+  // older rows.
   const pendingPaginationRef = useRef(false);
   if (loadingMore) pendingPaginationRef.current = true;
+  // Pure by design — no ref mutation in here. `React.StrictMode` (see
+  // `src/main.tsx`) double-invokes memo callbacks for the same commit;
+  // mutating `seenRowKeysRef`/`pendingPaginationRef` inside this memo would
+  // make the second invocation see state already consumed by the first,
+  // silently returning an empty `fresh` set for a message that should have
+  // animated. All ref writes happen in the paired `useEffect` below, which
+  // — sharing this memo's exact dependency list — fires exactly once per
+  // committed `messages`/`loading`/`loadingMore`/`activeRoomId` change, not
+  // on every incidental re-render.
   const newMessageKeys = useMemo(() => {
     const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
     if (!readyToSeed) return new Set<string>();
+    if (seededRoomIdRef.current !== activeRoomId) return new Set<string>();
+    if (pendingPaginationRef.current) return new Set<string>();
+    const fresh = new Set<string>();
+    for (const m of messages) {
+      const key = messageRowKey(m);
+      if (!seenRowKeysRef.current.has(key)) fresh.add(key);
+    }
+    return fresh;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, loading, loadingMore, activeRoomId]);
+  useEffect(() => {
+    const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    if (!readyToSeed) return;
     if (seededRoomIdRef.current !== activeRoomId) {
       seededRoomIdRef.current = activeRoomId;
       seenRowKeysRef.current = new Set(messages.map(messageRowKey));
       pendingPaginationRef.current = false;
-      return new Set<string>();
+      return;
     }
-    // A pagination response prepending older history — mark it all seen
-    // (so it doesn't animate later either) but don't flag any of it as
-    // fresh right now.
-    const isPaginationUpdate = pendingPaginationRef.current && !loadingMore;
-    if (isPaginationUpdate) pendingPaginationRef.current = false;
-    const fresh = new Set<string>();
-    for (const m of messages) {
-      const key = messageRowKey(m);
-      if (!seenRowKeysRef.current.has(key) && !isPaginationUpdate) fresh.add(key);
-    }
+    if (pendingPaginationRef.current && !loadingMore) pendingPaginationRef.current = false;
     messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
-    return fresh;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, loading, loadingMore, activeRoomId]);
   // The "New messages" divider's position is frozen at the *identity* of
