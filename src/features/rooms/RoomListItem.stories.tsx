@@ -42,3 +42,14 @@ export const UnreadWithCount: Story = {
     onSelect: () => {},
   },
 };
+
+// `has_unread` without a notification-worthy count (e.g. read receipts moved,
+// or an unread message that isn't a highlight/mention) — the numeric badge
+// doesn't cover this case, so a plain dot renders instead.
+export const UnreadWithoutCount: Story = {
+  args: {
+    room: makeRoomSummary({ name: "general", has_unread: true, unread_count: 0 }),
+    active: false,
+    onSelect: () => {},
+  },
+};
