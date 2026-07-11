@@ -30,6 +30,11 @@ import { useReadReceipts } from "./useReadReceipts";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { attachmentUploadPayload, useAttachmentUploads } from "./useAttachmentUploads";
 import { useChatTimeline } from "./useChatTimeline";
+import {
+  formatDateDividerLabel,
+  isDateDividerBoundary,
+  unreadDividerIndex,
+} from "./timelineDividers";
 import { useChatTyping } from "./useChatTyping";
 import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
@@ -134,6 +139,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
   const { messages, loading, bottomSentinelRef } = useChatTimeline(room, roomSettingsOpen);
+  // Snapshot of `room.unread_count` as of opening this room, frozen rather
+  // than tracked live — `useChatTimeline` marks the room read as soon as it
+  // becomes active, which asynchronously drives `unread_count` back to 0 via
+  // a later `room_list:update`. Using the live value would make the "New
+  // messages" divider flash in and immediately disappear instead of staying
+  // put until the user switches away.
+  const frozenUnreadCountRef = useRef(0);
+  const unreadRoomIdRef = useRef<string | null>(null);
+  if (unreadRoomIdRef.current !== activeRoomId) {
+    unreadRoomIdRef.current = activeRoomId;
+    frozenUnreadCountRef.current = room?.unread_count ?? 0;
+  }
+  const unreadStartIdx = unreadDividerIndex(messages.length, frozenUnreadCountRef.current);
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
@@ -271,26 +289,41 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           const readers = receiptsByEvent.get(message.event_id) ?? [];
 
           return (
-            <MessageRow
-              key={messageRowKey(message)}
-              message={message}
-              roomId={room.room_id}
-              own={own}
-              sameSenderAsPrev={prev?.sender === message.sender}
-              sameSenderAsNext={next?.sender === message.sender}
-              canRedact={allowedToRedact}
-              readers={readers}
-              getActionsHandle={(key) => actionsRefs.current.get(key)}
-              registerActionsRef={(key, el) => {
-                if (el) actionsRefs.current.set(key, el);
-                else actionsRefs.current.delete(key);
-              }}
-              onReply={() => handleReply(message)}
-              onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-              onEdit={() => handleEdit(message.event_id)}
-              onDelete={() => handleDelete(message.event_id)}
-              onCopy={() => navigator.clipboard?.writeText(message.body)}
-            />
+            <div key={messageRowKey(message)}>
+              {isDateDividerBoundary(messages, i) && (
+                <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
+                  {formatDateDividerLabel(message.timestamp_ms)}
+                </div>
+              )}
+              {i === unreadStartIdx && (
+                <div className="my-2 flex items-center gap-2">
+                  <div className="h-px flex-1 bg-destructive-solid" />
+                  <span className="text-[11px] font-semibold text-destructive-solid">
+                    New messages
+                  </span>
+                  <div className="h-px flex-1 bg-destructive-solid" />
+                </div>
+              )}
+              <MessageRow
+                message={message}
+                roomId={room.room_id}
+                own={own}
+                sameSenderAsPrev={prev?.sender === message.sender}
+                sameSenderAsNext={next?.sender === message.sender}
+                canRedact={allowedToRedact}
+                readers={readers}
+                getActionsHandle={(key) => actionsRefs.current.get(key)}
+                registerActionsRef={(key, el) => {
+                  if (el) actionsRefs.current.set(key, el);
+                  else actionsRefs.current.delete(key);
+                }}
+                onReply={() => handleReply(message)}
+                onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
+                onEdit={() => handleEdit(message.event_id)}
+                onDelete={() => handleDelete(message.event_id)}
+                onCopy={() => navigator.clipboard?.writeText(message.body)}
+              />
+            </div>
           );
         })}
         {/* Block-level sibling of the flex message rows above (not a flex
