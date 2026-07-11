@@ -135,7 +135,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // already at the bottom) behind it shouldn't be silently marked read, same
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
-  const { messages, loading, bottomSentinelRef } = useChatTimeline(room, roomSettingsOpen);
+  const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
+    useChatTimeline(room, roomSettingsOpen);
   const senders = messages.map((m) => m.sender);
   const canRedactBySender = useCanRedactMap(roomId, currentUserId, senders);
   const { receiptsByEvent } = useReadReceipts(room?.room_id ?? null, currentUserId);
@@ -261,10 +262,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
+      <div ref={containerRef} className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
         {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {!loading && messages.length === 0 && (
           <p className="text-sm text-muted-foreground">No messages yet</p>
+        )}
+        {/* Block-level sibling of the flex message rows below (not a flex
+            item within one), same reasoning as the bottom sentinel — scrolling
+            this near the top of the viewport loads one more page of older
+            history (Spec 26 Phase 1). */}
+        <div ref={topSentinelRef} className="h-px w-full shrink-0" />
+        {loadingMore && (
+          <p className="text-center text-xs text-muted-foreground">Loading older messages…</p>
         )}
         {messages.map((message, i) => {
           const own = message.sender === currentUserId;
