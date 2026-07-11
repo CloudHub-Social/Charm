@@ -66,6 +66,16 @@ jobs:
     # branch's own build.rs/JS build scripts could reach.
     env:
       HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
+      # main gets the read-write key (needed to populate the cache);
+      # anything else gets the read-only key if one's configured, so a
+      # workflow_dispatch run against an arbitrary branch can still get
+      # cache hits without holding write credentials. Neither secret
+      # configured at all still degrades cleanly: see HAS_SCCACHE_CREDS
+      # below, which drops the S3 backend info entirely rather than
+      # pointing sccache at the bucket with empty credentials (that used
+      # to hard-fail the build with an S3 "InvalidArgument" error instead
+      # of just running uncached).
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '') || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -165,21 +175,28 @@ jobs:
           # $GITHUB_ENV when a cert secret is configured; otherwise unset
           # (falls back to unsigned/ad-hoc-equivalent).
           RUSTC_WRAPPER: sccache
-          SCCACHE_BUCKET: charm-sccache-storage
-          SCCACHE_REGION: tor1
-          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          # Bucket/endpoint only set when HAS_SCCACHE_CREDS (job-level env,
+          # see above) found *some* usable key — write key on main, else the
+          # read-only key if configured. Left empty otherwise so sccache
+          # just runs as a local-disk-only cache instead of pointing at the
+          # S3 backend with no credentials, which used to hard-fail the
+          # whole build with an S3 "InvalidArgument" error (SCCACHE_IGNORE_
+          # SERVER_IO_ERROR only covers per-request I/O errors, not the
+          # server failing to start up at all).
+          SCCACHE_BUCKET: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'charm-sccache-storage' || '' }}
+          SCCACHE_REGION: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'tor1' || '' }}
+          SCCACHE_ENDPOINT: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'https://tor1.digitaloceanspaces.com' || '' }}
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty for workflow_dispatch runs against anything other than
-          # main: the caller can select an arbitrary branch/ref to dispatch
-          # against, and that branch's build.rs/JS build scripts run with
-          # whatever's injected here — same reasoning as quality-checks.yml's
-          # main-only gate. schedule always runs against main, so this only
-          # actually withholds credentials for a manual dispatch on a
-          # feature branch.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # main gets the read-write key; anything else gets the read-only
+          # key (if configured) so cache reads still work on a
+          # workflow_dispatch run against a feature branch without handing
+          # that branch's build.rs/JS build scripts write access to the
+          # shared cache — same reasoning as quality-checks.yml's main-only
+          # gate on the write key. schedule always runs against main.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       # Only published for main — same reasoning as the AWS_* credential
       # gating above: a workflow_dispatch run against an arbitrary branch is
@@ -226,6 +243,8 @@ jobs:
     # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
     env:
       HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && github.ref == 'refs/heads/main' }}
+      # See the macOS job's HAS_SCCACHE_CREDS comment.
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '') || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -335,21 +354,28 @@ jobs:
           pnpm tauri build --debug @configArgs
         env:
           RUSTC_WRAPPER: sccache
-          SCCACHE_BUCKET: charm-sccache-storage
-          SCCACHE_REGION: tor1
-          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          # Bucket/endpoint only set when HAS_SCCACHE_CREDS (job-level env,
+          # see above) found *some* usable key — write key on main, else the
+          # read-only key if configured. Left empty otherwise so sccache
+          # just runs as a local-disk-only cache instead of pointing at the
+          # S3 backend with no credentials, which used to hard-fail the
+          # whole build with an S3 "InvalidArgument" error (SCCACHE_IGNORE_
+          # SERVER_IO_ERROR only covers per-request I/O errors, not the
+          # server failing to start up at all).
+          SCCACHE_BUCKET: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'charm-sccache-storage' || '' }}
+          SCCACHE_REGION: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'tor1' || '' }}
+          SCCACHE_ENDPOINT: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'https://tor1.digitaloceanspaces.com' || '' }}
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty for workflow_dispatch runs against anything other than
-          # main: the caller can select an arbitrary branch/ref to dispatch
-          # against, and that branch's build.rs/JS build scripts run with
-          # whatever's injected here — same reasoning as quality-checks.yml's
-          # main-only gate. schedule always runs against main, so this only
-          # actually withholds credentials for a manual dispatch on a
-          # feature branch.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # main gets the read-write key; anything else gets the read-only
+          # key (if configured) so cache reads still work on a
+          # workflow_dispatch run against a feature branch without handing
+          # that branch's build.rs/JS build scripts write access to the
+          # shared cache — same reasoning as quality-checks.yml's main-only
+          # gate on the write key. schedule always runs against main.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       # Only published for main — see the macOS job's "Upload macOS
       # artifacts" step for the same reasoning.
@@ -390,6 +416,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # See the macOS job's HAS_SCCACHE_CREDS comment.
+    env:
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '') || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -469,21 +498,28 @@ jobs:
         timeout-minutes: 100
         env:
           RUSTC_WRAPPER: sccache
-          SCCACHE_BUCKET: charm-sccache-storage
-          SCCACHE_REGION: tor1
-          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          # Bucket/endpoint only set when HAS_SCCACHE_CREDS (job-level env,
+          # see above) found *some* usable key — write key on main, else the
+          # read-only key if configured. Left empty otherwise so sccache
+          # just runs as a local-disk-only cache instead of pointing at the
+          # S3 backend with no credentials, which used to hard-fail the
+          # whole build with an S3 "InvalidArgument" error (SCCACHE_IGNORE_
+          # SERVER_IO_ERROR only covers per-request I/O errors, not the
+          # server failing to start up at all).
+          SCCACHE_BUCKET: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'charm-sccache-storage' || '' }}
+          SCCACHE_REGION: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'tor1' || '' }}
+          SCCACHE_ENDPOINT: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'https://tor1.digitaloceanspaces.com' || '' }}
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty for workflow_dispatch runs against anything other than
-          # main: the caller can select an arbitrary branch/ref to dispatch
-          # against, and that branch's build.rs/JS build scripts run with
-          # whatever's injected here — same reasoning as quality-checks.yml's
-          # main-only gate. schedule always runs against main, so this only
-          # actually withholds credentials for a manual dispatch on a
-          # feature branch.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # main gets the read-write key; anything else gets the read-only
+          # key (if configured) so cache reads still work on a
+          # workflow_dispatch run against a feature branch without handing
+          # that branch's build.rs/JS build scripts write access to the
+          # shared cache — same reasoning as quality-checks.yml's main-only
+          # gate on the write key. schedule always runs against main.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
         run: |
           # GH Actions runs this as `bash -e` by default, so a non-zero exit
           # from `timeout` (including the expected 124/137 on a hang) would
@@ -562,6 +598,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # See the macOS job's HAS_SCCACHE_CREDS comment.
+    env:
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '') || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -629,8 +668,13 @@ jobs:
       # main-only gating every other platform job in this workflow uses.
       - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
         env:
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # main gets the read-write key; anything else gets the read-only
+          # key (if configured) — see the macOS job's AWS_* comment. Left
+          # empty when HAS_SCCACHE_CREDS found neither, same as every other
+          # platform job, so the [env] table below omits the S3 backend
+          # entirely and sccache just runs as a local-disk-only cache.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
           BUILD_ID: ${{ steps.build-id.outputs.build-id }}
         run: |
           set -euo pipefail
@@ -647,14 +691,16 @@ jobs:
             echo 'rustc-wrapper = "sccache"'
             echo ''
             echo '[env]'
-            echo 'SCCACHE_BUCKET = "charm-sccache-storage"'
-            echo 'SCCACHE_REGION = "tor1"'
-            echo 'SCCACHE_ENDPOINT = "https://tor1.digitaloceanspaces.com"'
-            echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
-            echo 'SCCACHE_S3_USE_SSL = "true"'
-            echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
-            echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
-            echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            if [ "$HAS_SCCACHE_CREDS" = "true" ]; then
+              echo 'SCCACHE_BUCKET = "charm-sccache-storage"'
+              echo 'SCCACHE_REGION = "tor1"'
+              echo 'SCCACHE_ENDPOINT = "https://tor1.digitaloceanspaces.com"'
+              echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
+              echo 'SCCACHE_S3_USE_SSL = "true"'
+              echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
+              echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
+              echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            fi
             # Baked into the Rust binary at compile time via
             # option_env!("BUILD_ID") in src-tauri/src/lib.rs — see that
             # file for why this can't just be a runtime env var.
@@ -696,6 +742,8 @@ jobs:
     # `if:`), and gated to main — see the macOS job's HAS_MACOS_CERT comment.
     env:
       HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_JKS != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' && github.ref == 'refs/heads/main' }}
+      # See the macOS job's HAS_SCCACHE_CREDS comment.
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '') || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -797,21 +845,28 @@ jobs:
         # see the macOS job.
         env:
           RUSTC_WRAPPER: sccache
-          SCCACHE_BUCKET: charm-sccache-storage
-          SCCACHE_REGION: tor1
-          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          # Bucket/endpoint only set when HAS_SCCACHE_CREDS (job-level env,
+          # see above) found *some* usable key — write key on main, else the
+          # read-only key if configured. Left empty otherwise so sccache
+          # just runs as a local-disk-only cache instead of pointing at the
+          # S3 backend with no credentials, which used to hard-fail the
+          # whole build with an S3 "InvalidArgument" error (SCCACHE_IGNORE_
+          # SERVER_IO_ERROR only covers per-request I/O errors, not the
+          # server failing to start up at all).
+          SCCACHE_BUCKET: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'charm-sccache-storage' || '' }}
+          SCCACHE_REGION: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'tor1' || '' }}
+          SCCACHE_ENDPOINT: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'https://tor1.digitaloceanspaces.com' || '' }}
           SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
           SCCACHE_S3_USE_SSL: "true"
           SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
-          # Empty for workflow_dispatch runs against anything other than
-          # main: the caller can select an arbitrary branch/ref to dispatch
-          # against, and that branch's build.rs/JS build scripts run with
-          # whatever's injected here — same reasoning as quality-checks.yml's
-          # main-only gate. schedule always runs against main, so this only
-          # actually withholds credentials for a manual dispatch on a
-          # feature branch.
-          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || '' }}
-          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || '' }}
+          # main gets the read-write key; anything else gets the read-only
+          # key (if configured) so cache reads still work on a
+          # workflow_dispatch run against a feature branch without handing
+          # that branch's build.rs/JS build scripts write access to the
+          # shared cache — same reasoning as quality-checks.yml's main-only
+          # gate on the write key. schedule always runs against main.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
           # Read by app/build.gradle.kts's "nightly" signingConfig.
           # ANDROID_RELEASE_STORE_FILE itself comes from $GITHUB_ENV (set by
           # the import step above), not repeated here. Empty/unset when

@@ -205,6 +205,22 @@ published as a release asset (`charm-nightly-signing-key.asc`) by the
 workflow itself on every signed run, so there's nothing else to distribute
 by hand.
 
+### sccache remote cache credentials
+
+The nightly workflow's Rust builds are cached in a shared DigitalOcean Spaces
+(S3-compatible) bucket via `sccache`. `SCCACHE_S3_ACCESS_KEY_ID` /
+`SCCACHE_S3_SECRET_ACCESS_KEY` are a read-write key, used only on `main`
+(scheduled runs and `main`-branch dispatches) to populate the cache.
+
+`SCCACHE_S3_READONLY_ACCESS_KEY_ID` / `SCCACHE_S3_READONLY_SECRET_ACCESS_KEY`
+are an optional read-only key (create one scoped to read-only access on the
+same Space) used for `workflow_dispatch` runs against any other branch, so
+those still get cache hits without holding write credentials. Neither
+read-only secret configured is fine too — every job falls back to a
+local-disk-only cache instead of hard-failing, rather than pointing sccache
+at the bucket with no credentials at all (which used to abort the build with
+an S3 "InvalidArgument" error).
+
 ## Identity — keep it clean
 
 This app publishes as plain **Charm**. Do **not** reintroduce a version suffix into any
