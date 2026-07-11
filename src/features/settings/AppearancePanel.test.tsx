@@ -81,4 +81,13 @@ describe("AppearancePanel", () => {
     const fieldset = bubbleButton.closest("fieldset");
     expect(fieldset).toHaveClass("flex-wrap");
   });
+
+  it("discloses that IRC mode doesn't show read receipts yet, only when IRC is selected", () => {
+    renderPanel();
+    expect(screen.queryByText(/doesn't show read receipts/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /IRC/ }));
+
+    expect(screen.getByText(/doesn't show read receipts/)).toBeInTheDocument();
+  });
 });

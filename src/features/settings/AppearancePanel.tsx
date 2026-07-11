@@ -209,6 +209,16 @@ export function AppearancePanel() {
           <div className="mt-3">
             <MessageLayoutControl value={messageLayout} onChange={setMessageLayout} />
           </div>
+          {messageLayout === "irc" && (
+            // IRC mode has no avatar column, so it doesn't render the
+            // avatar-stack read-receipt indicator Bubble/Discord use —
+            // rather than silently drop the feature with no explanation,
+            // disclose it here until an IRC-appropriate indicator design
+            // lands (tracked as a follow-up, not built speculatively now).
+            <p className="mt-2 text-sm text-warning">
+              IRC mode doesn't show read receipts yet — this is planned but not built.
+            </p>
+          )}
         </SettingTile>
       </SettingsCard>
     </div>
