@@ -34,16 +34,16 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-07, after Spec 11 — push notifications — added the
-        // `usePush` hook + notifications-panel wiring tests: lines 78.07 /
-        // statements 76.25 / functions 68.34 / branches 76.58), so any
-        // regression fails CI. When you add tests and coverage rises, raise
-        // these to the new floor in the same PR — never lower them just to
-        // make CI pass.
-        lines: 77,
-        statements: 75,
-        functions: 68,
-        branches: 76,
+        // 2026-07-11, after Spec 27 — chat message layout modes — added
+        // BubbleMessageRow/DiscordMessageRow/IrcMessageRow plus their tests:
+        // lines 83.56 / statements 81.64 / functions 74.16 / branches 80.95),
+        // so any regression fails CI. When you add tests and coverage rises,
+        // raise these to the new floor in the same PR — never lower them just
+        // to make CI pass.
+        lines: 83,
+        statements: 81,
+        functions: 73,
+        branches: 80,
       },
     },
   },

@@ -36,13 +36,14 @@ beforeEach(() => {
 });
 
 describe("AppearancePanel", () => {
-  it("renders the heading and all four appearance pickers", () => {
+  it("renders the heading and all five appearance pickers", () => {
     renderPanel();
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
     expect(screen.getByText("Theme")).toBeInTheDocument();
     expect(screen.getByText("Font size")).toBeInTheDocument();
     expect(screen.getByText("Message density")).toBeInTheDocument();
     expect(screen.getByText("Motion")).toBeInTheDocument();
+    expect(screen.getByText("Message layout")).toBeInTheDocument();
   });
 
   it("defaults to Dark theme, Medium font, Cozy density, Match system motion", () => {
@@ -59,5 +60,18 @@ describe("AppearancePanel", () => {
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Midnight" }));
     expect(screen.getByRole("button", { name: "Midnight" })).toBeInTheDocument();
     expect(document.documentElement.dataset.theme).toBe("midnight");
+  });
+
+  it("defaults to Bubble message layout and switches on click", () => {
+    renderPanel();
+    const bubbleButton = screen.getByRole("button", { name: /Bubble/ });
+    const discordButton = screen.getByRole("button", { name: /Discord/ });
+    expect(bubbleButton).toHaveAttribute("aria-pressed", "true");
+    expect(discordButton).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(discordButton);
+
+    expect(discordButton).toHaveAttribute("aria-pressed", "true");
+    expect(bubbleButton).toHaveAttribute("aria-pressed", "false");
   });
 });
