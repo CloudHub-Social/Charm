@@ -273,10 +273,10 @@ function SpaceButton({ space, active, unread, highlight, onClick }: SpaceButtonP
           aria-current={active ? "page" : undefined}
           onClick={onClick}
           className={cn(
-            "relative flex size-11 items-center justify-center rounded-md border transition-colors",
+            "relative flex size-11 items-center justify-center rounded-md border border-transparent transition-colors",
             active
-              ? "border-primary/50 bg-accent"
-              : "border-transparent bg-background hover:border-border hover:bg-accent/70",
+              ? "ring-2 ring-primary"
+              : "bg-background hover:border-border hover:bg-accent/70",
           )}
         >
           <Avatar size="sm">
