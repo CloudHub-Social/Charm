@@ -223,7 +223,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     observer.observe(sentinel);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state; re-created per render is unnecessary to depend on.
-  }, [room, messages]);
+  }, [room?.room_id, messages]);
 
   // Restores the scroll position `loadMoreHistory` recorded right before
   // prepending older messages, so the content the user was already reading
