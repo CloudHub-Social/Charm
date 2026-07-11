@@ -660,24 +660,33 @@ mod tests {
         std::fs::remove_dir_all(&tmp).ok();
     }
 
+    /// Creates a fresh, guaranteed-unique-and-already-created temp
+    /// directory for a test to use as its cache dir.
+    ///
+    /// Previously this hand-rolled a path (unused pid + wall-clock-nanos +
+    /// a process-local counter, under `std::env::temp_dir()`) without
+    /// actually creating it — the directory only came into existence later,
+    /// whenever the test happened to call `MediaCache::rebuild_index`/
+    /// `store` (both of which `create_dir_all` the cache dir lazily). That
+    /// left a window where two tests could compute paths that collided (the
+    /// nanosecond clock's resolution isn't guaranteed finer than the gap
+    /// between two `SystemTime::now()` calls on a loaded CI runner) before
+    /// either had actually created its directory, and was the suspected
+    /// cause of `evicts_oldest_ten_percent_when_over_budget` intermittently
+    /// panicking on `std::fs::write(..).unwrap()` with `Os { code: 22 }`
+    /// (EINVAL) in CI (#133) — e.g. one test's `create_dir_all` racing
+    /// another test's file write into what it believed was its own,
+    /// exclusively-owned directory. `tempfile::Builder::tempdir()` creates
+    /// the directory atomically (retrying on collision) before returning,
+    /// eliminating that race. `.keep()` preserves this file's existing
+    /// convention of each test manually `remove_dir_all`-ing its own dir at
+    /// the end, rather than relying on `TempDir`'s drop-based cleanup.
     fn tempfile_dir() -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("charm-media-cache-test-{}", unique_suffix()));
-        dir
-    }
-
-    fn unique_suffix() -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "{}-{}-{n}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
+        tempfile::Builder::new()
+            .prefix("charm-media-cache-test-")
+            .tempdir()
+            .unwrap()
+            .keep()
     }
 
     fn set_mtime(path: &Path, time: SystemTime) {
