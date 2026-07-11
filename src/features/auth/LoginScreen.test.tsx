@@ -159,3 +159,41 @@ describe("LoginScreen SSO callback handling", () => {
     expect(onSignedIn).not.toHaveBeenCalled();
   });
 });
+
+describe("LoginScreen default homeserver URL", () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    getCurrentUrls = null;
+    openUrlCallback = undefined;
+    getCurrent.mockClear();
+    onOpenUrl.mockClear();
+    openUrl.mockClear().mockResolvedValue(undefined);
+    login.mockClear();
+    register.mockClear();
+    startSsoLogin.mockClear().mockResolvedValue("https://homeserver.example/sso");
+    completeSsoLogin.mockClear();
+    cancelSsoLogin.mockClear().mockResolvedValue(undefined);
+  });
+
+  it("prefills the homeserver field from VITE_CHARM_DEFAULT_HOMESERVER_URL when set", () => {
+    vi.stubEnv("VITE_CHARM_DEFAULT_HOMESERVER_URL", "https://matrix.example.org");
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    expect(screen.getByLabelText("Homeserver")).toHaveValue("https://matrix.example.org");
+  });
+
+  it("falls back to the localhost default when the env var is unset", () => {
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    expect(screen.getByLabelText("Homeserver")).toHaveValue("http://localhost:8008");
+  });
+
+  it("falls back to the localhost default when the env var is an empty string", () => {
+    vi.stubEnv("VITE_CHARM_DEFAULT_HOMESERVER_URL", "");
+
+    render(<LoginScreen onSignedIn={vi.fn()} />);
+
+    expect(screen.getByLabelText("Homeserver")).toHaveValue("http://localhost:8008");
+  });
+});
