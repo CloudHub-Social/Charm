@@ -50,8 +50,54 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
+import { invoke as tauriCoreInvoke } from "@tauri-apps/api/core";
+import { addBreadcrumb } from "@sentry/react";
+import { scrubSentryValue } from "@/observability/scrubbers";
 import { invoke, listen, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
+
+/**
+ * Calls a Tauri IPC command and adds a Matrix-aware Sentry breadcrumb with
+ * PII-scrubbed args, result, and errors. Uses the raw @tauri-apps/api/core
+ * invoke (not the observability/ipc wrapper) so the breadcrumb data reflects
+ * the actual command args without being double-wrapped.
+ */
+export async function invokeMatrix<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    const result = await tauriCoreInvoke<T>(command, args);
+    addBreadcrumb({
+      category: "matrix.ipc",
+      level: "info",
+      message: `${command} succeeded`,
+      data: {
+        command,
+        args: scrubSentryValue(args),
+        result: scrubSentryValue(result as Record<string, unknown>),
+        status: "success",
+      },
+    });
+    return result;
+  } catch (error) {
+    addBreadcrumb({
+      category: "matrix.ipc",
+      level: "error",
+      message: `${command} failed`,
+      data: {
+        command,
+        args: scrubSentryValue(args),
+        error:
+          error instanceof Error
+            ? scrubSentryValue(error.message)
+            : scrubSentryValue(error as Record<string, unknown>),
+        status: "failure",
+      },
+    });
+    throw error;
+  }
+}
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see
