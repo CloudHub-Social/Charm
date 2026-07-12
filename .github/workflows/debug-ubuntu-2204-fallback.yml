@@ -7,7 +7,7 @@ name: DEBUG ubuntu-22.04 fallback test
 #
 # Tests whether the Linux CI hang (reproducibly hangs at "Bundling
 # ...rpm" — see the extensive investigation history in
-# nightly-platform-builds.yml's git log/PR #140/#142/#146) is specific
+# nightly-dev.yml's git log/PR #140/#142/#146) is specific
 # to the current ubuntu-24.04 hosted-runner image (20260705.232.1,
 # kernel 6.17.0-1018-azure, built 2026-07-05). NOTE: this is a broad
 # "does a different image/kernel avoid it" test, not a clean isolation

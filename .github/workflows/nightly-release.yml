@@ -48,6 +48,12 @@ jobs:
     env:
       HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # Same main-only gating as HAS_MACOS_CERT above: a workflow_dispatch
+      # run against an arbitrary branch must never get a live Sentry auth
+      # token or be able to publish debug files into the production Sentry
+      # project under repo-controlled branch code. schedule always runs
+      # against main.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -77,7 +83,7 @@ jobs:
       - name: Compute build id
         env:
           SHA: ${{ github.sha }}
-          BUILD_KIND: nightly-release
+          BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
       # Sets CARGO_PROFILE_RELEASE_DEBUG=1 and BUILD_ID/VITE_BUILD_ID from the
@@ -87,8 +93,13 @@ jobs:
       # passing WRITE_FRONTEND_UPLOAD_ENV: sourcemap upload is a separate,
       # web-deploy-scoped concern (see web-deploy-dev.yml) — uploading it
       # redundantly from four platform jobs a day would just spam Sentry
-      # with duplicate release sourcemaps for the same commit.
+      # with duplicate release sourcemaps for the same commit. Gated to main
+      # (see HAS_SENTRY_CREDS above) — off main this step, VITE_SENTRY_DSN,
+      # and the debug-file upload step below are all skipped, so the build
+      # just runs unsymbolicated instead of exposing the production Sentry
+      # token to branch code.
       - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -144,7 +155,7 @@ jobs:
       # directly onto its build step.
       - run: pnpm tauri build
         env:
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -164,8 +175,10 @@ jobs:
 
       # Same pnpm dlx @sentry/cli debug-files upload release-builds.yml's
       # apple-debug-files job runs, so a nightly release build symbolicates
-      # against Sentry exactly like a tagged release does.
+      # against Sentry exactly like a tagged release does. Gated to main —
+      # see HAS_SENTRY_CREDS above.
       - name: Upload macOS debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -203,6 +216,8 @@ jobs:
     env:
       HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && github.ref == 'refs/heads/main' }}
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -233,10 +248,11 @@ jobs:
         shell: bash
         env:
           SHA: ${{ github.sha }}
-          BUILD_KIND: nightly-release
+          BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
       - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         shell: bash
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -277,7 +293,7 @@ jobs:
           }
           pnpm tauri build @configArgs
         env:
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -302,6 +318,7 @@ jobs:
           "path=$releaseDir" >> $env:GITHUB_OUTPUT
 
       - name: Upload Windows debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         shell: pwsh
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -340,6 +357,8 @@ jobs:
       issues: write
     env:
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -374,10 +393,11 @@ jobs:
       - name: Compute build id
         env:
           SHA: ${{ github.sha }}
-          BUILD_KIND: nightly-release
+          BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
       - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -395,7 +415,7 @@ jobs:
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
-          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -438,6 +458,7 @@ jobs:
           echo "dir=$target_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload Linux debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -475,6 +496,8 @@ jobs:
     env:
       HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_JKS != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' && github.ref == 'refs/heads/main' }}
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -527,10 +550,11 @@ jobs:
       - name: Compute build id
         env:
           SHA: ${{ github.sha }}
-          BUILD_KIND: nightly-release
+          BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
       - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -554,9 +578,20 @@ jobs:
       # release-mode compile+bundle check plus fresh Sentry symbols, not a
       # store-distributable universal build, so building all 4 ABIs would
       # just burn CI time for no extra coverage.
+      # SENTRY_ANDROID_UPLOAD/AUTH_TOKEN/ORG/PROJECT gate the Sentry Gradle
+      # plugin itself (see src-tauri/gen/android/app/build.gradle.kts) —
+      # without SENTRY_ANDROID_UPLOAD=true it never applies, so ProGuard/R8
+      # mapping and native symbols wouldn't get uploaded even with valid
+      # credentials. All four (plus SENTRY_DSN) are gated to main via
+      # HAS_SENTRY_CREDS, same reasoning as every other secret gated to main
+      # in this workflow.
       - name: Build
         env:
-          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_ANDROID_UPLOAD: ${{ env.HAS_SENTRY_CREDS }}
+          SENTRY_AUTH_TOKEN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          SENTRY_ORG: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_ORG || '' }}
+          SENTRY_PROJECT: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_PROJECT || '' }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -576,7 +611,15 @@ jobs:
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
           pnpm tauri android build --target aarch64 --ci
 
+      # The Gradle plugin (Build step above) already uploads Proguard mapping
+      # + native symbols when SENTRY_ANDROID_UPLOAD is true; this separate
+      # debug-files upload covers the Rust/NDK native debug info the Gradle
+      # plugin doesn't reach, same split release-builds.yml's
+      # android-debug-files job doesn't need (it relies on the Gradle plugin
+      # alone) but rust-linux/apple/windows-debug-files do via @sentry/cli.
+      # Gated to main — see HAS_SENTRY_CREDS above.
       - name: Upload Android mapping and native symbols
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
@@ -611,6 +654,158 @@ jobs:
         run: |
           set -euo pipefail
           title="Nightly release build failure: Android"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+          fi
+
+  ios:
+    name: iOS (tauri ios build, simulator target, release)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: write
+    # See the macOS job's HAS_SCCACHE_CREDS/HAS_SENTRY_CREDS comments.
+    env:
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        id: build-id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      # See nightly-dev.yml's iOS job for the full comment on why sccache
+      # config is written into cargo's own config.toml here rather than
+      # passed as step env — `pnpm tauri ios build` runs the actual
+      # `cargo build` inside an Xcode "Run Script" build phase that doesn't
+      # forward this step's env into it.
+      - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          BUILD_ID: ${{ steps.build-id.outputs.build-id }}
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          config="$cargo_home/config.toml"
+          {
+            if [ "$HAS_SCCACHE_CREDS" = "true" ]; then
+              echo '[build]'
+              echo 'rustc-wrapper = "sccache"'
+              echo ''
+            fi
+            echo '[env]'
+            if [ "$HAS_SCCACHE_CREDS" = "true" ]; then
+              echo 'SCCACHE_BUCKET = "charm-sccache-storage"'
+              echo 'SCCACHE_REGION = "tor1"'
+              echo 'SCCACHE_ENDPOINT = "https://tor1.digitaloceanspaces.com"'
+              echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
+              echo 'SCCACHE_S3_USE_SSL = "true"'
+              echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
+              echo "SCCACHE_S3_RW_MODE = \"${SCCACHE_S3_RW_MODE}\""
+              echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
+              echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            fi
+            echo "BUILD_ID = \"${BUILD_ID}\""
+          } >> "$config"
+
+      # No --debug: release-mode compile/link differences (e.g. LTO) are
+      # exactly what this workflow exists to catch before release-builds.yml
+      # hits them on a tagged build. Still simulator-only — this repo has no
+      # Apple Developer signing identity in CI, same as nightly-dev.yml.
+      - run: pnpm tauri ios build --target aarch64-sim --ci
+
+      - name: Resolve Apple debug-file directories
+        id: apple-debug-files
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          paths=(
+            "$target_dir/aarch64-apple-ios-sim/debug"
+            "src-tauri/gen/apple/build"
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              existing+=("$path")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "::error::No Apple debug-file directories found"
+            exit 1
+          fi
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${existing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same @sentry/cli debug-files upload release-builds.yml's
+      # apple-debug-files job runs for its iOS simulator build. Gated to
+      # main — see HAS_SENTRY_CREDS above.
+      - name: Upload Apple debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          DEBUG_FILE_PATHS: ${{ steps.apple-debug-files.outputs.paths }}
+        run: |
+          paths=()
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done <<< "$DEBUG_FILE_PATHS"
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "${paths[@]}"
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly release build failure: iOS"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then

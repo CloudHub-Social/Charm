@@ -28,7 +28,7 @@ fi
 # the "unify VITE_BUILD_ID with SENTRY_RELEASE" option from that spec's open
 # question, so a build's Sentry release and its in-app "Build" row always
 # show the same string. RELEASE_INPUT (the workflow_dispatch `release` input
-# on sentry-release-artifacts.yml) still overrides this outright, so a manual
+# on release-builds.yml) still overrides this outright, so a manual
 # dispatch can name an arbitrary Sentry release.
 release="${RELEASE_INPUT:-}"
 if [ -z "$release" ]; then
