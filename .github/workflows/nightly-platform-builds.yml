@@ -589,7 +589,7 @@ jobs:
         # npm-installed @tauri-apps/cli binary, then the build step below calls
         # `cargo tauri build` instead of `pnpm tauri build`.
         timeout-minutes: 40
-        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch deps/rpm --rev 7e94ebddfb9e5a6f67a54c94a2dbb6d14a0104a0 --locked
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 7e94ebddfb9e5a6f67a54c94a2dbb6d14a0104a0 --locked
 
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 100
