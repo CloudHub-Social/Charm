@@ -39,6 +39,22 @@ runs:
     - run: pnpm build:web
       shell: bash
 
+    - name: Add Document-Policy header for static assets
+      shell: bash
+      # Cloudflare Workers Static Assets serves anything not matched by
+      # `run_worker_first` (below, only "/api/*") directly, without invoking
+      # the Worker's fetch handler — so a header set in worker.mjs never
+      # reaches the app shell / static asset responses. The `_headers` file
+      # is Cloudflare's static-assets header mechanism (same as Pages) for
+      # exactly this case: applied to every asset response with no Worker
+      # invocation needed. Required for Sentry's browser JS profiler; the
+      # dev server sets the same header in vite.config.ts.
+      run: |
+        cat > dist/_headers <<'EOF'
+        /*
+          Document-Policy: js-profiling
+        EOF
+
     - name: Configure Worker bundle
       shell: bash
       env:
@@ -85,12 +101,7 @@ runs:
               });
               return fetch(proxied);
             }
-            const assetResponse = await env.ASSETS.fetch(request);
-            // Required for Sentry's browser JS profiler (Profiler API is gated
-            // behind this policy); dev server sets the same header in vite.config.ts.
-            const response = new Response(assetResponse.body, assetResponse);
-            response.headers.set("Document-Policy", "js-profiling");
-            return response;
+            return env.ASSETS.fetch(request);
           },
         };
         EOF
