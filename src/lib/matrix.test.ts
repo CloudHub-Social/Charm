@@ -10,7 +10,7 @@ vi.mock("@sentry/react", () => ({
   addBreadcrumb: mocks.addBreadcrumb,
 }));
 
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("./matrixTransport", () => ({
   invoke: mocks.invoke,
 }));
 
@@ -74,7 +74,7 @@ describe("invokeMatrix", () => {
       message: "send_message failed",
       data: {
         args: {
-          body: "hello @[redacted]:[redacted]",
+          body: "[redacted]",
           roomId: "![redacted]:[redacted]",
         },
         command: "send_message",
@@ -82,5 +82,24 @@ describe("invokeMatrix", () => {
         status: "failure",
       },
     });
+  });
+
+  it("redacts camelCase secret fields the same as their snake_case equivalents", async () => {
+    const result = { ok: true };
+    const args = { recoveryKey: "secret-recovery-key", newPassword: "hunter2" };
+    mocks.invoke.mockResolvedValueOnce(result);
+
+    await invokeMatrix("recover_from_key", args);
+
+    expect(mocks.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          args: {
+            recoveryKey: "[redacted]",
+            newPassword: "[redacted]",
+          },
+        }),
+      }),
+    );
   });
 });
