@@ -97,7 +97,11 @@ function addMatrixIpcBreadcrumb(
 /**
  * Calls a Matrix IPC command (routed through matrixTransport, so it works on
  * both the Tauri desktop build and the web build) and adds a Matrix-aware
- * Sentry breadcrumb with PII-scrubbed args, result, and errors.
+ * Sentry breadcrumb with PII-scrubbed args, result, and errors. Passes
+ * `skipBreadcrumb: true` through to matrixTransport's underlying
+ * observability/ipc wrapper on the desktop build so a command doesn't get
+ * both its generic `tauri.ipc` breadcrumbs and this function's `matrix.ipc`
+ * one — `captureOnError`'s exception-capture behavior is unaffected.
  */
 export async function invokeMatrix<T>(
   command: string,
@@ -105,7 +109,7 @@ export async function invokeMatrix<T>(
   options?: InvokeOptions,
 ): Promise<T> {
   try {
-    const result = await invoke<T>(command, args, options);
+    const result = await invoke<T>(command, args, { ...options, skipBreadcrumb: true });
     addMatrixIpcBreadcrumb("info", `${command} succeeded`, {
       command,
       args: scrubBreadcrumbValue(args),

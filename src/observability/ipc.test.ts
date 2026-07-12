@@ -319,4 +319,22 @@ describe("IPC observability", () => {
 
     expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
   });
+
+  it("skips this wrapper's own breadcrumbs when skipBreadcrumb is set, without affecting exception capture", async () => {
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
+
+    await invoke("send_message", { roomId: "!room:example.org" }, { skipBreadcrumb: true });
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(
+      invoke("send_message", { roomId: "!room:example.org" }, { skipBreadcrumb: true }),
+    ).rejects.toThrow();
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
 });

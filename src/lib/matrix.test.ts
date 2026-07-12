@@ -41,7 +41,7 @@ describe("invokeMatrix", () => {
 
     await expect(invokeMatrix("send_message", args)).resolves.toBe(result);
 
-    expect(mocks.invoke).toHaveBeenCalledWith("send_message", args, undefined);
+    expect(mocks.invoke).toHaveBeenCalledWith("send_message", args, { skipBreadcrumb: true });
     expect(mocks.addBreadcrumb).toHaveBeenCalledWith({
       category: "matrix.ipc",
       level: "info",
@@ -137,7 +137,7 @@ describe("invokeMatrix", () => {
     expect(mocks.invoke).toHaveBeenCalledWith(
       "login",
       { username: "alice" },
-      { captureOnError: false },
+      { captureOnError: false, skipBreadcrumb: true },
     );
   });
 

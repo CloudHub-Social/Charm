@@ -144,6 +144,14 @@ export interface InvokeOptions {
    * filtered out regardless of this flag.
    */
   captureOnError?: boolean;
+  /**
+   * Skip this wrapper's own `tauri.ipc` breadcrumbs. Set to `true` by
+   * callers (e.g. `lib/matrix.ts`'s `invokeMatrix`) that add their own,
+   * more specific breadcrumb around this call — otherwise every invoke
+   * would produce two overlapping breadcrumb trails per command.
+   * Exception capture (`captureOnError`) is unaffected.
+   */
+  skipBreadcrumb?: boolean;
 }
 
 export async function invoke<T>(
@@ -152,15 +160,18 @@ export async function invoke<T>(
   options?: InvokeOptions,
 ): Promise<T> {
   const captureOnError = options?.captureOnError ?? true;
+  const skipBreadcrumb = options?.skipBreadcrumb ?? false;
   const id = createIpcOperationId();
   const startedAt = performance.now();
   const argsSummary = summarizeArgs(args);
 
-  addIpcBreadcrumb("info", `IPC ${command} started`, {
-    command,
-    operationId: id,
-    args: argsSummary,
-  });
+  if (!skipBreadcrumb) {
+    addIpcBreadcrumb("info", `IPC ${command} started`, {
+      command,
+      operationId: id,
+      args: argsSummary,
+    });
+  }
 
   try {
     const result = await tauriInvoke<T>(command, args, {
@@ -169,12 +180,14 @@ export async function invoke<T>(
       },
     });
     const durationMs = Math.round(performance.now() - startedAt);
-    addIpcBreadcrumb("info", `IPC ${command} succeeded`, {
-      command,
-      operationId: id,
-      durationMs,
-      result: summarizeValue(result),
-    });
+    if (!skipBreadcrumb) {
+      addIpcBreadcrumb("info", `IPC ${command} succeeded`, {
+        command,
+        operationId: id,
+        durationMs,
+        result: summarizeValue(result),
+      });
+    }
     recordCount("ipc.invoke", 1, { command, outcome: "success" });
     recordDistribution("ipc.invoke.duration", durationMs, {
       unit: "millisecond",
@@ -183,12 +196,14 @@ export async function invoke<T>(
     return result;
   } catch (error) {
     const durationMs = Math.round(performance.now() - startedAt);
-    addIpcBreadcrumb("error", `IPC ${command} failed`, {
-      command,
-      operationId: id,
-      durationMs,
-      error: summarizeError(error),
-    });
+    if (!skipBreadcrumb) {
+      addIpcBreadcrumb("error", `IPC ${command} failed`, {
+        command,
+        operationId: id,
+        durationMs,
+        error: summarizeError(error),
+      });
+    }
     recordCount("ipc.invoke", 1, { command, outcome: "error" });
     recordDistribution("ipc.invoke.duration", durationMs, {
       unit: "millisecond",
