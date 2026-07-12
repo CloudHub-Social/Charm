@@ -148,6 +148,21 @@ jobs:
           echo "$MACOS_CERT_P12" | base64 -D > cert.p12
           security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          # Trust the self-signed cert so the `find-identity -v` gate below
+          # lists it. That gate is valid-identities-only, which runs a trust
+          # evaluation, and a self-signed leaf is CSSMERR_TP_NOT_TRUSTED until
+          # it's a trusted anchor. Trust settings live in the keychain trust
+          # domain, not inside the .p12, so every fresh import is untrusted no
+          # matter how the cert was generated — codesign itself signs fine
+          # without this, but the verification step won't find the identity.
+          # Extract the public cert from the just-created keychain (only our
+          # cert is in it) and add it to the admin trust domain. The hosted
+          # runner has passwordless sudo and no GUI (loginwindow), so this
+          # applies non-interactively — no auth prompt.
+          security find-certificate -a -p "$keychain" > signing-cert.pem
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain signing-cert.pem
+          rm -f signing-cert.pem
           # Prepend rather than replace: the default keychain search list
           # still needs to include login.keychain for other tools in this
           # job (e.g. pnpm/node's own keychain reads); we're only adding to
