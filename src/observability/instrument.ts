@@ -79,6 +79,13 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
     enabledIntegrations.push(Sentry.replayCanvasIntegration());
   }
   if (settings.profilingEnabled) {
+    // Requires the Document-Policy: js-profiling response header (set in
+    // vite.config.ts and the web Worker in build-web-worker/action.yml) or the
+    // browser's Profiler API silently no-ops. Tauri's packaged desktop builds
+    // can't set this header — its app.security.headers config only allows a
+    // fixed whitelist that doesn't include Document-Policy — so profiling only
+    // takes effect on the web target until that's solved (e.g. a custom
+    // on_web_resource_request webview hook).
     enabledIntegrations.push(Sentry.browserProfilingIntegration());
   }
   if (settings.logsEnabled) {

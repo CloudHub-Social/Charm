@@ -85,7 +85,12 @@ runs:
               });
               return fetch(proxied);
             }
-            return env.ASSETS.fetch(request);
+            const assetResponse = await env.ASSETS.fetch(request);
+            // Required for Sentry's browser JS profiler (Profiler API is gated
+            // behind this policy); dev server sets the same header in vite.config.ts.
+            const response = new Response(assetResponse.body, assetResponse);
+            response.headers.set("Document-Policy", "js-profiling");
+            return response;
           },
         };
         EOF

@@ -30,9 +30,6 @@
       "assetProtocol": {
         "enable": true,
         "scope": ["$APPDATA/media/**"]
-      },
-      "headers": {
-        "Document-Policy": "js-profiling"
       }
     },
     "trayIcon": {
