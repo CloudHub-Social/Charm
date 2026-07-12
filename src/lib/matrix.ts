@@ -50,18 +50,22 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
-import { addBreadcrumb } from "@sentry/react";
+import * as Sentry from "@sentry/react";
+import type { InvokeOptions } from "@/observability/ipc";
 import { scrubSentryValue } from "@/observability/scrubbers";
 import { invoke, listen, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
 
 // Matrix command args/results carry user-authored content (message bodies,
-// formatted bodies, topics, etc.) that `scrubSentryValue` doesn't know to
-// redact — it only strips Matrix IDs and secret-shaped fields, so free text
-// would otherwise be stored verbatim in Sentry breadcrumbs. These field names
-// are dropped entirely rather than scrubbed, since their value is arbitrary
-// prose that can't be pattern-matched like an ID or token.
-const CONTENT_FIELD_NAME_PATTERN = /^(body|formatted_body|formattedBody|content|topic|name)$/i;
+// formatted bodies, topics, reply previews, etc.) that `scrubSentryValue`
+// doesn't know to redact — it only strips Matrix IDs and secret-shaped
+// fields, so free text would otherwise be stored verbatim in Sentry
+// breadcrumbs. These field names are dropped entirely rather than scrubbed,
+// since their value is arbitrary prose that can't be pattern-matched like an
+// ID or token. Includes `preview` (ReplyRef's generated message-text preview)
+// and `newBody` (edit_message's replacement body).
+const CONTENT_FIELD_NAME_PATTERN =
+  /^(body|formatted_body|formattedBody|newBody|content|topic|name|preview)$/i;
 
 function redactContentFields<T>(value: T): T {
   if (value === null || typeof value !== "object") return value;
@@ -80,40 +84,44 @@ function scrubBreadcrumbValue<T>(value: T): T {
   return scrubSentryValue(redactContentFields(value));
 }
 
+function addMatrixIpcBreadcrumb(
+  level: "info" | "error",
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return;
+  Sentry.addBreadcrumb({ category: "matrix.ipc", level, message, data });
+}
+
 /**
  * Calls a Matrix IPC command (routed through matrixTransport, so it works on
  * both the Tauri desktop build and the web build) and adds a Matrix-aware
  * Sentry breadcrumb with PII-scrubbed args, result, and errors.
  */
-export async function invokeMatrix<T>(command: string, args: Record<string, unknown>): Promise<T> {
+export async function invokeMatrix<T>(
+  command: string,
+  args: Record<string, unknown>,
+  options?: InvokeOptions,
+): Promise<T> {
   try {
-    const result = await invoke<T>(command, args);
-    addBreadcrumb({
-      category: "matrix.ipc",
-      level: "info",
-      message: `${command} succeeded`,
-      data: {
-        command,
-        args: scrubBreadcrumbValue(args),
-        result: scrubBreadcrumbValue(result as Record<string, unknown>),
-        status: "success",
-      },
+    const result = await invoke<T>(command, args, options);
+    addMatrixIpcBreadcrumb("info", `${command} succeeded`, {
+      command,
+      args: scrubBreadcrumbValue(args),
+      result: scrubBreadcrumbValue(result as Record<string, unknown>),
+      status: "success",
     });
     return result;
   } catch (error) {
-    addBreadcrumb({
-      category: "matrix.ipc",
-      level: "error",
-      message: `${command} failed`,
-      data: {
-        command,
-        args: scrubBreadcrumbValue(args),
-        error:
-          error instanceof Error
-            ? scrubSentryValue(error.message)
-            : scrubBreadcrumbValue(error as Record<string, unknown>),
-        status: "failure",
-      },
+    addMatrixIpcBreadcrumb("error", `${command} failed`, {
+      command,
+      args: scrubBreadcrumbValue(args),
+      error:
+        error instanceof Error
+          ? scrubSentryValue(error.message)
+          : scrubBreadcrumbValue(error as Record<string, unknown>),
+      status: "failure",
     });
     throw error;
   }

@@ -3,20 +3,26 @@ import { invokeMatrix } from "./matrix";
 
 const mocks = vi.hoisted(() => ({
   addBreadcrumb: vi.fn(),
+  getClient: vi.fn(),
   invoke: vi.fn(),
+  listen: vi.fn(),
 }));
 
 vi.mock("@sentry/react", () => ({
   addBreadcrumb: mocks.addBreadcrumb,
+  getClient: mocks.getClient,
 }));
 
 vi.mock("./matrixTransport", () => ({
   invoke: mocks.invoke,
+  listen: mocks.listen,
 }));
 
 beforeEach(() => {
   mocks.addBreadcrumb.mockReset();
   mocks.invoke.mockReset();
+  mocks.listen.mockReset();
+  mocks.getClient.mockReset().mockReturnValue({ getOptions: () => ({ enabled: true }) });
 });
 
 describe("invokeMatrix", () => {
@@ -35,7 +41,7 @@ describe("invokeMatrix", () => {
 
     await expect(invokeMatrix("send_message", args)).resolves.toBe(result);
 
-    expect(mocks.invoke).toHaveBeenCalledWith("send_message", args);
+    expect(mocks.invoke).toHaveBeenCalledWith("send_message", args, undefined);
     expect(mocks.addBreadcrumb).toHaveBeenCalledWith({
       category: "matrix.ipc",
       level: "info",
@@ -101,5 +107,46 @@ describe("invokeMatrix", () => {
         }),
       }),
     );
+  });
+
+  it("redacts reply preview and edit-message content fields", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      in_reply_to: { preview: "the secret plan is at 3pm" },
+    });
+
+    await invokeMatrix("get_timeline_page", {
+      roomId: "!room:matrix.example",
+      newBody: "edited text",
+    });
+
+    expect(mocks.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          args: expect.objectContaining({ newBody: "[redacted]" }),
+          result: { in_reply_to: { preview: "[redacted]" } },
+        }),
+      }),
+    );
+  });
+
+  it("forwards InvokeOptions to the underlying transport invoke", async () => {
+    mocks.invoke.mockResolvedValueOnce({ ok: true });
+
+    await invokeMatrix("login", { username: "alice" }, { captureOnError: false });
+
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "login",
+      { username: "alice" },
+      { captureOnError: false },
+    );
+  });
+
+  it("does not record a breadcrumb when Sentry is disabled", async () => {
+    mocks.getClient.mockReturnValue({ getOptions: () => ({ enabled: false }) });
+    mocks.invoke.mockResolvedValueOnce({ ok: true });
+
+    await invokeMatrix("send_message", { roomId: "!room:matrix.example" });
+
+    expect(mocks.addBreadcrumb).not.toHaveBeenCalled();
   });
 });
