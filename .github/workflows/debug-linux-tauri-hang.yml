@@ -2,7 +2,7 @@ name: DEBUG Linux tauri build hang diagnostics
 
 # On-demand diagnostic tooling for the intermittent Linux deb/rpm bundling
 # hang tracked at tauri-apps/tauri#15698 (and mitigated in this repo via the
-# retry-on-timeout wrapper in nightly-dev.yml). Manual dispatch
+# retry-on-timeout wrapper in nightly.yml). Manual dispatch
 # only — this doesn't run automatically and isn't part of any required
 # check. Reach for it if the hang needs re-diagnosing (upstream ships a fix
 # to verify, the symptom changes, a new hypothesis needs testing).
@@ -73,7 +73,7 @@ jobs:
           # would otherwise persist in local git config, readable by every
           # later step (pnpm install's lifecycle scripts, the Tauri build)
           # — same reasoning as the real Linux job in
-          # nightly-dev.yml.
+          # nightly.yml.
           persist-credentials: false
 
       - name: Install Tauri Linux system dependencies
@@ -260,7 +260,7 @@ jobs:
       # Makes the job conclusion mean what it says — without this, "job
       # success" only reflects that none of the steps above individually
       # failed, not that the build actually completed. See the retry
-      # wrapper's own comment in nightly-dev.yml for the same
+      # wrapper's own comment in nightly.yml for the same
       # lesson learned the hard way.
       - name: Fail the job if the build didn't actually succeed
         if: always()

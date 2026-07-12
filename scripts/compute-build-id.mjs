@@ -3,7 +3,7 @@
 // ("Build and release identification"). This is the single source of truth
 // for the format — every CI workflow that needs a build id (
 // release-builds.yml, web-deploy-dev.yml, web-preview.yml,
-// nightly-dev.yml) calls this script instead of recomputing its
+// nightly.yml) calls this script instead of recomputing its
 // own variant, which is how today's inconsistency (full vs. short SHA, tag
 // vs. SHA, plain version) crept in.
 //

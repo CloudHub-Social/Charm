@@ -42,7 +42,7 @@ queue builds (the PR combined with whatever else is ahead of it in the
 queue). Still no native platform bundling. This is the last gate before a
 commit lands on `main`.
 
-## Tier 3 — Nightly platform builds (`nightly-dev.yml`)
+## Tier 3 — Nightly platform builds (`nightly.yml`)
 
 **Implemented.** Full native builds — macOS, Windows, Linux, iOS
 (simulator), Android — on a daily cron (09:00 UTC) plus manual
@@ -52,22 +52,21 @@ job opens (or comments on, if one's already open) a GitHub issue titled
 `Nightly build failure: <Platform>`, so drift gets tracked and triaged
 without gating anyone's work.
 
-These builds only prove "does it compile and bundle" — they don't need to
-gate every commit, just catch breakage within a day.
-
-## Tier 3.5 — Nightly release builds (`nightly-release.yml`)
-
-**Implemented.** Same daily-cron + `workflow_dispatch` shape as Tier 3, but
-in **release** mode (not the `--debug` used by `nightly-dev.yml`) — this is
-where a release-mode-only bug (LTO/codegen differences, bundler-specific
-issues) actually gets caught before tagging. Also wires in the Sentry DSN
-and uploads debug symbols after each build (same pattern as
-`release-builds.yml`), so Sentry's nightly symbolication baseline stays
-fresh even between tagged releases. Scheduled a few hours after
-`nightly-dev.yml` so a dev-build breakage doesn't get conflated with a
-release-mode-only one. Non-blocking, same as Tier 3: a failure opens/updates
-a GitHub issue titled `Nightly release build failure: <Platform>` rather
-than gating anyone's work.
+Builds in **release** profile (not `--debug`) — this used to be split into a
+fast `--debug` workflow and a separate release-mode one, but that split
+didn't hold up: the installable nightly this workflow publishes
+(`publish-nightly`) is meant to represent what actually ships, so handing
+testers a `--debug` binary was actively counterproductive (different perf,
+different codegen, compiled-out `debug_assert!`s can mask or introduce
+different bugs than release does). Release mode also means the Sentry
+debug-symbol upload after each build (same pattern as `release-builds.yml`)
+actually matches what a real crash report would need to symbolicate, so
+Sentry's nightly symbolication baseline stays fresh between tagged releases
+too. The CI-cost tradeoff (release compiles slower, and the deb/rpm
+bundler's intermittent hang is more likely to bite here) is accepted since
+Tier 1/2 already catch plain compile errors — this only needs to catch
+native-bundler and release-mode-specific breakage, and there's no strong
+reason that needs to be fast.
 
 ## Tier 4 — Production release _(partially implemented)_
 
@@ -89,11 +88,12 @@ not something to wire up silently.
   dedicated DigitalOcean Spaces bucket (S3-compatible) rather than GitHub's
   Actions cache, so it isn't constrained by that same 10GB cap and every
   branch can freely read+write.
-- Native builds in Tier 1/2 (the `rust` job) and Tier 3's `nightly-dev.yml`
-  both build in `--debug` mode where they're pure compile-checks —
-  release-mode optimization (`opt-level=3`) is expensive and buys nothing
-  for "does it build." Tier 3.5's `nightly-release.yml` and Tier 4 build in
-  release mode deliberately, to catch release-mode-only failures.
+- Native builds in Tier 1/2 (the `rust` job) build in `--debug` mode where
+  they're pure compile-checks — release-mode optimization (`opt-level=3`) is
+  expensive and buys nothing for "does it build." Tier 3 and Tier 4 build in
+  release mode deliberately, to catch release-mode-only failures and to
+  produce artifacts (installable nightly, Sentry symbols) that actually
+  represent what ships.
 
 ## Future consideration — Moonrepo (Day 4)
 

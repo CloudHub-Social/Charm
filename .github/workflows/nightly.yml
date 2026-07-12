@@ -1,30 +1,54 @@
-name: Nightly release builds
+name: Nightly builds
 
-# Tier 3.5 of the CI/release model (see docs/ci-tiers.md): the release-profile
-# counterpart of nightly-dev.yml. nightly-dev.yml builds `--debug` and proves
-# "does it compile and bundle" as cheaply as possible; this workflow builds in
-# release mode (no `--debug`/`--profile dev`) to catch release-mode-only
-# failures (LTO/codegen differences, bundler-specific issues) before they
-# surface in a tagged release-builds.yml run. It also wires in the Sentry DSN
-# and uploads debug symbols after each build, same pattern as
-# release-builds.yml, so Sentry's symbolication baseline for nightly-adjacent
-# commits stays fresh between tagged releases rather than only updating on a
-# `v*` tag.
+# Tier 3 of the CI/release model (see docs/ci-tiers.md): the full native
+# platform matrix (macOS/Windows/Linux/iOS/Android) used to run on every PR
+# push and merge_group entry, which was the dominant cost driver of CI wall
+# time. These builds prove "does it compile and bundle" for a path nothing
+# else exercises — Tier 1/2 (quality-checks.yml) never touch the native
+# Tauri bundler. Moved here, off tip of `main`, on a daily schedule + manual
+# dispatch. Non-blocking: a failure here never blocks a PR or the merge
+# queue, it opens/updates a tracking GitHub issue instead.
 #
-# Scheduled a few hours after nightly-dev.yml's 09:00 UTC run so a plain
-# build breakage (caught faster/cheaper by nightly-dev.yml) doesn't get
-# conflated with a release-mode-only one in the same triage pass. Same
-# non-blocking, GitHub-issue-per-platform failure tracking as nightly-dev.yml.
+# Builds in **release** profile (not `--debug`) — this used to be split into
+# a fast `--debug` "nightly-dev" workflow and a separate release-mode
+# "nightly-release" one, but that split didn't hold up: the installable
+# nightly this workflow publishes (see publish-nightly below) is meant to
+# represent what actually ships, so handing testers a `--debug` binary was
+# actively counterproductive (different perf, different codegen, compiled-
+# out debug_assert!s can mask or introduce different bugs than release
+# does). Release mode also means Sentry's debug-symbol upload after each
+# build actually matches what a real crash report would need to
+# symbolicate — a `--debug` build's symbols aren't useful for that. The
+# CI-cost tradeoff (release compiles slower, and the deb/rpm bundler's
+# intermittent hang is more likely to bite here) is accepted since Tier 1/2
+# already catch plain compile errors — this only needs to catch native-
+# bundler and release-mode-specific breakage, and there's no strong reason
+# that needs to be fast.
 #
-# Unlike nightly-dev.yml, this workflow does not publish a rolling GitHub
-# Release — its purpose is signal (catch drift, keep Sentry fresh), not
-# distribution. See nightly-dev.yml's publish-nightly job for the installable
-# nightly builds.
+# macOS/Windows signing is opportunistic: if MACOS_CERT_P12/WINDOWS_CERT_PFX
+# (etc., see each job) are configured as repo secrets, the build is signed
+# with a self-signed cert. This does NOT remove either OS's first-run
+# warning — macOS Gatekeeper still blocks an unnotarized app as "from an
+# unidentified developer" and Windows SmartScreen's warning is reputation-
+# based, not signature-based — see README's "Installing a nightly build"
+# for the actual bypass steps on both. The signing itself is still useful
+# (an unsigned macOS binary can trip additional integrity checks/prompts
+# beyond Gatekeeper). Without those secrets, both jobs fall back to their
+# previous unsigned behavior. Both signing-import steps are further gated to
+# main only, so a workflow_dispatch run against an arbitrary branch never
+# gets an unlocked signing identity.
+#
+# Sentry secrets (auth token/org/project/DSN) are gated to main the same
+# way, via each job's HAS_SENTRY_CREDS — a workflow_dispatch run against an
+# arbitrary branch never gets a live Sentry auth token or the ability to
+# publish debug files into the production Sentry project under
+# repo-controlled branch code.
 
 on:
   schedule:
-    # 13:00 UTC daily — a few hours after nightly-dev.yml's 09:00 UTC run.
-    - cron: "0 13 * * *"
+    # 09:00 UTC daily — arbitrary; adjust if a different time better fits
+    # when someone's actually around to triage a failure.
+    - cron: "0 9 * * *"
   workflow_dispatch:
 
 permissions:
@@ -36,15 +60,18 @@ concurrency:
 
 jobs:
   macos:
-    name: macOS (tauri build, release)
+    name: macOS (tauri build)
     runs-on: macos-latest
     permissions:
       contents: read
       issues: write
-    # See nightly-dev.yml's macOS job for the reasoning behind gating both
-    # of these to main and computing them job-level rather than inline in a
-    # step's `if:`. schedule always runs against main; workflow_dispatch is
-    # the only way this ever sees a non-main ref.
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) because actionlint rejects the `secrets` context in a
+    # step-level `if:` (only `env`/`github`/`job`/etc. are allowed there —
+    # see the context-availability table linked from actionlint's error).
+    # Also gates to main: a workflow_dispatch run against an arbitrary
+    # branch should never get an unlocked signing identity/keychain that
+    # branch's own build.rs/JS build scripts could reach.
     env:
       HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
       HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
@@ -107,8 +134,14 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # See nightly-dev.yml's macOS job for the full comment on this step —
-      # unchanged here, same self-signed-cert-import flow.
+      # Imports a self-signed Code Signing cert into a throwaway keychain and
+      # exports its identity name for the build step below, iff the repo has
+      # MACOS_CERT_P12/MACOS_CERT_PASSWORD/MACOS_CERT_NAME secrets configured
+      # (see README.md's "Generating a nightly signing cert" for how to make
+      # one). No-ops (leaves APPLE_SIGNING_IDENTITY unset) when the secret
+      # isn't present, so this is safe to merge before anyone generates a
+      # cert — the build below just falls back to the previous
+      # unsigned/ad-hoc-equivalent behavior.
       - name: Import macOS signing certificate
         if: ${{ env.HAS_MACOS_CERT == 'true' }}
         env:
@@ -117,7 +150,7 @@ jobs:
           MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
         run: |
           set -euo pipefail
-          keychain="nightly-release-signing.keychain-db"
+          keychain="nightly-signing.keychain-db"
           keychain_password=$(uuidgen)
           security create-keychain -p "$keychain_password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
@@ -146,9 +179,8 @@ jobs:
           fi
           echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
 
-      # Release profile (no --debug): the whole point of this workflow is to
-      # exercise the same build path release-builds.yml uses for tagged
-      # releases. VITE_SENTRY_DSN is set directly (not via
+      # Release profile (no --debug) — same build path release-builds.yml
+      # uses for tagged releases. VITE_SENTRY_DSN is set directly (not via
       # WRITE_FRONTEND_UPLOAD_ENV above) so the embedded webview's Sentry
       # client is initialized in the built app, matching how
       # release-builds.yml's android-debug-files job wires SENTRY_DSN
@@ -192,23 +224,39 @@ jobs:
           --log-level info
           "${{ steps.cargo-target.outputs.dir }}/release"
 
+      # Only published for main — a workflow_dispatch run against an
+      # arbitrary branch is a compile check, not a build anyone should
+      # install and run. .dmg only, not the .app bundle inside it: a .app is
+      # a directory, and both actions/upload-artifact's later flattening and
+      # `gh release create`'s asset upload expect plain files. The .dmg
+      # already contains the .app, so uploading both is redundant as well as
+      # broken.
+      - name: Upload macOS artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-macos
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Track failure as a GitHub issue
         if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly release build failure: macOS"
+          title="Nightly build failure: macOS"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
-            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
           fi
 
   windows:
-    name: Windows (tauri build, release)
+    name: Windows (tauri build)
     runs-on: windows-latest
     permissions:
       contents: read
@@ -261,8 +309,15 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # See nightly-dev.yml's Windows job for the full comment on this step —
-      # unchanged here, same self-signed Authenticode cert import flow.
+      # Imports a self-signed Authenticode cert into the Windows cert store
+      # and captures its thumbprint for the build step below, iff the repo
+      # has WINDOWS_CERT_PFX/WINDOWS_CERT_PASSWORD secrets configured (see
+      # README.md's "Generating a nightly signing cert" for how to make one
+      # with New-SelfSignedCertificate). No-ops when the secret isn't
+      # present, so this is safe to merge before anyone generates a cert.
+      # Note this only signs the binary — SmartScreen's "Windows protected
+      # your PC" warning is reputation-based and persists regardless (only a
+      # paid EV cert removes it); see README for the user-facing workaround.
       - name: Import Windows signing certificate
         if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
         shell: pwsh
@@ -271,16 +326,24 @@ jobs:
           WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_PFX)
-          $pfxPath = Join-Path $env:RUNNER_TEMP "nightly-release-signing.pfx"
+          $pfxPath = Join-Path $env:RUNNER_TEMP "nightly-signing.pfx"
           [IO.File]::WriteAllBytes($pfxPath, $bytes)
           $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
           $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
           Remove-Item $pfxPath
           "WINDOWS_CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # Release profile (no --debug) — see nightly-dev.yml's Windows job for
-      # the --config/certificateThumbprint signing dance this preserves
-      # verbatim.
+      # Exercises the bundled-SQLite path (Windows runners have no system
+      # sqlite3 on PATH, so this is the one platform where linking against
+      # the vendored copy is actually load-bearing). Release profile (no
+      # --debug). Signed via a --config override
+      # (bundle.windows.certificateThumbprint) when the step above set
+      # WINDOWS_CERT_THUMBPRINT; the cert must already be in
+      # Cert:\CurrentUser\My for the Tauri bundler's signtool invocation to
+      # find it by thumbprint. A file path rather than inline JSON: `pnpm`
+      # on Windows is a .cmd shim, and passing the JSON straight through as
+      # a CLI arg goes through an extra cmd.exe re-tokenization that
+      # silently strips double-quotes — `--config <path>` sidesteps that.
       - name: Build
         shell: pwsh
         run: |
@@ -333,6 +396,19 @@ jobs:
             --log-level info `
             "${{ steps.windows-debug-files.outputs.path }}"
 
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning.
+      - name: Upload Windows artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Track failure as a GitHub issue
         if: failure() && github.ref == 'refs/heads/main'
         env:
@@ -340,17 +416,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          title="Nightly release build failure: Windows"
+          title="Nightly build failure: Windows"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
-            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
           fi
 
   linux:
-    name: Linux (tauri build, release)
+    name: Linux (tauri build)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -405,24 +481,29 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # Same rpm-rs 0.25 fix nightly-dev.yml's Linux job carries (PR #212,
-      # tauri-apps/tauri#15698): installs cargo-tauri from the deps/rpm
-      # branch instead of the npm-installed @tauri-apps/cli binary, so the
-      # build step below calls `cargo tauri build` instead of `pnpm tauri
-      # build`. This is the actual fix for the intermittent rpm-bundling
-      # hang, not just the retry loop below — keep this in sync with
-      # nightly-dev.yml's rev if that one's ever bumped.
+      # PR #212 (tauri-apps/tauri#15698): installs cargo-tauri from the
+      # tauri deps/rpm branch (rpm-rs 0.25) instead of the npm-installed
+      # @tauri-apps/cli binary, so the build step below calls
+      # `cargo tauri build` instead of `pnpm tauri build`. This is the fix
+      # for the intermittent rpm-bundling hang investigated at length below
+      # — the retry loop predates it and now stays as a defensive fallback.
       - name: Install tauri-cli from deps/rpm branch (rpm-rs 0.25 fix)
         timeout-minutes: 40
         run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 7e94ebddfb9e5a6f67a54c94a2dbb6d14a0104a0 --locked
 
-      # Release profile (no --debug). The retry loop is now a defensive
-      # fallback rather than the primary mitigation — see the install step
-      # above — but stays in case the fix doesn't cover every case. Per-
-      # attempt timeout matches release-builds.yml's (a release build
-      # compiles slower than nightly-dev.yml's --debug build, so a shorter
-      # per-attempt budget would misfire on legitimately-still-compiling
-      # attempts).
+      # AppImage is excluded via --bundles: linuxdeploy (the AppImage tool
+      # Tauri shells out to) downloads itself and its plugins from mutable
+      # URLs (master branch, continuous release) at build time. This job
+      # runs with live AWS sccache credentials, so executing an unpinned
+      # remote binary is a supply-chain risk. deb/rpm bundling had a
+      # separately-known intermittent hang of its own — tauri-apps/tauri
+      # #11478 describes the same symptom (rpm bundling stuck indefinitely,
+      # no error) and was closed upstream as unresolved; a follow-up,
+      # tauri-apps/tauri#15698, narrowed it to a genuine non-deterministic
+      # race in the `rpm` crate's in-process bundling and was fixed by
+      # rpm-rs 0.25 (see the install step above). The retry-on-timeout loop
+      # below predates that fix and is kept as a defensive fallback in case
+      # it doesn't cover every case.
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
@@ -483,23 +564,39 @@ jobs:
           --log-level info
           "${{ steps.cargo-target.outputs.dir }}/release"
 
+      # GPG-signing (when configured) happens centrally in publish-nightly,
+      # not per-platform-job — see that job's "Sign artifacts and generate
+      # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
+      # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
+      # begin with — apt/rpm install unsigned packages fine.
+      - name: Upload Linux artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-linux
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Track failure as a GitHub issue
         if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly release build failure: Linux"
+          title="Nightly build failure: Linux"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
-            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
           fi
 
   android:
-    name: Android (tauri android build, release)
+    name: Android (tauri android build)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -573,22 +670,29 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # See nightly-dev.yml's Android job for the full comment on this step —
-      # unchanged here, same persistent-keystore import flow.
+      # Decodes ANDROID_KEYSTORE_JKS into a file and exports the env vars
+      # app/build.gradle.kts's "nightly" signingConfig reads (see that
+      # file's comment), iff ANDROID_KEYSTORE_JKS/_PASSWORD/ANDROID_KEY_ALIAS
+      # /_PASSWORD secrets are configured (see README.md's "Generating a
+      # nightly signing cert" for how to make one with keytool). Without
+      # them, the build falls back to the AGP's own auto-generated debug
+      # keystore. A persistent keystore matters here — a fresh one every CI
+      # run would mean every "nightly" install prompts an Android device to
+      # trust a new, different signer, breaking update-in-place.
       - name: Import Android signing keystore
         if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
         env:
           ANDROID_KEYSTORE_JKS: ${{ secrets.ANDROID_KEYSTORE_JKS }}
         run: |
           set -euo pipefail
-          keystore_path="${RUNNER_TEMP}/nightly-release-signing.keystore"
+          keystore_path="${RUNNER_TEMP}/nightly-signing.keystore"
           echo "$ANDROID_KEYSTORE_JKS" | base64 -d > "$keystore_path"
           echo "ANDROID_RELEASE_STORE_FILE=${keystore_path}" >> "$GITHUB_ENV"
 
-      # Single arch (aarch64), same as nightly-dev.yml — this is a
-      # release-mode compile+bundle check plus fresh Sentry symbols, not a
-      # store-distributable universal build, so building all 4 ABIs would
-      # just burn CI time for no extra coverage.
+      # Single arch (aarch64) — this is a release-mode compile+bundle check
+      # plus fresh Sentry symbols, not a store-distributable universal
+      # build, so building all 4 ABIs would just burn CI time for no extra
+      # coverage.
       # SENTRY_ANDROID_UPLOAD/AUTH_TOKEN/ORG/PROJECT gate the Sentry Gradle
       # plugin itself (see src-tauri/gen/android/app/build.gradle.kts) —
       # without SENTRY_ANDROID_UPLOAD=true it never applies, so ProGuard/R8
@@ -649,6 +753,22 @@ jobs:
             --log-level info \
             "$(dirname "$apk_path")"
 
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning. Signed with the persistent
+      # nightly keystore when ANDROID_KEYSTORE_JKS is configured; otherwise
+      # falls back to the AGP's auto-generated debug keystore. Either way,
+      # Android happily installs the APK once the device has "install
+      # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
+      # equivalent block to work around.
+      - name: Upload Android artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-android
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Save Gradle cache
         if: github.ref == 'refs/heads/main'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -664,17 +784,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly release build failure: Android"
+          title="Nightly build failure: Android"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
-            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
           fi
 
   ios:
-    name: iOS (tauri ios build, simulator target, release)
+    name: iOS (tauri ios build, simulator target)
     runs-on: macos-latest
     permissions:
       contents: read
@@ -718,11 +838,21 @@ jobs:
           BUILD_KIND: nightly
         run: node scripts/compute-build-id.mjs
 
-      # See nightly-dev.yml's iOS job for the full comment on why sccache
-      # config is written into cargo's own config.toml here rather than
-      # passed as step env — `pnpm tauri ios build` runs the actual
-      # `cargo build` inside an Xcode "Run Script" build phase that doesn't
-      # forward this step's env into it.
+      # NOT a step-level `env:` on the build command below, unlike every
+      # other platform job in this workflow. `pnpm tauri ios build` shells
+      # out to `xcodebuild`, and the actual `cargo build` runs inside a
+      # generated Xcode "Run Script" build phase (`tauri ios xcode-script` —
+      # see src-tauri/gen/apple/project.yml's preBuildScripts) that does not
+      # forward this step's env into it — confirmed empirically: with
+      # RUSTC_WRAPPER set as step env, `sccache --show-stats` reported
+      # compile_requests: 0 even though dozens of crates visibly compiled.
+      # Writing rustc-wrapper plus the (non-secret) sccache config into
+      # cargo's own config file sidesteps the env-forwarding question
+      # entirely: cargo reads $CARGO_HOME/config.toml itself and forwards
+      # its `[env]` table to every rustc/build-script it spawns, regardless
+      # of what env the parent xcodebuild process handed it. Credentials go
+      # through the same file (not committed — generated fresh on the
+      # runner each job).
       - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
         env:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
@@ -755,10 +885,11 @@ jobs:
             echo "BUILD_ID = \"${BUILD_ID}\""
           } >> "$config"
 
-      # No --debug: release-mode compile/link differences (e.g. LTO) are
-      # exactly what this workflow exists to catch before release-builds.yml
-      # hits them on a tagged build. Still simulator-only — this repo has no
-      # Apple Developer signing identity in CI, same as nightly-dev.yml.
+      # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
+      # Silicon) rather than a device. This repo has no Apple Developer
+      # signing identity configured for CI, and simulator builds don't need
+      # one — compile verification only, not a distributable IPA. Release
+      # mode (no --debug), same as every other job in this workflow.
       - run: pnpm tauri ios build --target aarch64-sim --ci
 
       - name: Resolve Apple debug-file directories
@@ -816,11 +947,215 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly release build failure: iOS"
+          title="Nightly build failure: iOS"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
           else
-            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly release build failed. First occurrence: $run_url"
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  publish-nightly:
+    name: Publish nightly release
+    # Waits on every artifact-producing job, not just the ones that changed —
+    # a partial release (e.g. macOS present, Windows silently missing because
+    # its job failed) would be worse than no release: it looks complete but
+    # isn't. `if: always()` plus the per-need `result` check below lets this
+    # still run and report which platforms are missing, rather than being
+    # skipped outright by one failed dependency (GitHub Actions' default).
+    # iOS is excluded — see the iOS job's comment on why it's not published.
+    needs: [macos, windows, linux, android]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) — see the macOS job's HAS_MACOS_CERT comment. No ref check
+    # needed here (unlike the per-platform jobs) since this whole job is
+    # already gated to main via the `if:` above.
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nightly-*
+          path: artifacts
+          merge-multiple: true
+
+      # Centralized here (one ubuntu-latest job, where gpg is already known
+      # to be present) rather than duplicated per-platform-job: signing
+      # every binary once every platform's artifact has already landed
+      # avoids needing gpg on macos-latest/windows-latest too (unverified
+      # whether either image ships it), and avoids repeating the
+      # import+sign step 4 times over.
+      #
+      # Checksums always run (they don't need a key); GPG signing is
+      # opportunistic on GPG_PRIVATE_KEY/GPG_PASSPHRASE, same
+      # degrade-gracefully pattern as every other cert secret in this
+      # workflow. Detached ASCII-armored per-file signatures
+      # (`gpg --detach-sign --armor`) rather than format-specific tooling
+      # (dpkg-sig, rpm --addsign, etc.) — one verification method
+      # (`gpg --verify`) across every platform's artifact.
+      - name: Sign artifacts and generate checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # SHA256SUMS.txt/SHA1SUMS.txt: standard `sha256sum`/`sha1sum`
+          # output format, so `sha256sum -c SHA256SUMS.txt` (or `shasum -a
+          # 256 -c` on macOS) verifies directly against the file — no custom
+          # parsing needed. Computed over the binaries only, before any
+          # signature files exist, so the checksum files never end up
+          # hashing themselves or each other. SHA1 is included because it
+          # was asked for, not because it adds security over SHA256 (it
+          # doesn't — MD5/SHA1 are broken for collision resistance); treat
+          # SHA256SUMS.txt/the GPG signatures as the actual integrity checks
+          # and SHA1SUMS.txt as compatibility-only.
+          #
+          # Each entry must record just the basename (`sha256sum -c` fails
+          # to find "./nightly-macos/target/release/bundle/dmg/Charm.dmg" —
+          # that nested path only exists on the runner; `gh release upload`
+          # below strips it down to "Charm.dmg" as the actual asset name,
+          # which is what a downloader has on disk). Hashing from within
+          # each file's own directory (rather than xargs-ing the full
+          # relative path straight into sha256sum) is what makes the
+          # recorded name just the basename.
+          cd artifacts
+          duplicate_names=$(find . -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicate_names" ]; then
+            # Same collision `gh release upload` would hit further down
+            # (it also uses basename as the asset name) — fail here with a
+            # clear reason instead of a confusing gh error, or worse, a
+            # checksum file silently missing one of the colliding entries.
+            echo "Artifact basenames collide across platforms — gh release upload would overwrite one with the other:" >&2
+            echo "$duplicate_names" >&2
+            exit 1
+          fi
+          # Written to a temp path first, then moved into place, rather than
+          # `> SHA256SUMS.txt` directly inside artifacts/: bash opens (and
+          # truncates) that redirect's target before the `find` inside the
+          # process substitution below it actually walks the directory, so
+          # a direct-into-place redirect makes the checksum file list
+          # itself as a 0-byte entry — confirmed empirically, not
+          # theoretical. Both temp files are written before either is moved
+          # into artifacts/, so the SHA1 pass's `find` doesn't see
+          # SHA256SUMS.txt already sitting there either.
+          sha256_tmp=$(mktemp)
+          sha1_tmp=$(mktemp)
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha256_tmp"
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha1sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha1_tmp"
+          mv "$sha256_tmp" SHA256SUMS.txt
+          mv "$sha1_tmp" SHA1SUMS.txt
+          cd ..
+
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+            mkdir -p "$GNUPGHOME"
+            chmod 700 "$GNUPGHOME"
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+
+            # Sign every downloaded binary plus both checksum files — signing
+            # the checksum files means one signature attests to every
+            # artifact's hash, so verifying SHA256SUMS.txt.asc is enough to
+            # trust every entry in it without checking each binary's own
+            # .asc individually (both are provided; use whichever's more
+            # convenient).
+            mapfile -d '' to_sign < <(find artifacts -type f -print0)
+            for f in "${to_sign[@]}"; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$key_id" --detach-sign --armor "$f"
+            done
+
+            # Ships alongside the artifacts every signed run (small, and
+            # guarantees the verification key is available even for the
+            # very first signed release) rather than being published once
+            # out-of-band.
+            gpg --batch --armor --export "$key_id" > artifacts/charm-nightly-signing-key.asc
+          fi
+
+      - name: Create/update dated nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Empty string (rather than omitting the var) for any job that
+          # didn't succeed, so the release body can call out exactly which
+          # platform's artifact is missing instead of silently under-shipping.
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          set -euo pipefail
+          date_tag="nightly-$(date -u +%Y-%m-%d)"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+
+          missing=""
+          for pair in "macOS:$MACOS_RESULT" "Windows:$WINDOWS_RESULT" "Linux:$LINUX_RESULT" "Android:$ANDROID_RESULT"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then
+              missing="${missing}- ${name}: job ${result} (no artifact published this run)\n"
+            fi
+          done
+
+          {
+            echo "Automated nightly build from commit \`${sha_short}\` ($run_url)."
+            echo ""
+            echo "**Unsigned/self-signed test builds — not for production use.**"
+            echo "See README.md's \"Installing a nightly build\" section for per-platform install steps"
+            echo "(macOS Gatekeeper / Windows SmartScreen / Android \"install unknown apps\" workarounds)"
+            echo "and \"Verifying a nightly download\" for checking SHA256SUMS.txt / GPG signatures."
+            if [ -n "$missing" ]; then
+              echo ""
+              echo "**Missing from this run:**"
+              printf '%b' "$missing"
+            fi
+          } > release-notes.md
+
+          # Each nightly-* artifact preserves its uploaded directory
+          # structure (e.g. nightly-macos/target/release/bundle/dmg/*.dmg,
+          # nightly-android/src-tauri/gen/android/.../*.apk) — after
+          # `merge-multiple` they land nested under artifacts/, not flat, so
+          # a shallow `artifacts/*` glob would only pick up top-level
+          # directories (nothing `gh release` can upload) and silently ship
+          # zero or partial assets. `find -type f` walks the nesting.
+          mapfile -d '' assets < <(find artifacts -type f -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No artifacts downloaded — every platform job must have failed. Not touching the existing release." >&2
+            exit 1
+          fi
+
+          if gh release view "$date_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # Update in place rather than delete-then-recreate: if asset
+            # upload below fails partway, today's release still exists
+            # (possibly with stale assets) instead of having been deleted
+            # with nothing to replace it.
+            gh release edit "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md
+            gh release upload "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              "${assets[@]}"
+          else
+            # --target pins the tag to the exact commit these artifacts were
+            # built from; without it, a same-day push to main between this
+            # job starting and the tag being created would make the tag (and
+            # its source archive) point at a newer commit than the binaries.
+            gh release create "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              "${assets[@]}"
           fi
