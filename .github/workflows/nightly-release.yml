@@ -405,13 +405,24 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      # Release profile (no --debug), same intermittent-hang retry loop as
-      # nightly-dev.yml's Linux job (and release-builds.yml's
-      # rust-linux-debug-files job) — see either for the tauri-apps/tauri
-      # #11478/#15698 investigation history. Per-attempt timeout matches
-      # release-builds.yml's (a release build compiles slower than
-      # nightly-dev.yml's --debug build, so its shorter per-attempt budget
-      # would misfire on legitimately-still-compiling attempts).
+      # Same rpm-rs 0.25 fix nightly-dev.yml's Linux job carries (PR #212,
+      # tauri-apps/tauri#15698): installs cargo-tauri from the deps/rpm
+      # branch instead of the npm-installed @tauri-apps/cli binary, so the
+      # build step below calls `cargo tauri build` instead of `pnpm tauri
+      # build`. This is the actual fix for the intermittent rpm-bundling
+      # hang, not just the retry loop below — keep this in sync with
+      # nightly-dev.yml's rev if that one's ever bumped.
+      - name: Install tauri-cli from deps/rpm branch (rpm-rs 0.25 fix)
+        timeout-minutes: 40
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 7e94ebddfb9e5a6f67a54c94a2dbb6d14a0104a0 --locked
+
+      # Release profile (no --debug). The retry loop is now a defensive
+      # fallback rather than the primary mitigation — see the install step
+      # above — but stays in case the fix doesn't cover every case. Per-
+      # attempt timeout matches release-builds.yml's (a release build
+      # compiles slower than nightly-dev.yml's --debug build, so a shorter
+      # per-attempt budget would misfire on legitimately-still-compiling
+      # attempts).
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
@@ -433,7 +444,7 @@ jobs:
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
             status=0
-            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --bundles deb,rpm || status=$?
+            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --bundles deb,rpm || status=$?
             echo "::endgroup::"
             if [ "$status" -eq 0 ]; then
               echo "Build succeeded on attempt $attempt."
