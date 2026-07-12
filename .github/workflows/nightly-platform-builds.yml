@@ -577,8 +577,18 @@ jobs:
       # apparently not vanishingly rare) and exhausted the previous
       # 3-attempt budget, so this bumps to 5 attempts (worst case 75m of
       # build time) with the step timeout raised to match.
+      - name: Install tauri-cli from deps/rpm branch (rpm-rs 0.25 test)
+        # tauri-apps/tauri#15698: testing whether rpm-rs 0.25 (PR #15639,
+        # currently draft due to an unrelated macOS dep conflict but otherwise
+        # ready and used in the upstream cef branch) fixes the rpm bundling hang.
+        # This installs cargo-tauri from the deps/rpm branch instead of using the
+        # npm-installed @tauri-apps/cli binary, then the build step below calls
+        # `cargo tauri build` instead of `pnpm tauri build`.
+        timeout-minutes: 25
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --branch deps/rpm
+
       - name: Build (retry on hang, not on a real failure)
-        timeout-minutes: 110
+        timeout-minutes: 100
         env:
           # Empty (not just unset) when HAS_SCCACHE_CREDS (job-level env,
           # see above) found neither the write key (main) nor the read-only
@@ -621,13 +631,13 @@ jobs:
           # `|| true; status=$?` — that captures true's exit code, always 0,
           # not timeout's) sets status only on failure, leaving it unset
           # (defaulted to 0 below) on success, without ever tripping -e.
-          max_attempts=2
-          per_attempt_timeout=2700 # 45 min — testing whether compression just needs more time (tauri-apps/tauri#15698)
+          max_attempts=5
+          per_attempt_timeout=900 # 15 minutes
           attempt=1
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
             status=0
-            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --debug --bundles deb,rpm || status=$?
+            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --debug --bundles deb,rpm || status=$?
             echo "::endgroup::"
             if [ "$status" -eq 0 ]; then
               echo "Build succeeded on attempt $attempt."
