@@ -247,7 +247,6 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -437,7 +436,6 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -552,8 +550,10 @@ jobs:
       # plus frontend asset embedding), a build path nothing else exercises.
       # sccache credentials scoped to just this step — see the macOS job.
       #
-      # AppImage is deliberately excluded via --bundles: its own bundling
-      # codepath has a separately-known upstream deadlock. deb/rpm
+      # AppImage is included: the separately-known upstream deadlock that
+      # originally excluded it was not reproduced after rpm-rs 0.25
+      # (deps/rpm branch) fixed the bundler hang; re-enabled to verify.
+      # deb/rpm
       # bundling is also prone to an *intermittent* hang of its own —
       # tauri-apps/tauri#11478 describes the same symptom (rpm bundling
       # stuck indefinitely, no error) and was closed upstream as
@@ -602,7 +602,6 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -637,7 +636,7 @@ jobs:
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
             status=0
-            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --debug --bundles deb,rpm || status=$?
+            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --debug --bundles deb,rpm,appimage || status=$?
             echo "::endgroup::"
             if [ "$status" -eq 0 ]; then
               echo "Build succeeded on attempt $attempt."
@@ -969,7 +968,6 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
