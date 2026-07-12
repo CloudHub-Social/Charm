@@ -247,7 +247,7 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -437,7 +437,7 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -602,7 +602,7 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
@@ -969,7 +969,7 @@ jobs:
           # that as "S3 configured, but invalid" rather than "no S3
           # backend"; gating the wrapper is the only thing that reliably
           # skips sccache altogether).
-          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          RUSTC_WRAPPER: ""  # disabled: testing whether sccache causes rpm-rs hang (tauri-apps/tauri#15698)
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
           SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
