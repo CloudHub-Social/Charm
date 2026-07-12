@@ -549,20 +549,23 @@ jobs:
 
       # tauri-bundler's AppImage path (crates/tauri-bundler/src/bundle/linux/
       # appimage/linuxdeploy.rs, prepare_tools()) shells out to linuxdeploy
-      # and two of its plugins, downloading each from upstream the first
+      # and unconditionally prepares all four of its plugins (gtk, appimage,
+      # gstreamer — even though this repo's tauri.conf.json doesn't opt into
+      # bundleMediaFramework, so gstreamer is never actually invoked, it's
+      # still fetched) plus AppRun, downloading each from upstream the first
       # time it doesn't find them already present at
       # $XDG_CACHE_HOME/tauri (~/.cache/tauri here, since we don't pass
       # --local-tools-directory). There's no env var to redirect those
       # downloads — prepare_tools() only ever checks that fixed cache path
-      # for each exact filename it expects. Two of the four are pulled from
-      # mutable refs (the gtk plugin from tauri-apps/linuxdeploy-plugin-gtk's
-      # `master` branch; the appimage plugin from linuxdeploy/linuxdeploy-
-      # plugin-appimage's `continuous` release), and this job holds live
-      # sccache S3 credentials (see HAS_SCCACHE_CREDS above), so executing
-      # an unpinned binary fetched at build time here is a supply-chain
-      # risk. Pre-populate the cache with pinned, digest-verified copies so
-      # prepare_tools() finds everything already present and never fetches
-      # anything at build time.
+      # for each exact filename it expects. Three of the five are pulled
+      # from mutable refs (the gtk and gstreamer plugins from their
+      # respective `master` branches; the appimage plugin from linuxdeploy/
+      # linuxdeploy-plugin-appimage's `continuous` release), and this job
+      # holds live sccache S3 credentials (see HAS_SCCACHE_CREDS above), so
+      # executing an unpinned binary fetched at build time here is a
+      # supply-chain risk. Pre-populate the cache with pinned,
+      # digest-verified copies so prepare_tools() finds everything already
+      # present and never fetches anything at build time.
       - name: Prefetch and pin linuxdeploy tools for AppImage bundling
         run: |
           set -euo pipefail
@@ -606,6 +609,17 @@ jobs:
             "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" \
             "$tools_dir/linuxdeploy-plugin-appimage.AppImage" \
             "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"
+
+          # linuxdeploy-plugin-gstreamer: prepare_tools() downloads this
+          # unconditionally (from another mutable `master` branch) even
+          # though our tauri.conf.json doesn't set
+          # bundle.linux.appimage.bundleMediaFramework, so linuxdeploy is
+          # never actually invoked with `--plugin gstreamer` — the fetch
+          # still happens regardless, so it still needs pinning here.
+          fetch_pinned \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh" \
+            "$tools_dir/linuxdeploy-plugin-gstreamer.sh" \
+            "c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
 
       # rust-integration (quality-checks.yml) already covers `cargo test` on
       # Linux; this is the full app bundle (deb/rpm/AppImage via the Tauri
