@@ -92,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|sentry-release-artifacts)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against

@@ -24,7 +24,7 @@ and contribution guidelines.
 
 ## Installing a nightly build
 
-Every night (and on demand via the [Nightly platform builds](../../actions/workflows/nightly-platform-builds.yml)
+Every night (and on demand via the [Nightly dev builds](../../actions/workflows/nightly-dev.yml)
 workflow), CI builds macOS/Windows/Linux/Android and publishes them to a
 date-tagged, pre-release [GitHub Release](../../releases) (`nightly-YYYY-MM-DD`,
 overwritten if re-run same day). These are debug builds for testing — not
@@ -109,7 +109,7 @@ relevant repo secrets exist; until then, each platform falls back to its
 previous unsigned/ephemeral-keystore behavior (the workflow degrades
 gracefully either way). All platforms' artifacts are GPG-signed the same
 way (centrally, once every artifact has been built — see
-nightly-platform-builds.yml's publish-nightly job), purely for download
+nightly-dev.yml's publish-nightly job), purely for download
 provenance — none of the OS-level publisher-trust gates above are affected
 by it, only whether a `.asc` signature is available to verify against.
 

@@ -1,4 +1,4 @@
-name: Sentry release artifacts
+name: Release builds
 
 on:
   push:

@@ -1,4 +1,4 @@
-name: Nightly platform builds
+name: Nightly dev builds
 
 # Tier 3 of the CI/release model (see docs/ci-tiers.md): the full native
 # platform matrix (macOS/Windows/Linux/iOS/Android) used to run on every PR
@@ -8,6 +8,14 @@ name: Nightly platform builds
 # off tip of `main`, on a daily schedule + manual dispatch. Non-blocking:
 # a failure here never blocks a PR or the merge queue, it opens/updates a
 # tracking GitHub issue instead.
+#
+# This is the fast/debug half of the nightly split: --debug builds, no
+# Sentry wiring, optimized for catching build breakage quickly. See
+# release-builds.yml for tag-triggered full release builds, and
+# nightly-release.yml for the release-profile counterpart of this workflow
+# (same daily cadence, offset a few hours later, that builds in release mode
+# with Sentry DSN/debug-file upload wired in to catch release-mode-specific
+# failures and keep Sentry's nightly baseline fresh).
 #
 # Tier 1 (PR gate) and Tier 2 (merge queue) — quality-checks.yml's fmt/
 # clippy/nextest/frontend/storybook/e2e checks — are unaffected by this
@@ -296,7 +304,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly build failure: macOS"
+          title="Nightly dev build failure: macOS"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
@@ -484,7 +492,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          title="Nightly build failure: Windows"
+          title="Nightly dev build failure: Windows"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
@@ -677,7 +685,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly build failure: Linux"
+          title="Nightly dev build failure: Linux"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
@@ -826,7 +834,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly build failure: iOS"
+          title="Nightly dev build failure: iOS"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
@@ -1038,7 +1046,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Nightly build failure: Android"
+          title="Nightly dev build failure: Android"
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
           if [ -n "$existing" ]; then
