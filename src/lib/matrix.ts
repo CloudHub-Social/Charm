@@ -52,37 +52,9 @@ import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
-import { scrubSentryValue } from "@/observability/scrubbers";
+import { summarizeValue } from "@/observability/scrubbers";
 import { invoke, listen, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
-
-// Matrix command args/results carry user-authored content (message bodies,
-// formatted bodies, topics, reply previews, etc.) that `scrubSentryValue`
-// doesn't know to redact — it only strips Matrix IDs and secret-shaped
-// fields, so free text would otherwise be stored verbatim in Sentry
-// breadcrumbs. These field names are dropped entirely rather than scrubbed,
-// since their value is arbitrary prose that can't be pattern-matched like an
-// ID or token. Includes `preview` (ReplyRef's generated message-text preview)
-// and `newBody` (edit_message's replacement body).
-const CONTENT_FIELD_NAME_PATTERN =
-  /^(body|formatted_body|formattedBody|newBody|content|topic|name|preview)$/i;
-
-function redactContentFields<T>(value: T): T {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((item) => redactContentFields(item)) as T;
-
-  const output: Record<string, unknown> = {};
-  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = CONTENT_FIELD_NAME_PATTERN.test(key)
-      ? "[redacted]"
-      : redactContentFields(fieldValue);
-  }
-  return output as T;
-}
-
-function scrubBreadcrumbValue<T>(value: T): T {
-  return scrubSentryValue(redactContentFields(value));
-}
 
 function addMatrixIpcBreadcrumb(
   level: "info" | "error",
@@ -97,38 +69,47 @@ function addMatrixIpcBreadcrumb(
 /**
  * Calls a Matrix IPC command (routed through matrixTransport, so it works on
  * both the Tauri desktop build and the web build) and adds a Matrix-aware
- * Sentry breadcrumb with PII-scrubbed args, result, and errors. Passes
- * `skipBreadcrumb: true` through to matrixTransport's underlying
+ * Sentry breadcrumb with args/result/error run through `summarizeValue` —
+ * the same length-only/redacted-shape summarization `observability/ipc.ts`
+ * uses, rather than a denylist of known free-text field names, since Matrix
+ * commands keep growing new ones (captions, statuses, reasons, display
+ * names, local file paths, colonless `$eventId`s, ...) that a denylist can
+ * never fully enumerate. Passes `skipBreadcrumb: true` and
+ * `onFailureBreadcrumb` through to matrixTransport's underlying
  * observability/ipc wrapper on the desktop build so a command doesn't get
  * both its generic `tauri.ipc` breadcrumbs and this function's `matrix.ipc`
- * one — `captureOnError`'s exception-capture behavior is unaffected.
+ * one, and so the `matrix.ipc` failure breadcrumb is recorded before (not
+ * after) `captureOnError`'s exception capture — `captureOnError` itself is
+ * unaffected.
  */
 export async function invokeMatrix<T>(
   command: string,
   args: Record<string, unknown>,
   options?: InvokeOptions,
 ): Promise<T> {
-  try {
-    const result = await invoke<T>(command, args, { ...options, skipBreadcrumb: true });
-    addMatrixIpcBreadcrumb("info", `${command} succeeded`, {
-      command,
-      args: scrubBreadcrumbValue(args),
-      result: scrubBreadcrumbValue(result as Record<string, unknown>),
-      status: "success",
-    });
-    return result;
-  } catch (error) {
-    addMatrixIpcBreadcrumb("error", `${command} failed`, {
-      command,
-      args: scrubBreadcrumbValue(args),
-      error:
-        error instanceof Error
-          ? scrubSentryValue(error.message)
-          : scrubBreadcrumbValue(error as Record<string, unknown>),
-      status: "failure",
-    });
-    throw error;
-  }
+  const result = await invoke<T>(command, args, {
+    ...options,
+    skipBreadcrumb: true,
+    onFailureBreadcrumb: (error, durationMs) => {
+      addMatrixIpcBreadcrumb("error", `${command} failed`, {
+        command,
+        durationMs,
+        args: summarizeValue(args),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: summarizeValue(error.message) }
+            : summarizeValue(error),
+        status: "failure",
+      });
+    },
+  });
+  addMatrixIpcBreadcrumb("info", `${command} succeeded`, {
+    command,
+    args: summarizeValue(args),
+    result: summarizeValue(result),
+    status: "success",
+  });
+  return result;
 }
 
 /**

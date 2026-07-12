@@ -2,46 +2,13 @@ import * as Sentry from "@sentry/react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { recordCount, recordDistribution } from "./metrics";
 import { createIpcOperationId } from "./operationId";
-import { scrubSensitiveText } from "./scrubbers";
+import { summarizeString, summarizeValue } from "./scrubbers";
 
 type InvokeArgs = Record<string, unknown>;
 
 export const IPC_OPERATION_ID_HEADER = "x-charm-operation-id";
 
 const BEST_EFFORT_IPC_COMMANDS = new Set(["send_typing"]);
-
-function summarizeString(value: string): string {
-  const scrubbed = scrubSensitiveText(value);
-  if (scrubbed !== value) return `[redacted-string:${value.length}]`;
-  return `[string:${value.length}]`;
-}
-
-// Matches both snake_case and camelCase secret-ish field names (e.g.
-// `password`, `newPassword`, `oldPassword`, `recovery_key`, `recoveryKey`,
-// `access_token`, `accessToken`) so a Rust command parameter name doesn't
-// have to line up exactly with one of these literals to get redacted — only
-// the meaningful word boundary does.
-const SENSITIVE_KEY_PATTERN =
-  /(?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|secret)$/i;
-
-function summarizeValue(value: unknown, key?: string, depth = 0): unknown {
-  if (key && SENSITIVE_KEY_PATTERN.test(key)) {
-    return "[redacted]";
-  }
-  if (typeof value === "string") return summarizeString(value);
-  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
-  if (typeof value === "undefined") return "[undefined]";
-  if (Array.isArray(value)) return { type: "array", length: value.length };
-  if (typeof value !== "object") return `[${typeof value}]`;
-  // eslint-disable-next-line unicorn/no-array-sort -- `toSorted()` is not available in supported older WebViews.
-  if (depth >= 1) return { type: "object", keys: Object.keys(value).sort() };
-
-  const output: Record<string, unknown> = {};
-  for (const [fieldKey, fieldValue] of Object.entries(value as Record<string, unknown>)) {
-    output[fieldKey] = summarizeValue(fieldValue, fieldKey, depth + 1);
-  }
-  return output;
-}
 
 function summarizeArgs(args?: InvokeArgs): Record<string, unknown> | undefined {
   if (!args) return undefined;
@@ -152,6 +119,15 @@ export interface InvokeOptions {
    * Exception capture (`captureOnError`) is unaffected.
    */
   skipBreadcrumb?: boolean;
+  /**
+   * Called in place of this wrapper's own failure breadcrumb — at the same
+   * point in the flow, i.e. before `captureOnError`'s exception capture —
+   * so a caller supplying its own breadcrumb (e.g. `lib/matrix.ts`'s
+   * `invokeMatrix`) has it appear in Sentry's breadcrumb trail *before* the
+   * exception it's describing, not after. Only applies to the failure path;
+   * `skipBreadcrumb` still governs the start/success breadcrumbs.
+   */
+  onFailureBreadcrumb?: (error: unknown, durationMs: number) => void;
 }
 
 export async function invoke<T>(
@@ -196,7 +172,9 @@ export async function invoke<T>(
     return result;
   } catch (error) {
     const durationMs = Math.round(performance.now() - startedAt);
-    if (!skipBreadcrumb) {
+    if (options?.onFailureBreadcrumb) {
+      options.onFailureBreadcrumb(error, durationMs);
+    } else if (!skipBreadcrumb) {
       addIpcBreadcrumb("error", `IPC ${command} failed`, {
         command,
         operationId: id,

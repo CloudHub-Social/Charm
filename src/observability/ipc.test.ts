@@ -337,4 +337,29 @@ describe("IPC observability", () => {
     expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
     expect(Sentry.captureException).toHaveBeenCalled();
   });
+
+  it("calls onFailureBreadcrumb before captureOnError's exception capture, instead of its own breadcrumb", async () => {
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+    const callOrder: string[] = [];
+    vi.mocked(Sentry.captureException).mockImplementationOnce(() => {
+      callOrder.push("captureException");
+      return "event-id";
+    });
+    const onFailureBreadcrumb = vi.fn(() => {
+      callOrder.push("onFailureBreadcrumb");
+    });
+
+    await expect(
+      invoke(
+        "send_message",
+        { roomId: "!room:example.org" },
+        { skipBreadcrumb: true, onFailureBreadcrumb },
+      ),
+    ).rejects.toThrow();
+
+    expect(onFailureBreadcrumb).toHaveBeenCalledWith(error, expect.any(Number));
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(["onFailureBreadcrumb", "captureException"]);
+  });
 });

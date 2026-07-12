@@ -26,7 +26,7 @@ beforeEach(() => {
 });
 
 describe("invokeMatrix", () => {
-  it("returns the normal invoke result unchanged and records a redacted success breadcrumb", async () => {
+  it("returns the normal invoke result unchanged and records a summarized success breadcrumb", async () => {
     const result = {
       room_id: "!secret-room:matrix.example",
       access_token: "secret-token",
@@ -41,7 +41,11 @@ describe("invokeMatrix", () => {
 
     await expect(invokeMatrix("send_message", args)).resolves.toBe(result);
 
-    expect(mocks.invoke).toHaveBeenCalledWith("send_message", args, { skipBreadcrumb: true });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      "send_message",
+      args,
+      expect.objectContaining({ skipBreadcrumb: true, onFailureBreadcrumb: expect.any(Function) }),
+    );
     expect(mocks.addBreadcrumb).toHaveBeenCalledWith({
       category: "matrix.ipc",
       level: "info",
@@ -49,12 +53,12 @@ describe("invokeMatrix", () => {
       data: {
         command: "send_message",
         args: {
-          roomId: "![redacted]:[redacted]",
-          eventId: "$[redacted]:[redacted]",
+          roomId: "[redacted-string:27]",
+          eventId: "[redacted-string:28]",
           access_token: "[redacted]",
         },
         result: {
-          room_id: "![redacted]:[redacted]",
+          room_id: "[redacted-string:27]",
           access_token: "[redacted]",
           ok: true,
         },
@@ -63,9 +67,12 @@ describe("invokeMatrix", () => {
     });
   });
 
-  it("rethrows invoke failures unchanged and records a redacted failure breadcrumb", async () => {
+  it("rethrows invoke failures unchanged and records a summarized failure breadcrumb before capture", async () => {
     const error = new Error("failed to send to !secret-room:matrix.example with password=hunter2");
-    mocks.invoke.mockRejectedValueOnce(error);
+    mocks.invoke.mockImplementationOnce(async (_command, _args, options) => {
+      options.onFailureBreadcrumb(error, 12);
+      throw error;
+    });
 
     await expect(
       invokeMatrix("send_message", {
@@ -79,12 +86,16 @@ describe("invokeMatrix", () => {
       level: "error",
       message: "send_message failed",
       data: {
-        args: {
-          body: "[redacted]",
-          roomId: "![redacted]:[redacted]",
-        },
         command: "send_message",
-        error: "failed to send to ![redacted]:[redacted] with password=[redacted]",
+        durationMs: 12,
+        args: {
+          roomId: "[redacted-string:27]",
+          body: "[redacted-string:27]",
+        },
+        error: {
+          name: "Error",
+          message: "[redacted-string:67]",
+        },
         status: "failure",
       },
     });
@@ -109,7 +120,7 @@ describe("invokeMatrix", () => {
     );
   });
 
-  it("redacts reply preview and edit-message content fields", async () => {
+  it("never copies free-text/path content verbatim, whatever field it's under", async () => {
     mocks.invoke.mockResolvedValueOnce({
       in_reply_to: { preview: "the secret plan is at 3pm" },
     });
@@ -117,13 +128,25 @@ describe("invokeMatrix", () => {
     await invokeMatrix("get_timeline_page", {
       roomId: "!room:matrix.example",
       newBody: "edited text",
+      caption: "a caption nobody anticipated redacting by name",
+      filePath: "/Users/alice/Documents/private-notes.txt",
+      eventId: "$colonless_event_id_without_a_server_suffix",
     });
 
     expect(mocks.addBreadcrumb).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          args: expect.objectContaining({ newBody: "[redacted]" }),
-          result: { in_reply_to: { preview: "[redacted]" } },
+          args: {
+            roomId: "[redacted-string:20]",
+            newBody: "[string:11]",
+            caption: "[string:46]",
+            filePath: "[string:40]",
+            eventId: "[string:43]",
+          },
+          // Nested objects beyond the top level collapse to their key list
+          // rather than being summarized further, so a nested content field
+          // like `preview` never gets to the point of being a string at all.
+          result: { in_reply_to: { type: "object", keys: ["preview"] } },
         }),
       }),
     );
@@ -137,7 +160,11 @@ describe("invokeMatrix", () => {
     expect(mocks.invoke).toHaveBeenCalledWith(
       "login",
       { username: "alice" },
-      { captureOnError: false, skipBreadcrumb: true },
+      expect.objectContaining({
+        captureOnError: false,
+        skipBreadcrumb: true,
+        onFailureBreadcrumb: expect.any(Function),
+      }),
     );
   });
 
