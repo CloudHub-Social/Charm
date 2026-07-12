@@ -755,7 +755,7 @@ jobs:
         run: |
           target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
           paths=(
-            "$target_dir/aarch64-apple-ios-sim/debug"
+            "$target_dir/aarch64-apple-ios-sim/release"
             "src-tauri/gen/apple/build"
           )
           existing=()
