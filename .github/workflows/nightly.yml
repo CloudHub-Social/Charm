@@ -121,10 +121,10 @@ jobs:
       # web-deploy-scoped concern (see web-deploy-dev.yml) — uploading it
       # redundantly from four platform jobs a day would just spam Sentry
       # with duplicate release sourcemaps for the same commit. Gated to main
-      # (see HAS_SENTRY_CREDS above) — off main this step, VITE_SENTRY_DSN,
-      # and the debug-file upload step below are all skipped, so the build
-      # just runs unsymbolicated instead of exposing the production Sentry
-      # token to branch code.
+      # (see HAS_SENTRY_CREDS above) — off main this step and the debug-file
+      # upload step below are both skipped, so the build just runs
+      # unsymbolicated instead of exposing the production Sentry token to
+      # branch code.
       - name: Configure Sentry release env
         if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
         env:
@@ -132,6 +132,12 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       # Imports a self-signed Code Signing cert into a throwaway keychain and
@@ -180,14 +186,16 @@ jobs:
           echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
 
       # Release profile (no --debug) — same build path release-builds.yml
-      # uses for tagged releases. VITE_SENTRY_DSN is set directly (not via
-      # WRITE_FRONTEND_UPLOAD_ENV above) so the embedded webview's Sentry
-      # client is initialized in the built app, matching how
-      # release-builds.yml's android-debug-files job wires SENTRY_DSN
-      # directly onto its build step.
+      # uses for tagged releases. VITE_SENTRY_DSN is deliberately NOT set
+      # here, matching release-builds.yml's frontend-sourcemaps/
+      # android-debug-files jobs: src-tauri/tauri.conf.json's CSP
+      # (connect-src: 'self' ipc: http://ipc.localhost) doesn't allow the
+      # Sentry ingest host, so enabling the browser SDK in this webview
+      # would only produce envelopes the CSP silently blocks. Native Rust
+      # crash reporting (option_env!("BUILD_ID"), the debug-file upload
+      # below) doesn't depend on this and stays fully wired.
       - run: pnpm tauri build
         env:
-          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -307,6 +315,12 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       # Imports a self-signed Authenticode cert into the Windows cert store
@@ -356,7 +370,8 @@ jobs:
           }
           pnpm tauri build @configArgs
         env:
-          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
+          # step comment (CSP blocks the browser SDK's ingest traffic).
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -479,6 +494,12 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       # PR #212 (tauri-apps/tauri#15698): installs cargo-tauri from the
@@ -507,7 +528,8 @@ jobs:
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
-          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
+          # step comment (CSP blocks the browser SDK's ingest traffic).
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -668,6 +690,12 @@ jobs:
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
           WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       # Decodes ANDROID_KEYSTORE_JKS into a file and exports the env vars
@@ -853,6 +881,14 @@ jobs:
       # of what env the parent xcodebuild process handed it. Credentials go
       # through the same file (not committed — generated fresh on the
       # runner each job).
+      # Also where CARGO_PROFILE_RELEASE_DEBUG gets set for this job, for the
+      # same env-forwarding reason. Every other platform job gets it from
+      # configure-sentry-release-env.sh's WRITE_RUST_DEBUG_ENV flag (see the
+      # macOS job), but that script writes to $GITHUB_ENV, which — like
+      # RUSTC_WRAPPER — never reaches the nested cargo invocation here.
+      # Gated on HAS_SENTRY_CREDS same as everywhere else: skip the extra
+      # debuginfo (and its size/compile-time cost) on a run that won't
+      # upload it anyway.
       - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
         env:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
@@ -881,6 +917,9 @@ jobs:
               echo "SCCACHE_S3_RW_MODE = \"${SCCACHE_S3_RW_MODE}\""
               echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
               echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            fi
+            if [ "$HAS_SENTRY_CREDS" = "true" ]; then
+              echo 'CARGO_PROFILE_RELEASE_DEBUG = "1"'
             fi
             echo "BUILD_ID = \"${BUILD_ID}\""
           } >> "$config"
