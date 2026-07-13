@@ -2,11 +2,13 @@ name: Review gate
 
 # Closes the timing race where a PR goes green and merges (or enters the merge
 # queue) *before* the async review bots — Seer and Codex — have finished
-# reviewing the current head. Their *findings* are already blocked by "require
-# conversation resolution"; the problem is that resolution is a point-in-time
-# check, so a PR that becomes mergeable while a bot is still reviewing has no
-# threads yet to block on. This gate makes queue-entry wait until both bots have
-# signalled "done" on the head commit.
+# reviewing the current head. "Require conversation resolution" is meant to
+# block on their *findings*, but that's a point-in-time check, so a PR that
+# becomes mergeable while a bot is still reviewing has no threads yet to block
+# on — and empirically (#220) a PR can still merge with a genuinely unresolved
+# bot thread open, so this gate does not rely on that rule alone. It instead
+# makes queue-entry wait until both bots have signalled "done" on the head
+# commit, then explicitly fails if any review thread is still unresolved.
 #
 # (Copilot is intentionally excluded — it's advisory only, because Copilot review
 # runs on a monthly credit allowance that can run out and would then fail-closed
@@ -119,16 +121,16 @@ jobs:
           # resolved), which would let this fallback green-light the gate
           # before Codex has had any real chance to look at the new head —
           # reopening the exact race this gate exists to close.
-          codex_threads_all_resolved() {
-            local unresolved
-            # --paginate: a PR can have >100 review threads, which `first: 100`
-            # alone would silently truncate — any unresolved thread past the
-            # first page would then never be seen, letting this fallback
-            # wrongly report "all resolved". gh's own --slurp isn't usable
-            # together with --jq, so pipe the raw one-JSON-doc-per-page output
-            # through `jq -s` (slurp) ourselves to flatten across `.[]` before
-            # filtering.
-            unresolved=$(gh api graphql --paginate -f query='
+          # --paginate: a PR can have >100 review threads, which `first: 100`
+          # alone would silently truncate — any unresolved thread past the
+          # first page would then never be seen. gh's own --slurp isn't usable
+          # together with --jq, so pipe the raw one-JSON-doc-per-page output
+          # through `jq -s` (slurp) ourselves to flatten across `.[]` before
+          # filtering. `$1` is an optional jq author-login filter (unfiltered
+          # when omitted), reused below both for Codex-specific staleness
+          # fallback and for the final any-bot unresolved-thread check.
+          unresolved_review_thread_count() {
+            gh api graphql --paginate -f query='
               query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $pr) {
@@ -142,9 +144,14 @@ jobs:
                   }
                 }
               }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR" \
-              | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]
-                     | select(.comments.nodes[0].author.login == "chatgpt-codex-connector")
-                     | select(.isResolved == false)] | length')
+              | jq -s --arg author "${1:-}" \
+                '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+                  | select($author == "" or .comments.nodes[0].author.login == $author)
+                  | select(.isResolved == false)] | length'
+          }
+          codex_threads_all_resolved() {
+            local unresolved
+            unresolved=$(unresolved_review_thread_count "chatgpt-codex-connector")
             [ "$unresolved" -eq 0 ]
           }
           codex_done() {
@@ -176,7 +183,18 @@ jobs:
             codex_done && c=true || true
             echo "head=$HEAD_SHA  seer=$s  codex=$c"
             if $s && $c; then
-              echo "Seer and Codex have finished on $HEAD_SHA."
+              # Both bots have signalled done on this exact head — but "done
+              # reviewing" isn't the same as "nothing left to fix". Fail
+              # outright (don't just keep polling — a human, not time, is what
+              # resolves a thread) rather than trust "require conversation
+              # resolution" alone, since #220 showed that rule doesn't
+              # reliably stop a merge on its own.
+              unresolved=$(unresolved_review_thread_count)
+              if [ "$unresolved" -gt 0 ]; then
+                echo "::error::Seer and Codex have both finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved. Resolve them before merging. If a bot (usually Codex) needs to take another look — e.g. after pushing a fix — comment \"@codex address that feedback\" to prompt a fresh review, then re-run this check."
+                exit 1
+              fi
+              echo "Seer and Codex have finished on $HEAD_SHA, with no unresolved review threads."
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
