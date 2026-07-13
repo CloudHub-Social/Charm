@@ -24,6 +24,41 @@ already-running frontend client for the current window and apply to Rust crash
 monitoring on restart. Re-enabling after a same-window opt-out flips the
 frontend client back on without calling `Sentry.init()` a second time.
 
+### Frontend transport on desktop/Android (IPC tunnel)
+
+`src-tauri/tauri.conf.json`'s CSP (`connect-src: 'self' ipc: http://ipc.localhost`)
+blocks the webview from reaching Sentry's ingest host directly, so on Tauri
+builds `instrument.ts` configures `Sentry.init` with a custom `transport`
+(`makeTauriIpcTransport`) instead of the SDK's default fetch-based one. Every
+outgoing envelope (errors, sessions, replays, logs, transactions, feedback) is
+base64-encoded and sent through the `forward_sentry_envelope` Tauri command,
+which re-parses `SENTRY_DSN` on the Rust side and makes the real HTTP request
+there — Rust isn't subject to the webview's CSP. The CSP itself is left
+unchanged; no `connect-src` allowlist entry for Sentry's ingest host was added.
+This only applies `if (isTauri())`; the plain-browser web build (Spec 16, no
+CSP) still uses the SDK's normal transport straight to Sentry.
+
+`forward_sentry_envelope` re-checks `observability.json` consent itself
+(belt-and-suspenders — the frontend only calls it after its own `Sentry.init`
+already checked `settings.sentryEnabled`) and errors if `SENTRY_DSN` is unset,
+so a build without Sentry configured never attempts the HTTP request.
+
+### Crash-recovery prompt (opt-in nudge, not a crash report)
+
+Because Sentry itself is consent-gated, a crash before a user ever opts in
+produces no report at all — there's nothing to retroactively send. To close
+that gap without capturing anything pre-consent, Rust writes a marker file in
+the app data directory at process start (`take_previous_session_crash_flag`,
+`src-tauri/src/lib.rs`) and removes it on a clean `RunEvent::Exit`
+(`mark_clean_exit`). If the marker is still there at the _next_ launch, the
+previous process crashed or was killed. The frontend (`crashRecovery.ts`,
+`CrashRecoveryPrompt.tsx`, wired in `main.tsx`) checks this once at boot via
+`had_unclean_previous_session` and, only if Sentry is currently disabled,
+shows a one-time dialog inviting the user to turn crash reporting on for next
+time. It never claims to send a report for the crash that just happened —
+there's no stack trace or event data behind this signal, only "did the last
+process exit cleanly."
+
 Android JVM setup lives in
 `src-tauri/gen/android/app/src/main/java/social/cloudhub/charm/CharmApplication.kt`.
 The app manifest removes Sentry's Android `ContentProvider` auto-init path, so
@@ -102,11 +137,16 @@ dispatch. It currently uploads:
   `sentry-cli build upload` after the Android release-artifact build succeeds.
 
 The workflow requires these repository secrets: `SENTRY_AUTH_TOKEN`,
-`SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. The DSN is used only for
-the frontend sourcemap build so uploaded maps match the same Sentry-enabled
-bundle shape as shipped releases. Manual runs can override the Sentry release
-name and environment; tag runs default the release name to the tag, and manual
-runs without a release input default to the commit SHA.
+`SENTRY_ORG`, `SENTRY_PROJECT`, and `VITE_SENTRY_DSN`. `VITE_SENTRY_DSN` is set
+on every platform's actual `pnpm tauri build`/`pnpm tauri ios build`/
+`pnpm tauri android build` step too (not just the frontend-sourcemap build),
+now that the IPC tunnel above means the desktop CSP no longer needs loosening
+for the shipped webview bundle to have a working Sentry client — iOS gets it
+set as well even though the simulator debug build doesn't consume it yet, so
+the frontend build there matches every other platform's env. Manual runs can
+override the Sentry release name and environment; tag runs default the release
+name to the tag, and manual runs without a release input default to the
+commit SHA.
 
 Manual dispatch is safe only after the repository owner has configured the four
 required secrets above. A dry repo-side check can validate workflow syntax,
@@ -164,7 +204,11 @@ Both sides redact Matrix user IDs, room IDs, room aliases, event IDs, `mxc://`
 URIs, and known secret fields. Any new `captureMessage`, `captureException`,
 breadcrumb, log, or manual context call must go through the SDK's normal
 pipeline so these hooks run. Do not send raw Matrix IDs or tokens through a
-custom transport or external logging path.
+custom transport or external logging path. The desktop `makeTauriIpcTransport`
+(see "Frontend transport on desktop/Android" above) doesn't violate this: it
+only forwards envelope bytes the SDK already produced _after_ `beforeSend`/
+`beforeBreadcrumb`/etc. ran, exactly like the default fetch transport would —
+it changes how the bytes leave the process, not what's in them.
 
 ## User Feedback
 

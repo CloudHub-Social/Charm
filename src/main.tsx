@@ -12,6 +12,7 @@ import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
 import { isTauri } from "./lib/platform";
+import { checkUncleanPreviousSession } from "./observability/crashRecovery";
 import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
@@ -36,14 +37,17 @@ function ErrorBoundaryFallback({
  * next signed-in account, the same way `queryClient.clear()` already does
  * for TanStack Query.
  */
-function Root() {
+function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean }) {
   const [jotaiStore, setJotaiStore] = useState(() => createStore());
 
   return (
     <Sentry.ErrorBoundary fallback={ErrorBoundaryFallback}>
       <AppProviders store={jotaiStore}>
         <ThemeProvider>
-          <App onLoggedOut={() => setJotaiStore(createStore())} />
+          <App
+            onLoggedOut={() => setJotaiStore(createStore())}
+            showCrashRecoveryPrompt={showCrashRecoveryPrompt}
+          />
         </ThemeProvider>
       </AppProviders>
     </Sentry.ErrorBoundary>
@@ -52,8 +56,13 @@ function Root() {
 
 // Bounded, not `await bootstrapSentry()` directly: this gates React's first
 // render, so a hung settings read (e.g. a stuck Tauri IPC round-trip) must
-// never be able to leave the app permanently blank.
-await bootstrapSentryWithTimeout();
+// never be able to leave the app permanently blank. Run alongside the
+// crash-recovery check rather than after it, so neither adds to the other's
+// latency.
+const [settings, uncleanPreviousSession] = await Promise.all([
+  bootstrapSentryWithTimeout(),
+  checkUncleanPreviousSession(),
+]);
 
 if (isTauri()) {
   // Forwards the native side's `tauri-plugin-log` Webview target into this
@@ -65,8 +74,15 @@ if (isTauri()) {
   void attachConsole();
 }
 
+// `settings === null` means the read timed out, not that Sentry is
+// definitely disabled — `!settings?.sentryEnabled` would be `true` in that
+// case too (`undefined` is falsy), wrongly nudging a user who actually has
+// crash reporting on just because the settings read was slow. Only show the
+// prompt when we positively know it's off.
+const sentryDefinitelyDisabled = settings !== null && !settings.sentryEnabled;
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
+    <Root showCrashRecoveryPrompt={uncleanPreviousSession && sentryDefinitelyDisabled} />
   </React.StrictMode>,
 );

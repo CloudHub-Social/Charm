@@ -86,19 +86,19 @@
    ============================================================ */
 /* GENERATED:SEMANTIC:START */
 :root {
-  --color-bg-base: var(--gray-950);
-  --color-bg-surface: var(--gray-900);
-  --color-bg-raised: var(--gray-800);
-  --color-bg-overlay: var(--gray-700);
-  --color-border-subtle: var(--gray-700);
+  --color-bg-base: #35373c;
+  --color-bg-surface: #2b2d31;
+  --color-bg-raised: #313338;
+  --color-bg-overlay: #3f4147;
+  --color-border-subtle: #26282c;
   --color-border-default: var(--gray-600);
-  --color-text-primary: var(--gray-50);
+  --color-text-primary: #f2f3f5;
   --color-text-secondary: var(--gray-300);
-  --color-text-muted: var(--gray-400);
-  --color-accent: #8174f9;
+  --color-text-muted: #b5bac1;
+  --color-accent: #b4acfb;
   --color-accent-hover: var(--accent-400);
   --color-accent-active: var(--accent-600);
-  --color-danger: var(--danger-500);
+  --color-danger: #f58a8a;
   --color-success: var(--success-500);
   --color-warning: var(--warning-500);
 }
@@ -308,6 +308,16 @@
   --input: var(--color-border-default);
   --ring: var(--color-accent);
   --radius: var(--radius-md);
+}
+
+/* Dark theme's lightened canvas (#35373c vs. the old #0a0a0b) needs its own
+   --muted-solid: the shared #74747d above no longer clears 4.5:1 against
+   white initials text once the surrounding background gets this much
+   lighter, per the same avatarColor() fill-vs-text constraint noted above.
+   (The design handoff's literal Discord-matched value, #949ba4, only reaches
+   2.8:1 against white — darkened here to actually clear axe's threshold.) */
+[data-theme="dark"] {
+  --muted-solid: #626a74;
 }
 
 @theme inline {

@@ -8,7 +8,11 @@ import { VerificationOverlay } from "@/features/verification/VerificationOverlay
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
-import { useSettingsHashSync } from "@/features/settings/useSettingsNavigation";
+import {
+  useSettingsHashSync,
+  useSettingsNavigation,
+} from "@/features/settings/useSettingsNavigation";
+import { CrashRecoveryPrompt } from "@/observability/CrashRecoveryPrompt";
 import { AppShell, type MobileView } from "@/features/shell/AppShell";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
@@ -29,11 +33,28 @@ import {
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
+const noopDismissCrashRecoveryPrompt = () => {};
+
 interface RoomsScreenProps {
   currentUserId: string;
   deepLinkRoomId: string | null;
   onDeepLinkConsumed: () => void;
   onLoggedOut: () => void;
+  /**
+   * Whether to show `main.tsx`'s crash-recovery prompt right now. Controlled
+   * from `App` (not owned as local state here) — `RoomsScreen` unmounts on
+   * logout and remounts on the next sign-in within the same app process, so
+   * state initialized from a prop here would forget a dismissal and could
+   * reappear after a logout/login cycle. `App` doesn't unmount across that
+   * flow, so its state survives. Rendered from here rather than `App`
+   * directly (or `main.tsx`'s top-level `Root`) because this is the first
+   * point in the component tree where `SettingsScreen`/`useSettingsHashSync`
+   * are actually mounted — shown any earlier, the prompt's "Review crash
+   * reporting settings" button would change the URL hash with nothing
+   * listening for it yet — see PR #228 review discussion.
+   */
+  crashRecoveryPromptOpen?: boolean;
+  onDismissCrashRecoveryPrompt?: () => void;
 }
 
 export function RoomsScreen({
@@ -41,7 +62,10 @@ export function RoomsScreen({
   deepLinkRoomId,
   onDeepLinkConsumed,
   onLoggedOut,
+  crashRecoveryPromptOpen = false,
+  onDismissCrashRecoveryPrompt = noopDismissCrashRecoveryPrompt,
 }: RoomsScreenProps) {
+  const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
@@ -318,6 +342,14 @@ export function RoomsScreen({
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
+      <CrashRecoveryPrompt
+        open={crashRecoveryPromptOpen}
+        onDismiss={onDismissCrashRecoveryPrompt}
+        onOpenSettings={() => {
+          onDismissCrashRecoveryPrompt();
+          openSettings("observability");
+        }}
+      />
     </>
   );
 }
