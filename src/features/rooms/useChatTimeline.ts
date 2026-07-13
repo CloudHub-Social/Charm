@@ -70,43 +70,60 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // (see `TimelinePage`'s doc comment), so `loadMoreHistory` becomes a no-op.
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
-  // Tracks the identity of `messages[0]` as of the last time `firstItemIndex`
-  // was set, so `applyMessages` below can detect "older history was
-  // prepended" from *either* `loadMoreHistory`'s own response *or* a live
-  // `timeline:update` that happens to carry the same prepended diff (the
-  // backend can emit both for one `paginate_backwards` call — see the
-  // `ChatShell.test.tsx` race test) without double-shifting when both fire
-  // for the same underlying change: whichever applies first updates this
-  // ref to the new first message, so the second sees no further change.
-  const firstMessageKeyRef = useRef<string | null>(null);
+  // The full previous `messages` array, so `applyMessages` below can locate
+  // *any* still-surviving message from the old front of the list — not just
+  // check whether the exact old first message is still first — and compute
+  // exactly how `firstItemIndex` needs to move to keep it at the same
+  // logical position. A plain "is the old first message still first"
+  // check breaks if that specific message disappears from a later full
+  // snapshot entirely (e.g. an `UnableToDecrypt` placeholder at the front
+  // resolves into a msgtype `timeline_item_to_summary` filters out): the
+  // next surviving row's logical index would silently be treated as
+  // unchanged instead of shifting to compensate for the removal.
+  const previousMessagesRef = useRef<RoomMessageSummary[]>([]);
 
   // Applies a fresh full message snapshot (from either the initial/backward-
   // pagination `getTimelinePage` response or a live `timeline:update`),
-  // shifting `firstItemIndex` by however many messages were actually
-  // prepended ahead of the previously-first-loaded message — identified by
-  // its position in the new snapshot, not a length diff (which
-  // misattributes any concurrently-appended live messages as more prepended
-  // history; see `loadMoreHistory`'s own comment below for the race this
-  // guards against).
-  // Returns how many messages were actually prepended ahead of the
-  // previously-first-loaded message, so callers (`loadMoreHistory`) can tell
-  // "this page genuinely added renderable history" from "this page's
-  // underlying timeline items were all filtered out of `RoomMessageSummary`
-  // (state events, polls, etc.), so nothing actually changed" — the two look
+  // shifting `firstItemIndex` to keep whichever previously-loaded message
+  // survives closest to the front at the same logical position — identified
+  // by position, not a length diff (which misattributes any concurrently-
+  // appended live messages as more prepended history; see
+  // `loadMoreHistory`'s own comment below for the race this guards against).
+  //
+  // Returns the number of messages genuinely prepended ahead of that
+  // surviving message (0 if none were, including the "the old front message
+  // itself disappeared" case, which moves `firstItemIndex` the *other*
+  // direction instead), so callers (`loadMoreHistory`) can tell "this page
+  // genuinely added renderable history" from "this page's underlying
+  // timeline items were all filtered out of `RoomMessageSummary` (state
+  // events, polls, etc.), so nothing actually changed" — the two look
   // identical from `next_cursor` alone.
   function applyMessages(newMessages: RoomMessageSummary[]): number {
-    const previousFirstKey = firstMessageKeyRef.current;
-    const newFirstKey = newMessages.length > 0 ? messageRowKey(newMessages[0]) : null;
+    const previous = previousMessagesRef.current;
     let prepended = 0;
-    if (previousFirstKey !== null && newFirstKey !== previousFirstKey) {
-      prepended = newMessages.findIndex((m) => messageRowKey(m) === previousFirstKey);
-      if (prepended > 0) {
-        setFirstItemIndex((current) => current - prepended);
-      } else {
-        prepended = 0;
+    if (previous.length > 0 && newMessages.length > 0) {
+      const newKeys = new Map(newMessages.map((m, i) => [messageRowKey(m), i]));
+      for (let oldIndex = 0; oldIndex < previous.length; oldIndex++) {
+        const newIndex = newKeys.get(messageRowKey(previous[oldIndex]));
+        if (newIndex === undefined) continue;
+        // This message's logical index must stay the same: it was
+        // `firstItemIndex + oldIndex` before, so the new `firstItemIndex`
+        // must satisfy `firstItemIndex' + newIndex === firstItemIndex +
+        // oldIndex` — i.e. shift by `oldIndex - newIndex`. Positive when
+        // messages ahead of it (including possibly itself, if `oldIndex`
+        // was 0) were removed; negative when older history was prepended
+        // ahead of it.
+        const shift = oldIndex - newIndex;
+        if (shift !== 0) setFirstItemIndex((current) => current + shift);
+        prepended = shift < 0 ? -shift : 0;
+        break;
       }
+      // If no previously-loaded message survives anywhere in the new
+      // snapshot at all (extremely unlikely — the entire loaded window
+      // would have to have been replaced), there's no reliable anchor to
+      // shift from; leave `firstItemIndex` as-is rather than guess.
     }
-    firstMessageKeyRef.current = newFirstKey;
+    previousMessagesRef.current = newMessages;
     setMessages(newMessages);
     return prepended;
   }
@@ -132,8 +149,8 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
     // A fresh room's first snapshot is never "prepended history" relative to
     // anything — reset so `applyMessages`' first call for this room doesn't
-    // compare against the *previous* room's last-known first message.
-    firstMessageKeyRef.current = null;
+    // compare against the *previous* room's last-known messages.
+    previousMessagesRef.current = [];
     if (!timelineRoomId) {
       setMessages([]);
       setLoading(false);
@@ -261,16 +278,20 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // A single backend page can legitimately contribute zero renderable
     // `RoomMessageSummary` rows (its underlying timeline items were all
     // state events/polls/etc. `timeline_item_to_summary` filters out) while
-    // still advancing `next_cursor` — `messages.length` not growing is a
-    // simple, sufficient signal for that, distinct from `applyMessages`'
-    // own identity-based `firstItemIndex` math (which is about *where* new
-    // rows landed, not *whether* any did). Relying on the caller to notice
-    // and re-request wouldn't work for `ChatShell`'s Virtuoso
-    // `startReached`, which is deduped by rendered range and won't refire on
-    // its own while an all-filtered-out response leaves that range
-    // unchanged — so this loops internally until a page actually adds a
-    // row or history is confirmed exhausted.
-    let previousLength = messages.length;
+    // still advancing `next_cursor`. Progress is judged by `applyMessages`'
+    // own identity-based return value (how many messages actually landed
+    // ahead of whatever previously-loaded message survives), not a plain
+    // `messages.length` diff — a live tail message racing this same request
+    // can grow the total length without any real prepend, which would
+    // otherwise make this loop stop one page too early and strand the user
+    // behind an all-filtered-out page (the same class of bug the
+    // `firstItemIndex` math itself already had to be fixed for). Relying on
+    // the caller to notice and re-request wouldn't work for `ChatShell`'s
+    // Virtuoso `startReached` either way, since it's deduped by rendered
+    // range and won't refire on its own while an all-filtered-out response
+    // leaves that range unchanged — so this loops internally until a page
+    // actually adds a row or history is confirmed exhausted.
+    const startedEmpty = messages.length === 0;
     try {
       for (;;) {
         const page = await getTimelinePage(roomId);
@@ -281,13 +302,21 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         if (visitGenerationRef.current !== generation) return;
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
-        applyMessages(page.messages);
+        const prepended = applyMessages(page.messages);
         setPaginationError(false);
-        const madeProgress = page.messages.length > previousLength;
-        previousLength = page.messages.length;
+        // `applyMessages` can't detect the empty-to-non-empty transition
+        // itself (there's no previously-loaded message to anchor against
+        // when starting from nothing), so that case is checked directly.
+        const madeProgress = prepended > 0 || (startedEmpty && page.messages.length > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
+      // Stale if the room changed while this request was in flight — same
+      // reasoning as the success path above; without this guard, room A's
+      // failure could set `paginationError` for room B, blocking B's own
+      // empty-page auto-pagination or showing "Couldn't load messages"
+      // despite only A's request having failed.
+      if (visitGenerationRef.current !== generation) return;
       // Distinct from a page that succeeds but adds nothing — this is a
       // genuine request failure, and `ChatShell`'s empty-first-page
       // auto-pagination effect must stop retrying once it's true rather

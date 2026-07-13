@@ -80,6 +80,7 @@ vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function FakeVirtuoso(
     props: {
       data: RoomMessageSummary[];
+      className?: string;
       firstItemIndex?: number;
       startReached?: () => void;
       atBottomStateChange?: (atBottom: boolean) => void;
@@ -103,7 +104,7 @@ vi.mock("react-virtuoso", () => ({
     const base = props.firstItemIndex ?? 0;
     const Header = props.components?.Header;
     return (
-      <div data-testid="fake-virtuoso" data-first-item-index={base}>
+      <div data-testid="fake-virtuoso" className={props.className} data-first-item-index={base}>
         {Header ? <Header context={props.context} /> : null}
         {props.data.map((item, i) => {
           // Uses the real `computeItemKey` when ChatShell provides one, same
@@ -1041,6 +1042,228 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(2);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not stop the zero-prepend pagination loop early just because a live message races it", async () => {
+    // Regression test: an earlier version judged loop progress by
+    // `page.messages.length > previousLength`, which a live tail message
+    // racing the in-flight request (see the existing firstItemIndex race
+    // tests above) can satisfy without any real history having been
+    // prepended — stopping the loop one page too early and stranding the
+    // user behind an all-filtered-out page. Progress must be judged by
+    // `applyMessages`' own identity-based return value instead.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolveZeroPrependPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveZeroPrependPage = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    // A live message races this same in-flight request — the response's
+    // length grows relative to what was loaded when the request started,
+    // purely from this unrelated arrival, not from any real prepend.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+      });
+    });
+    await screen.findByText("third");
+
+    // The pagination response itself prepends nothing (same "$b"/"$c" set,
+    // no "$a"), but still has a next_cursor — the loop must continue rather
+    // than stop here just because the array is longer than when the
+    // request started.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+      ],
+      next_cursor: null,
+    });
+    act(() => {
+      resolveZeroPrependPage?.({
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("first");
+    expect(getTimelinePage).toHaveBeenCalledTimes(3);
+  });
+
+  it("shifts firstItemIndex forward when the previously-first message disappears from a later snapshot", async () => {
+    // Regression test: if the old first message itself vanishes from a
+    // later full snapshot (e.g. an UnableToDecrypt placeholder resolves into
+    // a msgtype timeline_item_to_summary filters out), a plain "is the old
+    // first message still first" check treats it as no change — but the
+    // next surviving message's logical index must shift forward by one to
+    // compensate, or Virtuoso loses its anchor for users reading near the top.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$undecryptable",
+          sender: "@alice:localhost",
+          body: "",
+          is_undecrypted: true,
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("second");
+    const initialFirstItemIndex = Number(
+      screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"),
+    );
+
+    // The undecryptable placeholder resolves into something filtered out
+    // entirely — it disappears from the snapshot rather than updating in
+    // place.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+
+    await waitFor(() =>
+      expect(
+        Number(screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index")),
+      ).toBe(initialFirstItemIndex + 1),
+    );
+  });
+
+  it("ignores a pagination failure from a room the user has since left", async () => {
+    // Regression test: the catch block set paginationError unconditionally,
+    // without the same visitGenerationRef guard the success/finally paths
+    // already had — so room A's failed request landing after the user
+    // switched to room B could show "Couldn't load messages" for B despite
+    // only A's request having failed.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "room A msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: "more",
+    });
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room A msg");
+
+    let rejectRoomAPage: ((err: Error) => void) | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectRoomAPage = reject;
+      }),
+    );
+    fireStartReached();
+
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$roomB",
+          sender: "@alice:localhost",
+          body: "room B msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+
+    act(() => {
+      rejectRoomAPage?.(new Error("room A network error"));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("Couldn't load messages")).not.toBeInTheDocument();
+  });
+
+  it("scrolls to the user's own new message after a successful slash command send", async () => {
+    // Regression test: the "scroll to present on own send" fix only wired
+    // Composer's onSubmit, but a slash command (e.g. /me, which sends an
+    // emote the same way a plain send does) goes through onSlashCommand
+    // instead — leaving a successfully-sent /me offscreen with no way back
+    // to it while scrolled away.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    runCommand.mockResolvedValue({ status: "success" });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    const composer = screen.getByPlaceholderText("Message general");
+    fireEvent.change(composer, { target: { value: "/me waves" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+
+    await vi.waitFor(() =>
+      expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+        expect.objectContaining({ index: "LAST", align: "end" }),
+      ),
+    );
+  });
+
+  it("gives the Virtuoso element a bounded flex height to fill the chat pane", async () => {
+    // Regression test: the old scroller was itself the `flex-1
+    // overflow-y-auto` child of the chat pane. Without `flex-1` on the new
+    // Virtuoso element, it has no bounded height to size its internal
+    // scroll area against — in a room with enough messages to scroll, it
+    // could grow to fit its own content instead of owning the remaining
+    // pane, breaking viewport measurement and potentially pushing the
+    // composer offscreen.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+
+    expect(screen.getByTestId("fake-virtuoso").className).toMatch(/\bflex-1\b/);
   });
 
   it("does not mark the room read while room settings covers the chat, but does once it closes", async () => {

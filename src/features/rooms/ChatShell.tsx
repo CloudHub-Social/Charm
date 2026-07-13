@@ -489,15 +489,29 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // excludes the user's own messages from its count (sending is already an
   // intentional "return to present" action). Without this, sending while
   // scrolled up would leave the just-sent message offscreen with no visible
-  // way back to it. Skipped for edits: saving an edit to an old message
-  // shouldn't relocate the view to it.
+  // way back to it.
+  function scrollToPresentAfterOwnSend() {
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+    handleVirtuosoAtBottomStateChange(true);
+  }
+  // Skipped for edits: saving an edit to an old message shouldn't relocate
+  // the view to it.
   function handleComposerSubmitAndScroll(content: Parameters<typeof handleComposerSubmit>[0]) {
     const wasEditing = composerMode === "edit";
     handleComposerSubmit(content);
-    if (!wasEditing) {
-      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
-      handleVirtuosoAtBottomStateChange(true);
-    }
+    if (!wasEditing) scrollToPresentAfterOwnSend();
+  }
+  // A slash command (e.g. `/me ...`, which sends an emote message the same
+  // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes
+  // through this separate path, not `onSubmit` — the same "scroll to the
+  // user's own new message" gap applies here and was missed by the fix
+  // above. Scrolled unconditionally, not gated on the command's own
+  // success/failure result: an unsuccessful command (e.g. an unrecognized
+  // one) produces no new message, so this is a harmless no-op for that case
+  // rather than worth threading the async result through just to skip it.
+  function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
+    handleSlashCommand(parsed);
+    scrollToPresentAfterOwnSend();
   }
 
   async function handleAttachClick() {
@@ -608,7 +622,14 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             // per-room reset of `firstItemIndex`.
             key={room.room_id}
             ref={virtuosoRef}
-            className="p-4"
+            // `flex-1` (not just padding): the old scroller was itself the
+            // `flex-1 overflow-y-auto` child of this `min-h-0 flex-1`
+            // container. Without it, Virtuoso's root has no bounded height
+            // to size its internal scroll area against — in a room with
+            // enough messages to scroll, it grows to fit its own content
+            // instead of owning the remaining chat pane, breaking viewport
+            // measurement and potentially pushing the composer offscreen.
+            className="flex-1 p-4"
             data={messages}
             firstItemIndex={firstItemIndex}
             initialTopMostItemIndex={messages.length - 1}
@@ -817,7 +838,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             }
             placeholder={`Message ${displayName(room.room_id, room.name)}`}
             onSubmit={handleComposerSubmitAndScroll}
-            onSlashCommand={handleSlashCommand}
+            onSlashCommand={handleSlashCommandAndScroll}
             onEscape={() => {
               if (editingEventId) setEditingEventId(null);
               else if (replyTarget) setReplyTarget(null);
