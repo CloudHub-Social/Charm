@@ -67,10 +67,23 @@ const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
 /// `resolve_build_id_tag`'s priority order.
 const BAKED_SENTRY_DSN: Option<&str> = option_env!("SENTRY_DSN");
 
-/// Pulled out from `resolve_sentry_dsn` as a pure function so the
-/// empty-string-is-unset priority order is unit-testable without an actual
-/// process environment — same reasoning as `resolve_build_id_tag`.
-fn resolve_sentry_dsn_from(env_value: Option<String>, baked: Option<&str>) -> Option<String> {
+/// Compile-time-baked fallback for `SENTRY_ENVIRONMENT` — same reasoning as
+/// `BAKED_SENTRY_DSN` above, and needed for the same reason: a review bot on
+/// PR #228 caught that once the baked DSN lets native Rust Sentry actually
+/// activate in an installed nightly, `init_sentry_from_settings`'s
+/// `std::env::var("SENTRY_ENVIRONMENT")` read would still find nothing at
+/// runtime, filing Rust events under Sentry's default environment while the
+/// frontend (`import.meta.env.VITE_SENTRY_ENVIRONMENT`, inlined by Vite at
+/// compile time) correctly tags them `nightly`/`production`.
+const BAKED_SENTRY_ENVIRONMENT: Option<&str> = option_env!("SENTRY_ENVIRONMENT");
+
+/// Shared by `resolve_sentry_dsn`/`resolve_sentry_environment`: prefers a
+/// present, non-empty runtime env var, falling back to a present, non-empty
+/// compile-time-baked value. Pulled out as a pure function so this priority
+/// order (including the empty-string-is-unset case) is unit-testable
+/// without an actual process environment — same reasoning as
+/// `resolve_build_id_tag`.
+fn resolve_env_or_baked(env_value: Option<String>, baked: Option<&str>) -> Option<String> {
     env_value.filter(|value| !value.is_empty()).or_else(|| {
         // CI build steps that pass `SENTRY_DSN: ${{ ... && secrets.X || '' }}`
         // (e.g. nightly runs without HAS_SENTRY_CREDS) bake in `Some("")`,
@@ -84,7 +97,14 @@ fn resolve_sentry_dsn_from(env_value: Option<String>, baked: Option<&str>) -> Op
 }
 
 fn resolve_sentry_dsn() -> Option<String> {
-    resolve_sentry_dsn_from(std::env::var("SENTRY_DSN").ok(), BAKED_SENTRY_DSN)
+    resolve_env_or_baked(std::env::var("SENTRY_DSN").ok(), BAKED_SENTRY_DSN)
+}
+
+fn resolve_sentry_environment() -> Option<String> {
+    resolve_env_or_baked(
+        std::env::var("SENTRY_ENVIRONMENT").ok(),
+        BAKED_SENTRY_ENVIRONMENT,
+    )
 }
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -382,10 +402,7 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
     update_runtime_observability_logs_enabled(logs_enabled);
-    let environment = std::env::var("SENTRY_ENVIRONMENT")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(Cow::Owned);
+    let environment = resolve_sentry_environment().map(Cow::Owned);
     // Priority: an explicit runtime SENTRY_RELEASE override, then the
     // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
     // binary), then the bare Cargo-version fallback release_name!() already
@@ -910,7 +927,7 @@ mod observability_tests {
 
     #[test]
     fn sentry_dsn_prefers_runtime_env_over_baked() {
-        let resolved = resolve_sentry_dsn_from(
+        let resolved = resolve_env_or_baked(
             Some("https://runtime@example/1".to_owned()),
             Some("https://baked@example/2"),
         );
@@ -919,14 +936,13 @@ mod observability_tests {
 
     #[test]
     fn sentry_dsn_falls_back_to_baked_value() {
-        let resolved = resolve_sentry_dsn_from(None, Some("https://baked@example/2"));
+        let resolved = resolve_env_or_baked(None, Some("https://baked@example/2"));
         assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
     }
 
     #[test]
     fn sentry_dsn_treats_empty_env_value_as_unset() {
-        let resolved =
-            resolve_sentry_dsn_from(Some(String::new()), Some("https://baked@example/2"));
+        let resolved = resolve_env_or_baked(Some(String::new()), Some("https://baked@example/2"));
         assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
     }
 
@@ -934,12 +950,24 @@ mod observability_tests {
     fn sentry_dsn_treats_empty_baked_value_as_unset() {
         // The bug a review bot caught: `SENTRY_DSN: ${{ cond && secrets.X || '' }}`
         // bakes `Some("")` via option_env! when `cond` is false, not `None`.
-        let resolved = resolve_sentry_dsn_from(None, Some(""));
+        let resolved = resolve_env_or_baked(None, Some(""));
         assert_eq!(resolved, None);
     }
 
     #[test]
     fn sentry_dsn_is_none_without_env_or_baked_value() {
-        assert_eq!(resolve_sentry_dsn_from(None, None), None);
+        assert_eq!(resolve_env_or_baked(None, None), None);
+    }
+
+    #[test]
+    fn sentry_environment_prefers_runtime_env_over_baked() {
+        let resolved = resolve_env_or_baked(Some("staging".to_owned()), Some("production"));
+        assert_eq!(resolved.as_deref(), Some("staging"));
+    }
+
+    #[test]
+    fn sentry_environment_falls_back_to_baked_value() {
+        let resolved = resolve_env_or_baked(None, Some("nightly"));
+        assert_eq!(resolved.as_deref(), Some("nightly"));
     }
 }

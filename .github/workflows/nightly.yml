@@ -1235,7 +1235,7 @@ jobs:
     # still run and report which platforms are missing, rather than being
     # skipped outright by one failed dependency (GitHub Actions' default).
     # iOS is excluded — see the iOS job's comment on why it's not published.
-    needs: [macos, windows, linux, android]
+    needs: [frontend-sourcemaps, macos, windows, linux, android]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -1361,6 +1361,14 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows.result }}
           LINUX_RESULT: ${{ needs.linux.result }}
           ANDROID_RESULT: ${{ needs.android.result }}
+          # Doesn't gate publishing (this job still runs via `if: always()`
+          # above regardless of this result) — a review bot on PR #228
+          # correctly noted this job's own `needs` list didn't even include
+          # frontend-sourcemaps, so a failed/slow sourcemap upload was
+          # invisible here. Surfacing it in the release notes at least makes
+          # "these binaries shipped without matching sourcemaps this run"
+          # visible instead of silent.
+          SOURCEMAPS_RESULT: ${{ needs['frontend-sourcemaps'].result }}
         run: |
           set -euo pipefail
           date_tag="nightly-$(date -u +%Y-%m-%d)"
@@ -1368,11 +1376,13 @@ jobs:
           sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
 
           missing=""
-          for pair in "macOS:$MACOS_RESULT" "Windows:$WINDOWS_RESULT" "Linux:$LINUX_RESULT" "Android:$ANDROID_RESULT"; do
+          for pair in "macOS:$MACOS_RESULT:no artifact published this run" "Windows:$WINDOWS_RESULT:no artifact published this run" "Linux:$LINUX_RESULT:no artifact published this run" "Android:$ANDROID_RESULT:no artifact published this run" "Frontend sourcemaps:$SOURCEMAPS_RESULT:frontend events from this run's binaries may be unsymbolicated"; do
             name="${pair%%:*}"
-            result="${pair#*:}"
+            rest="${pair#*:}"
+            result="${rest%%:*}"
+            detail="${rest#*:}"
             if [ "$result" != "success" ]; then
-              missing="${missing}- ${name}: job ${result} (no artifact published this run)\n"
+              missing="${missing}- ${name}: job ${result} (${detail})\n"
             fi
           done
 

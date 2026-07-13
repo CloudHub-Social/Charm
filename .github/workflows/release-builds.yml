@@ -324,8 +324,17 @@ jobs:
           # actually round-trip through the IPC tunnel
           # (`forward_sentry_envelope`) instead of failing with "SENTRY_DSN
           # not configured" the way it would if only this VITE_ var were set.
+          # VITE_SENTRY_RELEASE/VITE_SENTRY_ENVIRONMENT are exported below
+          # from the real process env vars, same reason as every other
+          # build step in this file — unlike SENTRY_DSN/BUILD_ID, these are
+          # consumed by the Vite build `pnpm tauri ios build` runs directly
+          # in *this* step (not inside xcodebuild's nested Run Script), so a
+          # plain shell export reaches it fine.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-        run: pnpm tauri ios build --target aarch64-sim --debug --ci
+        run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
+          export VITE_SENTRY_ENVIRONMENT="${{ github.event.inputs.environment || 'production' }}"
+          pnpm tauri ios build --target aarch64-sim --debug --ci
 
       - name: Resolve Apple debug-file directories
         id: apple-debug-files
