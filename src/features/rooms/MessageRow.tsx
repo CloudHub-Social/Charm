@@ -33,6 +33,8 @@ interface MessageRowProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  /** See `MessageRowLayoutProps.onJumpToMessage`. */
+  onJumpToMessage: (eventId: string) => void;
 }
 
 /**

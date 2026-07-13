@@ -27,6 +27,7 @@ export function IrcMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onJumpToMessage,
   isPending,
   isError,
   disableRelationActions,
@@ -68,11 +69,7 @@ export function IrcMessageRow({
                 <button
                   type="button"
                   className="underline"
-                  onClick={() => {
-                    document
-                      .getElementById(`message-${message.in_reply_to?.event_id}`)
-                      ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  }}
+                  onClick={() => onJumpToMessage(message.in_reply_to!.event_id)}
                 >
                   {message.in_reply_to.sender_display_name ?? message.in_reply_to.sender}
                 </button>

@@ -34,14 +34,14 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-11, after merging Spec 27 — chat message layout modes — with
-        // Spec 26 Phase 1 — scroll anchoring: lines 84.09 / statements 82.11 /
-        // functions 74.73 / branches 81.17), so any regression fails CI. When
-        // you add tests and coverage rises, raise these to the new floor in
-        // the same PR — never lower them just to make CI pass.
+        // 2026-07-13, after Spec 26 Phase 2 — bottom-up virtualized timeline
+        // rendering: lines 84.53 / statements 82.74 / functions 75.12 /
+        // branches 81.9), so any regression fails CI. When you add tests and
+        // coverage rises, raise these to the new floor in the same PR — never
+        // lower them just to make CI pass.
         lines: 84,
         statements: 82,
-        functions: 74,
+        functions: 75,
         branches: 81,
       },
     },

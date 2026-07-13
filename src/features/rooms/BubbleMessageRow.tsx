@@ -35,6 +35,7 @@ export function BubbleMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onJumpToMessage,
   isPending,
   isError,
   disableRelationActions,
@@ -84,11 +85,7 @@ export function BubbleMessageRow({
         {message.in_reply_to && !message.redacted && (
           <ReplyPreview
             reply={message.in_reply_to}
-            onClick={() => {
-              document
-                .getElementById(`message-${message.in_reply_to?.event_id}`)
-                ?.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
+            onClick={() => onJumpToMessage(message.in_reply_to!.event_id)}
           />
         )}
         <div className="flex items-center gap-1">
