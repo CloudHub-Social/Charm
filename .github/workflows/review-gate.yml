@@ -15,7 +15,10 @@ name: Review gate
 # Each bot exposes a different reliable done-signal (verified empirically):
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
 #   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
-#              when it has findings (not reliably head-anchored; see below).
+#              when it has findings, timestamped at or after HEAD_SHA's own
+#              commit (Codex's review.commit_id itself isn't reliably
+#              head-anchored — see below — so this checks *when* it engaged
+#              instead of *which commit* it says it reviewed).
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
@@ -74,21 +77,33 @@ jobs:
               | grep -qxE 'success|failure|neutral'
           }
           # Codex does NOT reliably re-review every push (its review's commit_id
-          # often lags the head), so pinning to HEAD_SHA would false-block. Treat it
-          # as "has engaged with this PR": a +1 reaction (clean) or any submitted
-          # review (findings). Seer above still anchors the latest commit.
+          # often lags the head), so pinning to HEAD_SHA's commit_id would
+          # false-block. Instead of "has engaged with this PR" *at all* — which let
+          # a stale review/reaction from an earlier head satisfy this forever, so
+          # the gate went green before Codex had looked at a later push (confirmed
+          # happening in practice: a second Codex review round landed on #220
+          # *after* this gate had already passed and the PR merged) — require the
+          # reaction/review to be timestamped at or after HEAD_SHA's own commit,
+          # i.e. posted in response to *this* commit existing, not an older one.
           # --paginate walks every page; the --jq emits one line per matching item
-          # (across all pages), and grep -c counts them. Do NOT use `… | length`
-          # with --paginate: that emits a length PER page, yielding a multi-line
-          # value that breaks the integer test on any PR with >1 page.
-          count_matches() { grep -c . || true; }
+          # (across all pages).
+          latest_epoch() { sort -rn | head -1; }
           codex_done() {
-            local react rev
-            react=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' | count_matches)
-            rev=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' | count_matches)
-            [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
+            local head_epoch react_epoch rev_epoch
+            head_epoch=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date' \
+              | xargs -I{} date -d {} +%s)
+
+            react_epoch=$( (gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .created_at' \
+                     | xargs -r -I{} date -d {} +%s | latest_epoch) || true)
+            if [ -n "$react_epoch" ] && [ "$react_epoch" -ge "$head_epoch" ]; then return 0; fi
+
+            rev_epoch=$( (gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .submitted_at' \
+                   | xargs -r -I{} date -d {} +%s | latest_epoch) || true)
+            if [ -n "$rev_epoch" ] && [ "$rev_epoch" -ge "$head_epoch" ]; then return 0; fi
+
+            return 1
           }
 
           while :; do
