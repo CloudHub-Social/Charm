@@ -121,11 +121,19 @@ jobs:
           # reopening the exact race this gate exists to close.
           codex_threads_all_resolved() {
             local unresolved
-            unresolved=$(gh api graphql -f query='
-              query($owner: String!, $repo: String!, $pr: Int!) {
+            # --paginate: a PR can have >100 review threads, which `first: 100`
+            # alone would silently truncate — any unresolved thread past the
+            # first page would then never be seen, letting this fallback
+            # wrongly report "all resolved". gh's own --slurp isn't usable
+            # together with --jq, so pipe the raw one-JSON-doc-per-page output
+            # through `jq -s` (slurp) ourselves to flatten across `.[]` before
+            # filtering.
+            unresolved=$(gh api graphql --paginate -f query='
+              query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
                 repository(owner: $owner, name: $repo) {
                   pullRequest(number: $pr) {
-                    reviewThreads(first: 100) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
                       nodes {
                         isResolved
                         comments(first: 1) { nodes { author { login } } }
@@ -134,7 +142,7 @@ jobs:
                   }
                 }
               }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR" \
-              --jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+              | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]
                      | select(.comments.nodes[0].author.login == "chatgpt-codex-connector")
                      | select(.isResolved == false)] | length')
             [ "$unresolved" -eq 0 ]
