@@ -183,10 +183,25 @@ jobs:
 
           # Codex normally self-triggers on open/synchronize (per its own
           # description: "Reviews are triggered when you open a PR / mark
-          # ready / comment @codex review"), so a timeout with codex=false
-          # means either it's unusually slow or, for whatever reason (a
-          # missed webhook, rate limiting, ...), never actually started.
-          # Nudge it once via a marker-tagged comment rather than requiring a
+          # ready / comment @codex review"), so a timeout where it hasn't even
+          # reacted or reviewed *at all* suggests it never actually started
+          # (a missed webhook, rate limiting, ...) — that's worth nudging.
+          # A timeout where codex=false but it HAS engaged at some point just
+          # means it hasn't re-reviewed *this* head yet (see codex_done()'s
+          # head-anchoring above); it's already working the PR and will
+          # presumably catch up, so nudging there would be redundant noise,
+          # not a fix for anything actually stuck.
+          codex_has_engaged_at_all() {
+            local react_count rev_count
+            react_count=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+              --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' \
+              | grep -c . || true)
+            rev_count=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' \
+              | grep -c . || true)
+            [ "${react_count:-0}" -gt 0 ] || [ "${rev_count:-0}" -gt 0 ]
+          }
+          # Nudge once via a marker-tagged comment rather than requiring a
           # human to notice the timeout and comment manually — but only once
           # per PR: re-running this check (or a later unrelated push) must
           # not re-nudge and spam the thread every time it's still slow.
@@ -227,7 +242,7 @@ jobs:
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              if ! $c; then nudge_codex_once; fi
+              if ! $c && ! codex_has_engaged_at_all; then nudge_codex_once; fi
               echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
               exit 1
             fi
