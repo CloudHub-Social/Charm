@@ -43,6 +43,18 @@ static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
         .expect("MXC_URI_PATTERN is a valid static regex")
 });
 
+/// Plain `http(s)://` URLs — homeserver URLs in particular, which
+/// `matrix-sdk` formats into its own error types verbatim (e.g. a discovery
+/// or sync failure's `Display` output) and which neither
+/// `SECRET_FIELD_PATTERN` nor `MATRIX_ID_PATTERN`/`MXC_URI_PATTERN` above
+/// catch. Deliberately broad (any http(s) URL, not just recognized
+/// homeserver hosts) since a false positive here just means "redacted a URL
+/// that happened to be harmless," while a false negative leaks a
+/// self-hosted homeserver's address.
+static URL_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r#"(?i)\bhttps?://[^\s"'<>]+"#).expect("URL_PATTERN is a valid static regex")
+});
+
 pub fn scrub_secrets(text: &str) -> String {
     SECRET_FIELD_PATTERN
         .replace_all(text, "$1$2[redacted]")
@@ -58,8 +70,29 @@ pub fn scrub_matrix_ids(text: &str) -> String {
         .into_owned()
 }
 
+/// Redacts plain `http(s)://` URLs (e.g. homeserver addresses), preserving
+/// only the scheme. Runs after `scrub_matrix_ids` so an already-redacted
+/// `mxc://[redacted]/[redacted]` (a different, non-`http(s)` scheme) is
+/// left untouched by this pass.
+pub fn scrub_urls(text: &str) -> String {
+    URL_PATTERN
+        .replace_all(text, |captures: &regex::Captures<'_>| {
+            // The regex itself is `(?i)`, so the match can have any case
+            // (`HTTPS://...`); compare case-insensitively too, or an
+            // uppercase scheme falls through to the `http` branch and gets
+            // silently downgraded in the output.
+            let scheme = if captures[0].to_ascii_lowercase().starts_with("https://") {
+                "https"
+            } else {
+                "http"
+            };
+            format!("{scheme}://[redacted]")
+        })
+        .into_owned()
+}
+
 pub fn scrub_sensitive_text(text: &str) -> String {
-    scrub_secrets(&scrub_matrix_ids(text))
+    scrub_secrets(&scrub_urls(&scrub_matrix_ids(text)))
 }
 
 pub fn scrub_json_value(value: &mut serde_json::Value) {
@@ -190,6 +223,46 @@ mod tests {
             scrub_sensitive_text(input),
             r#"room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] password="[redacted]""#
         );
+    }
+
+    #[test]
+    fn scrub_sensitive_text_redacts_homeserver_urls() {
+        let input = "failed to connect to https://matrix.example.org:8448/_matrix/client/versions";
+
+        assert_eq!(
+            scrub_sensitive_text(input),
+            "failed to connect to https://[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrub_urls_preserves_http_vs_https_scheme() {
+        assert_eq!(
+            scrub_urls("see http://example.org/path"),
+            "see http://[redacted]"
+        );
+        assert_eq!(
+            scrub_urls("see https://example.org/path"),
+            "see https://[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrub_urls_matches_scheme_case_insensitively() {
+        assert_eq!(
+            scrub_urls("see HTTPS://example.org/path"),
+            "see https://[redacted]"
+        );
+        assert_eq!(
+            scrub_urls("see HTTP://example.org/path"),
+            "see http://[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrub_urls_does_not_touch_already_redacted_mxc_uris() {
+        let already_scrubbed_mxc = "media at mxc://[redacted]/[redacted]";
+        assert_eq!(scrub_urls(already_scrubbed_mxc), already_scrubbed_mxc);
     }
 
     #[test]
