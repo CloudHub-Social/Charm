@@ -280,6 +280,31 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     })
 }
 
+/// Grants camera/mic requests from WebKitGTK's `permission-request` signal
+/// (Spec 13). Tauri's own webview only ever loads this app's first-party
+/// frontend, never arbitrary web content, so granting unconditionally here
+/// matches wry's own macOS/iOS `WKUIDelegate` behavior — that also grants
+/// unconditionally at the webview layer, relying on the OS's own TCC prompt
+/// (triggered separately by AVFoundation) as the real consent gate. Linux has
+/// no equivalent OS-level camera/mic permission system for a non-sandboxed
+/// native binary, so there is no such second gate to rely on here.
+#[cfg(target_os = "linux")]
+fn linux_wire_user_media_permission(platform_webview: tauri::webview::PlatformWebview) {
+    use webkit2gtk::glib::Cast;
+    use webkit2gtk::{PermissionRequestExt, WebViewExt};
+
+    let webview: webkit2gtk::WebView = platform_webview.inner();
+    webview.connect_permission_request(|_webview, request| {
+        match request.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
+            Some(user_media) => {
+                user_media.allow();
+                true
+            }
+            None => false,
+        }
+    });
+}
+
 /// Builds the tray icon (with a Show/Quit menu) and, on macOS, the native app
 /// menu bar (App/Edit/Window with standard shortcuts) — Spec 10. Desktop-only:
 /// mobile has no tray and relies on the OS's own app-switcher/back gestures
@@ -421,6 +446,16 @@ pub fn run() {
             }
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
+            // Spec 13: WebKitGTK's `permission-request` signal has no default
+            // handler and, unlike macOS/Windows/Android, no OS-level consent
+            // gate behind it — left unhandled, it silently denies and
+            // getUserMedia never resolves. See `linux_wire_user_media_permission`.
+            #[cfg(target_os = "linux")]
+            if let Some(webview) = app.get_webview_window("main") {
+                if let Err(e) = webview.with_webview(linux_wire_user_media_permission) {
+                    eprintln!("failed to wire WebKitGTK user-media permission handling: {e}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
