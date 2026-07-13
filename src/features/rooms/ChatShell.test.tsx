@@ -1399,6 +1399,121 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(3);
   });
 
+  it("treats an offset-neutral prepend (real content added, but a front-row removal cancels the net shift) as progress", async () => {
+    // Regression test (Codex P2): a page can simultaneously prepend real
+    // history *and* drop the same number of old front rows (e.g. an
+    // UnableToDecrypt placeholder resolving into a filtered-out type),
+    // netting `firstItemIndex`'s before/after diff to zero even though
+    // genuine content was added. Judging progress from `applyMessages`' own
+    // prepended-row count (not that diff) is required to stop the loop
+    // after this one page instead of needlessly fetching another.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$undecryptable",
+          sender: "@alice:localhost",
+          body: "",
+          is_undecrypted: true,
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$x",
+          sender: "@alice:localhost",
+          body: "prepended x",
+          timestamp_ms: 0,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    fireStartReached();
+
+    await screen.findByText("prepended x");
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    // Only the initial load plus this one pagination request — the loop
+    // must not fetch a further page just because the net firstItemIndex
+    // shift happened to be zero.
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps paginating past a live-tail-only response when the timeline started empty", async () => {
+    // Regression test (Codex P2): the empty-start progress signal must be
+    // evaluated fresh on every loop iteration, not captured once from
+    // `messages.length` before the loop began. If a live `timeline:update`
+    // races the in-flight request and lands first with only a new tail
+    // message (no older content), a pagination response containing that
+    // same single message would otherwise be misread as "the first page of
+    // real history arrived" and stop the loop — stranding the user behind
+    // an unfetched page of genuine older history despite `next_cursor`
+    // still being non-null.
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: "more" });
+
+    let resolveRacedEmptyStartPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRacedEmptyStartPage = resolve;
+      }),
+    );
+    renderChatShell();
+    await waitFor(() => expect(getTimelinePage).toHaveBeenCalledTimes(2));
+
+    // A live message arrives before this in-flight request's own response —
+    // no older history, just a fresh tail message.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$live", sender: "@alice:localhost", body: "live", timestamp_ms: 5 }),
+        ],
+      });
+    });
+    await screen.findByText("live");
+
+    // The next page (once the loop continues past this one) finally
+    // contributes genuine older history.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$old",
+          sender: "@alice:localhost",
+          body: "older text",
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$live", sender: "@alice:localhost", body: "live", timestamp_ms: 5 }),
+      ],
+      next_cursor: null,
+    });
+    // The pagination request itself resolves with only that same racing
+    // message — identical to what the live update already applied, so no
+    // real prepend occurred.
+    act(() => {
+      resolveRacedEmptyStartPage?.({
+        messages: [
+          summary({ event_id: "$live", sender: "@alice:localhost", body: "live", timestamp_ms: 5 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("older text");
+    // Initial empty page, the race-duplicate page, and the page that
+    // finally adds real content.
+    expect(getTimelinePage).toHaveBeenCalledTimes(3);
+  });
+
   it("excludes every genuinely-prepended row from entrance animation when a prepend and a front-row removal land in the same snapshot", async () => {
     // Regression test: excluding leading rows from "fresh" (entrance
     // animation / jump-to-present) by a plain firstItemIndex diff

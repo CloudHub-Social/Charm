@@ -342,33 +342,40 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // refire on its own while an all-filtered-out response leaves that range
     // unchanged.
     //
-    // Progress is judged by whether `firstItemIndex` has *decreased* since
-    // the whole loop started (via the synchronous `firstItemIndexRef`, not
-    // the `firstItemIndex` component-state variable, which doesn't update
-    // until next render) — not `applyMessages`' own per-call return value,
-    // and not a plain `messages.length` diff:
-    // - A length diff breaks if a live tail message races this request: the
-    //   total grows with no real prepend, stopping the loop one page too
-    //   early.
-    // - `applyMessages`' per-call return breaks the *opposite* way if a live
-    //   `timeline:update` for this same `paginate_backwards` call applies
-    //   the prepend *before* this request's own response arrives: by the
-    //   time this loop processes that response, `applyMessages` finds
-    //   nothing new to shift, reports zero progress, and this loop would
-    //   call `getTimelinePage` again — needlessly walking further back than
-    //   the single page the user's scroll-up asked for.
-    // - Comparing *any* front-key change (rather than requiring a genuine
-    //   decrease) breaks a third way: if the old front message disappears
-    //   from a later snapshot entirely (e.g. an `UnableToDecrypt`
-    //   placeholder resolving into a filtered-out type) while a fetched page
-    //   itself contributes zero renderable rows, `firstItemIndex` moves the
-    //   *other* direction (see `applyMessages`) — real progress requires it
-    //   to strictly decrease, not merely change.
-    // Comparing against the loop's own starting point (not each individual
-    // response) catches genuine progress regardless of which path (this
-    // loop's own responses, or a racing live update) produced it.
+    // Progress is judged per-iteration, from three signals combined (any one
+    // being true is enough):
+    // - `firstItemIndexRef` has decreased since the whole loop started. This
+    //   catches a prepend that a *racing* `timeline:update` already applied
+    //   (via its own `applyMessages` call, outside this loop) before this
+    //   iteration's own response arrives — by the time this call runs,
+    //   `applyMessages` finds nothing new to shift and reports zero prepended
+    //   rows itself, so only comparing against the loop's own starting point
+    //   (not just this call's return value) catches that the real work was
+    //   already done.
+    // - This iteration's own `applyMessages` return value — the count of
+    //   genuinely prepended rows ahead of whichever previously-loaded message
+    //   survives (see that function's comment) — rather than relying on the
+    //   `firstItemIndex` diff alone. A page that both prepends real history
+    //   *and* drops an equal number of old front rows (e.g. an
+    //   `UnableToDecrypt` placeholder resolving into a filtered-out type)
+    //   nets that diff to zero even though real progress was made in this
+    //   very call, which the first signal alone would misread as "no
+    //   progress" and over-page.
+    // - Whether `previousMessagesRef` was empty *immediately before this
+    //   iteration's own `applyMessages` call* (not hoisted once before the
+    //   loop) combined with this page contributing any renderable rows at
+    //   all — needed because `applyMessages`'s matching logic has no anchor
+    //   to shift from when there's nothing previously loaded to compare
+    //   against, so it always reports zero prepended rows in that case even
+    //   on a genuine first page of real history. Checking this fresh on
+    //   every iteration (rather than once, from `messages.length` as of when
+    //   the loop started) matters because a live `timeline:update` racing
+    //   this same call can populate `previousMessagesRef` mid-loop with,
+    //   say, just a new tail message — at that point it's no longer "empty",
+    //   so a later iteration's page containing only that same racing message
+    //   (with no real older content) correctly reads as zero progress via the
+    //   second signal instead of being misread as a genuine first page.
     const initialFirstItemIndex = firstItemIndexRef.current;
-    const startedEmpty = messages.length === 0;
     try {
       for (;;) {
         const page = await getTimelinePage(roomId);
@@ -379,11 +386,13 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         if (visitGenerationRef.current !== generation) return;
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
-        applyMessages(page.messages);
+        const wasEmpty = previousMessagesRef.current.length === 0;
+        const prependedByThisPage = applyMessages(page.messages);
         setPaginationError(false);
         const madeProgress =
           firstItemIndexRef.current < initialFirstItemIndex ||
-          (startedEmpty && page.messages.length > 0);
+          prependedByThisPage > 0 ||
+          (wasEmpty && page.messages.length > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
