@@ -147,6 +147,22 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             <button
               type="button"
               aria-label="More actions"
+              // Issue #226: reopening this trigger (e.g. clicking "More actions"
+              // again on an edited message, right after the previous menu was
+              // closed by selecting "Edit") is 100% reproducible as a no-op —
+              // the click event that opens the menu also bubbles to `document`,
+              // where the newly-mounted (modal={false}) DismissableLayer's own
+              // outside-pointerdown listener — attached synchronously via
+              // flushSync as part of the same pointerdown dispatch — treats it
+              // as a click "outside" the not-yet-rendered content and immediately
+              // closes the menu it just opened. Stopping propagation here keeps
+              // the event from ever reaching that listener; Radix's own composed
+              // handler on this same node (which does the actual open toggle)
+              // still runs first via composeEventHandlers, so opening is
+              // unaffected. Verified via e2e/message-actions.spec.ts's
+              // edit-then-reply flow, which failed 5/5 runs before this fix and
+              // passes 5/5 after.
+              onPointerDown={(e) => e.stopPropagation()}
               className="flex size-11 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary"
             >
               <MoreHorizontal size={16} />
