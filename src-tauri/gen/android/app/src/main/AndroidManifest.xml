@@ -8,6 +8,22 @@
          requests. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Spec 13: required for in-webview getUserMedia (voice/video calling).
+         Tauri's Android WebView (wry's RustWebChromeClient) already overrides
+         WebChromeClient.onPermissionRequest and requests these exact runtime
+         permissions via ActivityResultLauncher when a page calls
+         getUserMedia — but that flow has nothing to request without these
+         manifest declarations, which is why the call hung indefinitely
+         instead of prompting or resolving. android:required="false" on the
+         camera/microphone uses-feature keeps camera-less devices (this app
+         also ships an AndroidTV leanback launcher) eligible for install. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
