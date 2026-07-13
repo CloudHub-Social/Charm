@@ -16,14 +16,18 @@ name: Review gate
 #
 # Each bot exposes a different reliable done-signal (verified empirically):
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
-#   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
-#              when it has findings, timestamped at or after this push landed
-#              (Codex's review.commit_id itself isn't reliably head-anchored —
-#              see below — so this checks *when* it engaged instead of *which
-#              commit* it says it reviewed). Falls back to "no unresolved
-#              Codex threads" when the only signal is a reaction, since a
-#              repeat clean pass doesn't get a fresh reaction timestamp either
-#              (see below).
+#   - Codex  → a submitted review whose `commit_id` exactly equals HEAD_SHA.
+#              This is the one signal that's actually authoritative: a review
+#              can legitimately take a while and finish for an *older* commit
+#              if pushes arrive faster than Codex reviews them (that's not a
+#              bug, just "still working" — waiting longer is correct), but no
+#              timestamp trick can ever prove a review or a `+1` reaction was
+#              *for this exact code*, only that it happened at some point in
+#              time. A `+1` reaction especially can't: it has no commit_id at
+#              all, and re-adding the same reaction is idempotent server-side
+#              (its created_at never advances), so a repeat-clean pass leaves
+#              no fresh signal whatsoever to check. See nudge_codex_once()
+#              below for how a stuck "clean, reaction-only" PR recovers.
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
@@ -68,20 +72,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # `pull_request.updated_at` is stamped by GitHub's server the moment
-          # it processes this push, so it anchors "when this head actually
-          # landed" reliably — unlike the head commit's own committer date,
-          # which is git metadata a contributor controls (a locally-committed-
-          # then-later-pushed commit, or a rebase/cherry-pick that preserves an
-          # old date, can predate a stale review of a *previous* head, letting
-          # this gate pass without Codex having reviewed the pushed code).
-          HEAD_PUSHED_AT: ${{ github.event.pull_request.updated_at }}
           TIMEOUT_MINUTES: "10"
           POLL_SECONDS: "20"
-          # How long to require having waited since the push before trusting a
-          # stale (no-longer-timestamped) Codex +1 reaction plus "no unresolved
-          # Codex threads" as its done-signal — see codex_done() below.
-          MIN_WAIT_BEFORE_STALE_OK: "180"
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
@@ -97,42 +89,13 @@ jobs:
               --jq '.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion' \
               | grep -qxE 'success|failure|neutral'
           }
-          # Codex does NOT reliably re-review every push (its review's commit_id
-          # often lags the head), so pinning to HEAD_SHA's commit_id would
-          # false-block. Instead of "has engaged with this PR" *at all* — which let
-          # a stale review/reaction from an earlier head satisfy this forever, so
-          # the gate went green before Codex had looked at a later push (confirmed
-          # happening in practice: a second Codex review round landed on #220
-          # *after* this gate had already passed and the PR merged) — require the
-          # reaction/review to be timestamped at or after this push (HEAD_PUSHED_AT),
-          # i.e. posted in response to *this* push, not an earlier one.
-          # --paginate walks every page; the --jq emits one line per matching item
-          # (across all pages).
-          latest_epoch() { sort -rn | head -1; }
-          # GitHub's "create reaction" endpoint is idempotent: re-adding the same
-          # +1 on a PR that's already been reacted to returns the *original*
-          # reaction object, not a new one — so its created_at never advances,
-          # and a repeat clean pass on a later push produces no fresh timestamp
-          # to check at all (verified against GitHub's own reactions API docs).
-          # A genuinely new finding always shows up as a fresh, uniquely-
-          # timestamped review object instead (checked above via rev_epoch), so
-          # the residual risk here is narrow: only a clean-again verdict with
-          # nothing new to say. Cover that case by falling back to "no
-          # unresolved Codex review thread remains" — but ONLY once at least
-          # MIN_WAIT_BEFORE_STALE_OK has passed since the push landed. Without
-          # that wait, "no unresolved threads" is often trivially true the
-          # instant a fix is pushed (its own prior thread having just been
-          # resolved), which would let this fallback green-light the gate
-          # before Codex has had any real chance to look at the new head —
-          # reopening the exact race this gate exists to close.
           # --paginate: a PR can have >100 review threads, which `first: 100`
           # alone would silently truncate — any unresolved thread past the
           # first page would then never be seen. gh's own --slurp isn't usable
           # together with --jq, so pipe the raw one-JSON-doc-per-page output
           # through `jq -s` (slurp) ourselves to flatten across `.[]` before
           # filtering. `$1` is an optional jq author-login filter (unfiltered
-          # when omitted), reused below both for Codex-specific staleness
-          # fallback and for the final any-bot unresolved-thread check.
+          # when omitted).
           unresolved_review_thread_count() {
             gh api graphql --paginate -f query='
               query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
@@ -153,54 +116,29 @@ jobs:
                   | select($author == "" or .comments.nodes[0].author.login == $author)
                   | select(.isResolved == false)] | length'
           }
-          codex_threads_all_resolved() {
-            local unresolved
-            unresolved=$(unresolved_review_thread_count "chatgpt-codex-connector")
-            [ "$unresolved" -eq 0 ]
-          }
+          # See the header comment: only a review whose commit_id exactly
+          # equals HEAD_SHA proves Codex evaluated this code. --paginate in
+          # case the PR has many reviews.
           codex_done() {
-            local head_epoch react_epoch rev_epoch
-            head_epoch=$(date -d "$HEAD_PUSHED_AT" +%s)
-
-            react_epoch=$( (gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .created_at' \
-                     | xargs -r -I{} date -d {} +%s | latest_epoch) || true)
-
-            rev_epoch=$( (gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .submitted_at' \
-                   | xargs -r -I{} date -d {} +%s | latest_epoch) || true)
-            if [ -n "$rev_epoch" ] && [ "$rev_epoch" -ge "$head_epoch" ]; then return 0; fi
-
-            if [ -n "$react_epoch" ] && [ "$react_epoch" -ge "$head_epoch" ]; then return 0; fi
-            if [ -n "$react_epoch" ] \
-              && [ "$(( $(date +%s) - head_epoch ))" -ge "$MIN_WAIT_BEFORE_STALE_OK" ] \
-              && codex_threads_all_resolved; then
-              return 0
-            fi
-
-            return 1
+            gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              --jq --arg sha "$HEAD_SHA" \
+              '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
+              | grep -q .
           }
 
           # Codex normally self-triggers on open/synchronize (per its own
           # description: "Reviews are triggered when you open a PR / mark
-          # ready / comment @codex review"), so a timeout where it hasn't even
-          # reacted or reviewed *at all* suggests it never actually started
-          # (a missed webhook, rate limiting, ...) — that's worth nudging.
-          # A timeout where codex=false but it HAS engaged at some point just
-          # means it hasn't re-reviewed *this* head yet (see codex_done()'s
-          # head-anchoring above); it's already working the PR and will
-          # presumably catch up, so nudging there would be redundant noise,
-          # not a fix for anything actually stuck.
-          codex_has_engaged_at_all() {
-            local react_count rev_count
-            react_count=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-              --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' \
-              | grep -c . || true)
-            rev_count=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-              --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' \
-              | grep -c . || true)
-            [ "${react_count:-0}" -gt 0 ] || [ "${rev_count:-0}" -gt 0 ]
-          }
+          # ready / comment @codex review"), and a proper `@codex review`
+          # comment reliably produces a fresh, commit_id-anchored review even
+          # when clean — unlike the automatic webhook path, which for a
+          # repeat-clean pass leaves only an idempotent (never-refreshing) +1
+          # reaction and no way to prove it looked at the new head at all (see
+          # header comment). So a timeout with codex=false always gets
+          # nudged, regardless of whether Codex engaged before: waiting the
+          # full TIMEOUT_MINUTES already rules out "still working, will
+          # finish shortly" as the explanation, and a stuck "clean, reaction-
+          # only" PR needs exactly this kind of explicit re-trigger to ever
+          # produce a signal this check can actually verify.
           # Nudge once via a marker-tagged comment rather than requiring a
           # human to notice the timeout and comment manually — but only once
           # per PR: re-running this check (or a later unrelated push) must
@@ -242,7 +180,7 @@ jobs:
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              if ! $c && ! codex_has_engaged_at_all; then nudge_codex_once; fi
+              if ! $c; then nudge_codex_once; fi
               echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
               exit 1
             fi
