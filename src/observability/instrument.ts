@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
 import { getBuildId } from "../lib/buildId";
 import { platformTag, preloadPlatformTag } from "../lib/platform";
+import { recordCount } from "./metrics";
 import { readObservabilitySettings } from "./persistence";
 import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
 import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
@@ -125,6 +126,7 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     replaysOnErrorSampleRate: settings.replayEnabled ? 1.0 : 0,
     profilesSampleRate: settings.profilingEnabled ? rate : 0,
     enableLogs: settings.logsEnabled,
+    enableMetrics: true,
     integrations: integrations(settings),
     initialScope: {
       tags: {
@@ -172,6 +174,7 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
   Sentry.setTag("charm.build.id", getBuildId());
   Sentry.setTag("charm.build.version", packageJson.version);
   initialized = true;
+  recordCount("app.boot", 1, { platform: platformTag() });
   return true;
 }
 

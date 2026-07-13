@@ -263,6 +263,15 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
 
+    // Backend-side counterpart to the frontend's own `app.boot` metric
+    // (`src/observability/instrument.ts`'s `initializeSentry`) — this one
+    // fires once per native process launch rather than once per webview
+    // load, so the two together distinguish a fresh OS-level app start from
+    // a webview reload within the same running process.
+    sentry::metrics::counter("app.boot", 1)
+        .attribute("charm.platform", get_platform())
+        .capture();
+
     Some(SentryGuard {
         _client: client,
         tracing_installed,

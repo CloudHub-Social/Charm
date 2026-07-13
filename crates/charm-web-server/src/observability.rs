@@ -163,7 +163,35 @@ pub fn init() -> Option<SentryGuard> {
         .init();
 
     tracing::info!("Sentry error/log capture initialized for charm-web-server");
+    sentry::metrics::counter("app.boot", 1).capture();
     Some(SentryGuard { _client: client })
+}
+
+/// Records one HTTP request's outcome as Sentry Application Metrics — a
+/// `http.request` counter and an `http.request.duration` distribution, both
+/// tagged by route and status code. `route` should be the matched route
+/// template (e.g. `/api/rooms/{room_id}/send`), not the raw path, so
+/// per-room/per-user path segments don't blow up metric cardinality — see
+/// `routes::record_request_metrics` (the `axum::middleware::from_fn` layer
+/// that calls this) for where that template comes from.
+///
+/// Like every other Sentry call in this crate, this is unconditional: it's a
+/// no-op when Sentry isn't configured (`SENTRY_DSN_ENV` unset) because
+/// `sentry::metrics::*().capture()` only ever sends through the current
+/// `Hub`'s client, and there is none in that case — see this module's doc
+/// comment for why there's no separate consent gate to check here.
+pub fn record_http_request_metric(route: &str, status: u16, duration_ms: f64) {
+    use sentry::protocol::Unit;
+
+    sentry::metrics::counter("http.request", 1)
+        .attribute("http.route", route.to_owned())
+        .attribute("http.response.status_code", i64::from(status))
+        .capture();
+    sentry::metrics::distribution("http.request.duration", duration_ms)
+        .unit(Unit::Millisecond)
+        .attribute("http.route", route.to_owned())
+        .attribute("http.response.status_code", i64::from(status))
+        .capture();
 }
 
 /// Same default `tracing_subscriber::fmt::init()` used before this module
