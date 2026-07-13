@@ -89,7 +89,13 @@ export function useMessageSend({
           content.mentions,
         );
       }
-      return true;
+      // The user may have switched rooms while this send was in flight —
+      // same reasoning as `handleSlashCommand`'s own guard below. Without
+      // this, `ChatShell`'s caller would scroll and mark-at-bottom/read
+      // whatever room is *now* showing (a fresh `virtuosoRef`, since
+      // Virtuoso remounts per room) for a message that landed in a
+      // different, no-longer-active room.
+      return currentRoomIdRef.current === targetRoom.room_id;
     } catch (err) {
       console.error(err);
       return false;

@@ -1558,6 +1558,71 @@ describe("ChatShell", () => {
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
+  it("does not scroll a different room the user has since switched to when a stale send resolves", async () => {
+    // Regression test: if a send from room A resolves *after* the user has
+    // already switched to room B, `virtuosoRef` now points at B's (freshly
+    // remounted) Virtuoso instance — scrolling unconditionally would move
+    // B's view and mark it at-bottom/read for a message that landed in A,
+    // not B.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "room A msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    let resolveSend: ((txnId: string) => void) | undefined;
+    sendMessage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSend = resolve;
+      }),
+    );
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room A msg");
+    fireAtBottomStateChange(false);
+
+    const composer = screen.getByPlaceholderText(`Message ${room.name}`);
+    fireEvent.change(composer, { target: { value: "stale send" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
+
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$b",
+          sender: "@alice:localhost",
+          body: "room B msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    virtuosoScrollToIndexMock.mockClear();
+
+    act(() => {
+      resolveSend?.("txn-1");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
   it("gives the Virtuoso element a bounded flex height to fill the chat pane", async () => {
     // Regression test: the old scroller was itself the `flex-1
     // overflow-y-auto` child of the chat pane. Without `flex-1` on the new
