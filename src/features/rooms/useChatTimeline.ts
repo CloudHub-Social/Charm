@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getTimelinePage,
   markRoomRead,
@@ -8,21 +8,30 @@ import {
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
+// `react-virtuoso`'s prepend recipe: `firstItemIndex` is the logical index of
+// `messages[0]` in an unbounded conceptual list that grows *backwards* as
+// older history loads. It starts arbitrarily high so it can be decremented by
+// however many older messages a `loadMoreHistory` page prepends without ever
+// going negative — Virtuoso uses the *decrease* in this value (applied in the
+// same update as the longer `messages` array) to keep the previously-visible
+// rows exactly where they were, replacing Phase 1's manual
+// `scrollHeight`/`scrollTop` delta math entirely.
+const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
+
 export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: boolean) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
-  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
-  // The scrollable message-list element itself — needed (not just the
-  // sentinels) so backward-pagination can read/adjust `scrollTop` directly.
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const topSentinelRef = useRef<HTMLDivElement | null>(null);
-  // Whether the bottom sentinel was intersecting (i.e. the user was scrolled
-  // to the bottom) the last time the IntersectionObserver below fired.
-  // Defaults to true so the very first render (before any observation has
-  // happened yet) still scrolls to bottom once the initial page loads.
+  // Mirrors Virtuoso's own `atBottomStateChange` callback — the single
+  // source of truth for "is the user currently at the live bottom of the
+  // timeline" now that there's no permanently-mounted bottom sentinel to
+  // drive a separate `IntersectionObserver` (see Spec 26 Phase 2's Open
+  // Question on Spec 05's mark-as-read: Virtuoso's own bottom-visibility
+  // signal answers it directly, so mark-as-read and sticky-bottom share one
+  // boolean instead of needing two mechanisms).
   const isAtBottomRef = useRef(true);
   // Tracks which room `loadMoreHistory`'s in-flight request was issued for,
   // so a slow response landing after the user has since switched rooms (or
@@ -43,11 +52,6 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // (see `TimelinePage`'s doc comment), so `loadMoreHistory` becomes a no-op.
   const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
-  // Set by `loadMoreHistory` right before its response is applied to
-  // `messages`, so the layout effect below can keep whatever was already
-  // visible visually still once older messages are prepended above it
-  // (Spec 26 Phase 1's backward-pagination scroll anchor).
-  const pendingAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
   useEffect(() => {
     // Keyed on the room id, not the `room` object itself: `RoomsScreen` hands
@@ -63,9 +67,9 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     isAtBottomRef.current = true;
     currentRoomIdRef.current = timelineRoomId ?? null;
     nextCursorRef.current = null;
-    pendingAnchorRef.current = null;
     loadingMoreRef.current = false;
     setLoadingMore(false);
+    setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
     if (!timelineRoomId) {
       setMessages([]);
       setLoading(false);
@@ -106,6 +110,11 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // it, since the remote item's `transaction_id` is `None` and so
       // wouldn't match it for removal. Replacing outright is both correct
       // and simpler.
+      //
+      // Live arrival only ever appends to `messages`' tail — the oldest
+      // loaded message (`messages[0]`) doesn't change from a live update, so
+      // `firstItemIndex` doesn't need adjusting here (only `loadMoreHistory`
+      // prepending older history moves it).
       setMessages(update.messages);
     });
     return () => {
@@ -138,77 +147,59 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     markRoomRead(room.room_id).catch(logAndIgnore);
   }, [room, roomSettingsOpen]);
 
+  // Marks the room read once the true bottom of the timeline is visible —
+  // driven by Virtuoso's own `atBottomStateChange` (see
+  // `handleAtBottomStateChange` below) instead of a permanently-mounted
+  // bottom-sentinel `IntersectionObserver`, since a virtualized list's last
+  // row is no longer always a mounted DOM node to observe.
+  function markReadIfAtBottom() {
+    if (!room || !latestEventId) return;
+    if (roomSettingsOpen) return;
+    if (!isAtBottomRef.current) return;
+    if (lastMarkedReadEventId.current === latestEventId) return;
+    lastMarkedReadEventId.current = latestEventId;
+    markRoomRead(room.room_id).catch(logAndIgnore);
+  }
+  // Re-check on every message/room-settings change too: `roomSettingsOpen`
+  // closing while already at bottom, or a new latest message arriving while
+  // already at bottom, must mark read without needing a fresh
+  // `atBottomStateChange` firing (Virtuoso only calls it on an actual
+  // visibility transition).
   useEffect(() => {
-    if (!room || !latestEventId) return undefined;
-    // Same reasoning as above: don't mark read while the modal covers the
-    // chat. `roomSettingsOpen` in the deps re-creates the observer on close,
-    // which fires its callback immediately with the sentinel's current
-    // intersection state — no need to wait for it to re-intersect.
-    if (roomSettingsOpen) return undefined;
-    const sentinel = bottomSentinelRef.current;
-    if (!sentinel) return undefined;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const isVisible = entries.some((entry) => entry.isIntersecting);
-        isAtBottomRef.current = isVisible;
-        if (!isVisible) return;
-        if (lastMarkedReadEventId.current === latestEventId) return;
-        lastMarkedReadEventId.current = latestEventId;
-        markRoomRead(room.room_id).catch(logAndIgnore);
-      },
-      { threshold: 1 },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
+    markReadIfAtBottom();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `markReadIfAtBottom` closes over refs, not state.
   }, [room, latestEventId, roomSettingsOpen]);
 
-  // Scroll-to-bottom on initial load, and "sticky bottom" on live message
-  // arrival: whenever `messages` changes, jump to the newest message only if
-  // the sentinel's last known intersection state (tracked by the observer
-  // above) said the user was already at the bottom — never yank the view
-  // down while they've scrolled up to read history (see Spec 26, and Charm
-  // 1.0 issue #328 for the regression this guards against). `useLayoutEffect`
-  // rather than `useEffect` so the jump happens before paint, avoiding a
-  // visible flash of the pre-scroll position.
-  useLayoutEffect(() => {
-    if (!isAtBottomRef.current) return;
-    // jsdom (unit tests) doesn't implement `scrollIntoView` at all.
-    bottomSentinelRef.current?.scrollIntoView?.({ block: "end" });
-  }, [messages]);
+  function handleAtBottomStateChange(atBottom: boolean) {
+    isAtBottomRef.current = atBottom;
+    if (atBottom) markReadIfAtBottom();
+  }
 
-  // Backward-pagination scroll anchor (Spec 26 Phase 1 item 4): loads one
-  // more page of older history and keeps whatever was already visible
-  // visually still, rather than the load silently jumping the view (the
-  // load-more-history counterpart to the media-reservation reflow problem
-  // in `MediaMessage.tsx`). A no-op if a request is already in flight or the
-  // room's history start has already been reached.
+  // Loads one more page of older history and prepends it. Virtuoso's own
+  // `firstItemIndex` prepend recipe (see the constant's doc comment above)
+  // keeps whatever was already visible visually still, replacing Phase 1's
+  // `pendingAnchorRef`/manual `scrollHeight` delta math entirely. A no-op if
+  // a request is already in flight or the room's history start has already
+  // been reached.
   async function loadMoreHistory() {
     const roomId = currentRoomIdRef.current;
     if (!roomId || loadingMoreRef.current || !nextCursorRef.current) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const generation = visitGenerationRef.current;
-    // Captured synchronously, *before* the request even starts — not after
-    // awaiting it. The backend's long-lived timeline listener can push a
-    // `timeline:update` for this same `paginate_backwards` diff before this
-    // command's own response resolves; if the "before" snapshot were taken
-    // after the await, that live update would apply the prepended messages
-    // first, and by the time this response landed `container.scrollHeight`
-    // would already reflect the grown list — producing a zero-delta restore
-    // that fails to prevent the jump it was meant to guard against.
-    const container = containerRef.current;
-    pendingAnchorRef.current = container
-      ? { scrollHeight: container.scrollHeight, scrollTop: container.scrollTop }
-      : null;
+    const previousLength = messages.length;
     try {
       const page = await getTimelinePage(roomId);
       // Stale if the room has changed since this request was issued —
       // including a revisit to the same room id, which `visitGenerationRef`
       // (unlike a plain `currentRoomIdRef` comparison) still distinguishes.
-      // Don't apply this response's messages or scroll anchor in that case.
+      // Don't apply this response's messages or index shift in that case.
       if (visitGenerationRef.current !== generation) return;
       nextCursorRef.current = page.next_cursor;
+      const prepended = page.messages.length - previousLength;
+      if (prepended > 0) {
+        setFirstItemIndex((current) => current - prepended);
+      }
       setMessages(page.messages);
     } catch (err) {
       logAndIgnore(err);
@@ -220,57 +211,12 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     }
   }
 
-  // Triggers `loadMoreHistory` once the top sentinel scrolls into view, i.e.
-  // the user has scrolled close to the oldest currently-loaded message.
-  // Re-created whenever `messages` changes so a just-prepended page's new
-  // (now-higher-up) sentinel position is re-evaluated immediately — this is
-  // what makes an early scroll-up load enough history to fill the viewport,
-  // and it self-terminates once `nextCursorRef` goes `null`.
-  useEffect(() => {
-    if (!room) return undefined;
-    const sentinel = topSentinelRef.current;
-    if (!sentinel) return undefined;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          loadMoreHistory();
-        }
-      },
-      // `root` must be the scrollable message list itself, not the default
-      // (viewport) root — `rootMargin` only expands the *root's* box, not
-      // any clipping intermediate ancestors apply, so without this the
-      // 200px pre-load margin would expand relative to the browser window
-      // rather than this container and effectively do nothing.
-      { root: containerRef.current, rootMargin: "200px 0px 0px 0px" },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state; re-created per render is unnecessary to depend on.
-  }, [room?.room_id, messages]);
-
-  // Restores the scroll position `loadMoreHistory` recorded right before
-  // prepending older messages, so the content the user was already reading
-  // doesn't visually jump once the taller list renders above it. Runs for
-  // every `messages` change but is a no-op unless a backward-pagination
-  // response is what triggered this one (`pendingAnchorRef` is only set
-  // there).
-  useLayoutEffect(() => {
-    const anchor = pendingAnchorRef.current;
-    if (!anchor) return;
-    pendingAnchorRef.current = null;
-    const container = containerRef.current;
-    if (!container) return;
-    const delta = container.scrollHeight - anchor.scrollHeight;
-    container.scrollTop = anchor.scrollTop + delta;
-  }, [messages]);
-
   return {
     messages,
     loading,
     loadingMore,
-    bottomSentinelRef,
-    topSentinelRef,
-    containerRef,
+    firstItemIndex,
+    loadMoreHistory,
+    handleAtBottomStateChange,
   };
 }

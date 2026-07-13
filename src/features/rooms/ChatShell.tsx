@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { Info, Paperclip, Send, Settings, X } from "lucide-react";
+import { ChevronDown, Info, Paperclip, Send, Settings, X } from "lucide-react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
@@ -43,6 +44,14 @@ import { useMessageSend } from "./useMessageSend";
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
+}
+
+/** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
+ * Virtuoso's `context` prop rather than closing over component state, so it's
+ * a stable reference across renders instead of being redefined on every one. */
+function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean } }) {
+  if (!context?.loadingMore) return null;
+  return <p className="pb-2 text-center text-xs text-muted-foreground">Loading older messages…</p>;
 }
 
 /**
@@ -140,8 +149,39 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // already at the bottom) behind it shouldn't be silently marked read, same
   // reasoning as `RoomsScreen`'s focus-suppression check for this atom.
   const roomSettingsOpen = roomSettingsTarget !== null;
-  const { messages, loading, loadingMore, bottomSentinelRef, topSentinelRef, containerRef } =
-    useChatTimeline(room, roomSettingsOpen);
+  const {
+    messages,
+    loading,
+    loadingMore,
+    firstItemIndex,
+    loadMoreHistory,
+    handleAtBottomStateChange,
+  } = useChatTimeline(room, roomSettingsOpen);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Mirrors Virtuoso's `atBottomStateChange` — drives the "jump to present"
+  // pill's visibility (Spec 26 Phase 2). Starts `true` since a freshly
+  // opened room always renders scrolled to bottom.
+  const [atBottom, setAtBottom] = useState(true);
+  // Count of not-yet-seen messages (excluding the current user's own —
+  // sending a message is already an intentional "return to present" action,
+  // so it shouldn't need its own pill) that arrived while scrolled away from
+  // bottom. Reset to 0 once the user is back at bottom, whether by scrolling
+  // there themselves or by clicking the pill.
+  const [newMessageCount, setNewMessageCount] = useState(0);
+  function handleVirtuosoAtBottomStateChange(bottom: boolean) {
+    handleAtBottomStateChange(bottom);
+    setAtBottom(bottom);
+    if (bottom) setNewMessageCount(0);
+  }
+  function handleJumpToPresent() {
+    virtuosoRef.current?.scrollToIndex({ index: messages.length - 1, align: "end" });
+    // Same reconciliation path as Virtuoso's own `atBottomStateChange` (mark-
+    // as-read, pill reset) rather than only updating local `atBottom` state
+    // — a real Virtuoso may not synchronously report "at bottom" right after
+    // an imperative `scrollToIndex`, so this click is treated as having
+    // already arrived rather than waiting on that callback to catch up.
+    handleVirtuosoAtBottomStateChange(true);
+  }
   // Tracks which message rows have already been rendered once, keyed by
   // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
   // entrance — not every row on initial load/pagination.
@@ -231,6 +271,22 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, loading, loadingMore, activeRoomId]);
+  // "Jump to present" pill (Spec 26 Phase 2): accumulates `newMessageKeys`
+  // (the same genuinely-new-arrival diff the entrance animation uses) while
+  // scrolled away from bottom, excluding the current user's own messages —
+  // sending a message is already an intentional "return to present" action,
+  // so it doesn't need its own pill. Reset to 0 happens in
+  // `handleVirtuosoAtBottomStateChange`/`handleJumpToPresent` once back at
+  // bottom, not here.
+  useEffect(() => {
+    if (atBottom || newMessageKeys.size === 0) return;
+    const ownRowKeys = new Set(
+      messages.filter((m) => m.sender === currentUserId).map(messageRowKey),
+    );
+    const incoming = [...newMessageKeys].filter((key) => !ownRowKeys.has(key)).length;
+    if (incoming > 0) setNewMessageCount((count) => count + incoming);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newMessageKeys, atBottom]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
@@ -413,83 +469,107 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       </div>
 
-      <div ref={containerRef} className="flex flex-1 flex-col gap-1 overflow-y-auto p-4">
-        {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {loading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
         {!loading && messages.length === 0 && (
-          <p className="text-sm text-muted-foreground">No messages yet</p>
+          <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
         )}
-        {/* Block-level sibling of the flex message rows below (not a flex
-            item within one), same reasoning as the bottom sentinel — scrolling
-            this near the top of the viewport loads one more page of older
-            history (Spec 26 Phase 1). */}
-        <div ref={topSentinelRef} className="h-px w-full shrink-0" />
-        {loadingMore && (
-          <p className="text-center text-xs text-muted-foreground">Loading older messages…</p>
-        )}
-        {messages.map((message, i) => {
-          const own = message.sender === currentUserId;
-          const prev = messages[i - 1];
-          const next = messages[i + 1];
-          // Own messages are always redactable — don't wait on the async
-          // `canRedactBySender` resolution (which only matters for other
-          // senders' power levels) or Delete flashes hidden-then-shown.
-          const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
-          const readers = receiptsByEvent.get(message.event_id) ?? [];
+        {!loading && messages.length > 0 && (
+          <Virtuoso
+            // Remounts (and so resets Virtuoso's internal scroll/measurement
+            // state, including `firstItemIndex`) on every room switch —
+            // simpler and more robust than manually resetting each piece of
+            // that state ourselves, and matches `useChatTimeline`'s own
+            // per-room reset of `firstItemIndex`.
+            key={room.room_id}
+            ref={virtuosoRef}
+            className="p-4"
+            data={messages}
+            firstItemIndex={firstItemIndex}
+            initialTopMostItemIndex={messages.length - 1}
+            alignToBottom
+            followOutput="auto"
+            startReached={loadMoreHistory}
+            atBottomStateChange={handleVirtuosoAtBottomStateChange}
+            context={{ loadingMore }}
+            components={{ Header: LoadingOlderHeader }}
+            itemContent={(index, message) => {
+              const i = index - firstItemIndex;
+              const own = message.sender === currentUserId;
+              const prev = messages[i - 1];
+              const next = messages[i + 1];
+              // Own messages are always redactable — don't wait on the async
+              // `canRedactBySender` resolution (which only matters for other
+              // senders' power levels) or Delete flashes hidden-then-shown.
+              const allowedToRedact = own || (canRedactBySender[message.sender] ?? false);
+              const readers = receiptsByEvent.get(message.event_id) ?? [];
 
-          return (
-            <div key={messageRowKey(message)}>
-              {isDateDividerBoundary(messages, i) && (
-                <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
-                  {formatDateDividerLabel(message.timestamp_ms)}
+              return (
+                <div className="pb-1">
+                  {isDateDividerBoundary(messages, i) && (
+                    <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
+                      {formatDateDividerLabel(message.timestamp_ms)}
+                    </div>
+                  )}
+                  {i === unreadStartIdx && (
+                    <div className="my-2 flex items-center gap-2">
+                      <div className="h-px flex-1 bg-destructive-solid" />
+                      <span className="text-[11px] font-semibold text-destructive-solid">
+                        New messages
+                      </span>
+                      <div className="h-px flex-1 bg-destructive-solid" />
+                    </div>
+                  )}
+                  <MessageRow
+                    message={message}
+                    roomId={room.room_id}
+                    own={own}
+                    sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
+                    sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
+                    canRedact={allowedToRedact}
+                    readers={readers}
+                    senderNameByUserId={senderNameByUserId}
+                    // Excludes `own` messages: `messageRowKey` (transaction_id ??
+                    // event_id) isn't stable across the local-echo -> ack
+                    // transition for a message *we* sent — `transaction_id()`
+                    // only returns `Some` while an item is still local (see
+                    // `timeline.rs`'s `build_message_summary`), so the row's key
+                    // itself changes once the homeserver ack replaces the local
+                    // echo. That makes the acked row look "unseen" and replay the
+                    // entrance animation a second time. Other senders' messages
+                    // have no local-echo phase to begin with, so this exclusion
+                    // only ever skips the case that would otherwise double-animate.
+                    isNew={!own && newMessageKeys.has(messageRowKey(message))}
+                    getActionsHandle={(key) => actionsRefs.current.get(key)}
+                    registerActionsRef={(key, el) => {
+                      if (el) actionsRefs.current.set(key, el);
+                      else actionsRefs.current.delete(key);
+                    }}
+                    onReply={() => handleReply(message)}
+                    onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
+                    onEdit={() => handleEdit(message.event_id)}
+                    onDelete={() => handleDelete(message.event_id)}
+                    onCopy={() => navigator.clipboard?.writeText(message.body)}
+                  />
                 </div>
-              )}
-              {i === unreadStartIdx && (
-                <div className="my-2 flex items-center gap-2">
-                  <div className="h-px flex-1 bg-destructive-solid" />
-                  <span className="text-[11px] font-semibold text-destructive-solid">
-                    New messages
-                  </span>
-                  <div className="h-px flex-1 bg-destructive-solid" />
-                </div>
-              )}
-              <MessageRow
-                message={message}
-                roomId={room.room_id}
-                own={own}
-                sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
-                sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
-                canRedact={allowedToRedact}
-                readers={readers}
-                senderNameByUserId={senderNameByUserId}
-                // Excludes `own` messages: `messageRowKey` (transaction_id ??
-                // event_id) isn't stable across the local-echo -> ack
-                // transition for a message *we* sent — `transaction_id()`
-                // only returns `Some` while an item is still local (see
-                // `timeline.rs`'s `build_message_summary`), so the row's key
-                // itself changes once the homeserver ack replaces the local
-                // echo. That makes the acked row look "unseen" and replay the
-                // entrance animation a second time. Other senders' messages
-                // have no local-echo phase to begin with, so this exclusion
-                // only ever skips the case that would otherwise double-animate.
-                isNew={!own && newMessageKeys.has(messageRowKey(message))}
-                getActionsHandle={(key) => actionsRefs.current.get(key)}
-                registerActionsRef={(key, el) => {
-                  if (el) actionsRefs.current.set(key, el);
-                  else actionsRefs.current.delete(key);
-                }}
-                onReply={() => handleReply(message)}
-                onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
-                onEdit={() => handleEdit(message.event_id)}
-                onDelete={() => handleDelete(message.event_id)}
-                onCopy={() => navigator.clipboard?.writeText(message.body)}
-              />
-            </div>
-          );
-        })}
-        {/* Block-level sibling of the flex message rows above (not a flex
-            item within one) so it always keeps its own non-zero box and the
-            `threshold: 1` IntersectionObserver can reliably fire. */}
-        <div ref={bottomSentinelRef} className="h-px w-full shrink-0" />
+              );
+            }}
+          />
+        )}
+        {/* "Jump to present" (Spec 26 Phase 2): shown only while scrolled away
+            from the live bottom and at least one new (non-own) message has
+            arrived since — never while already at bottom, the Charm 1.0 #328
+            failure mode this migration is meant to avoid. */}
+        {!atBottom && newMessageCount > 0 && (
+          <button
+            type="button"
+            onClick={handleJumpToPresent}
+            className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-primary-solid px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md hover:opacity-90"
+          >
+            {newMessageCount} new message{newMessageCount === 1 ? "" : "s"}
+            <ChevronDown className="size-3.5" />
+          </button>
+        )}
       </div>
 
       {typingText && (
