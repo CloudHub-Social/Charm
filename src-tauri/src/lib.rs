@@ -151,12 +151,20 @@ fn crash_marker_path(app_data_dir: &Path) -> std::path::PathBuf {
 /// process still reports the same thing (the marker now says "running", not
 /// "crashed") — callers should ask once, e.g. at boot.
 fn take_previous_session_crash_flag(app_data_dir: &Path) -> bool {
-    if std::fs::create_dir_all(app_data_dir).is_err() {
+    if let Err(error) = std::fs::create_dir_all(app_data_dir) {
+        tracing::warn!(%error, "failed to create app data dir for the crash marker");
         return false;
     }
     let path = crash_marker_path(app_data_dir);
     let previous_session_unclean = path.exists();
-    let _ = std::fs::write(&path, b"running");
+    // Best-effort: a failure here (disk full, permissions) just means this
+    // session's own marker doesn't get written, so a crash mid-session
+    // wouldn't be detected next launch — logged (not propagated) since
+    // there's no reasonable recovery action and the crash-recovery prompt
+    // is itself only a nice-to-have nudge, not safety-critical.
+    if let Err(error) = std::fs::write(&path, b"running") {
+        tracing::warn!(%error, "failed to write the crash marker file");
+    }
     previous_session_unclean
 }
 
