@@ -93,20 +93,25 @@ on:
     # own src/gate.mjs, a schedule run ignores the `pull-request` input
     # entirely and scans all open PRs itself, so leaving that input empty for
     # this trigger (see the step below) is expected, not a bug. That scan
-    # does touch Dependabot PRs too, same as any other bot PR — harmless,
-    # since IS_BOT_PR still routes them to the trivial-success step.
+    # does touch bot-authored PRs (Dependabot included) too, and — unlike
+    # pull_request_target/issue_comment/etc. — there is no per-event PR
+    # payload here for IS_BOT_PR to key off, so the action can post a real
+    # marker/pending status for a bot PR's current head during this scan.
+    # The "Re-assert trivial success for bot PRs after a schedule sweep" step
+    # below runs unconditionally after the action on this trigger and
+    # overwrites whatever it wrote for every currently-open bot-authored PR,
+    # so the final state after each cron run is always correct even though
+    # the action's own scan can't be scoped to skip them up front.
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       # Required, not optional: per src/gate.mjs's readTrigger(), a blank
       # pull_request on workflow_dispatch makes the action scan *every* open
-      # PR with marker creation enabled — including bot-authored ones this
-      # workflow otherwise bypasses (IS_BOT_PR isn't computed for
-      # workflow_dispatch at all, so the "Run Codex review gate" step's own
-      # `if:` wouldn't skip them either). That would re-open a Codex request
-      # on any previously-bypassed bot PR, unrelated to whichever PR someone
-      # meant to manually re-gate. Requiring a number here forces a scoped,
-      # single-PR run instead.
+      # PR with marker creation enabled. Requiring a number here forces a
+      # scoped, single-PR run instead. Whether that PR is bot-authored is
+      # resolved at runtime by the "Resolve bot-authorship for
+      # workflow_dispatch" step below (this trigger's payload only carries
+      # the PR number, not its author, so IS_BOT_PR alone can't cover it).
       pull_request:
         description: Pull request number to gate
         required: true
@@ -163,8 +168,27 @@ jobs:
           || (github.event_name == 'pull_request_review_comment' && github.event.pull_request.user.type == 'Bot')
         }}
     steps:
+      - name: Resolve bot-authorship for workflow_dispatch
+        # workflow_dispatch's payload only carries the PR number the user
+        # typed in (github.event.inputs.pull_request), not its author, so
+        # IS_BOT_PR can't be computed for it at the env: block above the way
+        # it is for pull_request_target/issue_comment/etc. Without this, the
+        # manual-rerun path documented for stuck bot PRs would itself send
+        # them straight into the real action below. Looked up live rather
+        # than trusted from any cached state.
+        id: resolve-dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          is_bot=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.inputs.pull_request }}" --jq '.user.type == "Bot"')
+          echo "is_bot=$is_bot" >> "$GITHUB_OUTPUT"
       - name: Trivially pass for merge_group and bot PRs (Codex reviews neither)
-        if: github.event_name == 'merge_group' || env.IS_BOT_PR == 'true'
+        if: >-
+          github.event_name == 'merge_group'
+          || env.IS_BOT_PR == 'true'
+          || steps.resolve-dispatch.outputs.is_bot == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -175,7 +199,7 @@ jobs:
             # Resolved via a live lookup, not github.event.pull_request.head.sha:
             # that field doesn't exist on an issue_comment payload (only
             # `.issue` does), which IS_BOT_PR can now trigger this step for.
-            pr_number="${{ github.event.pull_request.number || github.event.issue.number }}"
+            pr_number="${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}"
             sha=$(gh api "repos/${{ github.repository }}/pulls/$pr_number" --jq .head.sha)
           fi
           gh api "repos/${{ github.repository }}/statuses/$sha" \
@@ -183,7 +207,10 @@ jobs:
             -f context=codex/review-gate \
             -f description="Codex does not review merge-queue commits or bot-authored PRs"
       - name: Run Codex review gate
-        if: github.event_name != 'merge_group' && env.IS_BOT_PR != 'true'
+        if: >-
+          github.event_name != 'merge_group'
+          && env.IS_BOT_PR != 'true'
+          && (github.event_name != 'workflow_dispatch' || steps.resolve-dispatch.outputs.is_bot != 'true')
         # v1.2 (v1.2.1 per its release commit message) — see the header
         # comment for why this is pinned to a SHA rather than the mutable tag.
         uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
@@ -191,3 +218,27 @@ jobs:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
           head-sha: ${{ github.event.pull_request.head.sha || '' }}
+      - name: Re-assert trivial success for bot PRs after a schedule sweep
+        # The action's schedule scan (see the `on.schedule` comment above)
+        # has no per-PR filter, so it can post a real marker/pending status
+        # for a bot-authored PR's current head during its run. This step
+        # runs unconditionally afterward on this trigger only, regardless of
+        # the action step's outcome (always()), and overwrites the status for
+        # every currently-open bot-authored PR's current head back to trivial
+        # success — so the final state after each cron run is correct even
+        # though the action's own scan can't be scoped to skip them.
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${{ github.repository }}/pulls?state=open" \
+            | jq -s '[.[][] | select(.user.type == "Bot") | {number, sha: .head.sha}]' \
+            | jq -c '.[]' \
+            | while read -r pr; do
+                sha=$(echo "$pr" | jq -r .sha)
+                gh api "repos/${{ github.repository }}/statuses/$sha" \
+                  -f state=success \
+                  -f context=codex/review-gate \
+                  -f description="Codex does not review merge-queue commits or bot-authored PRs"
+              done
