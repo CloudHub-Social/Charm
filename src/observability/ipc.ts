@@ -150,9 +150,15 @@ export async function invoke<T>(
   }
 
   try {
+    // Tauri IPC isn't `fetch`/`XHR`, so `browserTracingIntegration`'s
+    // automatic outbound instrumentation never sees this call — attach the
+    // same `sentry-trace`/`baggage` headers by hand so a trace started in
+    // the webview continues into the Rust side (parsed back out via
+    // `observability_trace.rs` on commands that opt in).
     const result = await tauriInvoke<T>(command, args, {
       headers: {
         [IPC_OPERATION_ID_HEADER]: id,
+        ...Sentry.getTraceData(),
       },
     });
     const durationMs = Math.round(performance.now() - startedAt);

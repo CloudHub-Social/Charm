@@ -51,6 +51,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 # S3-compatible endpoint, same as this repo's sccache config) in production,
 # where the deploy target has no persistent volume to write a plain file to.
 object_store = { version = "0.11", features = ["aws"] }
+sentry-tower = { version = "0.48.4", features = ["axum", "axum-matched-path", "http"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "cookies"] }

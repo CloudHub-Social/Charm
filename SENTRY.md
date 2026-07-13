@@ -238,6 +238,91 @@ repo-side label creation was needed for this spec. Verify end-to-end by
 submitting one test feedback item of each category and checking the resulting
 GitHub issue's label — this can't be automated from the app repo.
 
+## Distributed Tracing
+
+Three independent Sentry clients exist in this repo — web frontend
+(`src/observability/instrument.ts`), Tauri desktop
+(`src-tauri/src/lib.rs`), and `charm-web-server`
+(`crates/charm-web-server/src/observability.rs`) — each with its own
+`tracesSampleRate`/`traces_sample_rate`. Two of the three legs now share
+trace context so a slow or failing operation can be followed end-to-end in
+Sentry's trace view instead of appearing as unlinked events:
+
+- **Web frontend → `charm-web-server` (HTTP).** `instrument.ts`'s
+  `tracePropagationTargets` includes `VITE_CHARM_WEB_API_BASE_URL` (or
+  same-origin when that's unset — the web build's relative-path fallback,
+  see `src/lib/matrixTransport.ts`'s `apiBase()`) alongside `localhost`.
+  `browserTracingIntegration()` auto-attaches `sentry-trace`/`baggage` to
+  every `fetch` call within that origin list — no per-call code needed.
+  `charm-web-server`'s axum router (`routes::router()`) layers
+  `sentry_tower::SentryHttpLayer::new().enable_transaction()` +
+  `NewSentryLayer`, which automatically continues those headers into a
+  transaction per request. Layer ordering matters: axum applies `.layer()`
+  calls in the opposite order `tower::ServiceBuilder` would, so
+  `SentryHttpLayer` is applied _before_ `NewSentryLayer` in the router's
+  `.layer()` chain — reversing it silently leaks memory instead of failing
+  loudly (per `sentry-tower`'s own docs). `SentryHttpLayer` attaches the raw
+  request URL to its transaction (and, as a fallback, to any error event
+  captured during the request) — since Matrix room/event/user IDs in a path
+  like `/api/rooms/{room_id}/events/{event_id}/edit` are percent-encoded on
+  the wire, and `observability_scrub`'s `MATRIX_ID_PATTERN` only matches a
+  literal `:`, those IDs would otherwise reach Sentry unredacted despite
+  every other Sentry payload in this codebase going through that scrubber.
+  `routes.rs`'s `redact_request_uri_for_sentry` middleware rewrites the
+  request's URI (path and query) to the matched route template — via
+  `MatchedPath`, the same mechanism `record_request_metrics` already uses to
+  avoid per-room cardinality — before `SentryHttpLayer` ever reads it,
+  fixing both the transaction and the event fallback at their single shared
+  source rather than patching each payload after the fact. It must be
+  layered as the "outer" neighbor of `SentryHttpLayer` (added _after_ it in
+  the `.layer()` chain, given the reversed ordering above) so the rewrite
+  happens before `SentryHttpLayer`'s `Service::call` reads the URI —
+  `axum`'s `Path`/`Query` extractors are unaffected by this rewrite since
+  they read from a separately pre-captured `UrlParams` extension, not from
+  `request.uri()` itself, confirmed against `axum`'s own extractor source.
+- **Web/desktop frontend → Tauri Rust backend (IPC, not HTTP).** Tauri's
+  invoke channel isn't `fetch`/`XHR`, so the browser SDK can't
+  auto-instrument it. `src/observability/ipc.ts`'s `invoke()` — the single
+  choke point every Tauri command call already flows through for the
+  `x-charm-operation-id` header — now also attaches `Sentry.getTraceData()`'s
+  `sentry-trace`/`baggage` values as headers on every call. On the Rust
+  side, `src-tauri/src/observability_trace.rs`'s `continue_ipc_trace` parses
+  those headers back out of a command's `tauri::ipc::Request` and returns a
+  `sentry::TransactionContext` to bind for the duration of that command
+  (see `matrix::send::send_attachment` for the first wiring). Coverage here
+  is intentionally incremental, matching this codebase's existing
+  per-command rollout pattern (e.g. `ipc_operation_id`) — not every
+  `#[tauri::command]` is wired yet; extend it command-by-command as each is
+  touched, prioritizing ones that do real backend work (homeserver calls,
+  crypto) over pure local reads.
+
+**Synapse and Sygnal are out of scope for now.** Both run their own
+Sentry-instrumented deployments (same Sentry org, separate projects, set up
+via the `matrix-docker-ansible-deploy` MDAD playbook) — but reading their
+upstream source directly confirms neither configures
+`traces_sample_rate`/performance tracing:
+`sentry_sdk.init(dsn=..., release=..., environment=...)` in Synapse's
+`setup_sentry()` (`synapse/app/_base.py`), and the even more minimal
+`sentry_sdk.init(sentrycfg["dsn"])` in Sygnal's `sygnal.py`. Neither is set
+up to continue a distributed trace today, so forwarding `sentry-trace`/
+`baggage` to them from `charm-web-server` would currently be inert — those
+headers would just be ignored. If tracing into Synapse/Sygnal is ever
+picked up, it needs upstream changes on their side first (enabling
+`traces_sample_rate` and continuing incoming trace headers at their HTTP
+entrypoint, which for both means an explicit `continue_trace()`-style call
+since they use Twisted directly rather than a framework `sentry_sdk`
+auto-instruments) — that's a separate effort against those projects (and,
+for the MDAD-managed deployment config, against
+`matrix-docker-ansible-deploy-spec16-mdad`), not this repo.
+
+**No Postgres/DB tracing here.** `charm-web-server` has no direct database
+of its own — session persistence is an encrypted-object store
+(`crates/charm-web-server/src/persistence.rs`), and the only "database"
+anywhere in this repo is `matrix-sdk-sqlite`'s internal crypto store, opaque
+to our code. Postgres is Synapse's, external to this repo, and covered by
+the same "upstream tracing isn't configured yet" gap as the rest of Synapse
+above.
+
 ## Phasing
 
 This implementation covers the foundation: consent, settings UI, Sentry init,
