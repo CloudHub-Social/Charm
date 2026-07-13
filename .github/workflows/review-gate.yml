@@ -134,12 +134,18 @@ jobs:
             # Don't assume a fixed short-SHA length (verified 10 chars once,
             # but that's this bot's current formatting, not a guarantee) —
             # extract whatever hex string follows "Reviewed commit:" and check
-            # it's a genuine prefix of HEAD_SHA instead.
+            # it's a genuine prefix of HEAD_SHA instead. Bind via `as $m` first
+            # rather than chaining `capture(...)?.field` directly — the
+            # ubuntu-latest runner's jq rejects that as a syntax error even
+            # though it parses fine locally on a newer jq (confirmed: CI's jq
+            # errored "unexpected FIELD" on every poll). capture() already
+            # produces no output at all on a non-match (not an error), so `?`
+            # was never actually needed for that case either.
             gh api --paginate "repos/$REPO/issues/$PR/comments" \
               | jq --arg sha "$HEAD_SHA" \
                 '.[] | select(.user.login == "chatgpt-codex-connector[bot]")
-                  | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")?.c) as $c
-                  | select($c != null and ($sha | startswith($c)))
+                  | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")) as $m
+                  | select($m.c != null and ($sha | startswith($m.c)))
                   | .id' \
               | grep -q .
           }
