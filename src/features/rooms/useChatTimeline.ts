@@ -32,6 +32,15 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // Virtuoso never mounts at all, so there's no `startReached` sentinel to
   // trigger that load the normal way.
   const [hasMore, setHasMore] = useState(false);
+  // Set when `loadMoreHistory`'s request itself fails (network/backend
+  // error) — distinct from a request that *succeeds* but happens to add no
+  // renderable rows (see `loadMoreHistory`'s own continuation logic for
+  // that case). `ChatShell`'s empty-first-page auto-pagination effect must
+  // stop retrying once this is true, or a persistent backend error would
+  // otherwise loop that effect forever (same dependencies re-trigger it
+  // every time `loadingMore` flips back to `false`). Cleared on room switch
+  // and on any subsequent successful page.
+  const [paginationError, setPaginationError] = useState(false);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   // Mirrors Virtuoso's own `atBottomStateChange` callback — the single
@@ -79,17 +88,27 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // misattributes any concurrently-appended live messages as more prepended
   // history; see `loadMoreHistory`'s own comment below for the race this
   // guards against).
-  function applyMessages(newMessages: RoomMessageSummary[]) {
+  // Returns how many messages were actually prepended ahead of the
+  // previously-first-loaded message, so callers (`loadMoreHistory`) can tell
+  // "this page genuinely added renderable history" from "this page's
+  // underlying timeline items were all filtered out of `RoomMessageSummary`
+  // (state events, polls, etc.), so nothing actually changed" — the two look
+  // identical from `next_cursor` alone.
+  function applyMessages(newMessages: RoomMessageSummary[]): number {
     const previousFirstKey = firstMessageKeyRef.current;
     const newFirstKey = newMessages.length > 0 ? messageRowKey(newMessages[0]) : null;
+    let prepended = 0;
     if (previousFirstKey !== null && newFirstKey !== previousFirstKey) {
-      const prepended = newMessages.findIndex((m) => messageRowKey(m) === previousFirstKey);
+      prepended = newMessages.findIndex((m) => messageRowKey(m) === previousFirstKey);
       if (prepended > 0) {
         setFirstItemIndex((current) => current - prepended);
+      } else {
+        prepended = 0;
       }
     }
     firstMessageKeyRef.current = newFirstKey;
     setMessages(newMessages);
+    return prepended;
   }
 
   useEffect(() => {
@@ -109,6 +128,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     loadingMoreRef.current = false;
     setLoadingMore(false);
     setHasMore(false);
+    setPaginationError(false);
     setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
     // A fresh room's first snapshot is never "prepended history" relative to
     // anything — reset so `applyMessages`' first call for this room doesn't
@@ -238,17 +258,44 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const generation = visitGenerationRef.current;
+    // A single backend page can legitimately contribute zero renderable
+    // `RoomMessageSummary` rows (its underlying timeline items were all
+    // state events/polls/etc. `timeline_item_to_summary` filters out) while
+    // still advancing `next_cursor` — `messages.length` not growing is a
+    // simple, sufficient signal for that, distinct from `applyMessages`'
+    // own identity-based `firstItemIndex` math (which is about *where* new
+    // rows landed, not *whether* any did). Relying on the caller to notice
+    // and re-request wouldn't work for `ChatShell`'s Virtuoso
+    // `startReached`, which is deduped by rendered range and won't refire on
+    // its own while an all-filtered-out response leaves that range
+    // unchanged — so this loops internally until a page actually adds a
+    // row or history is confirmed exhausted.
+    let previousLength = messages.length;
     try {
-      const page = await getTimelinePage(roomId);
-      // Stale if the room has changed since this request was issued —
-      // including a revisit to the same room id, which `visitGenerationRef`
-      // (unlike a plain `currentRoomIdRef` comparison) still distinguishes.
-      // Don't apply this response's messages or index shift in that case.
-      if (visitGenerationRef.current !== generation) return;
-      nextCursorRef.current = page.next_cursor;
-      setHasMore(page.next_cursor !== null);
-      applyMessages(page.messages);
+      for (;;) {
+        const page = await getTimelinePage(roomId);
+        // Stale if the room has changed since this request was issued —
+        // including a revisit to the same room id, which `visitGenerationRef`
+        // (unlike a plain `currentRoomIdRef` comparison) still distinguishes.
+        // Don't apply this response's messages or index shift in that case.
+        if (visitGenerationRef.current !== generation) return;
+        nextCursorRef.current = page.next_cursor;
+        setHasMore(page.next_cursor !== null);
+        applyMessages(page.messages);
+        setPaginationError(false);
+        const madeProgress = page.messages.length > previousLength;
+        previousLength = page.messages.length;
+        if (madeProgress || page.next_cursor === null) break;
+      }
     } catch (err) {
+      // Distinct from a page that succeeds but adds nothing — this is a
+      // genuine request failure, and `ChatShell`'s empty-first-page
+      // auto-pagination effect must stop retrying once it's true rather
+      // than immediately calling this again the moment `loadingMore` flips
+      // back to `false` (its other trigger conditions are otherwise
+      // unchanged by a failed request), which would otherwise loop forever
+      // against a persistent backend/network error.
+      setPaginationError(true);
       logAndIgnore(err);
     } finally {
       if (visitGenerationRef.current === generation) {
@@ -263,6 +310,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     loading,
     loadingMore,
     hasMore,
+    paginationError,
     firstItemIndex,
     loadMoreHistory,
     handleAtBottomStateChange,

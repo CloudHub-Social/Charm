@@ -986,6 +986,63 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps paginating internally when a backward-pagination page adds zero renderable rows to an already-non-empty timeline", async () => {
+    // Regression test: a page can legitimately contribute zero renderable
+    // rows to an already-loaded (non-empty) timeline too, not just on the
+    // very first load — its underlying events were all filtered out of
+    // `RoomMessageSummary`, but `next_cursor` still advances. Virtuoso's
+    // `startReached` is deduped by rendered range and won't refire on its
+    // own while such a response leaves that range unchanged, so
+    // `loadMoreHistory` must keep paginating internally rather than
+    // stranding the user with no way to reach the older content behind it.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    // The next page adds nothing renderable (same array, advanced cursor)...
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "even-more",
+    });
+    // ...and the one after that finally does.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    fireStartReached();
+
+    await screen.findByText("first");
+    expect(getTimelinePage).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops retrying empty-first-page auto-pagination after a request fails", async () => {
+    // Regression test: a rejected loadMoreHistory() call leaves messages
+    // empty and hasMore unchanged, so without a failure flag, ChatShell's
+    // empty-first-page auto-pagination effect would immediately call it
+    // again the moment loadingMore flips back to false — looping forever
+    // against a persistent backend/network error.
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: "more" });
+    getTimelinePage.mockRejectedValueOnce(new Error("network error"));
+    renderChatShell();
+
+    await screen.findByText("Couldn't load messages");
+    // One call for the initial (empty) page, one for the failed retry — no
+    // further retries once paginationError is set.
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
   it("does not mark the room read while room settings covers the chat, but does once it closes", async () => {
     const store = createStore();
     store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });

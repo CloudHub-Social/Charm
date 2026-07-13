@@ -154,6 +154,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     loading,
     loadingMore,
     hasMore,
+    paginationError,
     firstItemIndex,
     loadMoreHistory,
     handleAtBottomStateChange,
@@ -165,12 +166,16 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // items would otherwise render "No messages yet" with Virtuoso never
   // mounted at all (gated on `messages.length > 0` below), meaning its
   // `startReached` sentinel never exists to trigger the load the normal way.
+  // `!paginationError` stops this from retrying forever against a
+  // persistent backend/network failure — a rejected `loadMoreHistory()`
+  // otherwise leaves every other dependency here unchanged once `loadingMore`
+  // flips back to `false`, which would immediately re-trigger it again.
   useEffect(() => {
-    if (!loading && messages.length === 0 && hasMore && !loadingMore) {
+    if (!loading && messages.length === 0 && hasMore && !loadingMore && !paginationError) {
       loadMoreHistory();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
-  }, [loading, messages.length, hasMore, loadingMore]);
+  }, [loading, messages.length, hasMore, loadingMore, paginationError]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   // Mirrors Virtuoso's `atBottomStateChange` — drives the "jump to present"
   // pill's visibility (Spec 26 Phase 2). Starts `true` since a freshly
@@ -248,11 +253,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // `useChatTimeline` or on the (per-room-remounted) Virtuoso instance —
   // switching rooms while scrolled away and mid-pill in room A must not
   // leave A's stale `atBottom`/`newMessageCount` visible over room B's first
-  // render, before B's own `atBottomStateChange` has fired.
-  useEffect(() => {
+  // render, before B's own `atBottomStateChange` has fired. Reset
+  // synchronously during render (React's documented "adjusting state when a
+  // prop changes" pattern), not in a passive `useEffect`: an effect only
+  // runs *after* paint, so room B's first frame would still show room A's
+  // stale pill (and could even count an immediate room-B update as "arrived
+  // while scrolled away") for one frame before the effect caught up.
+  const previousActiveRoomIdForPillRef = useRef(activeRoomId);
+  if (previousActiveRoomIdForPillRef.current !== activeRoomId) {
+    previousActiveRoomIdForPillRef.current = activeRoomId;
     setAtBottom(true);
     setNewMessageCount(0);
-  }, [activeRoomId]);
+  }
   // Tracks which message rows have already been rendered once, keyed by
   // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
   // entrance — not every row on initial load/pagination.
@@ -572,17 +584,20 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {/* While `messages` is empty but `hasMore` is true, older pages are
-            being auto-fetched (see the effect above) looking for a
-            renderable message — keep showing the loading state rather than
-            "No messages yet", which would otherwise flash misleadingly for a
-            room whose *newest* page happened to be entirely unsupported
-            item types. */}
-        {(loading || (messages.length === 0 && hasMore)) && (
+        {/* While `messages` is empty but `hasMore` is true (and no request
+            has failed), older pages are being auto-fetched (see the effect
+            above) looking for a renderable message — keep showing the
+            loading state rather than "No messages yet", which would
+            otherwise flash misleadingly for a room whose *newest* page
+            happened to be entirely unsupported item types. */}
+        {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
         {!loading && messages.length === 0 && !hasMore && (
           <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
+        )}
+        {!loading && messages.length === 0 && hasMore && paginationError && (
+          <p className="p-4 text-sm text-muted-foreground">Couldn't load messages</p>
         )}
         {!loading && messages.length > 0 && (
           <Virtuoso
