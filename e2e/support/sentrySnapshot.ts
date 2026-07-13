@@ -21,22 +21,34 @@ const captureDir = process.env.SENTRY_SNAPSHOT_CAPTURE
  * capture are already settled — this does not itself wait for anything.
  *
  * If a dialog (Radix `role="dialog"`) is open, resets scroll to top on
- * everything *outside* it — background bleed-through behind an otherwise-static
- * modal, never the state under test. Playwright's auto-scroll-into-view (e.g.
- * bringing a below-the-fold "Log out" button into view before clicking it)
- * leaves that background at a non-deterministic offset, which showed up as a
- * flaky diff on `settings-logout-confirm`. When no dialog is open, scroll is
- * left untouched: a scrolled-down settings panel can itself be the subject of
- * the snapshot (e.g. `settings-observability-opted-in` scrolls down to reach
- * "Send feedback" and captures that state), so resetting it there would hide
- * the very thing the test drove into view.
+ * everything outside the *topmost* one — background bleed-through behind an
+ * otherwise-static modal, never the state under test. Playwright's
+ * auto-scroll-into-view (e.g. bringing a below-the-fold "Log out" button into
+ * view before clicking it) leaves that background at a non-deterministic
+ * offset, which showed up as a flaky diff on `settings-logout-confirm`. When
+ * no dialog is open, scroll is left untouched: a scrolled-down settings panel
+ * can itself be the subject of the snapshot (e.g.
+ * `settings-observability-opted-in` scrolls down to reach "Send feedback" and
+ * captures that state), so resetting it there would hide the very thing the
+ * test drove into view.
+ *
+ * "Topmost" matters because `settings-logout-confirm` nests one dialog inside
+ * another: the Settings screen is itself a dialog on desktop widths, and its
+ * scrollable Account panel — the exact thing whose scroll position flakes —
+ * lives inside that outer dialog. Treating *any* mounted dialog as foreground
+ * would wrongly protect that outer dialog's own scrolled content once the
+ * inner "Log out?" confirmation opens on top of it. Radix portals a newly
+ * opened dialog to the end of `document.body`, so the last `role="dialog"` in
+ * document order is the active one; everything else — including an outer
+ * dialog that's merely still mounted underneath — counts as background.
  */
 export async function captureSnapshot(page: Page, name: string): Promise<void> {
   if (!captureDir) return;
   await page.evaluate(() => {
     const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
     if (dialogs.length === 0) return;
-    const isBackground = (el: Element) => !dialogs.some((dialog) => dialog.contains(el));
+    const topDialog = dialogs[dialogs.length - 1];
+    const isBackground = (el: Element) => !topDialog.contains(el);
 
     window.scrollTo(0, 0);
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
