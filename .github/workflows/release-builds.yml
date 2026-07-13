@@ -136,8 +136,19 @@ jobs:
           # `forward_sentry_envelope` Tauri command instead of a direct
           # fetch, so the desktop CSP's `connect-src` never needs to allow
           # Sentry's ingest host — see nightly.yml's Linux job for the same
-          # wiring.
+          # wiring. SENTRY_DSN (bare) is read at Rust *runtime* normally, but
+          # `option_env!("SENTRY_DSN")` (`BAKED_SENTRY_DSN` in lib.rs) bakes
+          # this CI-only value into the binary at compile time, same
+          # mechanism as BUILD_ID — see lib.rs's doc comment. VITE_SENTRY_RELEASE
+          # reuses the release id "Configure Sentry debug-file upload" above
+          # already computed (SENTRY_RELEASE), so this build's frontend
+          # events tag the same release the debug-file upload associates
+          # symbols with.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           # GH Actions runs this as `bash -e` by default, so a non-zero exit
           # from `timeout` (including the expected 124/137 on a hang) would
@@ -251,8 +262,13 @@ jobs:
       - name: Build Tauri macOS app with release debuginfo
         env:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
-          # (`forward_sentry_envelope`), so it's safe to set here too.
+          # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
+          # release/environment env, so it's safe to set here too.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: pnpm tauri build
 
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
@@ -393,8 +409,13 @@ jobs:
       - name: Build Tauri Windows app with release debuginfo
         env:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
-          # (`forward_sentry_envelope`), so it's safe to set here too.
+          # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
+          # release/environment env, so it's safe to set here too.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: pnpm tauri build
 
       - name: Resolve Windows debug-file directory
@@ -511,7 +532,13 @@ jobs:
           # job's Build step comment) — so it's now safe to set VITE_SENTRY_DSN
           # here too, rather than keeping the WebView client disabled.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          # Reuses the release id "Configure Sentry Android upload" above
+          # already computed (SENTRY_RELEASE) — see the Linux job's Build
+          # step comment for why this matters (matching the debug-file/
+          # mapping upload's release tag).
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"

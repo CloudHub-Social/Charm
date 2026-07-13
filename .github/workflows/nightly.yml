@@ -199,15 +199,24 @@ jobs:
         env:
           # VITE_SENTRY_DSN gets inlined into the built JS bundle by Vite at
           # this build step (`beforeBuildCommand` runs it) — see the comment
-          # above. NOT setting a bare SENTRY_DSN here: that one's read via
-          # `std::env::var` at Rust *runtime* (init_sentry_from_settings),
-          # not baked in at compile time the way BUILD_ID is via
-          # `option_env!`, so a CI-only env var here would never reach a
-          # real installed app's process environment — setting it would be
-          # a no-op that looks wired up but isn't. That's a separate,
-          # pre-existing gap in native (Rust-side) Sentry activation, not
-          # something this change fixes.
+          # above. SENTRY_DSN (bare) is also set here even though it's read
+          # via `std::env::var` at Rust *runtime*, not just compile time: CI
+          # env vars present during `cargo build` are captured by
+          # `option_env!("SENTRY_DSN")` (`BAKED_SENTRY_DSN` in lib.rs, same
+          # mechanism as `BUILD_ID`) and baked into the binary, so this one
+          # CI-only value does reach the installed app despite never being
+          # in its own runtime environment. VITE_SENTRY_RELEASE/
+          # VITE_SENTRY_ENVIRONMENT reuse the release id
+          # "Configure Sentry release env" above already computed
+          # (SENTRY_RELEASE), so the packaged frontend's events tag the same
+          # release the debug-file upload below associates symbols with —
+          # without this they'd fall back to the bare package version and
+          # never match.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: nightly
+          VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -382,10 +391,13 @@ jobs:
           }
           pnpm tauri build @configArgs
         env:
-          # VITE_SENTRY_DSN — see the macOS job's Build step comment (piped
-          # through the `forward_sentry_envelope` IPC tunnel, not the CSP-
-          # blocked webview fetch path).
+          # VITE_SENTRY_DSN/SENTRY_DSN/release-env — see the macOS job's
+          # Build step comment.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: nightly
+          VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -629,10 +641,13 @@ jobs:
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
-          # VITE_SENTRY_DSN — see the macOS job's Build step comment (piped
-          # through the `forward_sentry_envelope` IPC tunnel, not the CSP-
-          # blocked webview fetch path).
+          # VITE_SENTRY_DSN/SENTRY_DSN/release-env — see the macOS job's
+          # Build step comment.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: nightly
+          VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -839,6 +854,16 @@ jobs:
           SENTRY_ORG: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_ORG || '' }}
           SENTRY_PROJECT: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_PROJECT || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          # Previously missing (only the bare SENTRY_DSN above was set) — the
+          # Android WebView frontend SDK gates on VITE_SENTRY_DSN
+          # specifically (`initializeSentry`'s `import.meta.env.VITE_SENTRY_DSN`
+          # check), so without this the webview client stayed disabled while
+          # release-builds.yml's Android job (which does set it) enabled it,
+          # meaning nightly never exercised the IPC tunnel on Android.
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          SENTRY_ENVIRONMENT: nightly
+          VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1

@@ -36,15 +36,30 @@ function encodeEnvelopeBody(body: string | Uint8Array): string {
  * stays as locked-down as it is today rather than adding an external
  * `connect-src` allowlist entry.
  */
+interface SentryEnvelopeForwardResult {
+  status_code: number;
+  "x-sentry-rate-limits": string | null;
+  "retry-after": string | null;
+}
+
 function makeTauriIpcTransport(
   options: BaseTransportOptions,
 ): ReturnType<typeof Sentry.createTransport> {
   return Sentry.createTransport(options, async (request) => {
     const { invoke } = await import("@tauri-apps/api/core");
-    const statusCode = await invoke<number>("forward_sentry_envelope", {
+    const result = await invoke<SentryEnvelopeForwardResult>("forward_sentry_envelope", {
       envelopeBase64: encodeEnvelopeBody(request.body),
     });
-    return { statusCode };
+    // Pass rate-limit headers through so the SDK can back off per-category
+    // (errors vs. replays vs. logs) instead of only seeing a bare status
+    // code and treating every 429 the same way.
+    return {
+      statusCode: result.status_code,
+      headers: {
+        "x-sentry-rate-limits": result["x-sentry-rate-limits"],
+        "retry-after": result["retry-after"],
+      },
+    };
   });
 }
 

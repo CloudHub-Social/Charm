@@ -50,7 +50,7 @@ produces no report at all — there's nothing to retroactively send. To close
 that gap without capturing anything pre-consent, Rust writes a marker file in
 the app data directory at process start (`take_previous_session_crash_flag`,
 `src-tauri/src/lib.rs`) and removes it on a clean `RunEvent::Exit`
-(`mark_clean_exit`). If the marker is still there at the *next* launch, the
+(`mark_clean_exit`). If the marker is still there at the _next_ launch, the
 previous process crashed or was killed. The frontend (`crashRecovery.ts`,
 `CrashRecoveryPrompt.tsx`, wired in `main.tsx`) checks this once at boot via
 `had_unclean_previous_session` and, only if Sentry is currently disabled,
@@ -206,7 +206,7 @@ breadcrumb, log, or manual context call must go through the SDK's normal
 pipeline so these hooks run. Do not send raw Matrix IDs or tokens through a
 custom transport or external logging path. The desktop `makeTauriIpcTransport`
 (see "Frontend transport on desktop/Android" above) doesn't violate this: it
-only forwards envelope bytes the SDK already produced *after* `beforeSend`/
+only forwards envelope bytes the SDK already produced _after_ `beforeSend`/
 `beforeBreadcrumb`/etc. ran, exactly like the default fetch transport would —
 it changes how the bytes leave the process, not what's in them.
 

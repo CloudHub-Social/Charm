@@ -54,6 +54,26 @@ const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
 /// consumer below falls back the same way `release_name!()` already did.
 const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
 
+/// Compile-time-baked fallback for `SENTRY_DSN`, same reasoning as
+/// `BUILD_ID` above: an installed app's launch environment has no
+/// `SENTRY_DSN` set (that's only ever present in the CI job that built it),
+/// so a pure `std::env::var` lookup at runtime would silently find nothing
+/// in every shipped desktop/Android build — both `init_sentry_from_settings`
+/// and `forward_sentry_envelope` need this baked-in value as their fallback.
+/// CI sets `SENTRY_DSN` before invoking `pnpm tauri build`/
+/// `pnpm tauri android build` (see nightly.yml/release-builds.yml) purely so
+/// this `option_env!` captures it; `std::env::var("SENTRY_DSN")` still wins
+/// when actually present (e.g. a local dev override), matching
+/// `resolve_build_id_tag`'s priority order.
+const BAKED_SENTRY_DSN: Option<&str> = option_env!("SENTRY_DSN");
+
+fn resolve_sentry_dsn() -> Option<String> {
+    std::env::var("SENTRY_DSN")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| BAKED_SENTRY_DSN.map(str::to_owned))
+}
+
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 
@@ -121,23 +141,46 @@ fn had_unclean_previous_session(state: tauri::State<PreviousSessionCrash>) -> bo
     state.0
 }
 
+/// What `forward_sentry_envelope` hands back to the frontend transport —
+/// mirrors the SDK's own `TransportMakeRequestResponse` shape
+/// (`src/observability/instrument.ts`) so `makeTauriIpcTransport` can pass
+/// rate-limit headers straight through instead of only ever seeing a status
+/// code. Sentry's browser SDK uses `X-Sentry-Rate-Limits`/`Retry-After` to
+/// back off per-category (errors vs. replays vs. logs) rather than treating
+/// every 429 the same, so dropping these here would make the webview keep
+/// sending envelopes a category-specific limit already asked it to pause.
+#[derive(serde::Serialize)]
+struct SentryEnvelopeForwardResult {
+    status_code: u16,
+    #[serde(rename = "x-sentry-rate-limits")]
+    rate_limits: Option<String>,
+    #[serde(rename = "retry-after")]
+    retry_after: Option<String>,
+}
+
 /// Forwards a Sentry envelope from the frontend SDK to Sentry's ingest API
 /// over a plain Rust-side HTTP request instead of the webview's own
 /// fetch/XHR — the desktop CSP's `connect-src` doesn't allow the webview to
 /// reach Sentry's ingest host directly (see `instrument.ts`'s
-/// `makeTauriTransport` doc comment), so the frontend SDK is configured with
-/// a custom `transport` that pipes every outgoing envelope through this IPC
-/// command instead. `envelope_base64` because Tauri IPC arguments are
+/// `makeTauriIpcTransport` doc comment), so the frontend SDK is configured
+/// with a custom `transport` that pipes every outgoing envelope through this
+/// IPC command instead. `envelope_base64` because Tauri IPC arguments are
 /// JSON-encoded strings and Sentry envelopes (especially replay/profiling
 /// attachments) are binary. Gated on the same `observability.json` consent
 /// check `init_sentry_from_settings` uses — belt-and-suspenders, since the
 /// frontend only calls this after its own `Sentry.init` already checked
 /// `settings.sentryEnabled`.
+///
+/// Builds its own `X-Sentry-Auth` header via `Dsn::to_auth` — unlike
+/// `store_api_url`/`envelope_api_url`, which are bare endpoint URLs with no
+/// embedded credentials, Sentry's ingest API rejects an envelope POST that
+/// doesn't authenticate this way (the browser SDK's own transport builds the
+/// same header; this just replicates it on the Rust side of the tunnel).
 #[tauri::command]
 async fn forward_sentry_envelope<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     envelope_base64: String,
-) -> Result<u16, String> {
+) -> Result<SentryEnvelopeForwardResult, String> {
     use base64::Engine as _;
 
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -145,10 +188,7 @@ async fn forward_sentry_envelope<R: tauri::Runtime>(
         return Err("observability consent not granted".to_string());
     }
 
-    let dsn = std::env::var("SENTRY_DSN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "SENTRY_DSN not configured".to_string())?;
+    let dsn = resolve_sentry_dsn().ok_or_else(|| "SENTRY_DSN not configured".to_string())?;
     let parsed: sentry::types::Dsn = dsn
         .parse()
         .map_err(|e| format!("invalid Sentry DSN: {e}"))?;
@@ -156,15 +196,40 @@ async fn forward_sentry_envelope<R: tauri::Runtime>(
         .decode(envelope_base64)
         .map_err(|e| format!("invalid envelope encoding: {e}"))?;
 
+    let auth = parsed
+        .to_auth(Some("sentry.charm-tauri-tunnel/1.0"))
+        .to_string();
     let client = reqwest::Client::new();
     let response = client
         .post(parsed.envelope_api_url().as_str())
         .header("Content-Type", "application/x-sentry-envelope")
+        .header("X-Sentry-Auth", auth)
         .body(bytes)
         .send()
         .await
         .map_err(|e| format!("envelope forward failed: {e}"))?;
-    Ok(response.status().as_u16())
+
+    let status = response.status();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let rate_limits = header("x-sentry-rate-limits");
+    let retry_after = header("retry-after");
+    if !status.is_success() {
+        tracing::warn!(
+            status = status.as_u16(),
+            "Sentry envelope forward returned a non-success status"
+        );
+    }
+    Ok(SentryEnvelopeForwardResult {
+        status_code: status.as_u16(),
+        rate_limits,
+        retry_after,
+    })
 }
 
 #[allow(dead_code)]
@@ -296,9 +361,7 @@ fn resolve_build_id_tag(
 }
 
 fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
-    let dsn = std::env::var("SENTRY_DSN")
-        .ok()
-        .filter(|value| !value.is_empty())?;
+    let dsn = resolve_sentry_dsn()?;
     let app_data_dir = app.path().app_data_dir().ok()?;
     if !observability_enabled_from_store(&app_data_dir) {
         return None;
