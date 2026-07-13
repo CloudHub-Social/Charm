@@ -139,6 +139,14 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            // nightly.yml builds Android in release mode (see the "debug"
+            // block's comment above for why a persistent signing identity
+            // matters for in-place updates) — without this, the "nightly"
+            // signingConfig is defined but never applied to the build type
+            // actually used, and AGP ships a fully unsigned APK instead.
+            if (System.getenv("ANDROID_RELEASE_STORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("nightly")
+            }
         }
     }
     kotlinOptions {
