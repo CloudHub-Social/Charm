@@ -1,0 +1,89 @@
+name: Codex review gate
+
+# Owns a deterministic `codex/review-gate` commit status that stays pending
+# until Codex has cleanly reviewed the current PR head, replacing the
+# hand-rolled Codex polling this repo used to do inside review-gate.yml (see
+# that file's git history — CloudHub-Social/Charm#227/#235 hit repeated races
+# and false-positive/negative signal bugs trying to infer "is Codex done" from
+# raw comments/reviews/reactions). This action (JoeyTeng/codex-review-gate-
+# action) solves the same problem properly: it posts its own controlled
+# "@codex review" marker comment and only trusts a clean completion comment or
+# APPROVED review that appears *after* that marker, so a stale result for an
+# older commit can never be mistaken for covering the current head — the
+# exact class of bug our own version kept running into. See
+# https://github.com/JoeyTeng/codex-review-gate-action for the full design.
+#
+# review-gate.yml still separately waits for Seer (a native check-run, no
+# race to solve there) and for zero unresolved review threads from anyone —
+# this workflow only owns the Codex-specific signal.
+#
+# Runs on pull_request_target (not pull_request): the action needs reliable
+# write access (comments/statuses) regardless of who opened the PR, which
+# pull_request from a fork would deny. It does not check out or execute any
+# PR code — see the action's own docs for why this is safe.
+#
+# Pinned to a commit SHA, not the `v1.2` tag, since this grants a third-party
+# action issues/pull-requests/statuses write on pull_request_target — a tag
+# can be moved to point at different code later; a SHA can't. Re-pin
+# deliberately (verify the new commit first) rather than trusting `@v1.2` to
+# always mean the same thing. Currently v1.2.1 per the action's own release
+# commit message.
+#
+# First-time setup: merge this workflow to the default branch and let it run
+# once on a real PR before adding `codex/review-gate` to the repository
+# ruleset's required status checks — requiring it before the workflow exists
+# on the base branch makes the very first PR fail with nothing to satisfy it.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  schedule:
+    # Retries a stalled gate (e.g. a marker Codex never acknowledged) without
+    # needing a human to notice and re-run — see the action's own retry/
+    # backoff behavior (marker-ack-timeout-seconds, max-wait-seconds).
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Optional pull request number to gate
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: codex-review-gate-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  codex-review-gate:
+    name: codex/review-gate runner
+    # Skips dependabot-authored PRs/events (Codex doesn't review those, so
+    # waiting would fail-closed and block every automated dependency bump —
+    # same reasoning as review-gate.yml's bot-author skip) and, for the
+    # comment/review/review-comment events, only runs when the actor is
+    # actually Codex so unrelated PR activity doesn't spawn a wasted gate run.
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.user.login != 'dependabot[bot]')
+      && (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)))
+      && (github.event_name != 'pull_request_review' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.review.user.login))
+      && (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # v1.2 (v1.2.1 per its release commit message) — see the header comment
+      # for why this is pinned to a SHA rather than the mutable tag.
+      - uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
+          head-sha: ${{ github.event.pull_request.head.sha || '' }}
