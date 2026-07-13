@@ -109,6 +109,21 @@ struct ScrubbingWriter<W: std::io::Write> {
     buffer: Vec<u8>,
 }
 
+impl<W: std::io::Write> ScrubbingWriter<W> {
+    /// Scrubs and forwards whatever is currently buffered, then clears the
+    /// buffer — shared by `flush()` and `Drop` so both actually deliver
+    /// buffered data to `inner` rather than only one of them.
+    fn flush_buffer(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let scrubbed =
+            observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(&self.buffer));
+        let _ = self.inner.write_all(scrubbed.as_bytes());
+        self.buffer.clear();
+    }
+}
+
 impl<W: std::io::Write> std::io::Write for ScrubbingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.buffer.extend_from_slice(buf);
@@ -116,18 +131,18 @@ impl<W: std::io::Write> std::io::Write for ScrubbingWriter<W> {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
+        // `Write::flush`'s contract is that any buffered data has reached
+        // the underlying sink once this returns — calling `inner.flush()`
+        // alone (the previous bug) left our own buffer un-forwarded, so
+        // data was only ever written on `Drop`, not on an explicit `flush()`.
+        self.flush_buffer();
         self.inner.flush()
     }
 }
 
 impl<W: std::io::Write> Drop for ScrubbingWriter<W> {
     fn drop(&mut self) {
-        if self.buffer.is_empty() {
-            return;
-        }
-        let scrubbed =
-            observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(&self.buffer));
-        let _ = self.inner.write_all(scrubbed.as_bytes());
+        self.flush_buffer();
     }
 }
 
@@ -872,6 +887,30 @@ mod observability_tests {
         assert_eq!(
             String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
             "failed: access_token=[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrubbing_writer_flush_delivers_buffered_data_without_needing_drop() {
+        // Write::flush's contract is that buffered data has reached the
+        // inner writer once it returns — a caller that flushes and inspects
+        // the sink before the ScrubbingWriter is dropped must see the data.
+        use std::io::Write;
+
+        let mut buffer = Vec::new();
+        let mut writer = ScrubbingWriter {
+            inner: &mut buffer,
+            buffer: Vec::new(),
+        };
+        writer
+            .write_all(b"failed for @alice:example.org")
+            .expect("write");
+        writer.flush().expect("flush");
+        drop(writer);
+
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed for @[redacted]:[redacted]"
         );
     }
 

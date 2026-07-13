@@ -77,7 +77,11 @@ pub fn scrub_matrix_ids(text: &str) -> String {
 pub fn scrub_urls(text: &str) -> String {
     URL_PATTERN
         .replace_all(text, |captures: &regex::Captures<'_>| {
-            let scheme = if captures[0].starts_with("https://") {
+            // The regex itself is `(?i)`, so the match can have any case
+            // (`HTTPS://...`); compare case-insensitively too, or an
+            // uppercase scheme falls through to the `http` branch and gets
+            // silently downgraded in the output.
+            let scheme = if captures[0].to_ascii_lowercase().starts_with("https://") {
                 "https"
             } else {
                 "http"
@@ -240,6 +244,18 @@ mod tests {
         assert_eq!(
             scrub_urls("see https://example.org/path"),
             "see https://[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrub_urls_matches_scheme_case_insensitively() {
+        assert_eq!(
+            scrub_urls("see HTTPS://example.org/path"),
+            "see https://[redacted]"
+        );
+        assert_eq!(
+            scrub_urls("see HTTP://example.org/path"),
+            "see http://[redacted]"
         );
     }
 
