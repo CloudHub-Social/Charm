@@ -11,9 +11,7 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
-import { settingsHash } from "./features/settings/settingsAtoms";
 import { checkUncleanPreviousSession } from "./observability/crashRecovery";
-import { CrashRecoveryPrompt } from "./observability/CrashRecoveryPrompt";
 import { bootstrapSentry } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
@@ -40,20 +38,14 @@ function ErrorBoundaryFallback({
  */
 function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean }) {
   const [jotaiStore, setJotaiStore] = useState(() => createStore());
-  const [crashPromptOpen, setCrashPromptOpen] = useState(showCrashRecoveryPrompt);
 
   return (
     <Sentry.ErrorBoundary fallback={ErrorBoundaryFallback}>
       <AppProviders store={jotaiStore}>
         <ThemeProvider>
-          <App onLoggedOut={() => setJotaiStore(createStore())} />
-          <CrashRecoveryPrompt
-            open={crashPromptOpen}
-            onDismiss={() => setCrashPromptOpen(false)}
-            onOpenSettings={() => {
-              setCrashPromptOpen(false);
-              window.location.hash = settingsHash("observability");
-            }}
+          <App
+            onLoggedOut={() => setJotaiStore(createStore())}
+            showCrashRecoveryPrompt={showCrashRecoveryPrompt}
           />
         </ThemeProvider>
       </AppProviders>

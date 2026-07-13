@@ -13,6 +13,8 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
   onLoggedOut?: () => void;
+  /** Forwarded straight to `RoomsScreen` — see that prop's own doc comment for why it's gated to that branch specifically rather than shown here. */
+  showCrashRecoveryPrompt?: boolean;
 }
 
 /**
@@ -24,7 +26,7 @@ interface AppProps {
  * held here and is only consumed by `RoomsScreen` once onboarding
  * completes.
  */
-function App({ onLoggedOut }: AppProps) {
+function App({ onLoggedOut, showCrashRecoveryPrompt }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
@@ -76,6 +78,7 @@ function App({ onLoggedOut }: AppProps) {
       currentUserId={session.user_id}
       deepLinkRoomId={deepLinkRoomId}
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
+      showCrashRecoveryPrompt={showCrashRecoveryPrompt}
       onLoggedOut={() => {
         // Clears every account-scoped cache entry (profile, devices,
         // notification settings, room list, ...) so a subsequent sign-in as

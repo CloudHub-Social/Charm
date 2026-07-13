@@ -8,7 +8,11 @@ import { VerificationOverlay } from "@/features/verification/VerificationOverlay
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
-import { useSettingsHashSync } from "@/features/settings/useSettingsNavigation";
+import {
+  useSettingsHashSync,
+  useSettingsNavigation,
+} from "@/features/settings/useSettingsNavigation";
+import { CrashRecoveryPrompt } from "@/observability/CrashRecoveryPrompt";
 import { AppShell, type MobileView } from "@/features/shell/AppShell";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
@@ -34,6 +38,16 @@ interface RoomsScreenProps {
   deepLinkRoomId: string | null;
   onDeepLinkConsumed: () => void;
   onLoggedOut: () => void;
+  /**
+   * Whether `main.tsx`'s crash-recovery check found an unclean previous
+   * session (and Sentry is currently disabled) — passed down rather than
+   * shown at the top-level `Root` because this is the first point in the
+   * component tree where `SettingsScreen`/`useSettingsHashSync` are actually
+   * mounted. Shown any earlier (restoring/login/onboarding), the prompt's
+   * "Review crash reporting settings" button would change the URL hash with
+   * nothing listening for it yet — see PR #228 review discussion.
+   */
+  showCrashRecoveryPrompt?: boolean;
 }
 
 export function RoomsScreen({
@@ -41,7 +55,10 @@ export function RoomsScreen({
   deepLinkRoomId,
   onDeepLinkConsumed,
   onLoggedOut,
+  showCrashRecoveryPrompt = false,
 }: RoomsScreenProps) {
+  const [crashPromptOpen, setCrashPromptOpen] = useState(showCrashRecoveryPrompt);
+  const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
@@ -318,6 +335,14 @@ export function RoomsScreen({
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
+      <CrashRecoveryPrompt
+        open={crashPromptOpen}
+        onDismiss={() => setCrashPromptOpen(false)}
+        onOpenSettings={() => {
+          setCrashPromptOpen(false);
+          openSettings("observability");
+        }}
+      />
     </>
   );
 }

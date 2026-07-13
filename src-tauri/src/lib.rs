@@ -67,11 +67,24 @@ const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
 /// `resolve_build_id_tag`'s priority order.
 const BAKED_SENTRY_DSN: Option<&str> = option_env!("SENTRY_DSN");
 
+/// Pulled out from `resolve_sentry_dsn` as a pure function so the
+/// empty-string-is-unset priority order is unit-testable without an actual
+/// process environment — same reasoning as `resolve_build_id_tag`.
+fn resolve_sentry_dsn_from(env_value: Option<String>, baked: Option<&str>) -> Option<String> {
+    env_value.filter(|value| !value.is_empty()).or_else(|| {
+        // CI build steps that pass `SENTRY_DSN: ${{ ... && secrets.X || '' }}`
+        // (e.g. nightly runs without HAS_SENTRY_CREDS) bake in `Some("")`,
+        // not `None` — `option_env!` only sees "was this env var present at
+        // compile time", not "was it non-empty". Filtering here the same way
+        // as the runtime value above keeps an unconfigured build correctly
+        // disabled instead of treating an empty string as a real (and then
+        // invalid, once parsed as a Dsn) DSN.
+        baked.filter(|value| !value.is_empty()).map(str::to_owned)
+    })
+}
+
 fn resolve_sentry_dsn() -> Option<String> {
-    std::env::var("SENTRY_DSN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| BAKED_SENTRY_DSN.map(str::to_owned))
+    resolve_sentry_dsn_from(std::env::var("SENTRY_DSN").ok(), BAKED_SENTRY_DSN)
 }
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -877,5 +890,40 @@ mod observability_tests {
         assert!(!take_previous_session_crash_flag(dir.path()));
         mark_clean_exit(dir.path());
         assert!(!take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn sentry_dsn_prefers_runtime_env_over_baked() {
+        let resolved = resolve_sentry_dsn_from(
+            Some("https://runtime@example/1".to_owned()),
+            Some("https://baked@example/2"),
+        );
+        assert_eq!(resolved.as_deref(), Some("https://runtime@example/1"));
+    }
+
+    #[test]
+    fn sentry_dsn_falls_back_to_baked_value() {
+        let resolved = resolve_sentry_dsn_from(None, Some("https://baked@example/2"));
+        assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
+    }
+
+    #[test]
+    fn sentry_dsn_treats_empty_env_value_as_unset() {
+        let resolved =
+            resolve_sentry_dsn_from(Some(String::new()), Some("https://baked@example/2"));
+        assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
+    }
+
+    #[test]
+    fn sentry_dsn_treats_empty_baked_value_as_unset() {
+        // The bug a review bot caught: `SENTRY_DSN: ${{ cond && secrets.X || '' }}`
+        // bakes `Some("")` via option_env! when `cond` is false, not `None`.
+        let resolved = resolve_sentry_dsn_from(None, Some(""));
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn sentry_dsn_is_none_without_env_or_baked_value() {
+        assert_eq!(resolve_sentry_dsn_from(None, None), None);
     }
 }
