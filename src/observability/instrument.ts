@@ -16,10 +16,10 @@ type BaseTransportOptions = Parameters<typeof Sentry.createTransport>[0];
  */
 function encodeEnvelopeBody(body: string | Uint8Array): string {
   const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
+  // Builds an array of chars and joins once, rather than repeated `+=` in a
+  // loop (O(n²) in the worst case for large replay/profiling envelopes,
+  // which can run several megabytes).
+  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
   return btoa(binary);
 }
 
