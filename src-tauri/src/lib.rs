@@ -86,6 +86,47 @@ struct SentryGuard {
 #[allow(dead_code)]
 struct TracingFileGuard(tracing_appender::non_blocking::WorkerGuard);
 
+/// Redacts each formatted line the same way `scrub_log` already does for
+/// Sentry logs before writing it to the persistent file. Unlike the Sentry
+/// path, this file layer is unconditional (not gated on the user's logs
+/// consent — see `install_tracing`'s doc comment), so without this a native
+/// error containing a Matrix ID, homeserver URL, or MXC URI (e.g. the
+/// `%error` fields logged in `matrix::sync`/`matrix::verification`) would
+/// land in cleartext on disk regardless of consent. `tracing_subscriber::fmt`
+/// writes one already-formatted buffer per event through the `Write` impl,
+/// so scrubbing at that boundary covers the timestamp/level/target/message
+/// as a whole rather than needing a custom `FormatEvent`.
+struct ScrubbingWriter<W>(W);
+
+impl<W: std::io::Write> std::io::Write for ScrubbingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let scrubbed = observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(buf));
+        self.0.write_all(scrubbed.as_bytes())?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// `MakeWriter` adapter wrapping every writer produced (one per event, per
+/// the `MakeWriter` contract) in `ScrubbingWriter` — this crate's
+/// `tracing-subscriber` version has no `MakeWriterExt::map_writer`
+/// combinator to do this inline.
+struct ScrubbingMakeWriter<M>(M);
+
+impl<'a, M> tracing_subscriber::fmt::MakeWriter<'a> for ScrubbingMakeWriter<M>
+where
+    M: tracing_subscriber::fmt::MakeWriter<'a>,
+{
+    type Writer = ScrubbingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        ScrubbingWriter(self.0.make_writer())
+    }
+}
+
 fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
 ) -> sentry::integrations::tracing::EventFilter {
@@ -157,7 +198,7 @@ fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool)
         Some(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
-                .with_writer(writer)
+                .with_writer(ScrubbingMakeWriter(writer))
                 .with_filter(file_level),
         )
     });
@@ -707,6 +748,22 @@ mod observability_tests {
             Some(&sentry::protocol::Value::String(
                 "![redacted]:[redacted]".to_owned()
             ))
+        );
+    }
+
+    #[test]
+    fn scrubbing_writer_redacts_matrix_ids_and_secrets_before_the_inner_write() {
+        use std::io::Write;
+
+        let mut buffer = Vec::new();
+        let mut writer = ScrubbingWriter(&mut buffer);
+        writer
+            .write_all(b"failed for @alice:example.org access_token=secret")
+            .expect("write to an in-memory Vec never fails");
+
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed for @[redacted]:[redacted] access_token=[redacted]"
         );
     }
 
