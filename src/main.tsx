@@ -11,6 +11,9 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
+import { settingsHash } from "./features/settings/settingsAtoms";
+import { checkUncleanPreviousSession } from "./observability/crashRecovery";
+import { CrashRecoveryPrompt } from "./observability/CrashRecoveryPrompt";
 import { bootstrapSentry } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
@@ -35,24 +38,36 @@ function ErrorBoundaryFallback({
  * next signed-in account, the same way `queryClient.clear()` already does
  * for TanStack Query.
  */
-function Root() {
+function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean }) {
   const [jotaiStore, setJotaiStore] = useState(() => createStore());
+  const [crashPromptOpen, setCrashPromptOpen] = useState(showCrashRecoveryPrompt);
 
   return (
     <Sentry.ErrorBoundary fallback={ErrorBoundaryFallback}>
       <AppProviders store={jotaiStore}>
         <ThemeProvider>
           <App onLoggedOut={() => setJotaiStore(createStore())} />
+          <CrashRecoveryPrompt
+            open={crashPromptOpen}
+            onDismiss={() => setCrashPromptOpen(false)}
+            onOpenSettings={() => {
+              setCrashPromptOpen(false);
+              window.location.hash = settingsHash("observability");
+            }}
+          />
         </ThemeProvider>
       </AppProviders>
     </Sentry.ErrorBoundary>
   );
 }
 
-await bootstrapSentry();
+const [{ sentryEnabled }, uncleanPreviousSession] = await Promise.all([
+  bootstrapSentry(),
+  checkUncleanPreviousSession(),
+]);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root />
+    <Root showCrashRecoveryPrompt={uncleanPreviousSession && !sentryEnabled} />
   </React.StrictMode>,
 );

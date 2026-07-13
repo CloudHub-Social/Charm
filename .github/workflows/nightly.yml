@@ -186,16 +186,28 @@ jobs:
           echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
 
       # Release profile (no --debug) — same build path release-builds.yml
-      # uses for tagged releases. VITE_SENTRY_DSN is deliberately NOT set
-      # here, matching release-builds.yml's frontend-sourcemaps/
-      # android-debug-files jobs: src-tauri/tauri.conf.json's CSP
-      # (connect-src: 'self' ipc: http://ipc.localhost) doesn't allow the
-      # Sentry ingest host, so enabling the browser SDK in this webview
-      # would only produce envelopes the CSP silently blocks. Native Rust
-      # crash reporting (option_env!("BUILD_ID"), the debug-file upload
-      # below) doesn't depend on this and stays fully wired.
+      # uses for tagged releases. VITE_SENTRY_DSN is now set (gated to main
+      # via HAS_SENTRY_CREDS, same gating as everywhere else): src-tauri/
+      # tauri.conf.json's CSP (connect-src: 'self' ipc: http://ipc.localhost)
+      # still doesn't allow the webview to reach Sentry's ingest host
+      # directly, but the frontend SDK is configured with a custom transport
+      # (`instrument.ts`'s `makeTauriIpcTransport`) that pipes every envelope
+      # through the `forward_sentry_envelope` Tauri command instead, which
+      # makes the real HTTP request from the Rust side — so the CSP no
+      # longer needs loosening for this to work.
       - run: pnpm tauri build
         env:
+          # VITE_SENTRY_DSN gets inlined into the built JS bundle by Vite at
+          # this build step (`beforeBuildCommand` runs it) — see the comment
+          # above. NOT setting a bare SENTRY_DSN here: that one's read via
+          # `std::env::var` at Rust *runtime* (init_sentry_from_settings),
+          # not baked in at compile time the way BUILD_ID is via
+          # `option_env!`, so a CI-only env var here would never reach a
+          # real installed app's process environment — setting it would be
+          # a no-op that looks wired up but isn't. That's a separate,
+          # pre-existing gap in native (Rust-side) Sentry activation, not
+          # something this change fixes.
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -370,8 +382,10 @@ jobs:
           }
           pnpm tauri build @configArgs
         env:
-          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
-          # step comment (CSP blocks the browser SDK's ingest traffic).
+          # VITE_SENTRY_DSN — see the macOS job's Build step comment (piped
+          # through the `forward_sentry_envelope` IPC tunnel, not the CSP-
+          # blocked webview fetch path).
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -615,8 +629,10 @@ jobs:
       - name: Build (retry on hang, not on a real failure)
         timeout-minutes: 70
         env:
-          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
-          # step comment (CSP blocks the browser SDK's ingest traffic).
+          # VITE_SENTRY_DSN — see the macOS job's Build step comment (piped
+          # through the `forward_sentry_envelope` IPC tunnel, not the CSP-
+          # blocked webview fetch path).
+          VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1

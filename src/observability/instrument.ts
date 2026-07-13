@@ -1,11 +1,52 @@
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
 import { getBuildId } from "../lib/buildId";
-import { platformTag, preloadPlatformTag } from "../lib/platform";
+import { isTauri, platformTag, preloadPlatformTag } from "../lib/platform";
 import { recordCount } from "./metrics";
 import { readObservabilitySettings } from "./persistence";
 import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
 import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
+
+type BaseTransportOptions = Parameters<typeof Sentry.createTransport>[0];
+
+/**
+ * Encodes an envelope body (which for replay/profiling attachments is binary,
+ * not just text) as base64 for the Tauri IPC bridge — `invoke` arguments are
+ * JSON-encoded, so they can't carry arbitrary bytes directly.
+ */
+function encodeEnvelopeBody(body: string | Uint8Array): string {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Routes every outgoing Sentry envelope (errors, sessions, replays, logs,
+ * transactions — anything the SDK would otherwise `fetch`/`XHR` straight to
+ * Sentry's ingest host) through the `forward_sentry_envelope` Tauri command
+ * instead. Necessary because `src-tauri/tauri.conf.json`'s CSP
+ * (`connect-src: 'self' ipc: http://ipc.localhost`) blocks the webview from
+ * reaching Sentry's ingest host directly — the default `makeFetchTransport`
+ * would just fail silently on every send. The Rust side re-parses the DSN and
+ * makes the real HTTP request itself, which isn't CSP-constrained (see
+ * `forward_sentry_envelope` in `src-tauri/src/lib.rs`), so the webview's CSP
+ * stays as locked-down as it is today rather than adding an external
+ * `connect-src` allowlist entry.
+ */
+function makeTauriIpcTransport(
+  options: BaseTransportOptions,
+): ReturnType<typeof Sentry.createTransport> {
+  return Sentry.createTransport(options, async (request) => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const statusCode = await invoke<number>("forward_sentry_envelope", {
+      envelopeBase64: encodeEnvelopeBody(request.body),
+    });
+    return { statusCode };
+  });
+}
 
 const MAX_ERRORS_PER_SESSION = 50;
 
@@ -164,6 +205,7 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     profilesSampleRate: settings.profilingEnabled ? rate : 0,
     enableLogs: settings.logsEnabled,
     enableMetrics: true,
+    transport: isTauri() ? makeTauriIpcTransport : undefined,
     integrations: integrations(settings),
     initialScope: {
       tags: {

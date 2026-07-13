@@ -128,6 +128,16 @@ jobs:
         # kills the step mid-retry, before its own error handling/logging
         # can run.
         timeout-minutes: 70
+        env:
+          # Safe to send straight to the webview build here (unlike the
+          # Android job below, which historically kept this unset): the
+          # frontend SDK's transport (`instrument.ts`'s
+          # `makeTauriIpcTransport`) pipes every envelope through the
+          # `forward_sentry_envelope` Tauri command instead of a direct
+          # fetch, so the desktop CSP's `connect-src` never needs to allow
+          # Sentry's ingest host — see nightly.yml's Linux job for the same
+          # wiring.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: |
           # GH Actions runs this as `bash -e` by default, so a non-zero exit
           # from `timeout` (including the expected 124/137 on a hang) would
@@ -239,6 +249,10 @@ jobs:
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri macOS app with release debuginfo
+        env:
+          # See the Linux job's Build step comment — same IPC-tunnel wiring
+          # (`forward_sentry_envelope`), so it's safe to set here too.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: pnpm tauri build
 
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
@@ -272,6 +286,14 @@ jobs:
           fi
 
       - name: Build Tauri iOS simulator app with debuginfo
+        env:
+          # Not consumed yet — this is a simulator debug build for Sentry
+          # debug-file upload, not a shipped artifact, and iOS hasn't been
+          # verified end-to-end with the IPC tunnel (`forward_sentry_envelope`)
+          # the way desktop/Android have. Set anyway so the frontend build
+          # here matches the other platforms' env and doesn't need revisiting
+          # separately once iOS is verified.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: pnpm tauri ios build --target aarch64-sim --debug --ci
 
       - name: Resolve Apple debug-file directories
@@ -369,6 +391,10 @@ jobs:
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri Windows app with release debuginfo
+        env:
+          # See the Linux job's Build step comment — same IPC-tunnel wiring
+          # (`forward_sentry_envelope`), so it's safe to set here too.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: pnpm tauri build
 
       - name: Resolve Windows debug-file directory
@@ -477,10 +503,14 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          # Feed native Android BuildConfig only; keep VITE_* unset here so the
-          # Android WebView Sentry client stays disabled until CSP/sourcemap
-          # wiring is handled explicitly.
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          # The Android WebView frontend SDK's transport
+          # (`instrument.ts`'s `makeTauriIpcTransport`) pipes every envelope
+          # through the `forward_sentry_envelope` Tauri command instead of a
+          # direct fetch — same as the desktop platforms (see the Linux
+          # job's Build step comment) — so it's now safe to set VITE_SENTRY_DSN
+          # here too, rather than keeping the WebView client disabled.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"

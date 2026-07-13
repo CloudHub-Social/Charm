@@ -73,6 +73,100 @@ fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     Some(log)
 }
 
+/// Name of the marker file used to detect an unclean previous exit (Spec
+/// 27-ish "crash recovery prompt"): written as soon as this session starts,
+/// removed on a clean `RunEvent::Exit`. If it's still present at the *next*
+/// launch, the previous process never reached a clean shutdown — either a
+/// hard crash (segfault, OOM kill) or the OS killing the process outright,
+/// neither of which run our own exit handler. This is a coarse yes/no signal
+/// only; it carries no stack trace or diagnostic payload, since a native
+/// panic captured mid-session already goes to Sentry via the tracing bridge
+/// above *if* consent was already granted before the crash. Its purpose is
+/// to close the gap for users who never opted in: nudge them, after the
+/// fact, to turn on crash reporting for next time (see
+/// `had_unclean_previous_session` and the frontend's `crashRecovery.ts`),
+/// not to retroactively manufacture a report for a crash we have no data on.
+const CRASH_MARKER_FILENAME: &str = "last_session.marker";
+
+fn crash_marker_path(app_data_dir: &Path) -> std::path::PathBuf {
+    app_data_dir.join(CRASH_MARKER_FILENAME)
+}
+
+/// Reads whether the previous session's marker is still present (= unclean
+/// exit), then immediately overwrites it to mark *this* session as running.
+/// Consumes the signal in the sense that a second call within the same
+/// process still reports the same thing (the marker now says "running", not
+/// "crashed") — callers should ask once, e.g. at boot.
+fn take_previous_session_crash_flag(app_data_dir: &Path) -> bool {
+    if std::fs::create_dir_all(app_data_dir).is_err() {
+        return false;
+    }
+    let path = crash_marker_path(app_data_dir);
+    let previous_session_unclean = path.exists();
+    let _ = std::fs::write(&path, b"running");
+    previous_session_unclean
+}
+
+fn mark_clean_exit(app_data_dir: &Path) {
+    let _ = std::fs::remove_file(crash_marker_path(app_data_dir));
+}
+
+/// Frontend-visible result of `take_previous_session_crash_flag`, captured
+/// once during `setup()` and handed out by `had_unclean_previous_session` —
+/// the frontend calls that once at boot, same lifetime as this state.
+struct PreviousSessionCrash(bool);
+
+#[tauri::command]
+fn had_unclean_previous_session(state: tauri::State<PreviousSessionCrash>) -> bool {
+    state.0
+}
+
+/// Forwards a Sentry envelope from the frontend SDK to Sentry's ingest API
+/// over a plain Rust-side HTTP request instead of the webview's own
+/// fetch/XHR — the desktop CSP's `connect-src` doesn't allow the webview to
+/// reach Sentry's ingest host directly (see `instrument.ts`'s
+/// `makeTauriTransport` doc comment), so the frontend SDK is configured with
+/// a custom `transport` that pipes every outgoing envelope through this IPC
+/// command instead. `envelope_base64` because Tauri IPC arguments are
+/// JSON-encoded strings and Sentry envelopes (especially replay/profiling
+/// attachments) are binary. Gated on the same `observability.json` consent
+/// check `init_sentry_from_settings` uses — belt-and-suspenders, since the
+/// frontend only calls this after its own `Sentry.init` already checked
+/// `settings.sentryEnabled`.
+#[tauri::command]
+async fn forward_sentry_envelope<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    envelope_base64: String,
+) -> Result<u16, String> {
+    use base64::Engine as _;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !observability_enabled_from_store(&app_data_dir) {
+        return Err("observability consent not granted".to_string());
+    }
+
+    let dsn = std::env::var("SENTRY_DSN")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "SENTRY_DSN not configured".to_string())?;
+    let parsed: sentry::types::Dsn = dsn
+        .parse()
+        .map_err(|e| format!("invalid Sentry DSN: {e}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(envelope_base64)
+        .map_err(|e| format!("invalid envelope encoding: {e}"))?;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(parsed.envelope_api_url().as_str())
+        .header("Content-Type", "application/x-sentry-envelope")
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("envelope forward failed: {e}"))?;
+    Ok(response.status().as_u16())
+}
+
 #[allow(dead_code)]
 struct SentryGuard {
     _client: sentry::ClientInitGuard,
@@ -391,6 +485,12 @@ pub fn run() {
             if let Some(sentry_guard) = init_sentry_from_settings(app) {
                 app.manage(sentry_guard);
             }
+            if let Ok(app_data_dir) = app.path().app_data_dir() {
+                let crashed = take_previous_session_crash_flag(&app_data_dir);
+                app.manage(PreviousSessionCrash(crashed));
+            } else {
+                app.manage(PreviousSessionCrash(false));
+            }
             let handle = app.handle().clone();
             // Stashed for platform push callbacks (Android's JNI
             // `onMessage`; iOS's Notification Service Extension runs as a
@@ -445,6 +545,8 @@ pub fn run() {
             greet,
             get_platform,
             update_observability_log_consent,
+            had_unclean_previous_session,
+            forward_sentry_envelope,
             matrix::auth::login,
             matrix::auth::register,
             matrix::auth::discover_homeserver,
@@ -545,8 +647,20 @@ pub fn run() {
             push::unregister_push,
             push::get_push_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Mirror of `take_previous_session_crash_flag` in `setup()`: a
+            // clean `Exit` means this process is shutting down in an orderly
+            // way, so clear the marker before it happens. A crash/kill never
+            // reaches this callback, which is exactly what leaves the marker
+            // behind for the next launch to notice.
+            if let tauri::RunEvent::Exit = event {
+                if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+                    mark_clean_exit(&app_data_dir);
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -674,5 +788,31 @@ mod observability_tests {
     #[test]
     fn build_id_tag_is_none_without_release_env_or_compile_time_build_id() {
         assert_eq!(resolve_build_id_tag(None, None), None);
+    }
+
+    #[test]
+    fn crash_flag_is_false_on_first_launch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn crash_flag_is_true_after_an_unclean_exit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // First launch: no marker yet, so no crash reported, but this
+        // session's own marker is now written...
+        assert!(!take_previous_session_crash_flag(dir.path()));
+        // ...and never cleared (simulating a crash/kill instead of the
+        // `RunEvent::Exit` handler running `mark_clean_exit`), so the next
+        // launch sees it and reports true.
+        assert!(take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn crash_flag_is_false_after_a_clean_exit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!take_previous_session_crash_flag(dir.path()));
+        mark_clean_exit(dir.path());
+        assert!(!take_previous_session_crash_flag(dir.path()));
     }
 }
