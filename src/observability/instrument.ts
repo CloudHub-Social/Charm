@@ -82,7 +82,13 @@ function tracePropagationTargets(): (string | RegExp)[] {
   const targets: (string | RegExp)[] = ["localhost", /^https?:\/\/localhost(?::\d+)?\//];
   const apiBase = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
   if (apiBase) {
-    targets.push(apiBase);
+    // Trim trailing slashes the same way `matrixTransport.ts`'s `apiBase()`
+    // does before every fetch — this must match the actual request URL
+    // (`${apiBase()}${path}`), or a configured value with extra trailing
+    // slashes (e.g. `https://example.com/charm///`) never matches the
+    // trimmed request Sentry's string matcher sees, and no trace headers
+    // ever get attached.
+    targets.push(apiBase.replace(/\/+$/, ""));
   } else if (typeof window !== "undefined") {
     targets.push(window.location.origin);
   }

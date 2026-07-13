@@ -353,13 +353,20 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
     // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
     // and the only non-default headers requests need to set are
     // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
-    // browsers set that one themselves, but it still needs to be allowed) and
-    // `x-charm-operation-id` (used to correlate upload progress).
+    // browsers set that one themselves, but it still needs to be allowed),
+    // `x-charm-operation-id` (used to correlate upload progress), and
+    // `sentry-trace`/`baggage` (attached by the browser SDK when this
+    // origin is in `instrument.ts`'s `tracePropagationTargets` — without
+    // allowing them here, the browser's CORS preflight rejects the request
+    // before it ever reaches `SentryHttpLayer`, silently breaking every
+    // cross-origin API call from a Sentry-enabled web client).
     let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([
             header::CONTENT_TYPE,
             axum::http::HeaderName::from_static("x-charm-operation-id"),
+            axum::http::HeaderName::from_static("sentry-trace"),
+            axum::http::HeaderName::from_static("baggage"),
         ])
         .allow_credentials(true);
 
@@ -3260,5 +3267,87 @@ mod origin_allowlist_tests {
             "https://pr-**-preview.example.workers.dev",
             "https://pr-112-preview.example.workers.dev"
         ));
+    }
+}
+
+#[cfg(test)]
+mod cors_preflight_tests {
+    use tower::ServiceExt;
+
+    use super::ALLOWED_ORIGIN_ENV;
+    use crate::AppState;
+
+    const TEST_ALLOWED_ORIGIN: &str = "https://charm.example.test";
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Regression test: a Sentry-enabled cross-origin web client attaches
+    /// `sentry-trace`/`baggage` on every fetch matched by
+    /// `instrument.ts`'s `tracePropagationTargets` (see that file's
+    /// `apiBase`-origin handling), which forces a browser CORS preflight for
+    /// those non-safelisted headers. If `cors_layer` doesn't explicitly
+    /// allow them, the preflight fails and the browser blocks the actual
+    /// request before it ever reaches `SentryHttpLayer` — silently breaking
+    /// every cross-origin API call from such a client, trace or no trace.
+    #[tokio::test]
+    async fn preflight_allows_sentry_trace_and_baggage_headers() {
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let _allowed_origin = EnvVarGuard::set(ALLOWED_ORIGIN_ENV, TEST_ALLOWED_ORIGIN);
+
+        let app = super::router(AppState::default());
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/rooms")
+                    .header("origin", TEST_ALLOWED_ORIGIN)
+                    .header("access-control-request-method", "GET")
+                    .header(
+                        "access-control-request-headers",
+                        "sentry-trace,baggage,content-type",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allow_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .expect("preflight response must list allowed headers")
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+
+        assert!(
+            allow_headers.contains("sentry-trace"),
+            "expected sentry-trace in Access-Control-Allow-Headers, got: {allow_headers}"
+        );
+        assert!(
+            allow_headers.contains("baggage"),
+            "expected baggage in Access-Control-Allow-Headers, got: {allow_headers}"
+        );
     }
 }

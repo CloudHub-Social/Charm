@@ -118,6 +118,34 @@ describe("Sentry instrumentation", () => {
     expect(Sentry.setTag).toHaveBeenCalledWith("charm.build.version", packageJson.version);
   });
 
+  it("trims trailing slashes from VITE_CHARM_WEB_API_BASE_URL before adding it to tracePropagationTargets", () => {
+    vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "https://example.com/charm///");
+
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tracePropagationTargets: expect.arrayContaining(["https://example.com/charm"]),
+      }),
+    );
+  });
+
+  it("falls back to window.location.origin when VITE_CHARM_WEB_API_BASE_URL is unset", () => {
+    initializeSentry({
+      ...DEFAULT_OBSERVABILITY_SETTINGS,
+      sentryEnabled: true,
+    });
+
+    expect(Sentry.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tracePropagationTargets: expect.arrayContaining([window.location.origin]),
+      }),
+    );
+  });
+
   it("tags events with the real per-OS charm.platform value (Spec 23)", () => {
     vi.mocked(platformModule.platformTag).mockReturnValue("macos");
 
