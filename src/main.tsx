@@ -11,7 +11,7 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
-import { bootstrapSentry } from "./observability/instrument";
+import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
@@ -49,7 +49,10 @@ function Root() {
   );
 }
 
-await bootstrapSentry();
+// Bounded, not `await bootstrapSentry()` directly: this gates React's first
+// render, so a hung settings read (e.g. a stuck Tauri IPC round-trip) must
+// never be able to leave the app permanently blank.
+await bootstrapSentryWithTimeout();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

@@ -366,6 +366,32 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let builder = tauri::Builder::default();
 
+    // Registered first and independent of Sentry consent — this is the one
+    // thing that lets a launch problem (e.g. the app hanging/blanking before
+    // any UI or Sentry state exists) leave a trail on disk at all. Writes to
+    // the platform's standard app log dir (macOS: `~/Library/Logs/<bundle
+    // id>/`) in addition to stdout/the webview console, so `tail -f` on that
+    // directory works even for a release build launched from Finder with no
+    // attached terminal. See the 2026-07-13 blank-page-on-launch
+    // investigation — until this landed there was no persisted log for that
+    // report at all.
+    let builder = builder.plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                    file_name: None,
+                }),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+            ])
+            .level(if cfg!(debug_assertions) {
+                log::LevelFilter::Debug
+            } else {
+                log::LevelFilter::Info
+            })
+            .build(),
+    );
+
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))

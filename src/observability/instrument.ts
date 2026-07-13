@@ -227,6 +227,40 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
   return settings;
 }
 
+/**
+ * Milliseconds to wait for {@link bootstrapSentry} before giving up and letting
+ * `main.tsx` render anyway. `readObservabilitySettings` awaits a Tauri IPC
+ * round-trip (the `plugin-store` `load()`/`get()` calls in `persistence.ts`)
+ * that has no built-in timeout — if it ever hangs (a locked store file, a
+ * stuck IPC channel), the app was left permanently blank, because
+ * `main.tsx` used a top-level `await bootstrapSentry()` gating the very
+ * first `ReactDOM.createRoot(...).render(...)` call. See the 2026-07-13
+ * blank-page-on-launch investigation.
+ */
+export const BOOTSTRAP_TIMEOUT_MS = 3000;
+
+/**
+ * Runs {@link bootstrapSentry} but never blocks the caller past
+ * {@link BOOTSTRAP_TIMEOUT_MS} — `main.tsx` awaits this instead of
+ * `bootstrapSentry()` directly so a stuck settings read can no longer keep
+ * React from ever mounting. If the timeout wins, Sentry stays uninitialized
+ * for this session (same as `VITE_SENTRY_DSN` being unset) rather than the
+ * whole app staying blank forever.
+ */
+export async function bootstrapSentryWithTimeout(
+  timeoutMs: number = BOOTSTRAP_TIMEOUT_MS,
+): Promise<ObservabilitySettings | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([bootstrapSentry(), timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 export async function closeSentry(): Promise<void> {
   if (!initialized) return;
   sentErrorCount = 0;
