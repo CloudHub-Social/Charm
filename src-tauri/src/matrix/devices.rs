@@ -8,6 +8,7 @@ use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata:
     AccountManagementActionData, DeviceDeleteData,
 };
 use matrix_sdk::ruma::{DeviceId, OwnedDeviceId};
+use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
@@ -40,6 +41,10 @@ pub struct DeviceSummary {
 #[tauri::command]
 pub async fn list_devices(state: State<'_, MatrixState>) -> Result<Vec<DeviceSummary>, String> {
     let client = state.require_client().await?;
+    list_devices_impl(&client).await
+}
+
+pub async fn list_devices_impl(client: &Client) -> Result<Vec<DeviceSummary>, String> {
     let own_user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -53,15 +58,25 @@ pub async fn list_devices(state: State<'_, MatrixState>) -> Result<Vec<DeviceSum
 
     let mut summaries = Vec::with_capacity(response.devices.len());
     for device in response.devices {
-        let is_verified = client
-            .encryption()
-            .get_device(&own_user_id, &device.device_id)
-            .await
-            .map_err(|e| e.to_string())?
-            .is_some_and(|d| d.is_verified());
+        let is_current = device.device_id == own_device_id;
+        let is_verified = if is_current {
+            client
+                .encryption()
+                .get_own_device()
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some_and(|d| d.is_verified_with_cross_signing())
+        } else {
+            client
+                .encryption()
+                .get_device(&own_user_id, &device.device_id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_some_and(|d| d.is_verified())
+        };
 
         summaries.push(DeviceSummary {
-            is_current: device.device_id == own_device_id,
+            is_current,
             device_id: device.device_id.to_string(),
             display_name: device.display_name,
             last_seen_ip: device.last_seen_ip,
@@ -87,6 +102,14 @@ pub async fn delete_device(
     password: Option<String>,
 ) -> Result<(), UiaCommandError> {
     let client = state.require_client().await?;
+    delete_device_impl(&client, device_id, password).await
+}
+
+pub async fn delete_device_impl(
+    client: &Client,
+    device_id: String,
+    password: Option<String>,
+) -> Result<(), UiaCommandError> {
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?
@@ -194,7 +217,11 @@ pub async fn get_cross_signing_reset_url(
     state: State<'_, MatrixState>,
 ) -> Result<Option<String>, String> {
     let client = state.require_client().await?;
-    Ok(account_management_url(&client, AccountManagementActionData::CrossSigningReset).await)
+    Ok(get_cross_signing_reset_url_impl(&client).await)
+}
+
+pub async fn get_cross_signing_reset_url_impl(client: &Client) -> Option<String> {
+    account_management_url(client, AccountManagementActionData::CrossSigningReset).await
 }
 
 /// See `account::account_management_url` — `None` for a non-OAuth session,
@@ -206,12 +233,16 @@ pub async fn get_device_delete_url(
     device_id: String,
 ) -> Result<Option<String>, String> {
     let client = state.require_client().await?;
+    Ok(get_device_delete_url_impl(&client, device_id).await)
+}
+
+pub async fn get_device_delete_url_impl(client: &Client, device_id: String) -> Option<String> {
     let device_id: OwnedDeviceId = device_id.into();
-    Ok(account_management_url(
-        &client,
+    account_management_url(
+        client,
         AccountManagementActionData::DeviceDelete(DeviceDeleteData::new(&device_id)),
     )
-    .await)
+    .await
 }
 
 #[cfg(test)]

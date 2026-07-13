@@ -1,4 +1,5 @@
 use futures_util::StreamExt;
+use matrix_sdk::encryption::recovery::RecoveryState;
 use matrix_sdk::encryption::verification::{Emoji, SasState, Verification};
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::Client;
@@ -41,9 +42,15 @@ pub enum SasUpdateEvent {
     },
 }
 
+pub struct StartedSasVerification {
+    pub sas: matrix_sdk::encryption::verification::SasVerification,
+    pub accept_after_subscribe: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct CrossSigningStatusSummary {
+    pub has_identity: bool,
     pub has_master_key: bool,
     pub has_self_signing_key: bool,
     pub has_user_signing_key: bool,
@@ -113,7 +120,25 @@ pub async fn bootstrap_cross_signing_impl(
     retry_uia_with_session(&user_id, password, |auth| {
         encryption.bootstrap_cross_signing_if_needed(auth)
     })
-    .await
+    .await?;
+
+    if let Some(device) = encryption
+        .get_own_device()
+        .await
+        .map_err(|error| UiaCommandError::Other {
+            message: error.to_string(),
+        })?
+        .filter(|device| !device.is_verified_with_cross_signing())
+    {
+        device
+            .verify()
+            .await
+            .map_err(|error| UiaCommandError::Other {
+                message: error.to_string(),
+            })?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -128,13 +153,193 @@ pub async fn cross_signing_status(
 pub async fn cross_signing_status_impl(
     client: &Client,
 ) -> Result<CrossSigningStatusSummary, String> {
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let has_identity = match client.encryption().request_user_identity(&user_id).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "failed to refresh cross-signing identity; falling back to cached status"
+            );
+            false
+        }
+    };
+
     let status = client.encryption().cross_signing_status().await;
+    let has_local_keys = status
+        .as_ref()
+        .is_some_and(|s| s.has_master && s.has_self_signing && s.has_user_signing);
 
     Ok(CrossSigningStatusSummary {
+        has_identity: has_identity || has_local_keys,
         has_master_key: status.as_ref().is_some_and(|s| s.has_master),
         has_self_signing_key: status.as_ref().is_some_and(|s| s.has_self_signing),
         has_user_signing_key: status.as_ref().is_some_and(|s| s.has_user_signing),
     })
+}
+
+/// A device's key-backup/secret-storage ("4S") recovery state, exposed to
+/// the frontend so it knows whether to prompt for a recovery key.
+/// `incomplete` is the state this feature exists for: secrets/backup exist
+/// on the server (some other session set them up), but this device — e.g. a
+/// `charm-web-server` session that just lost its in-memory crypto store to a
+/// restart, see `crates/charm-web-server/src/persistence.rs`'s module doc
+/// comment — doesn't have them locally, so previously-decrypted room
+/// history is unreadable until the user enters their recovery key.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryStatusSummary {
+    Unknown,
+    Enabled,
+    Disabled,
+    Incomplete,
+}
+
+impl From<RecoveryState> for RecoveryStatusSummary {
+    fn from(state: RecoveryState) -> Self {
+        match state {
+            RecoveryState::Unknown => Self::Unknown,
+            RecoveryState::Enabled => Self::Enabled,
+            RecoveryState::Disabled => Self::Disabled,
+            RecoveryState::Incomplete => Self::Incomplete,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn recovery_status(
+    state: State<'_, MatrixState>,
+) -> Result<RecoveryStatusSummary, String> {
+    let client = state.require_client().await?;
+    Ok(recovery_status_impl(&client))
+}
+
+/// Core logic behind [`recovery_status`].
+pub fn recovery_status_impl(client: &Client) -> RecoveryStatusSummary {
+    client.encryption().recovery().state().into()
+}
+
+/// Restores this device's secrets (cross-signing keys, and the key-backup
+/// decryption key) from server-side secret storage using the account's
+/// recovery key. On success, matrix-sdk-crypto's backup machinery can start
+/// downloading and decrypting room keys from the server-side backup as
+/// needed — no separate "download history" step. No UIA/password challenge
+/// involved (unlike [`bootstrap_cross_signing`]): the recovery key itself is
+/// the proof of possession, so a wrong key just surfaces as an ordinary
+/// error rather than a retryable challenge.
+#[tauri::command]
+pub async fn recover_from_key(
+    state: State<'_, MatrixState>,
+    recovery_key: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    recover_from_key_impl(&client, &recovery_key).await
+}
+
+/// How many times [`recover_from_key_impl`] retries self-verification after
+/// a successful `recover()`, and how long it waits between attempts.
+/// `recover()` returning `Ok` only guarantees the account's private
+/// cross-signing secrets were *imported*; matrix-sdk-crypto persists that
+/// import to its local store asynchronously, so a `device.verify()` called
+/// immediately afterward can observe a store that hasn't caught up yet and
+/// fail with what looks like a missing self-signing key, even though the
+/// recovery itself genuinely succeeded. Retrying a few times with a short
+/// backoff resolves that ordinary race; a real failure (revoked device,
+/// corrupt secret storage) still fails every attempt and falls through to
+/// the existing best-effort log below.
+const SELF_VERIFY_RETRY_ATTEMPTS: u32 = 4;
+const SELF_VERIFY_RETRY_BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Core logic behind [`recover_from_key`]. Never logs `recovery_key` itself —
+/// only whether the attempt succeeded and, on failure, the SDK's error
+/// display — matching the redaction `src/observability/ipc.ts` already
+/// applies to this same argument on the frontend side of this same call.
+///
+/// After a successful recovery, also attempts to mark this session's own
+/// device verified — mirrors [`bootstrap_cross_signing_impl`]'s existing
+/// get_own_device/verify pattern (Charm 2.0 Spec 25, requirement 3): a
+/// successful `recover()` has already loaded the account's private
+/// self-signing key locally, so `device.verify()` can locally cross-sign this
+/// device the same way bootstrap's self-verify does, with no separate SAS
+/// step. This self-verify step is best-effort: its failure is logged but
+/// does not fail this call (the recovery itself already succeeded by that
+/// point), so the device can still end up unverified despite a successful
+/// recovery — see the fallback branches below. Retried up to
+/// [`SELF_VERIFY_RETRY_ATTEMPTS`] times first (see that constant's doc
+/// comment for why a single attempt right after `recover()` can spuriously
+/// fail). This is shared code (both the Tauri desktop command and
+/// `charm-web-server`'s `/api/verification/recovery` route call this same
+/// function), so it applies to both clients identically rather than only
+/// fixing the web client's copy of the same gap.
+pub async fn recover_from_key_impl(client: &Client, recovery_key: &str) -> Result<(), String> {
+    let result = client.encryption().recovery().recover(recovery_key).await;
+    match &result {
+        Ok(()) => tracing::info!("recovery-key restore succeeded"),
+        // A wrong key is an expected, common user-input error (like a wrong
+        // password) rather than a bug — `warn`, not `error`, so the Sentry
+        // tracing layer (see SENTRY.md) files this as a breadcrumb, not an
+        // issue that could page anyone.
+        Err(error) => tracing::warn!(error = %error, "recovery-key restore failed"),
+    }
+    result.map_err(|error| error.to_string())?;
+
+    // Best-effort: the recovery itself already succeeded above, so a failure
+    // self-verifying shouldn't be reported as the whole call failing — that
+    // would make a working recovery look like it failed to the caller, when
+    // secrets are in fact already restored. Logged instead; the device
+    // simply stays unverified until the next successful recovery/bootstrap.
+    match client.encryption().get_own_device().await {
+        Ok(Some(device)) if !device.is_verified_with_cross_signing() => {
+            let mut last_error = None;
+            for attempt in 1..=SELF_VERIFY_RETRY_ATTEMPTS {
+                match device.verify().await {
+                    Ok(()) => {
+                        tracing::info!(attempt, "recovery-key self-verification succeeded");
+                        last_error = None;
+                        break;
+                    }
+                    Err(error) => {
+                        if attempt < SELF_VERIFY_RETRY_ATTEMPTS {
+                            tracing::warn!(
+                                attempt,
+                                error = %error,
+                                "recovery-key self-verification attempt failed, retrying"
+                            );
+                        } else {
+                            tracing::warn!(
+                                attempt,
+                                error = %error,
+                                "recovery-key self-verification attempt failed, no attempts left"
+                            );
+                        }
+                        last_error = Some(error);
+                        if attempt < SELF_VERIFY_RETRY_ATTEMPTS {
+                            tokio::time::sleep(SELF_VERIFY_RETRY_BASE_DELAY * attempt).await;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                tracing::warn!(
+                    error = %error,
+                    attempts = SELF_VERIFY_RETRY_ATTEMPTS,
+                    "recovery-key restore succeeded but self-verification failed after all retries"
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            error = %error,
+            "recovery-key restore succeeded but fetching own device for self-verification failed"
+        ),
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -189,33 +394,25 @@ pub async fn start_sas_verification(
     flow_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    let sas = start_sas_verification_impl(&client, &other_user_id, &flow_id).await?;
+    let StartedSasVerification {
+        sas,
+        accept_after_subscribe,
+    } = start_sas_verification_impl(&client, &other_user_id, &flow_id).await?;
+
+    let watcher_sas = sas.clone();
+    let mut changes = watcher_sas.changes();
+    if accept_after_subscribe {
+        sas.accept().await.map_err(|e| e.to_string())?;
+    }
 
     let flow_id = flow_id.clone();
     tokio::spawn(async move {
-        let mut changes = sas.changes();
+        if emit_sas_update(&app, &flow_id, watcher_sas.state()) {
+            return;
+        }
+
         while let Some(sas_state) = changes.next().await {
-            let event = match sas_state {
-                SasState::Started { .. } => SasUpdateEvent::Started,
-                SasState::Accepted { .. } => SasUpdateEvent::Accepted,
-                SasState::KeysExchanged { emojis, .. } => SasUpdateEvent::KeysExchanged {
-                    emojis: emojis
-                        .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
-                        .unwrap_or_default(),
-                },
-                SasState::Confirmed => SasUpdateEvent::Confirmed,
-                SasState::Done { .. } => SasUpdateEvent::Done,
-                SasState::Cancelled(info) => SasUpdateEvent::Cancelled {
-                    reason: info.reason().to_string(),
-                },
-                SasState::Created { .. } => continue,
-            };
-            let is_terminal = matches!(
-                event,
-                SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
-            );
-            let _ = app.emit(&format!("verification:sas_update:{flow_id}"), event);
-            if is_terminal {
+            if emit_sas_update(&app, &flow_id, sas_state) {
                 break;
             }
         }
@@ -224,24 +421,40 @@ pub async fn start_sas_verification(
     Ok(())
 }
 
-/// Core logic behind [`start_sas_verification`]: accepts an already-accepted
-/// request into the SAS flow and returns the resulting `SasVerification` so
-/// the caller can drive/watch it. The state-change watcher loop itself stays
-/// in the command wrapper above since pushing each state as an event is
-/// transport-specific (`app.emit` today; a WebSocket push in the companion
-/// server later).
+/// Core logic behind [`start_sas_verification`]: starts or finds the SAS flow
+/// and tells the command whether it must accept after subscribing to changes.
+/// The state-change watcher loop itself stays in the command wrapper above
+/// since pushing each state as an event is transport-specific (`app.emit`
+/// today; a WebSocket push in the companion server later).
 pub async fn start_sas_verification_impl(
     client: &Client,
     other_user_id: &str,
     flow_id: &str,
-) -> Result<matrix_sdk::encryption::verification::SasVerification, String> {
+) -> Result<StartedSasVerification, String> {
+    let user_id = matrix_sdk::ruma::UserId::parse(other_user_id).map_err(|e| e.to_string())?;
+    if let Some(Verification::SasV1(sas)) = client
+        .encryption()
+        .get_verification(&user_id, flow_id)
+        .await
+    {
+        return Ok(StartedSasVerification {
+            sas,
+            accept_after_subscribe: true,
+        });
+    }
+
     let request = get_request(client, other_user_id, flow_id).await?;
 
-    request
+    let sas = request
         .start_sas()
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "the other side does not support SAS verification".to_string())
+        .ok_or_else(|| "the other side does not support SAS verification".to_string())?;
+
+    Ok(StartedSasVerification {
+        sas,
+        accept_after_subscribe: false,
+    })
 }
 
 #[tauri::command]
@@ -299,5 +512,35 @@ fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
     EmojiPair {
         symbol: emoji.symbol.to_string(),
         description: emoji.description.to_string(),
+    }
+}
+
+fn emit_sas_update(app: &AppHandle, flow_id: &str, sas_state: SasState) -> bool {
+    let Some(event) = sas_state_to_update(sas_state) else {
+        return false;
+    };
+    let is_terminal = matches!(
+        event,
+        SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
+    );
+    let _ = app.emit(&format!("verification:sas_update:{flow_id}"), event);
+    is_terminal
+}
+
+pub fn sas_state_to_update(sas_state: SasState) -> Option<SasUpdateEvent> {
+    match sas_state {
+        SasState::Started { .. } => Some(SasUpdateEvent::Started),
+        SasState::Accepted { .. } => Some(SasUpdateEvent::Accepted),
+        SasState::KeysExchanged { emojis, .. } => Some(SasUpdateEvent::KeysExchanged {
+            emojis: emojis
+                .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
+                .unwrap_or_default(),
+        }),
+        SasState::Confirmed => Some(SasUpdateEvent::Confirmed),
+        SasState::Done { .. } => Some(SasUpdateEvent::Done),
+        SasState::Cancelled(info) => Some(SasUpdateEvent::Cancelled {
+            reason: info.reason().to_string(),
+        }),
+        SasState::Created { .. } => None,
     }
 }

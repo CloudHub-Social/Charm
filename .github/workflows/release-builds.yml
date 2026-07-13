@@ -1,4 +1,4 @@
-name: Sentry release artifacts
+name: Release builds
 
 on:
   push:
@@ -116,8 +116,59 @@ jobs:
           WRITE_RUST_DEBUG_ENV: "true"
         run: bash .github/scripts/configure-sentry-release-env.sh
 
-      - name: Build Tauri Linux app with release debuginfo
-        run: pnpm tauri build
+      # AppImage is deliberately excluded via --bundles: its own bundling
+      # codepath has a separately-known upstream deadlock. deb/rpm
+      # bundling is also prone to an *intermittent* hang of its own —
+      # see nightly.yml's Linux job for the full
+      # investigation history and why this retries on a timeout rather
+      # than trying to prevent it outright.
+      - name: Build Tauri Linux app with release debuginfo (retry on hang, not on a real failure)
+        # Worst case: 3 attempts * (per_attempt_timeout=1200s + kill-after
+        # grace=30s) = 3690s (61.5min) — must exceed that or GH Actions
+        # kills the step mid-retry, before its own error handling/logging
+        # can run.
+        timeout-minutes: 70
+        run: |
+          # GH Actions runs this as `bash -e` by default, so a non-zero exit
+          # from `timeout` (including the expected 124/137 on a hang) would
+          # normally abort the step immediately. `|| status=$?` (not
+          # `|| true; status=$?` — that captures true's exit code, always 0,
+          # not timeout's) sets status only on failure, leaving it unset
+          # (defaulted to 0 below) on success, without ever tripping -e.
+          #
+          # 1200s (20 min), not 15: this is an optimized release build (no
+          # --debug), which is slower to compile than the nightly job's
+          # debug build — the old single-shot step here already used
+          # timeout-minutes: 20, and a shorter per-attempt cap would kill
+          # and retry legitimately-still-compiling attempts as if they'd
+          # hung.
+          max_attempts=3
+          per_attempt_timeout=1200 # 20 minutes
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "::group::Build attempt $attempt/$max_attempts"
+            status=0
+            timeout --kill-after=30 "$per_attempt_timeout" pnpm tauri build --bundles deb,rpm || status=$?
+            echo "::endgroup::"
+            if [ "$status" -eq 0 ]; then
+              echo "Build succeeded on attempt $attempt."
+              exit 0
+            fi
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
+              # Workspace target dir lives at the repo root (root Cargo.toml
+              # declares [workspace] with src-tauri as a member), not
+              # src-tauri/target — confirmed from CI logs
+              # (.../work/Charm/Charm/target/release/bundle/...).
+              rm -rf target/release/bundle
+            else
+              echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
+              exit "$status"
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "All $max_attempts attempts timed out — giving up."
+          exit 1
 
       - name: Resolve Cargo target directory
         id: cargo-target
@@ -189,6 +240,36 @@ jobs:
 
       - name: Build Tauri macOS app with release debuginfo
         run: pnpm tauri build
+
+      # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
+      # `cargo build` runs inside a generated Xcode "Run Script" build phase
+      # (`tauri ios xcode-script`) that does not forward this step's env into
+      # it — the same env-forwarding gap nightly.yml's iOS
+      # job already documents for sccache. BUILD_ID (written to $GITHUB_ENV
+      # by the Sentry config step above) reaches the macOS build fine but
+      # would silently be missing for this one, leaving
+      # option_env!("BUILD_ID") unset and the Rust Sentry release/build tag
+      # falling back to the bare Cargo version. Write it into cargo's own
+      # config.toml instead, same as that nightly job, so cargo forwards it
+      # to rustc regardless of what env xcodebuild's wrapper process handed
+      # down.
+      - name: Persist BUILD_ID for cargo (xcodebuild doesn't forward step env into its Run Script phase)
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          config="$cargo_home/config.toml"
+          # Guard against a duplicate [env] table (a TOML parse error) in
+          # case some earlier step/action already created this file with its
+          # own [env] section.
+          if [ -f "$config" ] && grep -q '^\[env\]' "$config"; then
+            echo "BUILD_ID = \"${BUILD_ID}\"" >> "$config"
+          else
+            {
+              echo '[env]'
+              echo "BUILD_ID = \"${BUILD_ID}\""
+            } >> "$config"
+          fi
 
       - name: Build Tauri iOS simulator app with debuginfo
         run: pnpm tauri ios build --target aarch64-sim --debug --ci

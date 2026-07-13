@@ -28,6 +28,7 @@ const modules = [
   "input",
   "label",
   "popover",
+  "switch",
   "tabs",
   "tooltip",
 ];

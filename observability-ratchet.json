@@ -1,0 +1,8 @@
+{
+  "_comment": "Ratchet floors for scripts/check-observability-ratchet.mjs. Set to actual counts as of 2026-07-12 (frontendMetricsCallSites/rustMetricsCallSites added when Sentry Application Metrics were wired in; other floors set 2026-07-10). When a PR adds e2e specs or Sentry/tracing/metrics instrumentation, raise the relevant floor(s) here in the same PR. Never lower a floor to make CI pass — that defeats the point; if the count is wrong, fix the script instead.",
+  "e2eSpecFiles": 14,
+  "frontendSentryCallSites": 2,
+  "frontendMetricsCallSites": 11,
+  "rustSentryCallSites": 31,
+  "rustMetricsCallSites": 4
+}

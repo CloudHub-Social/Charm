@@ -41,6 +41,15 @@ interface ComposerProps {
   onTypingInput: () => void;
   /** The editor lost focus — old textarea's cue to stop the room's typing notice. */
   onBlur?: () => void;
+  /**
+   * Fired whenever the trimmed plain-text content transitions between empty
+   * and non-empty (including once on mount) — lets the parent (the Send
+   * button in `ChatShell`) disable Send while there's nothing to submit.
+   * There's no attachment concept in this composer today (attachments
+   * upload and send independently — see `useAttachmentUploads`), so text
+   * emptiness is the only signal Send's disabled state needs.
+   */
+  onEmptyChange?: (isEmpty: boolean) => void;
 }
 
 /** Lets a parent (the Send button in `ChatShell`) trigger the same submit path as Enter. */
@@ -163,11 +172,28 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onEscape,
     onTypingInput,
     onBlur,
+    onEmptyChange,
   },
   ref,
 ) {
   const menu = useSuggestionMenu();
   const menuOpenRef = useRef(false);
+  // Tracks the last value reported via `onEmptyChange` so we only call it on
+  // an actual empty/non-empty transition, not on every keystroke. `null`
+  // (rather than defaulting to `true`) means "nothing reported yet" — this
+  // instance's own ref always starts fresh on mount, but the parent's state
+  // (e.g. `ChatShell`'s Send-disabled flag) may be stale from a previous
+  // composer instance (a room/mode switch remounts via `key`), so the first
+  // call after mount must always fire regardless of what it computes to.
+  const wasEmptyRef = useRef<boolean | null>(null);
+
+  function reportEmptyState(editorInstance: Editor) {
+    const isEmpty = editorInstance.getText().trim().length === 0;
+    if (isEmpty !== wasEmptyRef.current) {
+      wasEmptyRef.current = isEmpty;
+      onEmptyChange?.(isEmpty);
+    }
+  }
   menuOpenRef.current = menu.state.open;
 
   const membersRef = useRef<RoomMemberOption[]>([]);
@@ -365,9 +391,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // composer remounts back into send mode.
       if (mode !== "edit") draft.setDraft(e.getHTML());
       onTypingInput();
+      reportEmptyState(e);
     },
     onBlur: () => onBlur?.(),
   });
+
+  // Reports the editor's initial content emptiness once it's created
+  // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
+  // above only fires on subsequent keystrokes, so without this the parent
+  // would default to "empty" even when edit mode starts with existing text.
+  useEffect(() => {
+    if (editor) reportEmptyState(editor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-check when the editor instance itself changes (e.g. remount into a new mode/room); `reportEmptyState`/`onEmptyChange` are stable enough in practice and including them would re-run this on every render
+  }, [editor]);
 
   function submit() {
     if (!editor) return;
@@ -392,6 +428,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // ChatShell already told the server `typing: false` for this send.
       editor.commands.clearContent(false);
       draft.setDraft("");
+      reportEmptyState(editor);
       return;
     }
 
@@ -407,6 +444,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onSubmit(content);
     editor.commands.clearContent(false);
     draft.setDraft("");
+    reportEmptyState(editor);
   }
   submitRef.current = submit;
 

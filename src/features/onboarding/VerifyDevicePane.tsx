@@ -1,9 +1,13 @@
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useCrossSigningResetUrl } from "@/features/settings/useDevices";
+import {
+  useCrossSigningResetUrl,
+  useCrossSigningStatus,
+  useDeviceActions,
+  useDevices,
+} from "@/features/settings/useDevices";
 import { useUiaRetry } from "@/features/settings/useUiaRetry";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { bootstrapCrossSigning } from "@/lib/matrix";
@@ -22,17 +26,32 @@ interface VerifyDevicePaneProps {
  * cross-signing-verified; see its `isVerified` check.
  */
 export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
-  const queryClient = useQueryClient();
+  const { data: devices } = useDevices();
+  const { data: crossSigningStatus } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
+  const { verify, invalidateDevices, invalidateCrossSigning } = useDeviceActions();
   const [done, setDone] = useState(false);
   const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
   const { needsPassword, password, setPassword, error, submitting } = uia;
+  const hasLocalCrossSigningKeys = Boolean(
+    crossSigningStatus?.has_master_key &&
+    crossSigningStatus.has_self_signing_key &&
+    crossSigningStatus.has_user_signing_key,
+  );
+  const isBootstrapped = Boolean(crossSigningStatus?.has_identity || hasLocalCrossSigningKeys);
+  const verifierDevices = (devices ?? []).filter(
+    (device) => !device.is_current && device.is_verified,
+  );
 
   async function handleSetUp() {
     if (await uia.submit()) {
-      queryClient.invalidateQueries({ queryKey: ["crossSigningStatus"] });
+      await Promise.all([invalidateDevices(), invalidateCrossSigning()]);
       setDone(true);
     }
+  }
+
+  async function handleVerifyWith(deviceId: string) {
+    await verify.mutateAsync(deviceId);
   }
 
   return (
@@ -40,6 +59,43 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
       <h1 className="text-xl font-bold text-foreground">Verify this device</h1>
       {done ? (
         <p className="text-sm text-foreground">This device is set up and trusted.</p>
+      ) : isBootstrapped ? (
+        <>
+          <p className="text-sm text-muted-foreground">
+            {verifierDevices.length > 0
+              ? "Choose a session you already trust, then compare emojis there to verify this sign-in."
+              : "Open Charm on a trusted session, then come back here to start verification."}
+          </p>
+          {verifierDevices.length > 0 ? (
+            <div className="flex w-full flex-col gap-2">
+              {verifierDevices.map((device) => (
+                <Button
+                  key={device.device_id}
+                  className="h-11 w-full"
+                  onClick={() => handleVerifyWith(device.device_id).catch(logAndIgnore)}
+                  disabled={verify.isPending}
+                >
+                  Verify with {device.display_name ?? device.device_id}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          {verify.isError && (
+            <p className="text-sm text-destructive">
+              Couldn't start verification: {String(verify.error)}
+            </p>
+          )}
+          <Button
+            variant="ghost"
+            className="h-11 w-full"
+            onClick={() => {
+              invalidateDevices();
+              invalidateCrossSigning();
+            }}
+          >
+            Check again
+          </Button>
+        </>
       ) : (
         <>
           <p className="text-sm text-muted-foreground">
@@ -72,6 +128,18 @@ export function VerifyDevicePane({ onNext, onSkip }: VerifyDevicePaneProps) {
               disabled={submitting || (needsPassword && password === "")}
             >
               {submitting ? "Setting up…" : needsPassword ? "Confirm" : "Verify this device"}
+            </Button>
+          )}
+          {verifierDevices.length > 0 && (
+            <Button
+              variant="ghost"
+              className="h-11 w-full"
+              onClick={() => {
+                invalidateDevices();
+                invalidateCrossSigning();
+              }}
+            >
+              Check again
             </Button>
           )}
         </>

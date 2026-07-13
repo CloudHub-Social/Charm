@@ -1,7 +1,8 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RoomSettingsForm } from "./RoomSettingsForm";
-import { makeRoomDetails, openDropdownMenu, renderWithProviders } from "./testUtils";
+import { makeRoomDetails, openDropdownMenu } from "./testUtils";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 /**
  * Scopes the Save button lookup to whichever field's row it sits in — the

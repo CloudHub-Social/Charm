@@ -20,6 +20,8 @@ import {
   useCrossSigningStatus,
   useDeviceActions,
   useDevices,
+  useRecoverFromKey,
+  useRecoveryStatus,
 } from "./useDevices";
 import { useProfile } from "./useProfile";
 import { isUiaCommandError, uiaErrorMessage, useUiaRetry } from "./useUiaRetry";
@@ -37,7 +39,11 @@ export function DevicesPanel() {
   const { data: devices } = useDevices();
   const { data: status } = useCrossSigningStatus();
   const { data: resetUrl } = useCrossSigningResetUrl();
-  const { revoke, verify, invalidateCrossSigning } = useDeviceActions();
+  const { data: recoveryState } = useRecoveryStatus();
+  const recover = useRecoverFromKey();
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const { revoke, verify, invalidateDevices, invalidateCrossSigning } = useDeviceActions();
+  const oauthKnown = profile !== undefined;
   const usesOAuth = Boolean(profile?.uses_oauth);
   // `profile` (and so `usesOAuth`) is undefined until its query resolves —
   // without requiring it to have loaded, a deep-linked Devices panel could
@@ -45,7 +51,15 @@ export function DevicesPanel() {
   // account (whose devices can only be revoked via account management, not
   // in-app), with selections surviving the moment `usesOAuth` flips to true.
   // Treating "still loading" as non-selectable closes that window entirely.
-  const canBulkSelect = profile !== undefined && !usesOAuth;
+  const canBulkSelect = oauthKnown && !usesOAuth;
+  // Same reasoning applies to each row's own actions: while `profile` is
+  // still loading, `usesOAuth`'s default-`false` value would otherwise leak
+  // through as "not OAuth, safe to show in-app Sign out" — for an
+  // OAuth-managed web session that action can never complete (its UIA retry
+  // is password-only), so a quick click just fails confusingly. Passing
+  // `undefined` until the profile resolves keeps both the in-app "Sign out"
+  // and the account-management link out of the menu during that window.
+  const rowUsesOAuth = oauthKnown ? usesOAuth : undefined;
   const uia = useUiaRetry((password) => bootstrapCrossSigning(password));
   const {
     needsPassword,
@@ -62,11 +76,20 @@ export function DevicesPanel() {
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
 
-  // All three keys, not just the master key — an interrupted/reset bootstrap
-  // can leave a master key in place without the self-signing/user-signing
-  // keys, and this "Set up" action is the only thing that can repair that.
+  // `has_identity` covers the case onboarding already handles: the account's
+  // cross-signing identity exists (set up from another session) but this
+  // session hasn't downloaded/verified the private keys locally yet. Without
+  // it, this tile would fall through to the local-keys-only check below,
+  // wrongly claim "Cross-signing isn't set up yet", and offer setup/reset
+  // instead of verification from a trusted session.
+  //
+  // The local-keys check still matters on its own: all three keys, not just
+  // the master key — an interrupted/reset bootstrap can leave a master key
+  // in place without the self-signing/user-signing keys, and this "Set up"
+  // action is the only thing that can repair that.
   const isBootstrapped = Boolean(
-    status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key,
+    status?.has_identity ||
+    (status?.has_master_key && status.has_self_signing_key && status.has_user_signing_key),
   );
   const groups = groupDevices(devices ?? []);
   const selectableDeviceIds = [...groups.verified, ...groups.unverified].map((d) => d.device_id);
@@ -153,8 +176,18 @@ export function DevicesPanel() {
   async function handleBootstrap() {
     if (await uia.submit()) {
       uia.reset();
+      // The current device's `is_verified` is now derived from cross-signing
+      // verification, so the devices cache also needs invalidating here —
+      // otherwise it can serve a stale "Unverified" row for up to the 30s
+      // stale window right after a successful setup.
+      invalidateDevices();
       invalidateCrossSigning();
     }
+  }
+
+  async function handleRecover() {
+    await recover.mutateAsync(recoveryKey);
+    setRecoveryKey("");
   }
 
   const selectedCount = selectedIds.size;
@@ -209,6 +242,36 @@ export function DevicesPanel() {
         </SettingTile>
       </SettingsCard>
 
+      {recoveryState === "incomplete" && (
+        <SettingsCard heading="Recovery">
+          <SettingTile>
+            <p className="mb-3 text-sm text-muted-foreground">
+              This session is missing some of your account's encryption keys — usually after a
+              restart. Enter your recovery key to restore access to your encrypted message history.
+            </p>
+            <div className="mb-3 max-w-xs">
+              <Label htmlFor="recovery-key">Recovery key</Label>
+              <Input
+                id="recovery-key"
+                type="password"
+                value={recoveryKey}
+                onChange={(e) => setRecoveryKey(e.target.value)}
+              />
+            </div>
+            <Button
+              size="sm"
+              onClick={() => handleRecover().catch(logAndIgnore)}
+              disabled={recover.isPending || recoveryKey === ""}
+            >
+              {recover.isPending ? "Restoring…" : "Restore"}
+            </Button>
+            {recover.isError && (
+              <p className="mt-2 text-sm text-destructive">{String(recover.error)}</p>
+            )}
+          </SettingTile>
+        </SettingsCard>
+      )}
+
       {verify.isError && (
         <p className="text-sm text-destructive">
           Couldn't start verification: {String(verify.error)}
@@ -220,7 +283,7 @@ export function DevicesPanel() {
         devices={groups.current}
         revoke={revoke}
         verify={verify}
-        usesOAuth={usesOAuth}
+        usesOAuth={rowUsesOAuth}
         canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
@@ -230,7 +293,7 @@ export function DevicesPanel() {
         devices={groups.verified}
         revoke={revoke}
         verify={verify}
-        usesOAuth={usesOAuth}
+        usesOAuth={rowUsesOAuth}
         canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
@@ -240,7 +303,7 @@ export function DevicesPanel() {
         devices={groups.unverified}
         revoke={revoke}
         verify={verify}
-        usesOAuth={usesOAuth}
+        usesOAuth={rowUsesOAuth}
         canSelect={canBulkSelect}
         selectedIds={selectedIds}
         onToggleSelected={toggleSelected}
@@ -336,7 +399,7 @@ function DeviceGroup({
   devices: DeviceSummary[];
   revoke: ReturnType<typeof useDeviceActions>["revoke"];
   verify: ReturnType<typeof useDeviceActions>["verify"];
-  usesOAuth: boolean;
+  usesOAuth: boolean | undefined;
   canSelect: boolean;
   selectedIds: Set<string>;
   onToggleSelected: (deviceId: string) => void;

@@ -33,14 +33,21 @@ interface DeviceRowProps {
   onVerify: () => Promise<unknown>;
   /** UIA-gated — throw on the first (password-less) attempt to trigger the retry prompt. */
   onRevoke: (password?: string) => Promise<void>;
-  /** Whether the current session is OAuth/OIDC-managed — see the Rust command's doc comment on `get_device_delete_url`. */
-  usesOAuth: boolean;
+  /**
+   * Whether the current session is OAuth/OIDC-managed — see the Rust
+   * command's doc comment on `get_device_delete_url`. `undefined` while the
+   * profile that determines this is still loading: the in-app "Sign out"
+   * and the "Manage in account settings" link are mutually exclusive and
+   * gated on this being known, so both are hidden until it resolves rather
+   * than defaulting to the non-OAuth ("Sign out") behavior.
+   */
+  usesOAuth: boolean | undefined;
   /** Bulk-select checkbox — omitted (no checkbox rendered) for the current device, which can't be bulk-revoked. */
   selection?: { selected: boolean; onToggle: () => void };
 }
 
 export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: DeviceRowProps) {
-  const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, usesOAuth);
+  const { data: deleteUrl } = useDeviceDeleteUrl(device.device_id, Boolean(usesOAuth));
   const [revokeOpen, setRevokeOpen] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const uia = useUiaRetry((password) => onRevoke(password));
@@ -103,34 +110,38 @@ export function DeviceRow({ device, onVerify, onRevoke, usesOAuth, selection }: 
         </div>
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`}>
-            ⋮
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          {!device.is_verified && !device.is_current && (
-            <DropdownMenuItem onClick={handleVerify} disabled={verifying}>
-              Verify
-            </DropdownMenuItem>
-          )}
-          {/* `delete_device`'s password-only UIA retry can't satisfy an
-              OAuth-managed session's challenge — for those, offer the
-              account-management deep link (once resolved) instead of an
-              in-app "Sign out" that can never complete. */}
-          {!device.is_current && !usesOAuth && (
-            <DropdownMenuItem variant="destructive" onClick={() => setRevokeOpen(true)}>
-              Sign out
-            </DropdownMenuItem>
-          )}
-          {!device.is_current && usesOAuth && deleteUrl && (
-            <DropdownMenuItem onClick={() => openExternalUrl(deleteUrl).catch(logAndIgnore)}>
-              Manage in account settings
-            </DropdownMenuItem>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {!device.is_current && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${label}`}>
+              ⋮
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {!device.is_verified && (
+              <DropdownMenuItem onClick={handleVerify} disabled={verifying}>
+                Verify
+              </DropdownMenuItem>
+            )}
+            {/* `delete_device`'s password-only UIA retry can't satisfy an
+                OAuth-managed session's challenge — for those, offer the
+                account-management deep link (once resolved) instead of an
+                in-app "Sign out" that can never complete. Both branches below
+                require `usesOAuth` to be resolved (not `undefined`) before
+                rendering either action. */}
+            {usesOAuth === false && (
+              <DropdownMenuItem variant="destructive" onClick={() => setRevokeOpen(true)}>
+                Sign out
+              </DropdownMenuItem>
+            )}
+            {usesOAuth === true && deleteUrl && (
+              <DropdownMenuItem onClick={() => openExternalUrl(deleteUrl).catch(logAndIgnore)}>
+                Manage in account settings
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       <Dialog
         open={revokeOpen}

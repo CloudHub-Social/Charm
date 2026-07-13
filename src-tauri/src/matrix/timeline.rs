@@ -15,9 +15,10 @@ use ts_rs::TS;
 use super::{media, profiles, shell, MatrixState};
 
 /// The fixed placeholder body used for an as-yet-undecrypted message (see
-/// `MsgLikeKind::UnableToDecrypt` below) — a single source of truth so the
-/// notification path can recognize and skip it instead of comparing against
-/// a duplicated literal.
+/// `MsgLikeKind::UnableToDecrypt` below). `RoomMessageSummary::is_undecrypted`
+/// is the authoritative signal for this state — this constant only sets the
+/// display text; never match against it to detect undecrypted messages (a
+/// real decrypted message can legitimately contain this exact string).
 const UNABLE_TO_DECRYPT_BODY: &str = "Unable to decrypt message";
 
 /// Display metadata for a non-text `m.room.message` msgtype, additive
@@ -234,6 +235,12 @@ pub struct RoomMessageSummary {
     /// how the frontend turns this into an actual displayable/downloadable
     /// local path.
     pub media: Option<MediaContent>,
+    /// `true` only for `MsgLikeKind::UnableToDecrypt` — the authoritative
+    /// signal for "this is the undecrypted placeholder", set server-side.
+    /// Never derive this by comparing `body` against the placeholder text: a
+    /// real decrypted message can legitimately contain that exact string,
+    /// which would otherwise false-positive as undecrypted.
+    pub is_undecrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -467,6 +474,7 @@ async fn timeline_item_to_summary(
         reactions: Vec::new(),
         in_reply_to: None,
         media: None,
+        is_undecrypted: false,
     };
 
     match &msglike.kind {
@@ -492,6 +500,7 @@ async fn timeline_item_to_summary(
             body: UNABLE_TO_DECRYPT_BODY.to_string(),
             reactions,
             in_reply_to,
+            is_undecrypted: true,
             ..base
         }),
         // Stickers/polls/live-locations/custom message-likes aren't part of
@@ -594,6 +603,7 @@ mod notification_dedup_tests {
             transaction_id: None,
             send_state: SendState::Sent,
             media: None,
+            is_undecrypted: false,
         }
     }
 
@@ -780,9 +790,7 @@ async fn maybe_notify_new_message(
     own_user_id: Option<&UserId>,
     message: &RoomMessageSummary,
 ) {
-    if message.redacted
-        || !matches!(message.send_state, SendState::Sent)
-        || message.body == UNABLE_TO_DECRYPT_BODY
+    if message.redacted || !matches!(message.send_state, SendState::Sent) || message.is_undecrypted
     {
         return;
     }

@@ -1,0 +1,1288 @@
+name: Nightly builds
+
+# Tier 3 of the CI/release model (see docs/ci-tiers.md): the full native
+# platform matrix (macOS/Windows/Linux/iOS/Android) used to run on every PR
+# push and merge_group entry, which was the dominant cost driver of CI wall
+# time. These builds prove "does it compile and bundle" for a path nothing
+# else exercises — Tier 1/2 (quality-checks.yml) never touch the native
+# Tauri bundler. Moved here, off tip of `main`, on a daily schedule + manual
+# dispatch. Non-blocking: a failure here never blocks a PR or the merge
+# queue, it opens/updates a tracking GitHub issue instead.
+#
+# Builds in **release** profile (not `--debug`) — this used to be split into
+# a fast `--debug` "nightly-dev" workflow and a separate release-mode
+# "nightly-release" one, but that split didn't hold up: the installable
+# nightly this workflow publishes (see publish-nightly below) is meant to
+# represent what actually ships, so handing testers a `--debug` binary was
+# actively counterproductive (different perf, different codegen, compiled-
+# out debug_assert!s can mask or introduce different bugs than release
+# does). Release mode also means Sentry's debug-symbol upload after each
+# build actually matches what a real crash report would need to
+# symbolicate — a `--debug` build's symbols aren't useful for that. The
+# CI-cost tradeoff (release compiles slower, and the deb/rpm bundler's
+# intermittent hang is more likely to bite here) is accepted since Tier 1/2
+# already catch plain compile errors — this only needs to catch native-
+# bundler and release-mode-specific breakage, and there's no strong reason
+# that needs to be fast.
+#
+# macOS/Windows signing is opportunistic: if MACOS_CERT_P12/WINDOWS_CERT_PFX
+# (etc., see each job) are configured as repo secrets, the build is signed
+# with a self-signed cert. This does NOT remove either OS's first-run
+# warning — macOS Gatekeeper still blocks an unnotarized app as "from an
+# unidentified developer" and Windows SmartScreen's warning is reputation-
+# based, not signature-based — see README's "Installing a nightly build"
+# for the actual bypass steps on both. The signing itself is still useful
+# (an unsigned macOS binary can trip additional integrity checks/prompts
+# beyond Gatekeeper). Without those secrets, both jobs fall back to their
+# previous unsigned behavior. Both signing-import steps are further gated to
+# main only, so a workflow_dispatch run against an arbitrary branch never
+# gets an unlocked signing identity.
+#
+# Sentry secrets (auth token/org/project/DSN) are gated to main the same
+# way, via each job's HAS_SENTRY_CREDS — a workflow_dispatch run against an
+# arbitrary branch never gets a live Sentry auth token or the ability to
+# publish debug files into the production Sentry project under
+# repo-controlled branch code.
+
+on:
+  schedule:
+    # 09:00 UTC daily — arbitrary; adjust if a different time better fits
+    # when someone's actually around to triage a failure.
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS (tauri build)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) because actionlint rejects the `secrets` context in a
+    # step-level `if:` (only `env`/`github`/`job`/etc. are allowed there —
+    # see the context-availability table linked from actionlint's error).
+    # Also gates to main: a workflow_dispatch run against an arbitrary
+    # branch should never get an unlocked signing identity/keychain that
+    # branch's own build.rs/JS build scripts could reach.
+    env:
+      HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12 != '' && github.ref == 'refs/heads/main' }}
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # Same main-only gating as HAS_MACOS_CERT above: a workflow_dispatch
+      # run against an arbitrary branch must never get a live Sentry auth
+      # token or be able to publish debug files into the production Sentry
+      # project under repo-controlled branch code. schedule always runs
+      # against main.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      # Sets CARGO_PROFILE_RELEASE_DEBUG=1 and BUILD_ID/VITE_BUILD_ID from the
+      # build id above — same script and WRITE_RUST_DEBUG_ENV flag
+      # release-builds.yml's per-platform debug-file jobs use, so the debug
+      # symbols produced here symbolicate against Sentry the same way. Not
+      # passing WRITE_FRONTEND_UPLOAD_ENV: sourcemap upload is a separate,
+      # web-deploy-scoped concern (see web-deploy-dev.yml) — uploading it
+      # redundantly from four platform jobs a day would just spam Sentry
+      # with duplicate release sourcemaps for the same commit. Gated to main
+      # (see HAS_SENTRY_CREDS above) — off main this step and the debug-file
+      # upload step below are both skipped, so the build just runs
+      # unsymbolicated instead of exposing the production Sentry token to
+      # branch code.
+      - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # Imports a self-signed Code Signing cert into a throwaway keychain and
+      # exports its identity name for the build step below, iff the repo has
+      # MACOS_CERT_P12/MACOS_CERT_PASSWORD/MACOS_CERT_NAME secrets configured
+      # (see README.md's "Generating a nightly signing cert" for how to make
+      # one). No-ops (leaves APPLE_SIGNING_IDENTITY unset) when the secret
+      # isn't present, so this is safe to merge before anyone generates a
+      # cert — the build below just falls back to the previous
+      # unsigned/ad-hoc-equivalent behavior.
+      - name: Import macOS signing certificate
+        if: ${{ env.HAS_MACOS_CERT == 'true' }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_CERT_NAME: ${{ secrets.MACOS_CERT_NAME }}
+        run: |
+          set -euo pipefail
+          keychain="nightly-signing.keychain-db"
+          keychain_password=$(uuidgen)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$MACOS_CERT_P12" | base64 -D > cert.p12
+          security import cert.p12 -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security find-certificate -a -p "$keychain" > signing-cert.pem
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign \
+            -k /Library/Keychains/System.keychain signing-cert.pem
+          rm -f signing-cert.pem
+          IFS=$'\n' read -r -d '' -a existing_keychains < <(security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"[[:space:]]*$/\1/' && printf '\0')
+          security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
+          rm -f cert.p12
+          identity_name="$(printf '%s' "$MACOS_CERT_NAME" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          echo "::add-mask::$identity_name"
+          available_identities="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/^[[:space:]]*[0-9]*)[[:space:]]*[A-F0-9]*[[:space:]]*"\(.*\)"$/\1/p')"
+          if [ -z "$identity_name" ]; then
+            echo "::error::MACOS_CERT_NAME is empty after trimming."
+            exit 1
+          fi
+          if ! grep -qxF "$identity_name" <<< "$available_identities"; then
+            echo "::error::MACOS_CERT_NAME does not match any codesigning identity in the imported keychain. Available identity names:"
+            printf '%s\n' "$available_identities"
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=${identity_name}" >> "$GITHUB_ENV"
+
+      # Release profile (no --debug) — same build path release-builds.yml
+      # uses for tagged releases. VITE_SENTRY_DSN is deliberately NOT set
+      # here, matching release-builds.yml's frontend-sourcemaps/
+      # android-debug-files jobs: src-tauri/tauri.conf.json's CSP
+      # (connect-src: 'self' ipc: http://ipc.localhost) doesn't allow the
+      # Sentry ingest host, so enabling the browser SDK in this webview
+      # would only produce envelopes the CSP silently blocks. Native Rust
+      # crash reporting (option_env!("BUILD_ID"), the debug-file upload
+      # below) doesn't depend on this and stays fully wired.
+      - run: pnpm tauri build
+        env:
+          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+
+      - name: Resolve Cargo target directory
+        id: cargo-target
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          echo "dir=$target_dir" >> "$GITHUB_OUTPUT"
+
+      # Same pnpm dlx @sentry/cli debug-files upload release-builds.yml's
+      # apple-debug-files job runs, so a nightly release build symbolicates
+      # against Sentry exactly like a tagged release does. Gated to main —
+      # see HAS_SENTRY_CREDS above.
+      - name: Upload macOS debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload
+          --org "$SENTRY_ORG"
+          --project "$SENTRY_PROJECT"
+          --include-sources
+          --wait
+          --log-level info
+          "${{ steps.cargo-target.outputs.dir }}/release"
+
+      # Only published for main — a workflow_dispatch run against an
+      # arbitrary branch is a compile check, not a build anyone should
+      # install and run. .dmg only, not the .app bundle inside it: a .app is
+      # a directory, and both actions/upload-artifact's later flattening and
+      # `gh release create`'s asset upload expect plain files. The .dmg
+      # already contains the .app, so uploading both is redundant as well as
+      # broken.
+      - name: Upload macOS artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-macos
+          path: target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: macOS"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  windows:
+    name: Windows (tauri build)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && github.ref == 'refs/heads/main' }}
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        shell: bash
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # Imports a self-signed Authenticode cert into the Windows cert store
+      # and captures its thumbprint for the build step below, iff the repo
+      # has WINDOWS_CERT_PFX/WINDOWS_CERT_PASSWORD secrets configured (see
+      # README.md's "Generating a nightly signing cert" for how to make one
+      # with New-SelfSignedCertificate). No-ops when the secret isn't
+      # present, so this is safe to merge before anyone generates a cert.
+      # Note this only signs the binary — SmartScreen's "Windows protected
+      # your PC" warning is reputation-based and persists regardless (only a
+      # paid EV cert removes it); see README for the user-facing workaround.
+      - name: Import Windows signing certificate
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERT_PFX)
+          $pfxPath = Join-Path $env:RUNNER_TEMP "nightly-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, $bytes)
+          $securePassword = ConvertTo-SecureString -String $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePassword
+          Remove-Item $pfxPath
+          "WINDOWS_CERT_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Exercises the bundled-SQLite path (Windows runners have no system
+      # sqlite3 on PATH, so this is the one platform where linking against
+      # the vendored copy is actually load-bearing). Release profile (no
+      # --debug). Signed via a --config override
+      # (bundle.windows.certificateThumbprint) when the step above set
+      # WINDOWS_CERT_THUMBPRINT; the cert must already be in
+      # Cert:\CurrentUser\My for the Tauri bundler's signtool invocation to
+      # find it by thumbprint. A file path rather than inline JSON: `pnpm`
+      # on Windows is a .cmd shim, and passing the JSON straight through as
+      # a CLI arg goes through an extra cmd.exe re-tokenization that
+      # silently strips double-quotes — `--config <path>` sidesteps that.
+      - name: Build
+        shell: pwsh
+        run: |
+          $configArgs = @()
+          if ($env:WINDOWS_CERT_THUMBPRINT) {
+            $config = @{ bundle = @{ windows = @{ certificateThumbprint = $env:WINDOWS_CERT_THUMBPRINT } } } | ConvertTo-Json -Depth 5 -Compress
+            $configPath = Join-Path $env:RUNNER_TEMP "tauri-windows-signing.json"
+            Set-Content -Path $configPath -Value $config -NoNewline -Encoding utf8NoBOM
+            $configArgs = @("--config", $configPath)
+          }
+          pnpm tauri build @configArgs
+        env:
+          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
+          # step comment (CSP blocks the browser SDK's ingest traffic).
+          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+
+      - name: Resolve Windows debug-file directory
+        id: windows-debug-files
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --format-version=1 --no-deps | ConvertFrom-Json
+          $releaseDir = Join-Path $metadata.target_directory "release"
+          if (-not (Test-Path $releaseDir)) {
+            Write-Error "No Windows release debug-file directory found at $releaseDir"
+            exit 1
+          }
+          "path=$releaseDir" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Windows debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        shell: pwsh
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload `
+            --org "$env:SENTRY_ORG" `
+            --project "$env:SENTRY_PROJECT" `
+            --include-sources `
+            --wait `
+            --log-level info `
+            "${{ steps.windows-debug-files.outputs.path }}"
+
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning.
+      - name: Upload Windows artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-windows
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Windows"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  linux:
+    name: Linux (tauri build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # tauri-bundler's AppImage path (crates/tauri-bundler/src/bundle/linux/
+      # appimage/linuxdeploy.rs, prepare_tools()) shells out to linuxdeploy
+      # and unconditionally prepares all four of its plugins (gtk, appimage,
+      # gstreamer — even though this repo's tauri.conf.json doesn't opt into
+      # bundleMediaFramework, so gstreamer is never actually invoked, it's
+      # still fetched) plus AppRun, downloading each from upstream the first
+      # time it doesn't find them already present at
+      # $XDG_CACHE_HOME/tauri (~/.cache/tauri here, since we don't pass
+      # --local-tools-directory). There's no env var to redirect those
+      # downloads — prepare_tools() only ever checks that fixed cache path
+      # for each exact filename it expects. Three of the five are pulled
+      # from mutable refs (the gtk and gstreamer plugins from their
+      # respective `master` branches; the appimage plugin from linuxdeploy/
+      # linuxdeploy-plugin-appimage's `continuous` release), and this job
+      # holds live sccache S3 credentials (see HAS_SCCACHE_CREDS above), so
+      # executing an unpinned binary fetched at build time here is a
+      # supply-chain risk. Pre-populate the cache with pinned,
+      # digest-verified copies so prepare_tools() finds everything already
+      # present and never fetches anything at build time.
+      - name: Prefetch and pin linuxdeploy tools for AppImage bundling
+        run: |
+          set -euo pipefail
+          tools_dir="$HOME/.cache/tauri"
+          mkdir -p "$tools_dir"
+
+          fetch_pinned() {
+            local url="$1" dest="$2" sha256="$3"
+            curl -fsSL -o "$dest" "$url"
+            echo "$sha256  $dest" | sha256sum -c -
+            chmod +x "$dest"
+          }
+
+          # AppRun-x86_64 and linuxdeploy-x86_64.AppImage come from Tauri's
+          # own binary-releases mirror (fixed release tags, not upstream
+          # linuxdeploy/linuxdeploy directly) — still pinned by digest here
+          # rather than trusted implicitly.
+          fetch_pinned \
+            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64" \
+            "$tools_dir/AppRun-x86_64" \
+            "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
+
+          fetch_pinned \
+            "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage" \
+            "$tools_dir/linuxdeploy-x86_64.AppImage" \
+            "e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
+
+          # linuxdeploy-plugin-gtk ships as a shell script served from a
+          # mutable `master` branch — pin to a specific commit SHA instead
+          # of the branch ref, and still verify by digest.
+          fetch_pinned \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh" \
+            "$tools_dir/linuxdeploy-plugin-gtk.sh" \
+            "cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a"
+
+          # linuxdeploy-plugin-appimage's `continuous` release tag is
+          # mutable by design (it's a rolling pre-release), so this pins to
+          # today's asset by digest; bump the digest here when
+          # intentionally picking up a newer continuous build.
+          fetch_pinned \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" \
+            "$tools_dir/linuxdeploy-plugin-appimage.AppImage" \
+            "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"
+
+          # linuxdeploy-plugin-gstreamer: prepare_tools() downloads this
+          # unconditionally (from another mutable `master` branch) even
+          # though our tauri.conf.json doesn't set
+          # bundle.linux.appimage.bundleMediaFramework, so linuxdeploy is
+          # never actually invoked with `--plugin gstreamer` — the fetch
+          # still happens regardless, so it still needs pinning here.
+          fetch_pinned \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh" \
+            "$tools_dir/linuxdeploy-plugin-gstreamer.sh" \
+            "c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
+
+      # AppImage is re-enabled here: linuxdeploy (the tool Tauri shells out
+      # to for AppImage packaging) previously downloaded itself and its GTK/
+      # AppImage plugins from mutable upstream URLs (master branch,
+      # continuous release) at build time, which was a supply-chain risk
+      # given this job's live AWS sccache credentials — see the "Prefetch
+      # and pin linuxdeploy tools" step above, which now pre-populates
+      # ~/.cache/tauri with digest-verified copies so no such download
+      # happens at build time. (AppImage was also excluded for a time by a
+      # separately-known upstream tauri-bundler deadlock, tauri-apps/
+      # tauri#146 — root-caused via a live /proc snapshot on a hung runner —
+      # but that predates the rpm-rs 0.25 upgrade this branch carries; it
+      # has not reproduced since.)
+      #
+      # PR #212 (tauri-apps/tauri#15698): installs cargo-tauri from the
+      # tauri deps/rpm branch (rpm-rs 0.25) instead of the npm-installed
+      # @tauri-apps/cli binary, so the build step below calls
+      # `cargo tauri build` instead of `pnpm tauri build`. This is the fix
+      # for the intermittent rpm-bundling hang investigated at length below
+      # — the retry loop predates it and now stays as a defensive fallback.
+      - name: Install tauri-cli from deps/rpm branch (rpm-rs 0.25 fix)
+        timeout-minutes: 40
+        run: cargo install tauri-cli --git https://github.com/tauri-apps/tauri --rev 7e94ebddfb9e5a6f67a54c94a2dbb6d14a0104a0 --locked
+
+      # AppImage is excluded via --bundles: linuxdeploy (the AppImage tool
+      # Tauri shells out to) downloads itself and its plugins from mutable
+      # URLs (master branch, continuous release) at build time. This job
+      # runs with live AWS sccache credentials, so executing an unpinned
+      # remote binary is a supply-chain risk. deb/rpm bundling had a
+      # separately-known intermittent hang of its own — tauri-apps/tauri
+      # #11478 describes the same symptom (rpm bundling stuck indefinitely,
+      # no error) and was closed upstream as unresolved; a follow-up,
+      # tauri-apps/tauri#15698, narrowed it to a genuine non-deterministic
+      # race in the `rpm` crate's in-process bundling and was fixed by
+      # rpm-rs 0.25 (see the install step above). The retry-on-timeout loop
+      # below predates that fix and is kept as a defensive fallback in case
+      # it doesn't cover every case.
+      - name: Build (retry on hang, not on a real failure)
+        timeout-minutes: 70
+        env:
+          # VITE_SENTRY_DSN deliberately not set — see the macOS job's Build
+          # step comment (CSP blocks the browser SDK's ingest traffic).
+          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+        run: |
+          max_attempts=3
+          per_attempt_timeout=1200 # 20 minutes
+          attempt=1
+          while [ "$attempt" -le "$max_attempts" ]; do
+            echo "::group::Build attempt $attempt/$max_attempts"
+            status=0
+            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --bundles deb,rpm,appimage || status=$?
+            echo "::endgroup::"
+            if [ "$status" -eq 0 ]; then
+              echo "Build succeeded on attempt $attempt."
+              exit 0
+            fi
+            if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+              echo "Attempt $attempt timed out after ${per_attempt_timeout}s (exit $status) — likely the known intermittent bundling hang. Retrying."
+              rm -rf target/release/bundle
+            else
+              echo "Attempt $attempt failed with a real error (exit $status), not a timeout — not retrying."
+              exit "$status"
+            fi
+            attempt=$((attempt + 1))
+          done
+          echo "All $max_attempts attempts timed out — giving up."
+          exit 1
+
+      - name: Resolve Cargo target directory
+        id: cargo-target
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          echo "dir=$target_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Linux debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: >
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload
+          --org "$SENTRY_ORG"
+          --project "$SENTRY_PROJECT"
+          --include-sources
+          --wait
+          --log-level info
+          "${{ steps.cargo-target.outputs.dir }}/release"
+
+      # GPG-signing (when configured) happens centrally in publish-nightly,
+      # not per-platform-job — see that job's "Sign artifacts and generate
+      # checksums" step comment for why. Unlike macOS/Windows, deb/rpm have
+      # no Gatekeeper/SmartScreen-equivalent unidentified-publisher block to
+      # begin with — apt/rpm install unsigned packages fine.
+      - name: Upload Linux artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-linux
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Linux"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  android:
+    name: Android (tauri android build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      HAS_ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_JKS != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' && github.ref == 'refs/heads/main' }}
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      # See the macOS job's HAS_SENTRY_CREDS comment.
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore Gradle cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Set up Android SDK/NDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      - name: Configure Sentry release env
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          WRITE_RUST_DEBUG_ENV: "true"
+          # The script recomputes its own release id from BUILD_ID_KIND
+          # (not the BUILD_KIND the "Compute build id" step above already
+          # used) and then overwrites BUILD_ID/VITE_BUILD_ID with it — so
+          # without this, it silently clobbers the correct
+          # {version}+nightly.{sha} id with a plain {version}+{sha} one.
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # Decodes ANDROID_KEYSTORE_JKS into a file and exports the env vars
+      # app/build.gradle.kts's "nightly" signingConfig reads (see that
+      # file's comment), iff ANDROID_KEYSTORE_JKS/_PASSWORD/ANDROID_KEY_ALIAS
+      # /_PASSWORD secrets are configured (see README.md's "Generating a
+      # nightly signing cert" for how to make one with keytool). Without
+      # them, the build falls back to the AGP's own auto-generated debug
+      # keystore. A persistent keystore matters here — a fresh one every CI
+      # run would mean every "nightly" install prompts an Android device to
+      # trust a new, different signer, breaking update-in-place.
+      - name: Import Android signing keystore
+        if: ${{ env.HAS_ANDROID_KEYSTORE == 'true' }}
+        env:
+          ANDROID_KEYSTORE_JKS: ${{ secrets.ANDROID_KEYSTORE_JKS }}
+        run: |
+          set -euo pipefail
+          keystore_path="${RUNNER_TEMP}/nightly-signing.keystore"
+          echo "$ANDROID_KEYSTORE_JKS" | base64 -d > "$keystore_path"
+          echo "ANDROID_RELEASE_STORE_FILE=${keystore_path}" >> "$GITHUB_ENV"
+
+      # Single arch (aarch64) — this is a release-mode compile+bundle check
+      # plus fresh Sentry symbols, not a store-distributable universal
+      # build, so building all 4 ABIs would just burn CI time for no extra
+      # coverage.
+      # SENTRY_ANDROID_UPLOAD/AUTH_TOKEN/ORG/PROJECT gate the Sentry Gradle
+      # plugin itself (see src-tauri/gen/android/app/build.gradle.kts) —
+      # without SENTRY_ANDROID_UPLOAD=true it never applies, so ProGuard/R8
+      # mapping and native symbols wouldn't get uploaded even with valid
+      # credentials. All four (plus SENTRY_DSN) are gated to main via
+      # HAS_SENTRY_CREDS, same reasoning as every other secret gated to main
+      # in this workflow.
+      - name: Build
+        env:
+          SENTRY_ANDROID_UPLOAD: ${{ env.HAS_SENTRY_CREDS }}
+          SENTRY_AUTH_TOKEN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_AUTH_TOKEN || '' }}
+          SENTRY_ORG: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_ORG || '' }}
+          SENTRY_PROJECT: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.SENTRY_PROJECT || '' }}
+          SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
+          RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEYSTORE_PASSWORD || '' }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_ALIAS || '' }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ env.HAS_ANDROID_KEYSTORE == 'true' && secrets.ANDROID_KEY_PASSWORD || '' }}
+        run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
+          export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          pnpm tauri android build --target aarch64 --ci
+
+      # The Gradle plugin (Build step above) already uploads Proguard mapping
+      # + native symbols when SENTRY_ANDROID_UPLOAD is true; this separate
+      # debug-files upload covers the Rust/NDK native debug info the Gradle
+      # plugin doesn't reach, same split release-builds.yml's
+      # android-debug-files job doesn't need (it relies on the Gradle plugin
+      # alone) but rust-linux/apple/windows-debug-files do via @sentry/cli.
+      # Gated to main — see HAS_SENTRY_CREDS above.
+      - name: Upload Android mapping and native symbols
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          apk_path=$(find src-tauri/gen/android/app/build/outputs/apk -type f -name '*.apk' | sort | head -n1)
+          if [ -z "$apk_path" ]; then
+            echo "::error::No Android APK found to upload debug files for"
+            exit 1
+          fi
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "$(dirname "$apk_path")"
+
+      # Only published for main — see the macOS job's "Upload macOS
+      # artifacts" step for the same reasoning. Signed with the persistent
+      # nightly keystore when ANDROID_KEYSTORE_JKS is configured; otherwise
+      # falls back to the AGP's auto-generated debug keystore. Either way,
+      # Android happily installs the APK once the device has "install
+      # unknown apps" enabled for the source — no Gatekeeper/SmartScreen-
+      # equivalent block to work around.
+      - name: Upload Android artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nightly-android
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Save Gradle cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'buildSrc/**/Versions.kt', 'buildSrc/**/Dependencies.kt', 'gradle/*.versions.toml', '**/versions.properties') }}
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: Android"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  ios:
+    name: iOS (tauri ios build, simulator target)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      issues: write
+    # See the macOS job's HAS_SCCACHE_CREDS/HAS_SENTRY_CREDS comments.
+    env:
+      HAS_SCCACHE_CREDS: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY != '') || (github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID != '' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY != '') }}
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        id: build-id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      # NOT a step-level `env:` on the build command below, unlike every
+      # other platform job in this workflow. `pnpm tauri ios build` shells
+      # out to `xcodebuild`, and the actual `cargo build` runs inside a
+      # generated Xcode "Run Script" build phase (`tauri ios xcode-script` —
+      # see src-tauri/gen/apple/project.yml's preBuildScripts) that does not
+      # forward this step's env into it — confirmed empirically: with
+      # RUSTC_WRAPPER set as step env, `sccache --show-stats` reported
+      # compile_requests: 0 even though dozens of crates visibly compiled.
+      # Writing rustc-wrapper plus the (non-secret) sccache config into
+      # cargo's own config file sidesteps the env-forwarding question
+      # entirely: cargo reads $CARGO_HOME/config.toml itself and forwards
+      # its `[env]` table to every rustc/build-script it spawns, regardless
+      # of what env the parent xcodebuild process handed it. Credentials go
+      # through the same file (not committed — generated fresh on the
+      # runner each job).
+      # Also where CARGO_PROFILE_RELEASE_DEBUG gets set for this job, for the
+      # same env-forwarding reason. Every other platform job gets it from
+      # configure-sentry-release-env.sh's WRITE_RUST_DEBUG_ENV flag (see the
+      # macOS job), but that script writes to $GITHUB_ENV, which — like
+      # RUSTC_WRAPPER — never reaches the nested cargo invocation here.
+      # Gated on HAS_SENTRY_CREDS same as everywhere else: skip the extra
+      # debuginfo (and its size/compile-time cost) on a run that won't
+      # upload it anyway.
+      - name: Configure cargo to use sccache (xcodebuild doesn't forward step env into its Run Script phase)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+          SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+          BUILD_ID: ${{ steps.build-id.outputs.build-id }}
+        run: |
+          set -euo pipefail
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          mkdir -p "$cargo_home"
+          config="$cargo_home/config.toml"
+          {
+            if [ "$HAS_SCCACHE_CREDS" = "true" ]; then
+              echo '[build]'
+              echo 'rustc-wrapper = "sccache"'
+              echo ''
+            fi
+            echo '[env]'
+            if [ "$HAS_SCCACHE_CREDS" = "true" ]; then
+              echo 'SCCACHE_BUCKET = "charm-sccache-storage"'
+              echo 'SCCACHE_REGION = "tor1"'
+              echo 'SCCACHE_ENDPOINT = "https://tor1.digitaloceanspaces.com"'
+              echo 'SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE = "true"'
+              echo 'SCCACHE_S3_USE_SSL = "true"'
+              echo 'SCCACHE_IGNORE_SERVER_IO_ERROR = "1"'
+              echo "SCCACHE_S3_RW_MODE = \"${SCCACHE_S3_RW_MODE}\""
+              echo "AWS_ACCESS_KEY_ID = \"${AWS_ACCESS_KEY_ID}\""
+              echo "AWS_SECRET_ACCESS_KEY = \"${AWS_SECRET_ACCESS_KEY}\""
+            fi
+            if [ "$HAS_SENTRY_CREDS" = "true" ]; then
+              echo 'CARGO_PROFILE_RELEASE_DEBUG = "1"'
+            fi
+            echo "BUILD_ID = \"${BUILD_ID}\""
+          } >> "$config"
+
+      # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
+      # Silicon) rather than a device. This repo has no Apple Developer
+      # signing identity configured for CI, and simulator builds don't need
+      # one — compile verification only, not a distributable IPA. Release
+      # mode (no --debug), same as every other job in this workflow.
+      - run: pnpm tauri ios build --target aarch64-sim --ci
+
+      - name: Resolve Apple debug-file directories
+        id: apple-debug-files
+        run: |
+          target_dir=$(cargo metadata --format-version=1 --no-deps | node -e 'let input=""; process.stdin.on("data", c => input += c); process.stdin.on("end", () => console.log(JSON.parse(input).target_directory));')
+          paths=(
+            "$target_dir/aarch64-apple-ios-sim/release"
+            "src-tauri/gen/apple/build"
+          )
+          existing=()
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              existing+=("$path")
+            fi
+          done
+          if [ "${#existing[@]}" -eq 0 ]; then
+            echo "::error::No Apple debug-file directories found"
+            exit 1
+          fi
+          {
+            echo "paths<<EOF"
+            printf '%s\n' "${existing[@]}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same @sentry/cli debug-files upload release-builds.yml's
+      # apple-debug-files job runs for its iOS simulator build. Gated to
+      # main — see HAS_SENTRY_CREDS above.
+      - name: Upload Apple debug information files
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          DEBUG_FILE_PATHS: ${{ steps.apple-debug-files.outputs.paths }}
+        run: |
+          paths=()
+          while IFS= read -r path; do
+            if [ -n "$path" ]; then
+              paths+=("$path")
+            fi
+          done <<< "$DEBUG_FILE_PATHS"
+          pnpm dlx @sentry/cli@3.5.1 debug-files upload \
+            --org "$SENTRY_ORG" \
+            --project "$SENTRY_PROJECT" \
+            --include-sources \
+            --wait \
+            --log-level info \
+            "${paths[@]}"
+
+      - name: Track failure as a GitHub issue
+        if: failure() && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Nightly build failure: iOS"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Nightly build failed. First occurrence: $run_url"
+          fi
+
+  publish-nightly:
+    name: Publish nightly release
+    # Waits on every artifact-producing job, not just the ones that changed —
+    # a partial release (e.g. macOS present, Windows silently missing because
+    # its job failed) would be worse than no release: it looks complete but
+    # isn't. `if: always()` plus the per-need `result` check below lets this
+    # still run and report which platforms are missing, rather than being
+    # skipped outright by one failed dependency (GitHub Actions' default).
+    # iOS is excluded — see the iOS job's comment on why it's not published.
+    needs: [macos, windows, linux, android]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Job-level (rather than referencing secrets.* directly in a step's
+    # `if:`) — see the macOS job's HAS_MACOS_CERT comment. No ref check
+    # needed here (unlike the per-platform jobs) since this whole job is
+    # already gated to main via the `if:` above.
+    env:
+      HAS_GPG_KEY: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nightly-*
+          path: artifacts
+          merge-multiple: true
+
+      # Centralized here (one ubuntu-latest job, where gpg is already known
+      # to be present) rather than duplicated per-platform-job: signing
+      # every binary once every platform's artifact has already landed
+      # avoids needing gpg on macos-latest/windows-latest too (unverified
+      # whether either image ships it), and avoids repeating the
+      # import+sign step 4 times over.
+      #
+      # Checksums always run (they don't need a key); GPG signing is
+      # opportunistic on GPG_PRIVATE_KEY/GPG_PASSPHRASE, same
+      # degrade-gracefully pattern as every other cert secret in this
+      # workflow. Detached ASCII-armored per-file signatures
+      # (`gpg --detach-sign --armor`) rather than format-specific tooling
+      # (dpkg-sig, rpm --addsign, etc.) — one verification method
+      # (`gpg --verify`) across every platform's artifact.
+      - name: Sign artifacts and generate checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          # SHA256SUMS.txt/SHA1SUMS.txt: standard `sha256sum`/`sha1sum`
+          # output format, so `sha256sum -c SHA256SUMS.txt` (or `shasum -a
+          # 256 -c` on macOS) verifies directly against the file — no custom
+          # parsing needed. Computed over the binaries only, before any
+          # signature files exist, so the checksum files never end up
+          # hashing themselves or each other. SHA1 is included because it
+          # was asked for, not because it adds security over SHA256 (it
+          # doesn't — MD5/SHA1 are broken for collision resistance); treat
+          # SHA256SUMS.txt/the GPG signatures as the actual integrity checks
+          # and SHA1SUMS.txt as compatibility-only.
+          #
+          # Each entry must record just the basename (`sha256sum -c` fails
+          # to find "./nightly-macos/target/release/bundle/dmg/Charm.dmg" —
+          # that nested path only exists on the runner; `gh release upload`
+          # below strips it down to "Charm.dmg" as the actual asset name,
+          # which is what a downloader has on disk). Hashing from within
+          # each file's own directory (rather than xargs-ing the full
+          # relative path straight into sha256sum) is what makes the
+          # recorded name just the basename.
+          cd artifacts
+          duplicate_names=$(find . -type f -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicate_names" ]; then
+            # Same collision `gh release upload` would hit further down
+            # (it also uses basename as the asset name) — fail here with a
+            # clear reason instead of a confusing gh error, or worse, a
+            # checksum file silently missing one of the colliding entries.
+            echo "Artifact basenames collide across platforms — gh release upload would overwrite one with the other:" >&2
+            echo "$duplicate_names" >&2
+            exit 1
+          fi
+          # Written to a temp path first, then moved into place, rather than
+          # `> SHA256SUMS.txt` directly inside artifacts/: bash opens (and
+          # truncates) that redirect's target before the `find` inside the
+          # process substitution below it actually walks the directory, so
+          # a direct-into-place redirect makes the checksum file list
+          # itself as a 0-byte entry — confirmed empirically, not
+          # theoretical. Both temp files are written before either is moved
+          # into artifacts/, so the SHA1 pass's `find` doesn't see
+          # SHA256SUMS.txt already sitting there either.
+          sha256_tmp=$(mktemp)
+          sha1_tmp=$(mktemp)
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha256sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha256_tmp"
+          while IFS= read -r -d '' f; do
+            (cd "$(dirname "$f")" && sha1sum "$(basename "$f")")
+          done < <(find . -type f -print0 | sort -z) > "$sha1_tmp"
+          mv "$sha256_tmp" SHA256SUMS.txt
+          mv "$sha1_tmp" SHA1SUMS.txt
+          cd ..
+
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            export GNUPGHOME="${RUNNER_TEMP}/gnupg"
+            mkdir -p "$GNUPGHOME"
+            chmod 700 "$GNUPGHOME"
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+            key_id=$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^sec/ { print $5; exit }')
+
+            # Sign every downloaded binary plus both checksum files — signing
+            # the checksum files means one signature attests to every
+            # artifact's hash, so verifying SHA256SUMS.txt.asc is enough to
+            # trust every entry in it without checking each binary's own
+            # .asc individually (both are provided; use whichever's more
+            # convenient).
+            mapfile -d '' to_sign < <(find artifacts -type f -print0)
+            for f in "${to_sign[@]}"; do
+              gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" \
+                --local-user "$key_id" --detach-sign --armor "$f"
+            done
+
+            # Ships alongside the artifacts every signed run (small, and
+            # guarantees the verification key is available even for the
+            # very first signed release) rather than being published once
+            # out-of-band.
+            gpg --batch --armor --export "$key_id" > artifacts/charm-nightly-signing-key.asc
+          fi
+
+      - name: Create/update dated nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Empty string (rather than omitting the var) for any job that
+          # didn't succeed, so the release body can call out exactly which
+          # platform's artifact is missing instead of silently under-shipping.
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+          ANDROID_RESULT: ${{ needs.android.result }}
+        run: |
+          set -euo pipefail
+          date_tag="nightly-$(date -u +%Y-%m-%d)"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          sha_short="$(echo "${{ github.sha }}" | cut -c1-7)"
+
+          missing=""
+          for pair in "macOS:$MACOS_RESULT" "Windows:$WINDOWS_RESULT" "Linux:$LINUX_RESULT" "Android:$ANDROID_RESULT"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [ "$result" != "success" ]; then
+              missing="${missing}- ${name}: job ${result} (no artifact published this run)\n"
+            fi
+          done
+
+          {
+            echo "Automated nightly build from commit \`${sha_short}\` ($run_url)."
+            echo ""
+            echo "**Unsigned/self-signed test builds — not for production use.**"
+            echo "See README.md's \"Installing a nightly build\" section for per-platform install steps"
+            echo "(macOS Gatekeeper / Windows SmartScreen / Android \"install unknown apps\" workarounds)"
+            echo "and \"Verifying a nightly download\" for checking SHA256SUMS.txt / GPG signatures."
+            if [ -n "$missing" ]; then
+              echo ""
+              echo "**Missing from this run:**"
+              printf '%b' "$missing"
+            fi
+          } > release-notes.md
+
+          # Each nightly-* artifact preserves its uploaded directory
+          # structure (e.g. nightly-macos/target/release/bundle/dmg/*.dmg,
+          # nightly-android/src-tauri/gen/android/.../*.apk) — after
+          # `merge-multiple` they land nested under artifacts/, not flat, so
+          # a shallow `artifacts/*` glob would only pick up top-level
+          # directories (nothing `gh release` can upload) and silently ship
+          # zero or partial assets. `find -type f` walks the nesting.
+          mapfile -d '' assets < <(find artifacts -type f -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No artifacts downloaded — every platform job must have failed. Not touching the existing release." >&2
+            exit 1
+          fi
+
+          if gh release view "$date_tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            # Update in place rather than delete-then-recreate: if asset
+            # upload below fails partway, today's release still exists
+            # (possibly with stale assets) instead of having been deleted
+            # with nothing to replace it.
+            gh release edit "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md
+            gh release upload "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --clobber \
+              "${assets[@]}"
+          else
+            # --target pins the tag to the exact commit these artifacts were
+            # built from; without it, a same-day push to main between this
+            # job starting and the tag being created would make the tag (and
+            # its source archive) point at a newer commit than the binaries.
+            gh release create "$date_tag" \
+              --repo "${{ github.repository }}" \
+              --title "Nightly build — $(date -u +%Y-%m-%d)" \
+              --notes-file release-notes.md \
+              --target "${{ github.sha }}" \
+              --prerelease \
+              "${assets[@]}"
+          fi

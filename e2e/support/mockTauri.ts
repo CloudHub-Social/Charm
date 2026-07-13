@@ -64,6 +64,12 @@ export function installMockTauri(seed: {
   spaceChildren?: Record<string, Record<string, unknown>[]>;
   /** `list_space_hierarchy` results, keyed by the root space's `room_id`. */
   spaceHierarchy?: Record<string, Record<string, unknown>[]>;
+  /**
+   * Initial `recovery_status` state — defaults to `"enabled"` so every other
+   * spec's Devices panel never shows the recovery-key prompt. Set to
+   * `"incomplete"` to drive settings.spec.ts's recovery-restore flow.
+   */
+  recoveryState?: "unknown" | "enabled" | "disabled" | "incomplete";
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -138,6 +144,7 @@ export function installMockTauri(seed: {
 
   let nextTxnId = 1;
   let nextEventId = 1;
+  let nextCreatedRoomId = 1;
   const messagesByRoom = new Map<string, Record<string, unknown>[]>();
   for (const r of allRooms) {
     messagesByRoom.set(r.room_id as string, []);
@@ -158,6 +165,7 @@ export function installMockTauri(seed: {
     ...(seed.otherDevices ?? []),
   ];
   let crossSigningBootstrapped = true;
+  let recoveryState = seed.recoveryState ?? "enabled";
   let autostartEnabled = false;
   const ignoredUsers: string[] = [...(seed.ignoredUsers ?? [])];
   const notificationSettings = {
@@ -271,8 +279,17 @@ export function installMockTauri(seed: {
       return undefined;
     },
     resolve_room_alias: () => room.room_id,
+    // A fresh array copy, not `messagesByRoom.get(...)` directly — same
+    // footgun `pushTimelineUpdate` above already guards against: that array
+    // is mutated in place by later handlers (e.g. replacing a pending echo
+    // with its sent counterpart by index), and the frontend keeps its own
+    // reference to whatever this returns to compare a *later* snapshot
+    // against. Handing back the live, still-mutating array means that
+    // comparison sees the *current* (already-mutated) content instead of
+    // the content as of this call, silently matching the real IPC layer's
+    // behavior of always deserializing a genuinely new array over the wire.
     get_timeline_page: (args) => ({
-      messages: messagesByRoom.get(args.roomId as string) ?? [],
+      messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
     // Mirrors the real `mark_room_read` Rust command, which only sends a read
@@ -429,7 +446,39 @@ export function installMockTauri(seed: {
     },
     list_space_children: (args) => spaceChildren.get(args.spaceId as string) ?? [],
     list_space_hierarchy: (args) => spaceHierarchy.get(args.spaceId as string) ?? [],
-    join_room: () => undefined,
+    // Spec 19 Phase 4: create/join-by-address. Mirrors the real Rust
+    // commands' contract closely enough to exercise `CreateJoinSpaceDialog`
+    // end to end — `create_space` returns the new room's id and adds it to
+    // the live room list (like a real `m.room.create` would surface via the
+    // next sync), and `join_room` resolves an alias to a synthetic room id
+    // rather than actually contacting a homeserver.
+    create_space: (args) => {
+      const roomId = `!created-space-${nextCreatedRoomId++}:e2e`;
+      allRooms.push({
+        ...defaultRoomShape,
+        room_id: roomId,
+        name: args.name,
+        is_space: true,
+      });
+      messagesByRoom.set(roomId, []);
+      pushRoomListUpdate();
+      return roomId;
+    },
+    join_room: (args) => {
+      const target = args.roomIdOrAlias as string;
+      const existing = findRoom(target);
+      if (existing) return { room_id: existing.room_id, is_space: existing.is_space };
+      const roomId = target.startsWith("!") ? target : `!resolved-${nextCreatedRoomId++}:e2e`;
+      allRooms.push({
+        ...defaultRoomShape,
+        room_id: roomId,
+        name: target,
+        is_space: true,
+      });
+      messagesByRoom.set(roomId, []);
+      pushRoomListUpdate();
+      return { room_id: roomId, is_space: true };
+    },
     knock_room: () => undefined,
 
     // Spec 08: account/devices/notifications settings commands.
@@ -472,6 +521,19 @@ export function installMockTauri(seed: {
       has_user_signing_key: crossSigningBootstrapped,
     }),
     bootstrap_cross_signing: () => {
+      crossSigningBootstrapped = true;
+      return undefined;
+    },
+    recovery_status: () => recoveryState,
+    // Real matrix-sdk recovery has no fixed "the" correct key to check
+    // against — this fake just needs a way to distinguish success from
+    // failure, so "correct-key" always succeeds and anything else simulates
+    // a wrong recovery key the same way a real invalid one would surface.
+    recover_from_key: (args) => {
+      if (args.recoveryKey !== "correct-key") {
+        throw new Error("invalid recovery key");
+      }
+      recoveryState = "enabled";
       crossSigningBootstrapped = true;
       return undefined;
     },

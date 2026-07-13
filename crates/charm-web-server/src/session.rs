@@ -23,12 +23,78 @@ use crate::events::{ServerEvent, EVENT_CHANNEL_CAPACITY};
 /// process-lifetime secret.
 const SESSION_TOKEN_LEN: usize = 48;
 
+/// Env var overriding [`DEFAULT_IDLE_TIMEOUT_SECS`] — see `main.rs`'s
+/// periodic sweep task, which calls [`SessionStore::sweep_idle`] with
+/// whichever of these two applies.
+pub const IDLE_TIMEOUT_SECS_ENV: &str = "CHARM_WEB_SERVER_SESSION_IDLE_TIMEOUT_SECS";
+
+/// How long a session (with no WebSocket connected — see
+/// `Session::has_open_connection`) can go without an authenticated HTTP
+/// request before `main.rs`'s periodic sweep evicts its in-memory `Client`.
+/// 30 minutes: long enough that a user reading a long thread or stepping
+/// away for a coffee without touching a room doesn't get evicted mid-session
+/// (an open WebSocket keeps the session alive regardless, so this really
+/// only bounds "tab open, nobody home, nothing polling it"), short enough
+/// that a genuinely abandoned session's full `matrix_sdk::Client` (event
+/// cache, crypto state, the works) doesn't sit in memory indefinitely on a
+/// small instance. Eviction only drops the in-memory `Client` — the
+/// persisted session is left alone and restored on demand if the cookie
+/// comes back (see `persistence::PersistenceStore::restore_by_token`), so
+/// this is purely a memory-pressure knob, not a security timeout.
+pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
+/// Shorter than the idle timeout itself so an idle session isn't kept around
+/// much longer than the timeout implies, but long enough not to churn a
+/// write-lock over the whole session map too often on a busy server.
+pub const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// How long `SessionStore::evicted_presence` keeps an entry nobody has
+/// restored yet before giving up on it — deliberately much longer than
+/// `DEFAULT_IDLE_TIMEOUT_SECS`, since a persisted session (and the browser
+/// cookie pointing at it) both stay restorable far longer than that; see
+/// `sweep_idle`'s doc comment for why tying this to the idle timeout itself
+/// was wrong. Seven days: long enough to cover a week-long vacation/absence,
+/// short enough that a truly abandoned session's tiny presence-cache entry
+/// doesn't linger forever.
+const EVICTED_PRESENCE_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 /// How many rooms' live `matrix-sdk-ui` `Timeline`s one session holds open
 /// at once — same bound and rationale as desktop's `MatrixState::
 /// MAX_LIVE_TIMELINES` (see `src-tauri/src/matrix/mod.rs`): bounds memory so
 /// visiting many rooms in one session doesn't grow the set of subscribed
 /// timelines without limit. LRU-evicted.
 const MAX_LIVE_TIMELINES: usize = 20;
+
+/// Identifies this session's on-disk crypto store (`crypto_store.rs`) —
+/// `None` when persistence isn't configured, or for a session restored from
+/// a `PersistedSession` written before Spec 25 shipped (requirement 9's
+/// fail-open backfill). Cloned into `sync_loop::PersistHandle` at spawn time
+/// so a later re-save (token refresh, idle-eviction) can keep writing the
+/// same crypto fields rather than losing them on the very first re-save
+/// after login.
+#[derive(Clone)]
+pub struct CryptoStoreHandle {
+    pub store_key: String,
+    pub passphrase: String,
+}
+
+/// Manual, not derived: the default `Debug` for a struct with a plaintext
+/// `passphrase: String` field would print that passphrase verbatim on any
+/// `{:?}` of a `Session`/`PersistHandle` that embeds this (e.g. an
+/// unguarded debug log or panic message) — a secret capable of unlocking
+/// this session's on-disk crypto store. `store_key` isn't secret on its own
+/// (it's a directory name, not a credential), but there's no reason to log
+/// it either.
+impl std::fmt::Debug for CryptoStoreHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CryptoStoreHandle")
+            .field("store_key", &self.store_key)
+            .field("passphrase", &"<redacted>")
+            .finish()
+    }
+}
 
 /// One authenticated web-client session: the logged-in `Client`, the account
 /// id it belongs to (used only for diagnostics/logging — every lookup is
@@ -38,6 +104,34 @@ const MAX_LIVE_TIMELINES: usize = 20;
 pub struct Session {
     pub client: Client,
     pub user_id: String,
+    /// The crypto-store key/passphrase pair to keep writing on every re-save
+    /// of this session (token refresh, idle-eviction re-save) — deliberately
+    /// *not* the same signal as [`Self::crypto_store_open`]. At restore this
+    /// is populated from the persisted entry's fields whenever they exist,
+    /// regardless of whether this particular restore attempt actually
+    /// managed to open that store: if it didn't (transient lock/permissions
+    /// issue, not necessarily the directory being gone for good), re-saves
+    /// must still carry the *original* key/passphrase forward so a later
+    /// restart gets another chance to open it — deriving this from
+    /// `crypto_store_open` instead (an earlier revision of this field did
+    /// exactly that) would silently overwrite the persisted pair with `None`
+    /// on the very next re-save, permanently orphaning a store that might
+    /// still be perfectly readable.
+    pub persisted_crypto: Option<CryptoStoreHandle>,
+    /// Whether *this* session's live `client` is actually backed by an
+    /// opened on-disk crypto store right now — the signal
+    /// [`Self::has_unpersisted_encrypted_room`] uses to gate idle eviction.
+    /// This is about safety of evicting *this* client's current in-memory
+    /// crypto state (accumulated since it was built, whether or not that
+    /// happened to come from a successfully-opened store), which is a
+    /// different question from "what should we keep telling
+    /// `PersistenceStore::save` to write" ([`Self::persisted_crypto`]):
+    /// e.g. a session whose store failed to open this restore attempt has
+    /// `persisted_crypto = Some(..)` (so re-saves don't lose the original
+    /// pair) but `crypto_store_open = false` (evicting it now would still
+    /// lose whatever this fallback in-memory client has learned since it
+    /// started, exactly like a session with no persisted store at all).
+    pub crypto_store_open: bool,
     /// Mirrors desktop's `MatrixState::get_or_create_timeline`: a `Timeline`
     /// carries its own pagination cursor, so building a fresh one on every
     /// `get_timeline_page` request (as sub-PR A originally did) silently
@@ -191,6 +285,28 @@ pub struct Session {
     /// otherwise leave that user's status stale indefinitely.
     pub presence_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedUserId, ServerEvent>>>,
+    /// When this session last did something other than sit idle — bumped by
+    /// `routes::require_session` on every authenticated HTTP request, so
+    /// `SessionStore::sweep_idle` can tell a genuinely abandoned session
+    /// (browser closed, cookie never coming back) apart from one that's just
+    /// between requests. Deliberately *not* bumped by anything inside
+    /// `sync_loop`'s own background loop — a session nobody is looking at
+    /// shouldn't count as active just because it keeps long-polling `/sync`
+    /// in the background, or idle eviction would never trigger for an
+    /// abandoned browser tab that was left open. An open WebSocket
+    /// connection is tracked separately (`ws_connections` below) and always
+    /// counts as active regardless of this timestamp.
+    pub last_active: std::sync::Mutex<std::time::Instant>,
+    /// Count of this session's currently-connected WebSocket clients (zero,
+    /// one, or more — the same "zero or more tabs" shape as `events`
+    /// above). `crate::routes::handle_socket` increments this on connect and
+    /// decrements it on disconnect via a drop guard, so it stays accurate
+    /// across every exit path (clean close, send failure, lag-induced
+    /// close). `SessionStore::sweep_idle` never evicts a session with at
+    /// least one connection open, regardless of `last_active` — a tab left
+    /// open and quietly receiving live updates is active by definition, even
+    /// if the user hasn't issued an HTTP request in a while.
+    pub ws_connections: std::sync::atomic::AtomicUsize,
 }
 
 /// Bundles `Session`'s "current state, replayed to every new connection"
@@ -251,11 +367,18 @@ impl Session {
 pub(crate) const MAX_PENDING_VERIFICATION_EVENTS: usize = 20;
 
 impl Session {
-    pub fn new(client: Client, user_id: String) -> Self {
+    pub fn new(
+        client: Client,
+        user_id: String,
+        persisted_crypto: Option<CryptoStoreHandle>,
+        crypto_store_open: bool,
+    ) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Self {
             client,
             user_id,
+            persisted_crypto,
+            crypto_store_open,
             sync_presence: Arc::new(std::sync::Mutex::new(
                 charm_lib::matrix::presence::PresenceStateDto::default(),
             )),
@@ -272,8 +395,103 @@ impl Session {
             typing_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
             presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }
+    }
+
+    /// Marks this session as active right now — see `last_active`'s doc
+    /// comment for who calls this and why.
+    pub fn touch(&self) {
+        *self.last_active.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// How long since this session was last touched by an authenticated HTTP
+    /// request. Not itself sufficient to decide eviction — see
+    /// `has_open_connection` and `SessionStore::sweep_idle`, which combines
+    /// both.
+    fn idle_for(&self) -> std::time::Duration {
+        self.last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed()
+    }
+
+    /// Whether at least one WebSocket client is currently connected — see
+    /// `ws_connections`'s doc comment.
+    fn has_open_connection(&self) -> bool {
+        self.ws_connections
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    }
+
+    /// Whether this session has an undelivered verification event sitting in
+    /// `pending_verification_events`. Per that field's own doc comment, none
+    /// of the three event kinds buffered there (`verification:request`, an
+    /// outgoing "other device accepted", a `verification:sas_update`) are
+    /// ever reissued once the sync loop has already produced them — the
+    /// buffer *is* the only remaining copy until a WebSocket connects and
+    /// `routes::handle_socket` drains it. Idle-evicting a session in that
+    /// state would abort the sync loop and drop the `Client` with that
+    /// buffer still non-empty; the entry itself survives on the `Session`
+    /// (evicted sessions are simply dropped, not persisted separately), but
+    /// there is no live sync loop left to eventually finish the flow, and no
+    /// mechanism to hand the buffer to whatever fresh `Session` a later
+    /// on-demand restore builds — so the verification flow would be
+    /// silently stuck forever with no way for the browser to ever learn
+    /// what happened. `SessionStore::sweep_idle` treats this the same as an
+    /// open WebSocket connection: it keeps the session alive regardless of
+    /// how long it's been idle until the buffer drains.
+    fn has_pending_verification_events(&self) -> bool {
+        !self
+            .pending_verification_events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+    }
+
+    /// Whether this session belongs to at least one end-to-end-encrypted
+    /// room *and* its live `client` isn't currently backed by an opened
+    /// on-disk crypto store — a cheap, synchronous check
+    /// (`Room::encryption_state` reads already-synced local state, no
+    /// network call) used as a proxy for "evicting this session's in-memory
+    /// `matrix_sdk::Client` would irrecoverably lose Megolm/Olm state, not
+    /// just require a homeserver round-trip to rebuild it."
+    ///
+    /// Gates on [`Self::crypto_store_open`], not [`Self::persisted_crypto`]:
+    /// the question here is whether *this client's* current in-memory crypto
+    /// state (accumulated since it was built) would survive eviction, which
+    /// is true only when this client is actually backed by a store on disk
+    /// right now — a session whose store *exists* on disk but failed to open
+    /// on this particular restore attempt (`persisted_crypto = Some(..)`,
+    /// `crypto_store_open = false`) is running on a fallback in-memory
+    /// client just like a session with no persisted store at all, so
+    /// evicting it loses exactly the same kind of state.
+    ///
+    /// Before Spec 25, `charm-web-server` never persisted the Olm/Megolm
+    /// crypto store at all — restoring a session (there, only ever after a
+    /// full process restart) rebuilt a bare in-memory `Client` that could no
+    /// longer decrypt history it had already learned, or continue an
+    /// established verification. Idle eviction hit the exact same gap, just
+    /// far more often (a normal 30-minute idle gap during the same process's
+    /// uptime, not only a restart), so this exempted *any* encrypted-room
+    /// session from idle eviction entirely — narrower than "never evict,"
+    /// since a session that's never touched E2EE has nothing at risk, but
+    /// still meant every E2EE session held its full `Client` (event cache,
+    /// crypto state, timelines) in memory indefinitely regardless of how
+    /// long it sat idle. Now that a session's crypto store is persisted
+    /// (see `crypto_store.rs`), a session actually backed by an opened store
+    /// can be safely evicted and restored again on demand — same as any
+    /// other persisted session — so this exemption only still applies when
+    /// this client currently has no working store to fall back on.
+    fn has_unpersisted_encrypted_room(&self) -> bool {
+        !self.crypto_store_open
+            && self
+                .client
+                .rooms()
+                .iter()
+                .any(|room| room.encryption_state().is_encrypted())
     }
 
     /// Returns this session's cached `Timeline` for `room_id`, building and
@@ -468,6 +686,41 @@ fn spawn_timeline_listener(
 #[derive(Clone, Default)]
 pub struct SessionStore {
     inner: Arc<RwLock<HashMap<String, Arc<Session>>>>,
+    /// The presence choice an idle-evicted session had at the instant
+    /// `sweep_idle` evicted it, keyed by token, paired with the `Instant` it
+    /// was recorded at — populated there, consumed once by
+    /// `routes::require_session`'s on-demand restore (via
+    /// `take_evicted_presence`) to seed the freshly rebuilt `Session`'s
+    /// `sync_presence` before its sync loop starts, instead of silently
+    /// reverting an explicit `unavailable`/`offline` choice back to `Online`
+    /// (see `sync_loop::spawn`'s doc comment for why that would otherwise
+    /// happen). This is plain in-memory bookkeeping, not persisted — a full
+    /// process restart already loses this the same way it loses everything
+    /// else in-memory, no worse than before this existed; it only smooths
+    /// over the *much* more frequent idle-eviction-then-restore case this
+    /// module introduces.
+    ///
+    /// The recorded `Instant` isn't for `take_evicted_presence` — it's so
+    /// `sweep_idle` can prune entries for tokens that were evicted but never
+    /// came back (browser closed for good, cookie discarded). Without this,
+    /// an entry inserted here lives forever: nothing else ever removes it
+    /// except a restore that may never happen, so this map would otherwise
+    /// grow without bound over the process's lifetime — the exact kind of
+    /// unbounded memory growth this whole module exists to fix. `sweep_idle`
+    /// prunes anything older than its own `idle_timeout` on every run, since
+    /// that's the same "give up on this eventually" threshold already
+    /// governing everything else in this store.
+    evicted_presence: Arc<
+        std::sync::Mutex<
+            HashMap<
+                String,
+                (
+                    charm_lib::matrix::presence::PresenceStateDto,
+                    std::time::Instant,
+                ),
+            >,
+        >,
+    >,
 }
 
 impl SessionStore {
@@ -503,23 +756,411 @@ impl SessionStore {
         }
     }
 
-    /// Inserts `session` under a caller-chosen `token` — used only at
-    /// startup to reinsert a persisted session under the exact token it was
-    /// issued to a browser under before the restart (see
-    /// `persistence::PersistenceStore::restore_all` and `main.rs`), so an
-    /// already-set cookie keeps working. Never exposed to request handlers:
-    /// every other insertion path goes through [`Self::create`]'s
-    /// server-chosen token, preserving the "tokens are never client/caller
-    /// influenced at request time" property.
+    /// Inserts `session` under a caller-chosen `token` — for reinserting a
+    /// persisted session under the exact token it was already issued to a
+    /// browser as a cookie, so that already-set cookie keeps working. Two
+    /// call sites do this: `main.rs`'s startup restore (see
+    /// `persistence::PersistenceStore::restore_all`), and
+    /// `routes::require_session`'s on-demand restore of an idle-evicted
+    /// session (see `SessionStore::sweep_idle` and
+    /// `persistence::PersistenceStore::restore_by_token`) — the latter *is*
+    /// exposed to request handlers, updated from this doc comment's
+    /// original claim otherwise.
+    ///
+    /// This still never lets a client or caller choose a *new* token,
+    /// though: both call sites only ever pass back a token that was already
+    /// a valid cookie for an existing persisted session (looked up by
+    /// `sha256(token)` — see `persistence::object_path_for_token`), not one
+    /// invented at request time. A request presenting an unknown or forged
+    /// token never reaches this function at all; it 401s in
+    /// `require_session` before any restore is attempted. Every *fresh*
+    /// login still goes through [`Self::create`]'s server-chosen token —
+    /// this function only ever re-establishes a token that already existed.
     pub async fn insert(&self, token: String, session: Session) {
         self.inner.write().await.insert(token, Arc::new(session));
     }
 
+    /// Looks up `token` and marks the session active in the same step —
+    /// `touch()` runs while this still holds `inner`'s read lock, which
+    /// blocks `sweep_idle`'s write lock from running concurrently. Without
+    /// that, a caller doing `get` then `touch()` as two separate steps (an
+    /// earlier version of this did exactly that) leaves a gap between them
+    /// where the sweeper can evict this exact session — a WebSocket upgrade
+    /// racing the sweep in that gap could then attach to a `Session` that's
+    /// already been removed from the store and whose sync loop is being
+    /// aborted, leaving the browser connected to a dead event channel.
+    /// Folding the touch in here closes that window: by the time this
+    /// returns, the session is guaranteed fresh enough that this same sweep
+    /// cycle can't have just evicted it.
     pub async fn get(&self, token: &str) -> Option<Arc<Session>> {
-        self.inner.read().await.get(token).cloned()
+        let inner = self.inner.read().await;
+        let session = inner.get(token)?;
+        session.touch();
+        Some(Arc::clone(session))
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
         self.inner.write().await.remove(token)
+    }
+
+    /// Removes and returns every session idle longer than `idle_timeout`
+    /// with no WebSocket currently connected (see `Session::idle_for` /
+    /// `Session::has_open_connection`) — the caller (a periodic background
+    /// task in `main.rs`) is responsible for cleaning up each returned
+    /// session's `sync_handle` afterwards; this only touches the map itself,
+    /// same division of responsibility as `routes::logout`.
+    ///
+    /// Deliberately does **not** touch `PersistenceStore` — an evicted
+    /// session's persisted object is left exactly as-is, so a request
+    /// arriving later with that session's still-valid cookie can restore it
+    /// on demand (see `persistence::PersistenceStore::restore_by_token` and
+    /// `routes::require_session`) instead of forcing a full re-login just
+    /// because nobody happened to use the tab for a while.
+    pub async fn sweep_idle(
+        &self,
+        idle_timeout: std::time::Duration,
+    ) -> Vec<(String, Arc<Session>)> {
+        let mut inner = self.inner.write().await;
+        let mut evicted = Vec::new();
+        inner.retain(|token, session| {
+            if session.has_open_connection()
+                || session.has_pending_verification_events()
+                || session.has_unpersisted_encrypted_room()
+                || session.idle_for() < idle_timeout
+            {
+                true
+            } else {
+                // Abort the sync loop right here — synchronously, still
+                // under this write lock, in the same statement as the
+                // `has_pending_verification_events` check above — rather
+                // than leaving it to `main.rs`'s caller to abort later, one
+                // session at a time, only after this whole sweep has
+                // returned and (previously) after an awaited persistence
+                // save per session. That gap mattered: a verification event
+                // or a token refresh landing in it would be silently lost
+                // (the event) or discarded (the refresh) once the loop
+                // finally stopped. `abort()` itself is synchronous and
+                // non-blocking (it only requests cancellation — the task
+                // actually stops at its own next `.await` point, not
+                // instantly), so this doesn't fully eliminate the window,
+                // but shrinks it from "however long the rest of this sweep
+                // plus every prior evicted session's save call takes" down
+                // to "essentially zero, right next to the check above."
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+                // Captured *before* this session is dropped from the map —
+                // see `evicted_presence`'s doc comment for why, and
+                // `routes::require_session` for where this gets consumed.
+                let presence = *session
+                    .sync_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                self.evicted_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(token.clone(), (presence, std::time::Instant::now()));
+                evicted.push((token.clone(), Arc::clone(session)));
+                false
+            }
+        });
+        // Prune `evicted_presence` entries nobody ever came back to claim —
+        // see that field's doc comment for why this would otherwise leak,
+        // and `prune_evicted_presence`'s own doc comment for why this uses
+        // `EVICTED_PRESENCE_MAX_AGE` rather than `idle_timeout`. Piggybacks
+        // on this same periodic call rather than a separate task, since
+        // `main.rs` already invokes `sweep_idle` on a timer for exactly this
+        // kind of periodic upkeep.
+        self.prune_evicted_presence(EVICTED_PRESENCE_MAX_AGE);
+        evicted
+    }
+
+    /// Drops every `evicted_presence` entry recorded more than `max_age`
+    /// ago — split out from [`Self::sweep_idle`] (which always calls this
+    /// with [`EVICTED_PRESENCE_MAX_AGE`]) purely so tests can exercise the
+    /// pruning logic itself with a short `max_age` instead of waiting out
+    /// the real multi-day constant.
+    fn prune_evicted_presence(&self, max_age: std::time::Duration) {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, (_, recorded_at)| recorded_at.elapsed() < max_age);
+    }
+
+    /// Removes and returns `token`'s presence choice at eviction time, if
+    /// any was ever recorded — see `evicted_presence`'s doc comment. `None`
+    /// covers "this token was never evicted", "already consumed by an
+    /// earlier restore", and "pruned for having gone unclaimed too long",
+    /// all three of which just mean the restore path falls back to the
+    /// freshly built `Session`'s default (`Online`).
+    pub fn take_evicted_presence(
+        &self,
+        token: &str,
+    ) -> Option<charm_lib::matrix::presence::PresenceStateDto> {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token)
+            .map(|(presence, _)| presence)
+    }
+
+    /// Non-destructive counterpart to [`Self::take_evicted_presence`] — reads
+    /// `token`'s recorded presence without removing it. `routes::require_session`
+    /// uses this before attempting a restore rather than `take`: a restore
+    /// can fail (timeout, unreachable homeserver, transient object-store
+    /// error), and an earlier version of this took the entry unconditionally
+    /// up front, so a failed restore attempt permanently lost the only
+    /// record of the user's `unavailable`/`offline` choice — a *later*,
+    /// successful retry with the same still-valid cookie would then fall
+    /// back to the default `Online` even though the cached value had been
+    /// sitting right there the whole time. Callers should still call
+    /// [`Self::forget_evicted_presence`] once a restore actually succeeds,
+    /// so a claimed entry doesn't linger until `EVICTED_PRESENCE_MAX_AGE`.
+    pub fn peek_evicted_presence(
+        &self,
+        token: &str,
+    ) -> Option<charm_lib::matrix::presence::PresenceStateDto> {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(token)
+            .map(|(presence, _)| *presence)
+    }
+
+    /// Drops `token`'s recorded presence, if any, without returning it —
+    /// called from `routes::logout` once the persisted session itself is
+    /// being deleted, so an explicit logout doesn't leave a now-meaningless
+    /// entry sitting around for `EVICTED_PRESENCE_MAX_AGE` for no reason.
+    pub fn forget_evicted_presence(&self, token: &str) {
+        self.evicted_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn dummy_session(user_id: &str) -> Session {
+        let client = Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        Session::new(client, user_id.to_string(), None, false)
+    }
+
+    /// Backdates a session's `last_active` so tests don't need to actually
+    /// sleep past the idle timeout to exercise eviction.
+    fn backdate(session: &Session, ago: std::time::Duration) {
+        *session
+            .last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - ago;
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_evicts_only_sessions_past_the_timeout_with_no_open_connection() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let idle_token = store.create(dummy_session("@idle:example.org").await).await;
+        backdate(&store.get(&idle_token).await.unwrap(), idle_timeout * 2);
+
+        let active_token = store
+            .create(dummy_session("@active:example.org").await)
+            .await;
+        store.get(&active_token).await.unwrap().touch();
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert_eq!(evicted.len(), 1);
+        assert_eq!(evicted[0].0, idle_token);
+        assert!(
+            store.get(&idle_token).await.is_none(),
+            "the idle session must be gone from the store"
+        );
+        assert!(
+            store.get(&active_token).await.is_some(),
+            "a recently-touched session must survive the sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_open_websocket_connection_prevents_eviction_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store
+            .create(dummy_session("@connected:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 10);
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            evicted.is_empty(),
+            "a session with a live WebSocket connection must never be evicted, no matter how \
+             long ago its last HTTP request was"
+        );
+        assert!(store.get(&token).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn sweep_idle_is_a_no_op_when_nothing_is_idle_yet() {
+        let store = SessionStore::new();
+        let token = store
+            .create(dummy_session("@fresh:example.org").await)
+            .await;
+
+        let evicted = store.sweep_idle(std::time::Duration::from_secs(60)).await;
+
+        assert!(evicted.is_empty());
+        assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test: an idle session with an undelivered verification
+    /// event must not be evicted, since nobody would ever be left to
+    /// deliver it — see `Session::has_pending_verification_events`'s doc
+    /// comment.
+    #[tokio::test]
+    async fn a_pending_verification_event_prevents_eviction_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store
+            .create(dummy_session("@verifying:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 10);
+        session.pending_verification_events.lock().unwrap().push(
+            crate::events::ServerEvent::VerificationRequest(
+                charm_lib::matrix::verification::VerificationRequestSummary {
+                    flow_id: "flow-1".to_string(),
+                    other_user_id: "@other:example.org".to_string(),
+                    other_device_id: "DEVICE".to_string(),
+                },
+            ),
+        );
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            evicted.is_empty(),
+            "a session with an undelivered verification event must never be evicted — there \
+             would be nothing left to ever deliver it"
+        );
+        assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test: `sweep_idle` must capture a session's presence
+    /// choice at eviction time so a later on-demand restore can seed it back
+    /// in, instead of silently reverting to `Online` — see
+    /// `SessionStore::evicted_presence`'s doc comment.
+    #[tokio::test]
+    async fn sweep_idle_captures_presence_for_a_later_restore_to_consume() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_secs(60);
+
+        let token = store.create(dummy_session("@away:example.org").await).await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, idle_timeout * 2);
+        *session.sync_presence.lock().unwrap() =
+            charm_lib::matrix::presence::PresenceStateDto::Unavailable;
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+
+        assert_eq!(
+            store.take_evicted_presence(&token),
+            Some(charm_lib::matrix::presence::PresenceStateDto::Unavailable),
+            "the presence choice recorded at eviction time must be retrievable exactly once"
+        );
+        assert_eq!(
+            store.take_evicted_presence(&token),
+            None,
+            "a second take for the same token must find nothing left — it's consumed once"
+        );
+    }
+
+    /// Regression test: an `evicted_presence` entry for a token nobody ever
+    /// restored must eventually be pruned rather than living forever — see
+    /// `evicted_presence`'s doc comment for why an unbounded version of this
+    /// map would be its own memory leak.
+    #[tokio::test]
+    async fn evicted_presence_entries_are_pruned_once_max_age_elapses_unclaimed() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_millis(50);
+
+        let token = store
+            .create(dummy_session("@never-returns:example.org").await)
+            .await;
+        backdate(&store.get(&token).await.unwrap(), idle_timeout * 2);
+
+        let evicted = store.sweep_idle(idle_timeout).await;
+        assert_eq!(evicted.len(), 1);
+        assert!(
+            store.evicted_presence.lock().unwrap().contains_key(&token),
+            "the presence entry must exist right after eviction"
+        );
+
+        tokio::time::sleep(idle_timeout * 3).await;
+        // Exercises the pruning pass directly with a short `max_age` — the
+        // real `EVICTED_PRESENCE_MAX_AGE` this backs onto in `sweep_idle` is
+        // multiple days, deliberately independent of `idle_timeout` (see
+        // `sweep_idle`'s doc comment), so this test can't wait it out for
+        // real.
+        store.prune_evicted_presence(idle_timeout);
+
+        assert!(
+            store.take_evicted_presence(&token).is_none(),
+            "an entry nobody ever came back to claim must be pruned, not kept forever"
+        );
+    }
+
+    /// Regression test: `sweep_idle` must *not* prune `evicted_presence`
+    /// entries against its own short `idle_timeout` parameter — only
+    /// `prune_evicted_presence`'s separate, much longer `max_age` should
+    /// ever remove one. An earlier version of this tied pruning directly to
+    /// `idle_timeout`, which threw away a user's explicit presence choice
+    /// almost immediately after eviction even though the persisted session
+    /// itself stays restorable far longer.
+    #[tokio::test]
+    async fn sweep_idle_does_not_prune_evicted_presence_against_its_own_idle_timeout() {
+        let store = SessionStore::new();
+        let idle_timeout = std::time::Duration::from_millis(50);
+
+        let token = store
+            .create(dummy_session("@away-a-while:example.org").await)
+            .await;
+        backdate(&store.get(&token).await.unwrap(), idle_timeout * 2);
+        store.sweep_idle(idle_timeout).await;
+        assert!(store.evicted_presence.lock().unwrap().contains_key(&token));
+
+        tokio::time::sleep(idle_timeout * 5).await;
+        // Several `idle_timeout`s have now passed — if pruning were still
+        // tied to `idle_timeout`, this call would drop the entry. It must
+        // not: only `EVICTED_PRESENCE_MAX_AGE` (multiple days) governs that.
+        store.sweep_idle(idle_timeout).await;
+
+        assert!(
+            store.evicted_presence.lock().unwrap().contains_key(&token),
+            "evicted_presence must survive many multiples of idle_timeout — only the \
+             separate, much longer EVICTED_PRESENCE_MAX_AGE should ever prune it"
+        );
     }
 }

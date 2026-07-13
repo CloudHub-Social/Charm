@@ -1,24 +1,30 @@
 name: Review gate
 
 # Closes the timing race where a PR goes green and merges (or enters the merge
-# queue) *before* the async review bots — Seer and Codex — have finished
-# reviewing the current head. Their *findings* are already blocked by "require
-# conversation resolution"; the problem is that resolution is a point-in-time
-# check, so a PR that becomes mergeable while a bot is still reviewing has no
-# threads yet to block on. This gate makes queue-entry wait until both bots have
-# signalled "done" on the head commit.
+# queue) *before* Seer has finished reviewing the current head, and separately
+# waits for zero unresolved review threads from anyone (human or bot).
+# "Require conversation resolution" is meant to cover the latter, but that's a
+# point-in-time check — a PR that becomes mergeable while review is still in
+# progress has no threads yet to block on, and empirically (#220) a PR can
+# still merge with a genuinely unresolved thread open, so this gate does not
+# rely on that rule alone.
 #
-# (Copilot is intentionally excluded — it's advisory only, because Copilot review
-# runs on a monthly credit allowance that can run out and would then fail-closed
-# on every PR here. Re-add a copilot_done check to the loop if that changes.)
+# Codex used to be handled here too via a hand-rolled poll over its comments/
+# reviews/reactions, but that kept hitting real races and false-positive/
+# negative bugs (CloudHub-Social/Charm#227, #235) trying to infer "is Codex
+# done" from those signals. Replaced by codex-review-gate.yml, which uses
+# JoeyTeng/codex-review-gate-action to own a proper `codex/review-gate`
+# commit status instead — see that file for why it doesn't have the same
+# problems. Branch protection should require both this check and
+# `codex/review-gate`.
 #
-# Each bot exposes a different reliable done-signal (verified empirically):
-#   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
-#   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
-#              when it has findings (not reliably head-anchored; see below).
+# Seer needs no equivalent gate action: it already posts a native GitHub
+# check-run (`Seer Code Review`, reaching a real completed/success/failure/
+# neutral state), so there's no comment/reaction race to solve — this
+# workflow just waits on that check-run directly.
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
-# trivial pass — the bots review the PR head, never the synthetic merge commit, so
+# trivial pass — Seer reviews the PR head, never the synthetic merge commit, so
 # there is nothing to wait for and blocking would only stall the queue). Branch
 # protection should require this context so a PR cannot enter the queue until it
 # passes.
@@ -34,7 +40,6 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
-  issues: read
   checks: read
 
 jobs:
@@ -42,11 +47,11 @@ jobs:
     name: Review bots done
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for review bots to finish on the current head
+      - name: Wait for Seer to finish and every review thread to resolve
         # No-op pass on merge_group (see header), on draft PRs (which can't merge
-        # and which the bots skip anyway; marking ready re-triggers), and on
-        # bot-authored PRs (e.g. dependabot) — Seer and Codex don't review those,
-        # so waiting would fail-closed and block every automated dependency bump.
+        # and which Seer skips anyway; marking ready re-triggers), and on
+        # bot-authored PRs (e.g. dependabot) — Seer doesn't review those, so
+        # waiting would fail-closed and block every automated dependency bump.
         if: >-
           github.event_name == 'pull_request'
           && github.event.pull_request.draft == false
@@ -56,7 +61,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TIMEOUT_MINUTES: "10"
+          TIMEOUT_MINUTES: "20"
           POLL_SECONDS: "20"
         run: |
           set -euo pipefail
@@ -68,40 +73,84 @@ jobs:
           # skipped / timed_out run is still status=="completed" but did NOT
           # actually review — only success/failure/neutral mean a real review ran.
           # --paginate in case the head has >30 check-runs.
+          # jq itself decides true/false and prints exactly that one word —
+          # never pipe a multi-line jq/gh stream into `grep -q`: under
+          # `set -o pipefail`, grep -q exits (and closes its end of the pipe)
+          # as soon as it sees a match, and if more output was still coming
+          # the upstream writer gets SIGPIPE and the whole pipeline reports
+          # non-zero even though a match was found — confirmed reproducing
+          # (exit 141) with a large enough stream. Bit us for real here: a PR
+          # with >1 matching Seer result would silently fail this check even
+          # though the match existed.
           seer_done() {
-            gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion' \
-              | grep -qxE 'success|failure|neutral'
+            # check-runs returns an OBJECT ({total_count, check_runs: [...]}),
+            # not a bare array — unlike the reviewThreads GraphQL query below,
+            # gh's --paginate does NOT merge the nested check_runs array
+            # across pages for this shape; it just prints each page's raw
+            # object as its own separate JSON document (confirmed: forcing a
+            # small per_page produced multiple concatenated top-level docs,
+            # not one merged object). So this needs its own `jq -s` (slurp)
+            # to flatten `.[].check_runs[]` across pages, same idea as
+            # unresolved_review_thread_count()'s GraphQL query below.
+            [ "$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+              | jq -s '[.[].check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion]
+                | any(. == "success" or . == "failure" or . == "neutral")')" = "true" ]
           }
-          # Codex does NOT reliably re-review every push (its review's commit_id
-          # often lags the head), so pinning to HEAD_SHA would false-block. Treat it
-          # as "has engaged with this PR": a +1 reaction (clean) or any submitted
-          # review (findings). Seer above still anchors the latest commit.
-          # --paginate walks every page; the --jq emits one line per matching item
-          # (across all pages), and grep -c counts them. Do NOT use `… | length`
-          # with --paginate: that emits a length PER page, yielding a multi-line
-          # value that breaks the integer test on any PR with >1 page.
-          count_matches() { grep -c . || true; }
-          codex_done() {
-            local react rev
-            react=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' | count_matches)
-            rev=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' | count_matches)
-            [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
+          # --paginate: a PR can have >100 review threads, which `first: 100`
+          # alone would silently truncate — any unresolved thread past the
+          # first page would then never be seen. gh's own --slurp isn't usable
+          # together with --jq, so pipe the raw one-JSON-doc-per-page output
+          # through `jq -s` (slurp) ourselves to flatten across `.[]` before
+          # filtering. Deliberately unfiltered by author — this catches any
+          # unresolved thread, human or bot (including Codex, as a backstop
+          # in case codex-review-gate.yml's own findings-tracking ever misses
+          # one), not just a specific author's.
+          unresolved_review_thread_count() {
+            gh api graphql --paginate -f query='
+              query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved
+                      }
+                    }
+                  }
+                }
+              }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR" \
+              | jq -s '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+                  | select(.isResolved == false)] | length'
           }
 
           while :; do
-            s=false; c=false
+            s=false
             seer_done && s=true || true
-            codex_done && c=true || true
-            echo "head=$HEAD_SHA  seer=$s  codex=$c"
-            if $s && $c; then
-              echo "Seer and Codex have finished on $HEAD_SHA."
+            unresolved=0
+            if $s; then
+              unresolved=$(unresolved_review_thread_count)
+            fi
+            echo "head=$HEAD_SHA  seer=$s  unresolved=$unresolved"
+            if $s && [ "$unresolved" -eq 0 ]; then
+              echo "Seer has finished on $HEAD_SHA, with no unresolved review threads."
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
+              if $s; then
+                # Deliberately NOT an instant exit-1 the moment an unresolved
+                # thread is first seen: a thread can be resolved by a human at
+                # any point while Seer is still being waited on elsewhere in
+                # the loop, e.g. right after replying to a finding. Keep
+                # polling on the same TIMEOUT_MINUTES budget so a resolution
+                # that lands mid-run is picked up without needing a manual
+                # re-run, and only actually fail once that budget is
+                # exhausted with something still open. "Require conversation
+                # resolution" alone isn't enough here either way — #220
+                # showed it doesn't reliably stop a merge on its own.
+                echo "::error::Seer has finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved after ${TIMEOUT_MINUTES}m. Resolve them before merging."
+              else
+                echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for Seer to review $HEAD_SHA. Re-run this check once it finishes, or push a new commit."
+              fi
               exit 1
             fi
             sleep "$POLL_SECONDS"

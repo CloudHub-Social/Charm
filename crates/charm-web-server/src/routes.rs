@@ -10,7 +10,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,10 @@ use charm_lib::matrix::actions::{
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
 use charm_lib::matrix::commands::SlashCommand;
+use charm_lib::matrix::devices::{
+    delete_device_impl, get_cross_signing_reset_url_impl, get_device_delete_url_impl,
+    list_devices_impl,
+};
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
@@ -41,11 +45,14 @@ use charm_lib::matrix::rooms::{
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
-use charm_lib::matrix::spaces::{join_room_impl, knock_room_impl, list_space_hierarchy_impl};
+use charm_lib::matrix::spaces::{
+    create_space_impl, join_room_impl, knock_room_impl, list_space_hierarchy_impl,
+};
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
     accept_verification_request_impl, bootstrap_cross_signing_impl, cancel_verification_impl,
-    confirm_sas_verification_impl, cross_signing_status_impl,
+    confirm_sas_verification_impl, cross_signing_status_impl, recover_from_key_impl,
+    recovery_status_impl,
 };
 use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata::v1::AccountManagementActionData;
@@ -73,6 +80,12 @@ const MULTIPART_ATTACHMENT_BODY_LIMIT: usize =
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        // -- unauthenticated: platform health check --
+        // No session/homeserver reachability implied by a 200 here — just
+        // "this process is up and routing requests" — so a deploy platform's
+        // health check (which needs a plain 200, unlike `/api/auth/me`'s
+        // deliberate 401-when-logged-out) can hit it with zero setup.
+        .route("/api/health", get(health))
         // -- unauthenticated: discovery, login/registration --
         .route("/api/auth/discover", post(discover_homeserver))
         .route("/api/auth/login", post(login))
@@ -85,6 +98,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/resolve-alias", post(resolve_room_alias))
         .route("/api/rooms/join", post(join_room))
         .route("/api/rooms/knock", post(knock_room))
+        .route("/api/rooms/create-space", post(create_space))
         .route("/api/rooms/{room_id}", get(get_room_details))
         .route("/api/rooms/{room_id}/members", get(get_room_members))
         .route(
@@ -220,6 +234,14 @@ pub fn router(state: AppState) -> Router {
             get(get_cross_signing_status).post(bootstrap_cross_signing),
         )
         .route(
+            "/api/verification/cross-signing/reset-url",
+            get(get_cross_signing_reset_url),
+        )
+        .route(
+            "/api/verification/recovery",
+            get(get_recovery_status).post(recover_from_key),
+        )
+        .route(
             "/api/verification/{other_user_id}/{flow_id}/accept",
             post(accept_verification),
         )
@@ -239,10 +261,112 @@ pub fn router(state: AppState) -> Router {
             "/api/verification/devices/{device_id}/request",
             post(request_device_verification),
         )
+        .route("/api/devices", get(list_devices))
+        .route("/api/devices/{device_id}", delete(delete_device))
+        .route(
+            "/api/devices/{device_id}/delete-url",
+            get(get_device_delete_url),
+        )
         // -- live events --
         .route("/api/ws", get(ws_handler))
+        .layer(axum::middleware::from_fn(record_request_metrics))
+        // Continues a Sentry trace from the web frontend's `sentry-trace`/
+        // `baggage` headers (see `src/observability/instrument.ts`'s
+        // `tracePropagationTargets`) into a transaction spanning this
+        // request — the HTTP-transport counterpart to
+        // `observability_trace::continue_ipc_trace` on the desktop/Tauri
+        // side. `axum` applies `.layer()` calls in the *opposite* order
+        // `tower::ServiceBuilder` would (confirmed by `sentry-tower`'s own
+        // docs), so `SentryHttpLayer` must come before `NewSentryLayer`
+        // here, not after — the wrong order silently leaks memory instead
+        // of failing loudly.
+        .layer(sentry_tower::SentryHttpLayer::new().enable_transaction())
+        // Added *after* `SentryHttpLayer` above — under axum's reversed
+        // `.layer()` ordering (see that layer's comment) that makes this one
+        // "outer", running before `SentryHttpLayer` sees the request. Must
+        // stay outer: it rewrites `request.uri()` to the route template
+        // before `SentryHttpLayer` reads the raw path into its transaction's
+        // `request.url` (see `redact_request_uri_for_sentry`'s doc comment).
+        .layer(axum::middleware::from_fn(redact_request_uri_for_sentry))
+        .layer(sentry_tower::NewSentryLayer::<axum::extract::Request>::new_from_top())
         .layer(cors_layer())
         .with_state(state)
+}
+
+/// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
+/// every HTTP request — the backend equivalent of the frontend's
+/// `src/observability/ipc.ts` `invoke()` wrapper, which already instruments
+/// every Tauri IPC call the desktop/mobile client makes. This crate has no
+/// such single dispatch point of its own (routes are plain axum handlers,
+/// not Tauri's `generate_handler!` macro), so a middleware layer is the
+/// equivalent chokepoint for its HTTP surface.
+///
+/// Uses the *matched route template* (`MatchedPath`, e.g.
+/// `/api/rooms/{room_id}/send`) rather than the raw request path as the
+/// metric's `http.route` attribute — the raw path would embed a distinct
+/// room/device/user ID per request, and Sentry bills/aggregates metrics by
+/// their attribute cardinality, so every unique room would silently mint a
+/// new metric series. Falls back to `"unmatched"` for a request that never
+/// matched a route at all (e.g. a 404) rather than embedding the raw path.
+async fn record_request_metrics(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_owned())
+        .unwrap_or_else(|| "unmatched".to_owned());
+    let started_at = std::time::Instant::now();
+    let response = next.run(request).await;
+    let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+    crate::observability::record_http_request_metric(
+        &route,
+        response.status().as_u16(),
+        duration_ms,
+    );
+    response
+}
+
+/// Replaces the request's URI (path *and* query — e.g. `resolve_avatar`'s
+/// `?mxc=...` query param) with the matched route template before
+/// `SentryHttpLayer` (added downstream of this in `router()`'s `.layer()`
+/// chain, and therefore "outer"/earlier-executing than this middleware —
+/// see that layer's own comment) ever reads it. Without this, Matrix room/
+/// event/user IDs in the path reach Sentry's transaction (and, via
+/// `SentryHttpLayer`'s request-fallback event processor, any error event
+/// captured during the request) percent-encoded — `charm_lib::observability_scrub`'s
+/// `MATRIX_ID_PATTERN` only matches a literal `:`, not `%3A`, so those IDs
+/// silently bypass the scrubber `SENTRY.md` documents as unconditional.
+/// Rewriting the URI at its one source (both `SentryHttpLayer`'s transaction
+/// `request.url` and its event-fallback derive from the same
+/// `get_url_from_request` call) fixes both in one place, rather than
+/// patching each Sentry payload after the fact. Uses the same `MatchedPath`/
+/// `"unmatched"` fallback shape as `record_request_metrics` just above, for
+/// the same reason (cardinality there, PII here).
+async fn redact_request_uri_for_sentry(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let matched_path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str());
+    *request.uri_mut() = redacted_route_uri(matched_path);
+    next.run(request).await
+}
+
+/// Pure helper behind [`redact_request_uri_for_sentry`] — a route template
+/// has no per-resource IDs to redact, so this is just a parse with a safe
+/// fallback for the pathological case of a template that somehow isn't a
+/// valid URI path (falls back to the same `"/unmatched"` this crate already
+/// treats as its no-route placeholder), kept separate from the middleware so
+/// it's unit-testable without spinning up a router.
+fn redacted_route_uri(matched_path: Option<&str>) -> axum::http::Uri {
+    matched_path
+        .unwrap_or("/unmatched")
+        .parse()
+        .unwrap_or_else(|_| axum::http::Uri::from_static("/unmatched"))
 }
 
 /// Builds the router's CORS layer from the same `CHARM_WEB_SERVER_ALLOWED_ORIGIN`
@@ -277,13 +401,20 @@ fn cors_layer() -> tower_http::cors::CorsLayer {
     // wildcard entirely: every route here is `GET`/`POST`/`PUT`/`DELETE`,
     // and the only non-default headers requests need to set are
     // `Content-Type` (JSON bodies, or `multipart/form-data` for uploads —
-    // browsers set that one themselves, but it still needs to be allowed) and
-    // `x-charm-operation-id` (used to correlate upload progress).
+    // browsers set that one themselves, but it still needs to be allowed),
+    // `x-charm-operation-id` (used to correlate upload progress), and
+    // `sentry-trace`/`baggage` (attached by the browser SDK when this
+    // origin is in `instrument.ts`'s `tracePropagationTargets` — without
+    // allowing them here, the browser's CORS preflight rejects the request
+    // before it ever reaches `SentryHttpLayer`, silently breaking every
+    // cross-origin API call from a Sentry-enabled web client).
     let layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([
             header::CONTENT_TYPE,
             axum::http::HeaderName::from_static("x-charm-operation-id"),
+            axum::http::HeaderName::from_static("sentry-trace"),
+            axum::http::HeaderName::from_static("baggage"),
         ])
         .allow_credentials(true);
 
@@ -351,10 +482,15 @@ async fn finish_login(
     // that, not just assume it, so a transient failure here doesn't leave
     // `sync_loop::spawn` believing this session is already safely
     // persisted (see that field's doc comment).
+    let crypto = stored
+        .persisted_crypto
+        .as_ref()
+        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+
     let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         match persistence
-            .save(&token, homeserver_url, matrix_session)
+            .save(&token, homeserver_url, matrix_session, crypto)
             .await
         {
             Ok(()) => initial_save_succeeded = true,
@@ -370,6 +506,7 @@ async fn finish_login(
             homeserver_url: homeserver_url.to_string(),
             initial_access_token: initial_save_succeeded
                 .then(|| matrix_session.tokens.access_token.clone()),
+            crypto: stored.persisted_crypto.clone(),
         })
     } else {
         None
@@ -393,9 +530,10 @@ async fn login(
     Json(request): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session, initial_response) = crate::auth::login(request)
-        .await
-        .map_err(ApiError::unauthorized)?;
+    let (response, session, initial_response) =
+        crate::auth::login(request, state.persistence.is_some())
+            .await
+            .map_err(ApiError::unauthorized)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
@@ -406,9 +544,10 @@ async fn register(
     Json(request): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let homeserver_url = request.homeserver_url.clone();
-    let (response, session, initial_response) = crate::auth::register(request)
-        .await
-        .map_err(ApiError::bad_request)?;
+    let (response, session, initial_response) =
+        crate::auth::register(request, state.persistence.is_some())
+            .await
+            .map_err(ApiError::bad_request)?;
     let token = finish_login(&state, session, &homeserver_url, initial_response).await;
     Ok((jar.add(session_cookie(token)), Json(response)))
 }
@@ -427,6 +566,15 @@ async fn logout(
     require_allowed_origin(&headers)?;
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
         let token = cookie.value().to_string();
+        // Captured before the live-session branch below moves `session`
+        // into a spawned task — this is the fallback `persistence.remove`
+        // needs at the very end to still clean up this session's crypto
+        // store even when no persisted blob exists to read it from (e.g.
+        // `finish_login`'s own initial `persistence.save` failed, which it
+        // explicitly tolerates — the live session still has an on-disk
+        // crypto store in that case, just never a matching blob for
+        // `PersistenceStore::remove`'s own `read_one` to find it through).
+        let mut live_crypto = None;
         // Stop the live sync loop *before* removing the persisted entry
         // below, not after. Its `repersist_if_token_changed` can re-save a
         // refreshed token at any sync iteration — removing the persisted
@@ -438,6 +586,7 @@ async fn logout(
         // synchronously mid-poll — but from "the rest of this handler's
         // lifetime" down to "whatever's already in flight at this instant").
         if let Some(session) = state.sessions.remove(&token).await {
+            live_crypto = session.persisted_crypto.clone();
             if let Some(handle) = session
                 .sync_handle
                 .lock()
@@ -456,6 +605,52 @@ async fn logout(
             tokio::spawn(async move {
                 let _ = session.client.matrix_auth().logout().await;
             });
+            // See the matching call in the `else` branch below — harmless
+            // even in the (normal) case where this token was never
+            // idle-evicted and so never had an entry to begin with.
+            state.sessions.forget_evicted_presence(&token);
+        } else if let Some(persistence) = &state.persistence {
+            // No live in-memory `Session` for this token — either it was
+            // never loaded (a startup `restore_all` failure/timeout) or it
+            // was idle-evicted (see `session::SessionStore::sweep_idle`).
+            // Either way there's still a persisted access/refresh token that
+            // would otherwise stay valid at the homeserver forever, since
+            // nothing below this rebuilds a `Client` to revoke it — only
+            // deletes the local persisted copy. Restore just far enough to
+            // call `logout()` on the homeserver before that persisted copy
+            // is gone. `restore_client_for_revocation`, not the full
+            // `restore_by_token` — revoking a token needs no crypto identity
+            // at all, and `restore_by_token` now deliberately fails closed
+            // when a session's crypto store is missing/unopenable (to stop a
+            // *live* session from silently continuing under a fresh, empty
+            // crypto identity — see `build_client_for_restore`'s doc
+            // comment), which would otherwise skip this homeserver
+            // revocation entirely for exactly that session and leave its
+            // token valid forever even though the browser's logout
+            // succeeded. The restore itself is awaited (not spawned) and
+            // *before* the unconditional `remove` below — it reads the same
+            // persisted object `remove` is about to delete, so this has to
+            // run first, not race it — and it's already bounded by
+            // `RESTORE_TIMEOUT`, so a slow/unreachable homeserver can't hang
+            // on *that* part. The actual `logout()` call is spawned rather
+            // than awaited, same as the live-session branch above and for
+            // the same reason: it's a second, independent network call with
+            // no timeout of its own, so awaiting it inline here would let a
+            // slow/unreachable homeserver hang this response even after the
+            // bounded restore already succeeded. No presence to carry
+            // forward here — this session is being logged out, not restored
+            // for continued use.
+            if let Some(client) = persistence.restore_client_for_revocation(&token).await {
+                tokio::spawn(async move {
+                    let _ = client.matrix_auth().logout().await;
+                });
+            }
+            // This token's cached presence (if any — see
+            // `SessionStore::evicted_presence`) is now meaningless: the
+            // persisted session it would have restored into is about to be
+            // deleted below. Drop it immediately instead of leaving it to
+            // `EVICTED_PRESENCE_MAX_AGE`'s much longer backstop.
+            state.sessions.forget_evicted_presence(&token);
         }
         // Removed unconditionally, whether or not a live in-memory session
         // was found above — not nested inside that `if let Some(session)`.
@@ -469,7 +664,10 @@ async fn logout(
         // restore failure has cleared) would restore and start syncing an
         // account the user believes they already logged out of.
         if let Some(persistence) = &state.persistence {
-            if let Err(e) = persistence.remove(&token).await {
+            let live_crypto = live_crypto
+                .as_ref()
+                .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+            if let Err(e) = persistence.remove(&token, live_crypto).await {
                 tracing::warn!("failed to remove persisted session on logout: {e}");
             }
         }
@@ -480,6 +678,10 @@ async fn logout(
     // leave some clients holding onto the (now server-side-invalid) cookie.
     let jar = jar.remove(Cookie::build(SESSION_COOKIE).path("/"));
     Ok((jar, StatusCode::NO_CONTENT))
+}
+
+async fn health() -> StatusCode {
+    StatusCode::OK
 }
 
 #[derive(Serialize)]
@@ -531,6 +733,81 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
+    if let Some(session) = state.sessions.get(&token).await {
+        session.touch();
+        return Ok(session);
+    }
+
+    // Not in memory — either never logged in under this token, or this
+    // session was idle-evicted (see `session::SessionStore::sweep_idle`)
+    // while the cookie was still valid. Try restoring it from persistence
+    // before giving up, so a browser that comes back after the eviction
+    // window doesn't get forced into a full re-login for no reason other
+    // than server-side memory pressure.
+    //
+    // Known race, accepted rather than solved here: two requests for the
+    // same idle-evicted token arriving concurrently (e.g. a page load firing
+    // several API calls at once right after the eviction window) can both
+    // miss the `get` above and both restore + spawn their own `Client` and
+    // sync loop, with the second `insert` silently winning and orphaning the
+    // first's sync loop (never aborted, just abandoned — it'll keep polling
+    // until the process restarts). Narrow in practice (only matters in the
+    // instant right after an eviction, before either restore completes) and
+    // no worse than today's behavior for the equivalent case elsewhere in
+    // this file; closing it properly needs a per-token restore lock, which
+    // isn't worth the added complexity unless it shows up in practice.
+    let Some(persistence) = &state.persistence else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    // Read (not taken) *before* the restore call below — see
+    // `persistence::PersistenceStore::restore_by_token`'s doc comment for
+    // why it needs this to seed the freshly built session's presence before
+    // its own initial `sync_once` runs, not merely before this function
+    // returns. `peek_evicted_presence`, not `take`: `restore_by_token` can
+    // fail (timeout, unreachable homeserver, a transient object-store
+    // error), and taking the entry unconditionally up front would
+    // permanently lose the user's `unavailable`/`offline` choice on that
+    // first failed attempt — a *later*, successful retry with the same
+    // still-valid cookie would then silently fall back to `Online` even
+    // though the cached value was sitting right there the whole time. Only
+    // consumed (`forget_evicted_presence`, below) once the restore this
+    // presence was seeded into has actually succeeded.
+    let evicted_presence = state.sessions.peek_evicted_presence(&token);
+    let Some((homeserver_url, session, initial_response, initial_access_token)) =
+        persistence.restore_by_token(&token, evicted_presence).await
+    else {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    };
+    if evicted_presence.is_some() {
+        state.sessions.forget_evicted_presence(&token);
+    }
+    session.touch();
+    let persist = Some(crate::sync_loop::PersistHandle {
+        store: Arc::clone(persistence),
+        token: token.clone(),
+        homeserver_url,
+        initial_access_token: Some(initial_access_token),
+        crypto: session.persisted_crypto.clone(),
+    });
+    let handle = crate::sync_loop::spawn(
+        session.client.clone(),
+        session.events.clone(),
+        session.sync_presence.clone(),
+        persist,
+        initial_response,
+        session.sync_snapshots(),
+    );
+    *session
+        .sync_handle
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+    state.sessions.insert(token.clone(), session).await;
+    // `insert` takes the session by value and wraps it in its own `Arc`
+    // internally (see `SessionStore::insert`) — re-fetch that shared `Arc`
+    // rather than wrapping a second, disconnected one here, so every holder
+    // of this session (this request, `sync_loop`'s spawned task, any other
+    // concurrent request racing the same restore) is looking at the same
+    // instance.
     state
         .sessions
         .get(&token)
@@ -656,10 +933,36 @@ async fn join_room(
     Json(request): Json<JoinRoomRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    join_room_impl(&session.client, &request.room_id_or_alias)
+    let room_id = join_room_impl(&session.client, &request.room_id_or_alias)
         .await
         .map_err(ApiError::bad_request)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(room_id))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateSpaceRequest {
+    name: String,
+    topic: Option<String>,
+    room_alias_name: Option<String>,
+    public: bool,
+}
+
+async fn create_space(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<CreateSpaceRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let room_id = create_space_impl(
+        &session.client,
+        &request.name,
+        request.topic.as_deref(),
+        request.room_alias_name.as_deref(),
+        request.public,
+    )
+    .await
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(room_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2130,6 +2433,41 @@ async fn bootstrap_cross_signing(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn get_cross_signing_reset_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(
+        get_cross_signing_reset_url_impl(&session.client).await,
+    ))
+}
+
+async fn get_recovery_status(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(recovery_status_impl(&session.client)))
+}
+
+#[derive(Debug, Deserialize)]
+struct RecoverFromKeyRequest {
+    recovery_key: String,
+}
+
+async fn recover_from_key(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<RecoverFromKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    recover_from_key_impl(&session.client, &request.recovery_key)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn accept_verification(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -2213,6 +2551,52 @@ async fn request_device_verification(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(flow_id))
+}
+
+async fn list_devices(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let devices = list_devices_impl(&session.client)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(devices))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeleteDeviceRequest {
+    password: Option<String>,
+}
+
+async fn delete_device(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(device_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let request: DeleteDeviceRequest = parse_optional_json(&body)?;
+    delete_device_impl(&session.client, device_id, request.password)
+        .await
+        .map_err(|error| match error {
+            UiaCommandError::UiaChallenge => ApiError::uia_challenge(),
+            UiaCommandError::Other { message } => ApiError::uia_other(message),
+        })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_device_delete_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(device_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    Ok(Json(
+        get_device_delete_url_impl(&session.client, device_id).await,
+    ))
 }
 
 // ---------------------------------------------------------------------
@@ -2465,7 +2849,32 @@ fn requeue_pending_verification_events(
     *buffer = requeued;
 }
 
+/// Keeps `Session::ws_connections` accurate across every exit path out of
+/// `handle_socket` (clean close, a failed `socket.send`, the lag-induced
+/// forced close) — see that field's doc comment for why an open connection
+/// must always count as active for `SessionStore::sweep_idle`, regardless
+/// of how long ago this session's last HTTP request was.
+struct WsConnectionGuard(Arc<Session>);
+
+impl WsConnectionGuard {
+    fn new(session: Arc<Session>) -> Self {
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(session)
+    }
+}
+
+impl Drop for WsConnectionGuard {
+    fn drop(&mut self) {
+        self.0
+            .ws_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn handle_socket(mut socket: WebSocket, session: Arc<Session>) {
+    let _connection_guard = WsConnectionGuard::new(Arc::clone(&session));
     let mut receiver = session.events.subscribe();
     // Drain (not just peek) any verification requests that arrived before a
     // client was connected to receive them — see
@@ -2906,5 +3315,138 @@ mod origin_allowlist_tests {
             "https://pr-**-preview.example.workers.dev",
             "https://pr-112-preview.example.workers.dev"
         ));
+    }
+}
+
+#[cfg(test)]
+mod redact_request_uri_for_sentry_tests {
+    use tower::ServiceExt;
+
+    use super::redacted_route_uri;
+    use crate::AppState;
+
+    #[test]
+    fn a_matched_route_template_has_no_room_or_event_id_left() {
+        let uri = redacted_route_uri(Some("/api/rooms/{room_id}/events/{event_id}/edit"));
+
+        assert_eq!(uri.path(), "/api/rooms/{room_id}/events/{event_id}/edit");
+        assert_eq!(uri.query(), None);
+    }
+
+    #[test]
+    fn no_matched_path_falls_back_to_the_same_unmatched_placeholder_as_metrics() {
+        assert_eq!(redacted_route_uri(None).path(), "/unmatched");
+    }
+
+    /// Regression test for the actual review finding: a request whose real
+    /// path/query carries percent-encoded Matrix identifiers (the shape
+    /// `matrixTransport.ts`'s `encodeSegment`/`query` helpers produce) must
+    /// never reach a route handler with those identifiers still attached to
+    /// `request.uri()` — this is what `SentryHttpLayer` would otherwise
+    /// read into the transaction's `request.url`.
+    #[tokio::test]
+    async fn a_real_request_with_encoded_matrix_ids_is_rewritten_to_the_route_template() {
+        let app = super::router(AppState::default());
+
+        // `/api/rooms/{room_id}` (get_room_details) requires a session, so
+        // this 401s before reaching the handler body — but `Path<String>`
+        // extraction (and thus route *matching*) happens before session
+        // resolution, so a 401 here (rather than some other rejection)
+        // already proves the request was successfully routed and matched
+        // despite this middleware's URI rewrite happening first.
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/rooms/!secretroom%3Aexample.org")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[cfg(test)]
+mod cors_preflight_tests {
+    use tower::ServiceExt;
+
+    use super::ALLOWED_ORIGIN_ENV;
+    use crate::AppState;
+
+    const TEST_ALLOWED_ORIGIN: &str = "https://charm.example.test";
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// Regression test: a Sentry-enabled cross-origin web client attaches
+    /// `sentry-trace`/`baggage` on every fetch matched by
+    /// `instrument.ts`'s `tracePropagationTargets` (see that file's
+    /// `apiBase`-origin handling), which forces a browser CORS preflight for
+    /// those non-safelisted headers. If `cors_layer` doesn't explicitly
+    /// allow them, the preflight fails and the browser blocks the actual
+    /// request before it ever reaches `SentryHttpLayer` — silently breaking
+    /// every cross-origin API call from such a client, trace or no trace.
+    #[tokio::test]
+    async fn preflight_allows_sentry_trace_and_baggage_headers() {
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let _allowed_origin = EnvVarGuard::set(ALLOWED_ORIGIN_ENV, TEST_ALLOWED_ORIGIN);
+
+        let app = super::router(AppState::default());
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/rooms")
+                    .header("origin", TEST_ALLOWED_ORIGIN)
+                    .header("access-control-request-method", "GET")
+                    .header(
+                        "access-control-request-headers",
+                        "sentry-trace,baggage,content-type",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allow_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .expect("preflight response must list allowed headers")
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+
+        assert!(
+            allow_headers.contains("sentry-trace"),
+            "expected sentry-trace in Access-Control-Allow-Headers, got: {allow_headers}"
+        );
+        assert!(
+            allow_headers.contains("baggage"),
+            "expected baggage in Access-Control-Allow-Headers, got: {allow_headers}"
+        );
     }
 }

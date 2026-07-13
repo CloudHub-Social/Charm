@@ -30,6 +30,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Pinned to match src-tauri's own `sentry` dependency (see that Cargo.toml) —
+# both crates share the redaction/filtering logic in
+# `charm_lib::observability_scrub`, which is written against this version's
+# `sentry::protocol`/`sentry::integrations::tracing` API surface.
+sentry = { version = "0.48.3", features = ["logs", "metrics", "tracing"] }
 rand = "0.10.2"
 lru = "0.12"
 futures-util = "0.3.32"
@@ -41,6 +46,12 @@ base64 = "0.22"
 eyeball = "0.8.8"
 sha2 = "0.11.0"
 tokio-util = { version = "0.7", features = ["io"] }
+# Backs `persistence.rs`'s encrypted session blob: `LocalFileSystem` for local
+# dev/tests (unchanged on-disk layout), `AmazonS3` (against DO Spaces'
+# S3-compatible endpoint, same as this repo's sccache config) in production,
+# where the deploy target has no persistent volume to write a plain file to.
+object_store = { version = "0.11", features = ["aws"] }
+sentry-tower = { version = "0.48.4", features = ["axum", "axum-matched-path", "http"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json", "cookies"] }

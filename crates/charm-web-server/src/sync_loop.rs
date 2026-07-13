@@ -24,12 +24,10 @@ use charm_lib::matrix::room_admin;
 use charm_lib::matrix::rooms;
 use charm_lib::matrix::shell;
 use charm_lib::matrix::sync::SyncStateEvent;
-use charm_lib::matrix::verification::{
-    self, EmojiPair, SasUpdateEvent, VerificationRequestSummary,
-};
+use charm_lib::matrix::verification::{self, SasUpdateEvent, VerificationRequestSummary};
 use futures_util::StreamExt;
 use matrix_sdk::config::SyncSettings;
-use matrix_sdk::encryption::verification::{Emoji, SasState};
+use matrix_sdk::encryption::verification::SasState;
 use matrix_sdk::ruma::events::key::verification::request::ToDeviceKeyVerificationRequestEvent;
 use matrix_sdk::ruma::events::presence::PresenceEvent;
 use matrix_sdk::ruma::events::room::member::SyncRoomMemberEvent;
@@ -82,6 +80,11 @@ pub struct PersistHandle {
     /// would otherwise leave it persisted nowhere until the token later
     /// happened to rotate.
     pub initial_access_token: Option<String>,
+    /// This session's crypto-store identity, if it has one — threaded
+    /// through unchanged into every re-save below (see `PersistenceStore::
+    /// save`'s doc comment on why a re-save must reuse, not regenerate, the
+    /// pair a session was first persisted with).
+    pub crypto: Option<crate::session::CryptoStoreHandle>,
 }
 
 /// Re-saves the session if (and only if) its access token has changed since
@@ -98,9 +101,13 @@ async fn repersist_if_token_changed(
         return last_saved_access_token;
     }
     let access_token = session.tokens.access_token.clone();
+    let crypto = persist
+        .crypto
+        .as_ref()
+        .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
     if let Err(e) = persist
         .store
-        .save(&persist.token, &persist.homeserver_url, &session)
+        .save(&persist.token, &persist.homeserver_url, &session, crypto)
         .await
     {
         tracing::warn!("failed to re-persist refreshed session: {e}");
@@ -248,8 +255,24 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     {
         let client = client.clone();
+        let sync_presence = sync_presence.clone();
         tokio::spawn(async move {
-            let _ = presence::set_presence_online(&client).await;
+            // Read whatever `sync_presence` already holds rather than
+            // hardcoding `Online` — for an ordinary fresh login/register or
+            // a full-process restart's `restore_all`, `Session::new`
+            // defaults this to `Online` anyway (see `PresenceStateDto`'s
+            // `Default` impl), so behavior there is unchanged. But
+            // `routes::require_session`'s on-demand restore of an
+            // idle-evicted session (see `session::SessionStore::sweep_idle`)
+            // seeds this with the session's presence choice *at the moment
+            // it was evicted* before calling this `spawn` — hardcoding
+            // `Online` here would silently undo an explicit
+            // `unavailable`/`offline` choice the instant that session comes
+            // back from an idle eviction, even though the steady-state loop
+            // below already takes care to read this same value fresh on
+            // every iteration for exactly that reason.
+            let presence = *sync_presence.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = presence::set_presence_impl(&client, presence, None).await;
         });
     }
 
@@ -570,40 +593,24 @@ pub async fn start_sas_verification(
     other_user_id: &str,
     flow_id: &str,
 ) -> Result<(), String> {
-    let sas = verification::start_sas_verification_impl(client, other_user_id, flow_id).await?;
+    let verification::StartedSasVerification {
+        sas,
+        accept_after_subscribe,
+    } = verification::start_sas_verification_impl(client, other_user_id, flow_id).await?;
+    let watcher_sas = sas.clone();
+    let mut changes = watcher_sas.changes();
+    if accept_after_subscribe {
+        sas.accept().await.map_err(|e| e.to_string())?;
+    }
     let flow_id = flow_id.to_string();
 
     tokio::spawn(async move {
-        let mut changes = sas.changes();
+        if buffer_sas_update(&events, &pending, &flow_id, watcher_sas.state()) {
+            return;
+        }
+
         while let Some(sas_state) = changes.next().await {
-            let update = match sas_state {
-                SasState::Started { .. } => SasUpdateEvent::Started,
-                SasState::Accepted { .. } => SasUpdateEvent::Accepted,
-                SasState::KeysExchanged { emojis, .. } => SasUpdateEvent::KeysExchanged {
-                    emojis: emojis
-                        .map(|e| e.emojis.into_iter().map(to_emoji_pair).collect())
-                        .unwrap_or_default(),
-                },
-                SasState::Confirmed => SasUpdateEvent::Confirmed,
-                SasState::Done { .. } => SasUpdateEvent::Done,
-                SasState::Cancelled(info) => SasUpdateEvent::Cancelled {
-                    reason: info.reason().to_string(),
-                },
-                SasState::Created { .. } => continue,
-            };
-            let is_terminal = matches!(
-                update,
-                SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
-            );
-            buffer_verification_event(
-                &events,
-                &pending,
-                ServerEvent::VerificationSasUpdate(SasUpdatePayload {
-                    flow_id: flow_id.clone(),
-                    update,
-                }),
-            );
-            if is_terminal {
+            if buffer_sas_update(&events, &pending, &flow_id, sas_state) {
                 break;
             }
         }
@@ -612,11 +619,28 @@ pub async fn start_sas_verification(
     Ok(())
 }
 
-fn to_emoji_pair(emoji: Emoji) -> EmojiPair {
-    EmojiPair {
-        symbol: emoji.symbol.to_string(),
-        description: emoji.description.to_string(),
-    }
+fn buffer_sas_update(
+    events: &broadcast::Sender<ServerEvent>,
+    pending: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    flow_id: &str,
+    sas_state: SasState,
+) -> bool {
+    let Some(update) = verification::sas_state_to_update(sas_state) else {
+        return false;
+    };
+    let is_terminal = matches!(
+        update,
+        SasUpdateEvent::Done | SasUpdateEvent::Cancelled { .. }
+    );
+    buffer_verification_event(
+        events,
+        pending,
+        ServerEvent::VerificationSasUpdate(SasUpdatePayload {
+            flow_id: flow_id.to_string(),
+            update,
+        }),
+    );
+    is_terminal
 }
 
 /// Starts an outgoing SAS verification of another of this account's own

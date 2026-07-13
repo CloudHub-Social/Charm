@@ -34,10 +34,10 @@ describe("ReactionBar", () => {
     expect(onToggle).toHaveBeenCalledWith("👍");
   });
 
-  it("renders only the add-reaction affordance when there are no reactions yet", () => {
-    render(<ReactionBar reactions={[]} onToggle={vi.fn()} />);
+  it("renders nothing when there are no reactions yet", () => {
+    const { container } = render(<ReactionBar reactions={[]} onToggle={vi.fn()} />);
 
-    expect(screen.getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("disables chips and the add-reaction picker for a still-pending message", () => {

@@ -6,6 +6,8 @@
 #![recursion_limit = "512"]
 
 pub mod matrix;
+pub mod observability_scrub;
+pub mod observability_trace;
 pub mod push;
 
 use std::borrow::Cow;
@@ -20,98 +22,46 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
-/// Matches `key = value` / `key: "value"` pairs (JSON-ish or Debug/Display
-/// formatted) for field names that should never reach Sentry, case
-/// insensitively. Not a general-purpose secret scanner — just a
-/// defense-in-depth backstop: nothing in this codebase today formats a
-/// token/passphrase/key into a panic or error string, but `Result<_, String>`
-/// is pervasive here (see `persistence.rs`, `qr_login.rs`), so a single
-/// future `.expect()`/`unwrap()` added against one of those `Err`s could
-/// otherwise ship a secret verbatim to Sentry with nothing catching it.
-static SECRET_FIELD_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(
-        r#"(?i)(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)("?\s*[:=]\s*"?)([^"'\s,}\]]+)"#,
-    )
-    .expect("SECRET_FIELD_PATTERN is a valid static regex")
-});
+/// The `charm.platform` Sentry tag's real per-OS value (Spec 23):
+/// `std::env::consts::OS` returns the same `linux`/`macos`/`ios`/`android`/
+/// `windows` set `@tauri-apps/plugin-os`'s `platform()` does — a plain app
+/// command exposing just this one string, rather than registering the whole
+/// OS plugin (which also injects arch/exe-extension/family/locale/version
+/// fingerprinting into the frontend for a single tag's worth of need; see
+/// PR #169 review discussion).
+#[tauri::command]
+fn get_platform() -> &'static str {
+    std::env::consts::OS
+}
 
-static SECRET_FIELD_NAME_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
-    || {
-        regex::Regex::new(
-        r#"(?i)^(access_token|refresh_token|password|passphrase|recovery_key|secret_storage_key|session_key)$"#,
-    )
-    .expect("SECRET_FIELD_NAME_PATTERN is a valid static regex")
-    },
-);
+/// Crate targets the desktop Sentry tracing bridge forwards — see
+/// `observability_scrub::is_tracing_target_allowed`.
+const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
 
-static MATRIX_ID_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?"#)
-        .expect("MATRIX_ID_PATTERN is a valid static regex")
-});
-
-static MXC_URI_PATTERN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#"mxc://[A-Za-z0-9.-]+/[A-Za-z0-9._~-]+"#)
-        .expect("MXC_URI_PATTERN is a valid static regex")
-});
+/// Spec 24's canonical build identifier (`{version}+{short_sha}`,
+/// `{version}+pr{number}.{short_sha}`, or `{version}+nightly.{short_sha}`),
+/// baked in at *compile* time via `option_env!` — mirroring how
+/// `sentry::release_name!()` below captures `CARGO_PKG_VERSION` at compile
+/// time. A runtime `std::env::var` lookup (like `SENTRY_RELEASE` still
+/// supports, for explicit overrides) isn't enough on its own: an installed
+/// app's launch environment won't have CI's `BUILD_ID` set, so without this
+/// compile-time capture every shipped binary would silently fall back to the
+/// bare Cargo version and never show the SHA. CI sets `BUILD_ID` before
+/// invoking `cargo build`/`pnpm tauri build` — see
+/// `.github/scripts/configure-sentry-release-env.sh` and the
+/// nightly-platform-builds.yml / sentry-release-artifacts.yml workflow
+/// steps. Absent (e.g. a local dev build), this is `None` and every
+/// consumer below falls back the same way `release_name!()` already did.
+const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 
-fn scrub_secrets(text: &str) -> String {
-    SECRET_FIELD_PATTERN
-        .replace_all(text, "$1$2[redacted]")
-        .into_owned()
-}
-
-fn scrub_matrix_ids(text: &str) -> String {
-    let without_mxc = MXC_URI_PATTERN
-        .replace_all(text, "mxc://[redacted]/[redacted]")
-        .into_owned();
-    MATRIX_ID_PATTERN
-        .replace_all(&without_mxc, "$1[redacted]:[redacted]")
-        .into_owned()
-}
-
-fn scrub_sensitive_text(text: &str) -> String {
-    scrub_secrets(&scrub_matrix_ids(text))
-}
-
-fn scrub_json_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => {
-            *text = scrub_sensitive_text(text);
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                scrub_json_value(item);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for (key, field) in fields.iter_mut() {
-                if SECRET_FIELD_NAME_PATTERN.is_match(key) {
-                    *field = serde_json::Value::String("[redacted]".to_owned());
-                } else {
-                    scrub_json_value(field);
-                }
-            }
-        }
-        serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::Null => {}
-    }
-}
-
-/// Sentry `before_send` hook: redacts anything matching [`SECRET_FIELD_PATTERN`]
-/// and Matrix identifier patterns from every serialized string field before
-/// the event ever leaves the process.
-fn scrub_event(
-    event: sentry::protocol::Event<'static>,
-) -> Option<sentry::protocol::Event<'static>> {
-    let Ok(mut value) = serde_json::to_value(&event) else {
-        return Some(event);
-    };
-    scrub_json_value(&mut value);
-    serde_json::from_value(value).ok()
-}
-
+/// Consent-gated wrapper around `observability_scrub::scrub_log_in_place` —
+/// desktop is the one Sentry call site with a per-user runtime toggle (the
+/// Observability settings panel), so the gating lives here rather than in
+/// the shared module `charm-web-server` also uses (which has no such
+/// toggle).
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     if !RUNTIME_LOG_CONSENT.load(Ordering::SeqCst) {
         return None;
@@ -119,10 +69,7 @@ fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     if matches!(log.level, sentry::protocol::LogLevel::Debug) && !cfg!(debug_assertions) {
         return None;
     }
-    log.body = scrub_sensitive_text(&log.body);
-    for attribute in log.attributes.values_mut() {
-        scrub_json_value(&mut attribute.0);
-    }
+    observability_scrub::scrub_log_in_place(&mut log);
     Some(log)
 }
 
@@ -133,33 +80,89 @@ struct SentryGuard {
     logs_enabled: bool,
 }
 
-fn is_charm_tracing_target(target: &str) -> bool {
-    matches!(target, "charm" | "charm_lib")
-        || target.starts_with("charm::")
-        || target.starts_with("charm_lib::")
+/// Keeps `tracing-appender`'s background flush thread alive for the app's
+/// lifetime — dropping this guard (e.g. if it were a local in `.setup()`)
+/// stops the writer and silently truncates the log file.
+#[allow(dead_code)]
+struct TracingFileGuard(tracing_appender::non_blocking::WorkerGuard);
+
+/// Redacts each formatted event the same way `scrub_log` already does for
+/// Sentry logs before writing it to the persistent file. Unlike the Sentry
+/// path, this file layer is unconditional (not gated on the user's logs
+/// consent — see `install_tracing`'s doc comment), so without this a native
+/// error containing a Matrix ID, homeserver URL, or MXC URI (e.g. the
+/// `%error` fields logged in `matrix::sync`/`matrix::verification`) would
+/// land in cleartext on disk regardless of consent.
+///
+/// Buffers every `write()` call instead of scrubbing each one independently:
+/// `tracing_subscriber::fmt` can — and does, for a structured field like
+/// `access_token = %token` — split a single event's formatted output across
+/// several `write()` calls (field name, `=`, value written separately), so
+/// scrubbing per-call could see e.g. `access_token=` and the token itself as
+/// two unrelated chunks and redact neither. `MakeWriter::make_writer` is
+/// called once per event (a fresh `Self::Writer` each time — see
+/// `ScrubbingMakeWriter` below), so accumulating everything written through
+/// one instance and scrubbing it as a whole on `Drop` covers exactly one
+/// event's complete output, however many `write()` calls it took to produce.
+struct ScrubbingWriter<W: std::io::Write> {
+    inner: W,
+    buffer: Vec<u8>,
 }
 
-fn sentry_event_filter_for_level_target(
-    level: &tracing::Level,
-    target: &str,
-    logs_enabled: bool,
-) -> sentry::integrations::tracing::EventFilter {
-    use sentry::integrations::tracing::EventFilter;
+impl<W: std::io::Write> ScrubbingWriter<W> {
+    /// Scrubs and forwards whatever is currently buffered, then clears the
+    /// buffer — shared by `flush()` and `Drop` so both actually deliver
+    /// buffered data to `inner` rather than only one of them.
+    fn flush_buffer(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let scrubbed =
+            observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(&self.buffer));
+        let _ = self.inner.write_all(scrubbed.as_bytes());
+        self.buffer.clear();
+    }
+}
 
-    if !is_charm_tracing_target(target) {
-        return EventFilter::Ignore;
+impl<W: std::io::Write> std::io::Write for ScrubbingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(buf);
+        Ok(buf.len())
     }
 
-    if !logs_enabled {
-        return EventFilter::Ignore;
+    fn flush(&mut self) -> std::io::Result<()> {
+        // `Write::flush`'s contract is that any buffered data has reached
+        // the underlying sink once this returns — calling `inner.flush()`
+        // alone (the previous bug) left our own buffer un-forwarded, so
+        // data was only ever written on `Drop`, not on an explicit `flush()`.
+        self.flush_buffer();
+        self.inner.flush()
     }
+}
 
-    match *level {
-        tracing::Level::ERROR => EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
-        tracing::Level::WARN => EventFilter::Breadcrumb | EventFilter::Log,
-        tracing::Level::INFO => EventFilter::Breadcrumb,
-        tracing::Level::DEBUG => EventFilter::Ignore,
-        tracing::Level::TRACE => EventFilter::Ignore,
+impl<W: std::io::Write> Drop for ScrubbingWriter<W> {
+    fn drop(&mut self) {
+        self.flush_buffer();
+    }
+}
+
+/// `MakeWriter` adapter wrapping every writer produced (one per event, per
+/// the `MakeWriter` contract) in `ScrubbingWriter` — this crate's
+/// `tracing-subscriber` version has no `MakeWriterExt::map_writer`
+/// combinator to do this inline.
+struct ScrubbingMakeWriter<M>(M);
+
+impl<'a, M> tracing_subscriber::fmt::MakeWriter<'a> for ScrubbingMakeWriter<M>
+where
+    M: tracing_subscriber::fmt::MakeWriter<'a>,
+{
+    type Writer = ScrubbingWriter<M::Writer>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        ScrubbingWriter {
+            inner: self.0.make_writer(),
+            buffer: Vec::new(),
+        }
     }
 }
 
@@ -168,47 +171,96 @@ fn sentry_event_filter(
 ) -> sentry::integrations::tracing::EventFilter {
     use sentry::integrations::tracing::EventFilter;
 
-    if !is_charm_tracing_target(metadata.target()) {
-        return EventFilter::Ignore;
-    }
-
     match *metadata.level() {
         tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO => {
             let logs_enabled = runtime_observability_logs_enabled();
-            sentry_event_filter_for_level_target(metadata.level(), metadata.target(), logs_enabled)
+            observability_scrub::sentry_event_filter_for_level_target(
+                metadata.level(),
+                metadata.target(),
+                logs_enabled,
+                DESKTOP_SENTRY_TRACING_CRATES,
+            )
         }
         tracing::Level::DEBUG | tracing::Level::TRACE => EventFilter::Ignore,
     }
 }
 
 fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
-    sentry_span_filter_for_level_target(metadata.level(), metadata.target())
+    observability_scrub::sentry_span_filter_for_level_target(
+        metadata.level(),
+        metadata.target(),
+        DESKTOP_SENTRY_TRACING_CRATES,
+    )
 }
 
-fn sentry_span_filter_for_level_target(level: &tracing::Level, target: &str) -> bool {
-    is_charm_tracing_target(target)
-        && matches!(
-            *level,
-            tracing::Level::ERROR | tracing::Level::WARN | tracing::Level::INFO
-        )
-}
-
-fn install_sentry_tracing() -> bool {
+/// Installs the process-global `tracing` subscriber exactly once, regardless
+/// of whether Sentry consent is on: the native app's own diagnostics (e.g.
+/// the sync-loop failures in `matrix::sync`) are emitted via `tracing::*!`
+/// macros, not the `log` crate, so `tauri-plugin-log`'s `LogDir` target (which
+/// only captures `log::*!` calls) never sees them on its own — before this,
+/// a user who hadn't opted into Sentry had literally no persisted trail of
+/// their own app's errors. The file layer here is unconditional; the Sentry
+/// bridging layer is attached alongside it only when `sentry_enabled` (i.e.
+/// `init_sentry_from_settings` is about to, or just did, call `sentry::init`).
+/// Called once from `run()`'s `.setup()`, before `init_sentry_from_settings`,
+/// since `tracing::subscriber::set_global_default` can only succeed once per
+/// process. See the 2026-07-13 blank-page-on-launch investigation.
+fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool) -> bool {
     if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
         return true;
     }
 
-    let sentry_layer = sentry::integrations::tracing::layer()
-        .event_filter(sentry_event_filter)
-        .span_filter(|metadata| {
-            sentry_span_filter(metadata) && runtime_observability_logs_enabled()
-        });
-    let subscriber = tracing_subscriber::registry().with(sentry_layer);
+    // Same Info/Debug split as the tauri-plugin-log registration below —
+    // without this filter the layer accepts every level from every crate
+    // (including matrix-sdk's own DEBUG/TRACE spans) into the persistent
+    // file regardless of build type.
+    let file_level = if cfg!(debug_assertions) {
+        tracing::level_filters::LevelFilter::DEBUG
+    } else {
+        tracing::level_filters::LevelFilter::INFO
+    };
+    let file_layer = app.path().app_log_dir().ok().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        // The non-`Builder` `rolling::daily` constructor panics on an
+        // unopenable file (e.g. permissions changed, disk full); go through
+        // the fallible `Builder` instead so that case just disables file
+        // logging for this run rather than aborting startup from inside
+        // `.setup()`.
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("charm.log")
+            .build(&dir)
+            .inspect_err(|error| eprintln!("failed to open log file in {dir:?}: {error}"))
+            .ok()?;
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        app.manage(TracingFileGuard(guard));
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(ScrubbingMakeWriter(writer))
+                .with_filter(file_level),
+        )
+    });
+    if file_layer.is_none() {
+        eprintln!("failed to resolve app log dir; file logging disabled for this run");
+    }
+
+    let sentry_layer = sentry_enabled.then(|| {
+        sentry::integrations::tracing::layer()
+            .event_filter(sentry_event_filter)
+            .span_filter(|metadata| {
+                sentry_span_filter(metadata) && runtime_observability_logs_enabled()
+            })
+    });
+
+    let subscriber = tracing_subscriber::registry()
+        .with(file_layer)
+        .with(sentry_layer);
 
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => true,
         Err(error) => {
-            eprintln!("failed to install Sentry tracing subscriber: {error}");
+            eprintln!("failed to install tracing subscriber: {error}");
             SENTRY_TRACING_INSTALLED.store(false, Ordering::SeqCst);
             false
         }
@@ -272,14 +324,49 @@ fn runtime_observability_logs_enabled() -> bool {
     RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
 }
 
-fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
-    let dsn = std::env::var("SENTRY_DSN")
+/// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):
+/// an explicit runtime `SENTRY_RELEASE` override wins (empty values from
+/// `std::env::var` are treated as unset), otherwise fall back to the
+/// compile-time-baked `BUILD_ID` (see the `BUILD_ID` const doc comment).
+/// Pulled out as a pure function so the priority order is unit-testable
+/// without needing an actual Sentry client or process environment.
+fn resolve_build_id_tag(
+    sentry_release_env: Option<String>,
+    build_id: Option<&str>,
+) -> Option<String> {
+    sentry_release_env
+        .filter(|value| !value.is_empty())
+        .or_else(|| build_id.map(str::to_owned))
+}
+
+fn sentry_dsn() -> Option<String> {
+    std::env::var("SENTRY_DSN")
         .ok()
-        .filter(|value| !value.is_empty())?;
-    let app_data_dir = app.path().app_data_dir().ok()?;
-    if !observability_enabled_from_store(&app_data_dir) {
+        .filter(|value| !value.is_empty())
+}
+
+/// Whether `init_sentry_from_settings` is about to call `sentry::init` —
+/// computed ahead of that call so `install_tracing` (which must run first,
+/// see its doc comment) knows whether to attach the Sentry bridging layer.
+fn sentry_enabled_at_launch<R: tauri::Runtime>(app: &tauri::App<R>) -> bool {
+    sentry_dsn().is_some()
+        && app
+            .path()
+            .app_data_dir()
+            .ok()
+            .is_some_and(|dir| observability_enabled_from_store(&dir))
+}
+
+fn init_sentry_from_settings<R: tauri::Runtime>(
+    app: &tauri::App<R>,
+    tracing_installed: bool,
+    sentry_enabled: bool,
+) -> Option<SentryGuard> {
+    if !sentry_enabled {
         return None;
     }
+    let dsn = sentry_dsn()?;
+    let app_data_dir = app.path().app_data_dir().ok()?;
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
     update_runtime_observability_logs_enabled(logs_enabled);
@@ -287,11 +374,28 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
         .ok()
         .filter(|value| !value.is_empty())
         .map(Cow::Owned);
+    // Priority: an explicit runtime SENTRY_RELEASE override, then the
+    // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
+    // binary), then the bare Cargo-version fallback release_name!() already
+    // provided before this spec.
     let release = std::env::var("SENTRY_RELEASE")
         .ok()
         .filter(|value| !value.is_empty())
         .map(Cow::Owned)
+        .or_else(|| BUILD_ID.map(Cow::Borrowed))
         .or_else(|| sentry::release_name!());
+
+    // charm.build.id mirrors `release` (or BUILD_ID directly when no
+    // SENTRY_RELEASE override is present) so a Sentry event's tag matches
+    // what AboutPanel displays for the same build — see Spec 24, which
+    // introduced this build id and whose AboutPanel consumes it for
+    // feedback/error context. Exception: local/dev builds where neither
+    // SENTRY_RELEASE nor BUILD_ID is set. There, this tag is absent
+    // (`None`) while AboutPanel's `formatBuildIdForDisplay`
+    // (src/lib/buildId.ts) still renders a `{version}-dev` fallback from
+    // the bare package.json version — so the two surfaces diverge in that
+    // one case.
+    let build_id_tag = resolve_build_id_tag(std::env::var("SENTRY_RELEASE").ok(), BUILD_ID);
 
     let client = sentry::init((
         dsn,
@@ -305,21 +409,74 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
             // Keep Sentry Logs initialized for same-session opt-in; scrub_log
             // drops every native log unless runtime log consent is enabled.
             enable_logs: true,
-            before_send: Some(std::sync::Arc::new(scrub_event)),
+            before_send: Some(std::sync::Arc::new(observability_scrub::scrub_event)),
             before_send_log: Some(std::sync::Arc::new(scrub_log)),
             ..Default::default()
         },
     ));
-    let tracing_installed = install_sentry_tracing();
+    if let Some(build_id) = build_id_tag {
+        sentry::configure_scope(|scope| scope.set_tag("charm.build.id", build_id));
+    }
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
+
+    // Backend-side counterpart to the frontend's own `app.boot` metric
+    // (`src/observability/instrument.ts`'s `initializeSentry`) — this one
+    // fires once per native process launch rather than once per webview
+    // load, so the two together distinguish a fresh OS-level app start from
+    // a webview reload within the same running process.
+    sentry::metrics::counter("app.boot", 1)
+        .attribute("charm.platform", get_platform())
+        .capture();
 
     Some(SentryGuard {
         _client: client,
         tracing_installed,
         logs_enabled,
     })
+}
+
+/// Enables getUserMedia and grants its camera/mic requests on WebKitGTK
+/// (Spec 13). Two separate gates, both closed by default:
+///
+/// 1. `Settings:enable-media-stream` (and `enable-webrtc`) default to
+///    `FALSE` in WebKitGTK — wry's own webview setup only turns on
+///    WebGL/WebAudio/page-cache, not these, so without enabling them here
+///    `getUserMedia` is undefined at the JS layer and the permission signal
+///    below is never even reached.
+/// 2. The `permission-request` signal itself has no default handler and no
+///    OS-level consent gate behind it (no TCC-style prompt) — left
+///    unhandled, it silently denies.
+///
+/// Tauri's own webview only ever loads this app's first-party frontend,
+/// never arbitrary web content, so granting unconditionally here matches
+/// wry's own macOS/iOS `WKUIDelegate` behavior — that also grants
+/// unconditionally at the webview layer, relying on the OS's own TCC prompt
+/// (triggered separately by AVFoundation) as the real consent gate. Linux has
+/// no equivalent OS-level camera/mic permission system for a non-sandboxed
+/// native binary, so there is no such second gate to rely on here.
+#[cfg(target_os = "linux")]
+fn linux_wire_user_media_permission(platform_webview: tauri::webview::PlatformWebview) {
+    use webkit2gtk::glib::Cast;
+    use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
+
+    let webview: webkit2gtk::WebView = platform_webview.inner();
+
+    if let Some(settings) = webview.settings() {
+        settings.set_enable_media_stream(true);
+        settings.set_enable_webrtc(true);
+    }
+
+    webview.connect_permission_request(|_webview, request| {
+        match request.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
+            Some(user_media) => {
+                user_media.allow();
+                true
+            }
+            None => false,
+        }
+    });
 }
 
 /// Builds the tray icon (with a Show/Quit menu) and, on macOS, the native app
@@ -408,6 +565,33 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let builder = tauri::Builder::default();
 
+    // Registered first and independent of Sentry consent — mirrors `log::*!`
+    // calls to stdout and the webview console. Deliberately omits
+    // `TargetKind::LogDir`: that target's file open happens inside this
+    // plugin's own `.setup()` and propagates any I/O error (permissions, a
+    // root-owned leftover file, a full disk) through `?` — since `run()`
+    // below `.expect()`s the overall `.run(...)` result, an unopenable log
+    // file there would panic and abort the whole app before any window
+    // renders, exactly the blank-page/no-page class of bug this file's
+    // `install_tracing` exists to fix. Persistent file logging instead comes
+    // entirely from `install_tracing`'s own tracing-appender layer, which
+    // already treats an unopenable file as "disable file logging for this
+    // run" rather than fatal (see its doc comment). See the 2026-07-13
+    // blank-page-on-launch investigation.
+    let builder = builder.plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+            ])
+            .level(if cfg!(debug_assertions) {
+                log::LevelFilter::Debug
+            } else {
+                log::LevelFilter::Info
+            })
+            .build(),
+    );
+
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
@@ -430,7 +614,22 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(matrix::MatrixState::default())
         .setup(|app| {
-            if let Some(sentry_guard) = init_sentry_from_settings(app) {
+            // Read once and pass to both calls below, rather than letting
+            // each independently re-read observability.json from disk: the
+            // file can change between two reads (e.g. the frontend writing a
+            // settings update at the same moment), which could otherwise
+            // install_tracing's Sentry bridging layer for one value of
+            // sentryEnabled while init_sentry_from_settings initializes the
+            // client for a different one — silently dropping every
+            // tracing::*! event Sentry would otherwise have received.
+            let sentry_enabled = sentry_enabled_at_launch(app);
+            // Must run before `init_sentry_from_settings`: both attach to the
+            // one process-global `tracing` subscriber, which can only be set
+            // once — see `install_tracing`'s doc comment.
+            let tracing_installed = install_tracing(app, sentry_enabled);
+            if let Some(sentry_guard) =
+                init_sentry_from_settings(app, tracing_installed, sentry_enabled)
+            {
                 app.manage(sentry_guard);
             }
             let handle = app.handle().clone();
@@ -454,11 +653,25 @@ pub fn run() {
             }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
-            if let Err(e) = matrix::persistence::sweep_orphan_temp_stores(&handle) {
+            let sweep_result = tauri::async_runtime::block_on(async {
+                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                matrix::persistence::sweep_orphan_temp_stores(&handle)
+            });
+            if let Err(e) = sweep_result {
                 eprintln!("orphan temp-store sweep failed: {e}");
             }
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
+            // Spec 13: WebKitGTK's `permission-request` signal has no default
+            // handler and, unlike macOS/Windows/Android, no OS-level consent
+            // gate behind it — left unhandled, it silently denies and
+            // getUserMedia never resolves. See `linux_wire_user_media_permission`.
+            #[cfg(target_os = "linux")]
+            if let Some(webview) = app.get_webview_window("main") {
+                if let Err(e) = webview.with_webview(linux_wire_user_media_permission) {
+                    eprintln!("failed to wire WebKitGTK user-media permission handling: {e}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -481,6 +694,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
+            get_platform,
             update_observability_log_consent,
             matrix::auth::login,
             matrix::auth::register,
@@ -504,6 +718,8 @@ pub fn run() {
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
             matrix::verification::cross_signing_status,
+            matrix::verification::recovery_status,
+            matrix::verification::recover_from_key,
             matrix::verification::accept_verification_request,
             matrix::verification::cancel_verification,
             matrix::verification::start_sas_verification,
@@ -526,6 +742,7 @@ pub fn run() {
             matrix::spaces::list_space_hierarchy,
             matrix::spaces::join_room,
             matrix::spaces::knock_room,
+            matrix::spaces::create_space,
             matrix::room_admin::get_room_details,
             matrix::room_admin::get_room_member_list,
             matrix::room_admin::set_room_name,
@@ -602,41 +819,11 @@ mod observability_tests {
         RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
     }
 
-    #[test]
-    fn scrub_sensitive_text_redacts_matrix_ids_and_secret_fields() {
-        let input = r#"room !abcdef:matrix.example user @alice:example.org alias #general:example.org event $event:example.org mxc://example.org/media password="secret""#;
-
-        assert_eq!(
-            scrub_sensitive_text(input),
-            r#"room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] password="[redacted]""#
-        );
-    }
-
-    #[test]
-    fn scrub_json_value_redacts_secret_field_values() {
-        let mut value = serde_json::json!({
-            "message": "failed in !room:example.org",
-            "extra": {
-                "password": "secret",
-                "access_token": "token",
-                "nested": ["@user:example.org", "plain string"]
-            }
-        });
-
-        scrub_json_value(&mut value);
-
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "message": "failed in ![redacted]:[redacted]",
-                "extra": {
-                    "password": "[redacted]",
-                    "access_token": "[redacted]",
-                    "nested": ["@[redacted]:[redacted]", "plain string"]
-                }
-            })
-        );
-    }
+    // Pure redaction-rule tests (matrix ID/secret patterns, JSON walking)
+    // live in `observability_scrub`'s own test module now that the logic
+    // does — this module keeps only what's actually desktop-specific:
+    // consent gating and crate-scoped filtering wired to
+    // `DESKTOP_SENTRY_TRACING_CRATES`.
 
     #[test]
     fn scrub_log_redacts_body_and_attributes() {
@@ -669,49 +856,74 @@ mod observability_tests {
     }
 
     #[test]
-    fn sentry_tracing_filter_keeps_bridge_charm_scoped() {
-        use sentry::integrations::tracing::EventFilter;
+    fn scrubbing_writer_redacts_matrix_ids_and_secrets_before_the_inner_write() {
+        use std::io::Write;
 
-        fn assert_event_filter(actual: EventFilter, expected: EventFilter) {
-            assert_eq!(actual.bits(), expected.bits());
+        let mut buffer = Vec::new();
+        {
+            let mut writer = ScrubbingWriter {
+                inner: &mut buffer,
+                buffer: Vec::new(),
+            };
+            writer
+                .write_all(b"failed for @alice:example.org access_token=secret")
+                .expect("write to an in-memory Vec never fails");
+            // Drop flushes the buffered-and-scrubbed output to `inner`.
         }
 
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::INFO, "matrix_sdk::sync", true),
-            EventFilter::Ignore,
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed for @[redacted]:[redacted] access_token=[redacted]"
         );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::INFO, "charm_lib::matrix", true),
-            EventFilter::Breadcrumb,
+    }
+
+    #[test]
+    fn scrubbing_writer_redacts_a_secret_split_across_multiple_write_calls() {
+        // The exact failure mode Codex flagged on #227: tracing_subscriber's
+        // fmt formatter can write a structured field's name, separator, and
+        // value as separate `write()` calls — scrubbing each independently
+        // would see "access_token=" and "secret" as unrelated chunks and
+        // redact neither.
+        use std::io::Write;
+
+        let mut buffer = Vec::new();
+        {
+            let mut writer = ScrubbingWriter {
+                inner: &mut buffer,
+                buffer: Vec::new(),
+            };
+            writer.write_all(b"failed: access_token=").expect("write 1");
+            writer.write_all(b"super-secret-value").expect("write 2");
+        }
+
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed: access_token=[redacted]"
         );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", true),
-            EventFilter::Breadcrumb | EventFilter::Log,
+    }
+
+    #[test]
+    fn scrubbing_writer_flush_delivers_buffered_data_without_needing_drop() {
+        // Write::flush's contract is that buffered data has reached the
+        // inner writer once it returns — a caller that flushes and inspects
+        // the sink before the ScrubbingWriter is dropped must see the data.
+        use std::io::Write;
+
+        let mut buffer = Vec::new();
+        let mut writer = ScrubbingWriter {
+            inner: &mut buffer,
+            buffer: Vec::new(),
+        };
+        writer
+            .write_all(b"failed for @alice:example.org")
+            .expect("write");
+        writer.flush().expect("flush");
+        drop(writer);
+
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed for @[redacted]:[redacted]"
         );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::ERROR, "charm_lib::matrix", true),
-            EventFilter::Event | EventFilter::Breadcrumb | EventFilter::Log,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(&tracing::Level::WARN, "charm_lib::matrix", false),
-            EventFilter::Ignore,
-        );
-        assert_event_filter(
-            sentry_event_filter_for_level_target(
-                &tracing::Level::ERROR,
-                "charm_lib::matrix",
-                false,
-            ),
-            EventFilter::Ignore,
-        );
-        assert!(!sentry_span_filter_for_level_target(
-            &tracing::Level::INFO,
-            "matrix_sdk::sync"
-        ));
-        assert!(sentry_span_filter_for_level_target(
-            &tracing::Level::INFO,
-            "charm_lib::matrix"
-        ));
     }
 
     #[test]
@@ -755,5 +967,34 @@ mod observability_tests {
         update_runtime_observability_logs_enabled(false);
 
         assert!(!runtime_observability_logs_enabled());
+    }
+
+    // Spec 24: charm.build.id tag resolution — an explicit runtime
+    // SENTRY_RELEASE always wins over the compile-time BUILD_ID constant,
+    // and an empty-string env value (std::env::var returns "" rather than
+    // None when a var is set-but-empty) is treated the same as unset.
+
+    #[test]
+    fn build_id_tag_prefers_runtime_sentry_release_override() {
+        let resolved =
+            resolve_build_id_tag(Some("charm@override".to_owned()), Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("charm@override"));
+    }
+
+    #[test]
+    fn build_id_tag_falls_back_to_compile_time_build_id() {
+        let resolved = resolve_build_id_tag(None, Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("0.1.0+a1b2c3d"));
+    }
+
+    #[test]
+    fn build_id_tag_treats_empty_env_value_as_unset() {
+        let resolved = resolve_build_id_tag(Some(String::new()), Some("0.1.0+a1b2c3d"));
+        assert_eq!(resolved.as_deref(), Some("0.1.0+a1b2c3d"));
+    }
+
+    #[test]
+    fn build_id_tag_is_none_without_release_env_or_compile_time_build_id() {
+        assert_eq!(resolve_build_id_tag(None, None), None);
     }
 }

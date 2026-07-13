@@ -37,6 +37,7 @@ describe("local mirror", () => {
       fontSize: "lg",
       density: "compact",
       reducedMotion: "on",
+      messageLayout: "discord",
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -166,6 +167,7 @@ describe("mergeAppearance", () => {
       fontSize: "xl",
       density: "compact",
       reducedMotion: "off",
+      messageLayout: "irc",
     };
     expect(mergeAppearance(full)).toEqual(full);
   });
@@ -185,6 +187,22 @@ describe("mergeAppearance", () => {
       reducedMotion: "maybe",
     } as unknown as Partial<AppearanceState>;
     expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("falls back to the default for an invalid messageLayout", () => {
+    const corrupted = { messageLayout: "compact" } as unknown as Partial<AppearanceState>;
+    expect(mergeAppearance(corrupted)).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("accepts each valid messageLayout value", () => {
+    expect(mergeAppearance({ messageLayout: "discord" })).toEqual({
+      ...DEFAULT_APPEARANCE,
+      messageLayout: "discord",
+    });
+    expect(mergeAppearance({ messageLayout: "irc" })).toEqual({
+      ...DEFAULT_APPEARANCE,
+      messageLayout: "irc",
+    });
   });
 
   it("falls back to the default when a field is a non-string type", () => {

@@ -5,7 +5,14 @@ import { IPC_OPERATION_ID_HEADER, invoke, ipcObservabilityTestHooks } from "./ip
 
 vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
+  captureException: vi.fn(),
   getClient: vi.fn(),
+  getTraceData: vi.fn(() => ({})),
+  metrics: {
+    count: vi.fn(),
+    gauge: vi.fn(),
+    distribution: vi.fn(),
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -96,7 +103,29 @@ describe("IPC observability", () => {
     );
   });
 
-  it("records a redacted failure breadcrumb and rethrows the original error", async () => {
+  it("merges Sentry.getTraceData()'s sentry-trace/baggage into the IPC headers", async () => {
+    vi.mocked(Sentry.getTraceData).mockReturnValueOnce({
+      "sentry-trace": "12345678901234567890123456789012-1234567890123456-1",
+      baggage: "sentry-trace_id=12345678901234567890123456789012",
+    });
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(undefined);
+
+    await invoke("send_typing", { roomId: "!room:example.org" });
+
+    expect(tauriInvoke).toHaveBeenCalledWith(
+      "send_typing",
+      { roomId: "!room:example.org" },
+      {
+        headers: {
+          [IPC_OPERATION_ID_HEADER]: expect.stringMatching(/^ipc-/),
+          "sentry-trace": "12345678901234567890123456789012-1234567890123456-1",
+          baggage: "sentry-trace_id=12345678901234567890123456789012",
+        },
+      },
+    );
+  });
+
+  it("records a redacted failure breadcrumb, captures a summarized error, and rethrows the original error", async () => {
     const error = new Error("failed for @alice:example.org with password=secret");
     vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
 
@@ -118,6 +147,141 @@ describe("IPC observability", () => {
         }),
       }),
     );
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'IPC invoke failed: {"name":"Error","message":"[redacted-string:50]"}',
+        name: "IpcError",
+      }),
+      expect.objectContaining({
+        fingerprint: ["ipc-invoke-failed", "change_password"],
+        contexts: expect.objectContaining({
+          "tauri.ipc": expect.objectContaining({
+            command: "change_password",
+            operationId: expect.stringMatching(/^ipc-/),
+            durationMs: expect.any(Number),
+            args: {
+              password: "[redacted]",
+            },
+          }),
+        }),
+        tags: expect.objectContaining({
+          "ipc.command": "change_password",
+        }),
+      }),
+    );
+  });
+
+  it("fingerprints captured exceptions by command so different commands don't collapse into one Sentry issue", async () => {
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error("boom a"));
+    await expect(invoke("command_a")).rejects.toThrow("boom a");
+
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(new Error("boom b"));
+    await expect(invoke("command_b")).rejects.toThrow("boom b");
+
+    expect(Sentry.captureException).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ fingerprint: ["ipc-invoke-failed", "command_a"] }),
+    );
+    expect(Sentry.captureException).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ fingerprint: ["ipc-invoke-failed", "command_b"] }),
+    );
+  });
+
+  it("does not capture an expected/handled failure when the caller opts out via captureOnError: false", async () => {
+    const error = new Error("wrong password");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("login", { request: {} }, { captureOnError: false })).rejects.toBe(error);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    // Breadcrumbs still get recorded — only the Sentry exception capture is skipped.
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC login failed",
+      }),
+    );
+  });
+
+  it("still captures a command's failure by default when no options are passed", async () => {
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("some_other_command")).rejects.toBe(error);
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("redacts camelCase secret-ish field names, not just exact snake_case keys", () => {
+    expect(
+      ipcObservabilityTestHooks.summarizeArgs({
+        newPassword: "super-secret-new-password",
+        oldPassword: "super-secret-old-password",
+        currentPassword: "super-secret-current-password",
+        recoveryKey: "recovery-key-value",
+        accessToken: "token-value",
+        password: "plain-password",
+      }),
+    ).toEqual({
+      newPassword: "[redacted]",
+      oldPassword: "[redacted]",
+      currentPassword: "[redacted]",
+      recoveryKey: "[redacted]",
+      accessToken: "[redacted]",
+      password: "[redacted]",
+    });
+  });
+
+  it("does not capture expected UIA challenges as IPC failures", async () => {
+    const challenge = { kind: "UiaChallenge", session: "session-id" };
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(challenge);
+
+    await expect(invoke("change_password", { password: undefined })).rejects.toBe(challenge);
+
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC change_password failed",
+      }),
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("does not capture noisy best-effort typing failures", async () => {
+    const error = new Error("offline");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("send_typing", { roomId: "!room:example.org", typing: true })).rejects.toBe(
+      error,
+    );
+
+    expect(Sentry.addBreadcrumb).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        category: "tauri.ipc",
+        level: "error",
+        message: "IPC send_typing failed",
+      }),
+    );
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("does not send a Sentry event while the current Sentry client is disabled, even on failure", async () => {
+    vi.mocked(Sentry.getClient).mockReturnValue({
+      getOptions: () => ({ enabled: false }),
+    } as ReturnType<typeof Sentry.getClient>);
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(invoke("logout")).rejects.toBe(error);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it("falls back to a local operation id when crypto randomUUID is unavailable", async () => {
@@ -159,6 +323,15 @@ describe("IPC observability", () => {
     });
   });
 
+  it("builds captured IPC errors from summarized data only", () => {
+    const error = new Error("https://homeserver.example login failed");
+
+    expect(ipcObservabilityTestHooks.createCapturedIpcError(error)).toMatchObject({
+      message: 'IPC invoke failed: {"name":"Error","message":"[string:39]"}',
+      name: "IpcError",
+    });
+  });
+
   it("does not record breadcrumbs while the current Sentry client is disabled", async () => {
     vi.mocked(Sentry.getClient).mockReturnValue({
       getOptions: () => ({ enabled: false }),
@@ -168,5 +341,48 @@ describe("IPC observability", () => {
     await invoke("logout");
 
     expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+  });
+
+  it("skips this wrapper's own breadcrumbs when skipBreadcrumb is set, without affecting exception capture", async () => {
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(null);
+
+    await invoke("send_message", { roomId: "!room:example.org" }, { skipBreadcrumb: true });
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+
+    await expect(
+      invoke("send_message", { roomId: "!room:example.org" }, { skipBreadcrumb: true }),
+    ).rejects.toThrow();
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  it("calls onFailureBreadcrumb before captureOnError's exception capture, instead of its own breadcrumb", async () => {
+    const error = new Error("boom");
+    vi.mocked(tauriInvoke).mockRejectedValueOnce(error);
+    const callOrder: string[] = [];
+    vi.mocked(Sentry.captureException).mockImplementationOnce(() => {
+      callOrder.push("captureException");
+      return "event-id";
+    });
+    const onFailureBreadcrumb = vi.fn(() => {
+      callOrder.push("onFailureBreadcrumb");
+    });
+
+    await expect(
+      invoke(
+        "send_message",
+        { roomId: "!room:example.org" },
+        { skipBreadcrumb: true, onFailureBreadcrumb },
+      ),
+    ).rejects.toThrow();
+
+    expect(onFailureBreadcrumb).toHaveBeenCalledWith(error, expect.any(Number));
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    expect(callOrder).toEqual(["onFailureBreadcrumb", "captureException"]);
   });
 });

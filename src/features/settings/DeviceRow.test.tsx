@@ -1,15 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  waitForElementToBeRemoved,
-} from "@testing-library/react";
-import type { ReactElement } from "react";
+import { fireEvent, screen, waitFor, waitForElementToBeRemoved } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { DeviceRow } from "./DeviceRow";
 import type { DeviceSummary } from "@/lib/matrix";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const getDeviceDeleteUrl = vi.fn();
 
@@ -33,11 +26,6 @@ function makeDevice(overrides: Partial<DeviceSummary> = {}): DeviceSummary {
     is_verified: false,
     ...overrides,
   };
-}
-
-function renderWithProviders(ui: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */
@@ -115,10 +103,22 @@ describe("DeviceRow", () => {
     expect(onVerify).toHaveBeenCalled();
   });
 
-  it("does not offer Verify for the current device or an already-verified one", () => {
+  it("hides the actions menu entirely for the current device", () => {
     renderWithProviders(
       <DeviceRow
         device={makeDevice({ is_current: true, is_verified: true })}
+        onVerify={vi.fn()}
+        onRevoke={vi.fn()}
+        usesOAuth={false}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /Actions for/ })).not.toBeInTheDocument();
+  });
+
+  it("does not offer Verify for an already-verified, non-current device", () => {
+    renderWithProviders(
+      <DeviceRow
+        device={makeDevice({ is_current: false, is_verified: true })}
         onVerify={vi.fn()}
         onRevoke={vi.fn()}
         usesOAuth={false}

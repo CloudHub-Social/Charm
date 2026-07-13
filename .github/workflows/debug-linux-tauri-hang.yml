@@ -1,0 +1,280 @@
+name: DEBUG Linux tauri build hang diagnostics
+
+# On-demand diagnostic tooling for the intermittent Linux deb/rpm bundling
+# hang tracked at tauri-apps/tauri#15698 (and mitigated in this repo via the
+# retry-on-timeout wrapper in nightly.yml). Manual dispatch
+# only — this doesn't run automatically and isn't part of any required
+# check. Reach for it if the hang needs re-diagnosing (upstream ships a fix
+# to verify, the symptom changes, a new hypothesis needs testing).
+#
+# What it does: runs `pnpm tauri build` in the background so a later step
+# can inspect it while still running instead of only after it's been
+# killed, polls for actual completion (via an exit-code sentinel file, not
+# just process liveness — a bare `kill -0` check can't tell "still
+# legitimately compiling" from "hung"), and if it's still running past
+# `wait_minutes`, captures a full diagnostic bundle as a build artifact:
+# - Full build log (optionally `-vv` verbose bundler output)
+# - /proc snapshot (status/wchan/stack/syscall/open fds) for every
+#   descendant process of the build
+# - System resource state: free/df/df-i/meminfo/dmesg (OOM-killer and
+#   ENOSPC activity specifically)/journalctl
+#
+# Findings so far (as of 2026-07-10): FUSE mounting, an untimed network
+# download inside tauri-bundler, an AppImage-specific deadlock, a libuv
+# io_uring kernel bug, a Node 22.23.x regression, runner image/kernel
+# version (ubuntu-24.04 vs 22.04), and resource exhaustion (memory/disk)
+# have all been tested and ruled out. A verified same-image/same-kernel
+# run that completed successfully (rpm bundled in 2.6s) alongside runs
+# that hung for 15+ minutes confirms this is a genuine non-deterministic
+# race condition somewhere in the bundler (most likely rpm-rs, given -vv
+# shows the hang starts right after the .desktop file template finishes
+# rendering for the rpm target, before any further logged output) —
+# not anything environment-specific. See tauri-apps/tauri#15698 for the
+# full writeup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundles:
+        description: "Bundle targets to build (comma-separated, passed to --bundles)"
+        required: false
+        default: "deb,rpm"
+        type: string
+      verbose:
+        description: "Pass -vv to tauri build for bundler-internal logging"
+        required: false
+        default: true
+        type: boolean
+      wait_minutes:
+        description: "How long to wait for the build before treating it as stuck and capturing diagnostics"
+        required: false
+        default: "15"
+        type: string
+      runner_image:
+        description: "Runner image to test against"
+        required: false
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04
+          - ubuntu-22.04
+
+jobs:
+  linux:
+    name: Linux tauri build hang diagnostics
+    runs-on: ${{ inputs.runner_image }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # This can be dispatched against any ref, and the checkout token
+          # would otherwise persist in local git config, readable by every
+          # later step (pnpm install's lifecycle scripts, the Tauri build)
+          # — same reasoning as the real Linux job in
+          # nightly.yml.
+          persist-credentials: false
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      # Isolated cache namespace per runner image, and never saves — this
+      # workflow shouldn't write into (or read a possibly-incompatible
+      # build of) the real Linux job's cache.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: src-tauri
+          prefix-key: "debug-linux-tauri-hang-${{ inputs.runner_image }}"
+          save-if: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # No sccache: this is a diagnostic tool, not a speed-optimized build,
+      # and sccache credentials are main-only anyway — keeping this
+      # dispatchable from any branch without silently hitting an
+      # unrelated S3-auth failure.
+      - name: Start Tauri Linux build in background
+        env:
+          # Passed via env rather than interpolated directly into the
+          # `sh -c` string: bundles is a free-text workflow_dispatch
+          # input, so building the command by string concatenation would
+          # let commas-with-spaces mis-split it into extra args at best,
+          # or shell metacharacters change what actually runs at worst.
+          BUNDLES_INPUT: ${{ inputs.bundles }}
+          VERBOSE_INPUT: ${{ inputs.verbose }}
+        run: |
+          rm -f /tmp/tauri-build.exit
+          if [[ ! "$BUNDLES_INPUT" =~ ^[a-zA-Z0-9,_-]+$ ]]; then
+            echo "::error::bundles input must only contain letters, numbers, commas, hyphens, underscores — got: $BUNDLES_INPUT"
+            exit 1
+          fi
+          VERBOSE_FLAG=""
+          if [ "$VERBOSE_INPUT" = "true" ]; then
+            VERBOSE_FLAG="-vv"
+          fi
+          nohup env BUNDLES_INPUT="$BUNDLES_INPUT" VERBOSE_FLAG="$VERBOSE_FLAG" sh -c \
+            'pnpm tauri build --debug --bundles "$BUNDLES_INPUT" $VERBOSE_FLAG; echo $? > /tmp/tauri-build.exit' \
+            > /tmp/tauri-build.log 2>&1 &
+          echo $! > /tmp/tauri-build.pid
+
+      # Keys off an exit-code sentinel file, not just `kill -0` process
+      # liveness — a cold/no-sccache compile can legitimately still be
+      # running well past a short fixed window, which isn't the same
+      # thing as being stuck. Only conclude "hung" once wait_minutes has
+      # genuinely elapsed with no sentinel file.
+      - name: Wait for the build to actually finish (or genuinely hang)
+        id: wait
+        env:
+          WAIT_MINUTES_INPUT: ${{ inputs.wait_minutes }}
+        run: |
+          if [[ ! "$WAIT_MINUTES_INPUT" =~ ^[0-9]+$ ]] || [ "$WAIT_MINUTES_INPUT" -lt 1 ]; then
+            echo "::error::wait_minutes must be a positive integer — got: $WAIT_MINUTES_INPUT"
+            exit 1
+          fi
+          wait_iterations=$((WAIT_MINUTES_INPUT * 6))
+          checkpoint_iteration=$((wait_iterations / 3))
+          for i in $(seq 1 "$wait_iterations"); do
+            if [ -f /tmp/tauri-build.exit ]; then
+              EXIT_CODE=$(cat /tmp/tauri-build.exit)
+              echo "Build finished on its own after $((i * 10))s with exit code $EXIT_CODE"
+              tail -n 150 /tmp/tauri-build.log
+              echo "still_stuck=false" >> "$GITHUB_OUTPUT"
+              echo "build_exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$i" -eq "$checkpoint_iteration" ]; then
+              echo "::group::Checkpoint — still running, not necessarily stuck"
+              free -h
+              df -h /
+              tail -n 40 /tmp/tauri-build.log
+              echo "::endgroup::"
+            fi
+            sleep 10
+          done
+          echo "Build still running after $WAIT_MINUTES_INPUT minutes — treating as genuinely stuck"
+          echo "::group::Last 200 lines of the build log before the hang"
+          tail -n 200 /tmp/tauri-build.log
+          echo "::endgroup::"
+          echo "still_stuck=true" >> "$GITHUB_OUTPUT"
+
+      - name: Capture hang diagnostics (only if still stuck)
+        if: steps.wait.outputs.still_stuck == 'true'
+        run: |
+          set +e
+          mkdir -p /tmp/diag
+          BUILD_PID=$(cat /tmp/tauri-build.pid 2>/dev/null)
+          echo "$BUILD_PID" > /tmp/diag/build_pid.txt
+          cp /tmp/tauri-build.log /tmp/diag/tauri-build.log 2>&1
+          ps -eo pid,ppid,stat,etimes,rss,cmd --forest > /tmp/diag/ps_forest.txt 2>&1
+
+          # BFS over descendants via a single ps snapshot + awk (no
+          # recursive re-invocation racing against processes exiting
+          # mid-walk).
+          ALL_PIDS=$(ps -eo pid,ppid --no-headers 2>/dev/null | awk -v root="$BUILD_PID" '
+            { parent[$1]=$2 }
+            END {
+              print root
+              found[root]=1
+              changed=1
+              while (changed) {
+                changed=0
+                for (pid in parent) {
+                  if (!(pid in found) && (parent[pid] in found)) {
+                    print pid
+                    found[pid]=1
+                    changed=1
+                  }
+                }
+              }
+            }')
+          echo "$ALL_PIDS" > /tmp/diag/all_pids.txt
+
+          for pid in $ALL_PIDS; do
+            {
+              echo "=== PID $pid ==="
+              echo "--- cmdline ---"
+              tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null
+              echo
+              echo "--- status ---"
+              cat "/proc/$pid/status" 2>/dev/null
+              echo "--- wchan ---"
+              cat "/proc/$pid/wchan" 2>/dev/null
+              echo
+              echo "--- stack ---"
+              sudo cat "/proc/$pid/stack" 2>/dev/null
+              echo "--- open fds ---"
+              sudo ls -la "/proc/$pid/fd" 2>/dev/null
+              echo "--- syscall ---"
+              cat "/proc/$pid/syscall" 2>/dev/null
+              echo
+            } >> /tmp/diag/per_pid_snapshot.txt 2>&1
+          done
+
+          # Best-effort strace snapshot on the deepest descendant.
+          sudo apt-get install -y -qq strace > /tmp/diag/strace_install.log 2>&1
+          DEEPEST_PID=$(echo "$ALL_PIDS" | tail -1)
+          if command -v strace >/dev/null 2>&1 && [ -n "$DEEPEST_PID" ]; then
+            sudo timeout 8 strace -p "$DEEPEST_PID" -f -tt -o /tmp/diag/strace.txt 2>/tmp/diag/strace_stderr.txt
+          fi
+
+          # Resource state — rules out (or confirms) OOM-kill/disk
+          # exhaustion as a contributing factor.
+          {
+            echo "=== free -h ==="; free -h; echo
+            echo "=== df -h ==="; df -h; echo
+            echo "=== df -i ==="; df -i; echo
+            echo "=== /proc/meminfo ==="; cat /proc/meminfo; echo
+            echo "=== dmesg: OOM killer / ENOSPC activity ==="
+            sudo dmesg -T 2>/dev/null | grep -iE "killed process|out of memory|oom|ENOSPC|no space left" | tail -50
+            echo
+            echo "=== dmesg: full tail (last 200 lines) ==="
+            sudo dmesg -T 2>/dev/null | tail -200
+            echo
+            echo "=== journalctl: oom/kill activity ==="
+            sudo journalctl -k --since "-30min" 2>/dev/null | grep -iE "killed process|out of memory|oom" | tail -50
+          } > /tmp/diag/resource_snapshot.txt 2>&1
+
+          echo "Diagnostics captured for PIDs: $ALL_PIDS"
+          exit 0
+
+      - name: Upload hang diagnostics
+        if: steps.wait.outputs.still_stuck == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-tauri-hang-diagnostics
+          path: /tmp/diag/
+          retention-days: 14
+
+      # Makes the job conclusion mean what it says — without this, "job
+      # success" only reflects that none of the steps above individually
+      # failed, not that the build actually completed. See the retry
+      # wrapper's own comment in nightly.yml for the same
+      # lesson learned the hard way.
+      - name: Fail the job if the build didn't actually succeed
+        if: always()
+        run: |
+          if [ "${{ steps.wait.outcome }}" != "success" ]; then
+            echo "The wait step itself didn't run to completion (outcome: ${{ steps.wait.outcome }} — e.g. invalid wait_minutes input, or an earlier setup step failed and this got skipped). See the logs above. Not a build hang or failure."
+            exit 1
+          fi
+          if [ "${{ steps.wait.outputs.still_stuck }}" = "true" ]; then
+            echo "Build never finished — genuinely stuck. See the uploaded diagnostics artifact."
+            exit 1
+          fi
+          if [ "${{ steps.wait.outputs.build_exit_code }}" != "0" ]; then
+            echo "Build finished but with a non-zero exit code: ${{ steps.wait.outputs.build_exit_code }}"
+            exit 1
+          fi
+          echo "Build finished successfully — no hang this run (it's intermittent; try again if you need a repro)."

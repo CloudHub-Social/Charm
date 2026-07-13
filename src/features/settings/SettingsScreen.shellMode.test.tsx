@@ -26,6 +26,7 @@ vi.mock("@/lib/matrix", () => ({
   unignoreUser: vi.fn(),
   listDevices: vi.fn().mockResolvedValue([]),
   crossSigningStatus: vi.fn().mockResolvedValue({
+    has_identity: true,
     has_master_key: true,
     has_self_signing_key: true,
     has_user_signing_key: true,
@@ -132,7 +133,7 @@ describe("SettingsScreen shell mode", () => {
 
     await screen.findByRole("button", { name: "Close settings" });
     expect(screen.queryByRole("tab", { name: "Notifications" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab", { name: "Devices" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Devices" })).toBeInTheDocument();
   });
 
   it("hides the Desktop section on a Tauri *mobile* build even at a desktop-width viewport", async () => {

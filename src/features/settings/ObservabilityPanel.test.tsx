@@ -61,11 +61,39 @@ describe("ObservabilityPanel", () => {
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Sentry observability" }));
 
+    expect(feedbackButton).toBeDisabled();
+  });
+
+  it("also requires a feedback category before the button is enabled", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
+    const feedbackButton = screen.getByRole("button", { name: "Send feedback" });
+    expect(feedbackButton).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Bug" }));
+
     expect(feedbackButton).toBeEnabled();
     fireEvent.click(feedbackButton);
 
     expect(openSentryFeedbackDialog).toHaveBeenCalledTimes(1);
-    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({ surface: "settings" });
+    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({
+      surface: "settings",
+      category: "bug",
+    });
+  });
+
+  it("passes the feature-request category when selected", async () => {
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Feature request" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
+
+    expect(openSentryFeedbackDialog).toHaveBeenCalledWith({
+      surface: "settings",
+      category: "feature_request",
+    });
   });
 
   it("announces feedback availability failures", async () => {
@@ -73,6 +101,7 @@ describe("ObservabilityPanel", () => {
     renderPanel();
 
     fireEvent.click(await screen.findByRole("switch", { name: "Enable Sentry observability" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Bug" }));
     fireEvent.click(screen.getByRole("button", { name: "Send feedback" }));
 
     expect(await screen.findByRole("status")).toBeVisible();

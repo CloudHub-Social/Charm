@@ -1,6 +1,10 @@
 import { listen as tauriListen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { IPC_OPERATION_ID_HEADER, invoke as tauriInvoke } from "@/observability/ipc";
+import {
+  IPC_OPERATION_ID_HEADER,
+  invoke as tauriInvoke,
+  type InvokeOptions,
+} from "@/observability/ipc";
 import { createIpcOperationId } from "@/observability/operationId";
 import { isWebBuild } from "./platform";
 
@@ -303,6 +307,13 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         room_id_or_alias: args.roomIdOrAlias,
         reason: args.reason,
       });
+    case "create_space":
+      return requestJson<T>("POST", "/api/rooms/create-space", {
+        name: args.name,
+        topic: args.topic,
+        room_alias_name: args.roomAliasName,
+        public: args.public,
+      });
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,
@@ -527,6 +538,25 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       );
     case "cross_signing_status":
       return requestJson<T>("GET", "/api/verification/cross-signing");
+    case "get_cross_signing_reset_url":
+      return requestJson<T>("GET", "/api/verification/cross-signing/reset-url");
+    case "recovery_status":
+      return requestJson<T>("GET", "/api/verification/recovery");
+    case "recover_from_key":
+      return requestJson<T>("POST", "/api/verification/recovery", {
+        recovery_key: args.recoveryKey,
+      });
+    case "list_devices":
+      return requestJson<T>("GET", "/api/devices");
+    case "delete_device":
+      return requestJson<T>("DELETE", `/api/devices/${encodeSegment(String(args.deviceId))}`, {
+        password: args.password,
+      });
+    case "get_device_delete_url":
+      return requestJson<T>(
+        "GET",
+        `/api/devices/${encodeSegment(String(args.deviceId))}/delete-url`,
+      );
     case "accept_verification_request":
     case "cancel_verification":
     case "start_sas_verification":
@@ -561,9 +591,24 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
   }
 }
 
-export async function invoke<T>(command: string, args?: InvokeArgs): Promise<T> {
-  if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args);
-  return invokeWeb<T>(command, args ?? {});
+export async function invoke<T>(
+  command: string,
+  args?: InvokeArgs,
+  options?: InvokeOptions,
+): Promise<T> {
+  if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args, options);
+  // invokeWeb has no breadcrumb/capture logic of its own (unlike the Tauri
+  // path's observability/ipc wrapper), so options like skipBreadcrumb and
+  // captureOnError have nothing to do here — but a caller's
+  // onFailureBreadcrumb (e.g. lib/matrix.ts's invokeMatrix) still needs
+  // calling on failure, or it silently never fires on the web build.
+  const startedAt = performance.now();
+  try {
+    return await invokeWeb<T>(command, args ?? {});
+  } catch (error) {
+    options?.onFailureBreadcrumb?.(error, Math.round(performance.now() - startedAt));
+    throw error;
+  }
 }
 
 export async function listen<T>(event: string, callback: EventCallback<T>): Promise<UnlistenFn> {

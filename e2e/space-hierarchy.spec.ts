@@ -118,6 +118,6 @@ test("renders nested space rooms and exposes recursive hierarchy plus space badg
     },
   });
 
-  await expect(page.getByLabel("1 unread rooms, 3 mentions")).toHaveText("3");
+  await expect(page.getByLabel("1 unread room, 3 mentions")).toHaveText("3");
   await captureSnapshot(page, "space-hierarchy-foundation");
 });

@@ -58,6 +58,27 @@ describe("observability persistence", () => {
     await expect(readObservabilitySettings()).resolves.toEqual(DEFAULT_OBSERVABILITY_SETTINGS);
   });
 
+  it("never touches the Tauri store on a plain-browser build", async () => {
+    // Regression test: @tauri-apps/plugin-store's load() waits on an IPC
+    // callback that never arrives outside the native shell, so it hangs
+    // rather than rejecting — a real deploy hit this and blocked the app's
+    // top-level `await bootstrapSentry()` in main.tsx forever, leaving the
+    // page permanently blank with no console errors.
+    mocks.isTauri.mockReturnValue(false);
+    // Deliberately left unconfigured (no mockResolvedValue/mockRejectedValue)
+    // rather than mimicking a real hang with a never-resolving Promise — the
+    // point of this test is the `not.toHaveBeenCalled()` assertion below, not
+    // observing a timeout.
+    mocks.load.mockReset();
+
+    await expect(readObservabilitySettings()).resolves.toEqual(DEFAULT_OBSERVABILITY_SETTINGS);
+    await expect(
+      persistObservabilitySettings({ ...DEFAULT_OBSERVABILITY_SETTINGS, sentryEnabled: true }),
+    ).resolves.toBeUndefined();
+
+    expect(mocks.load).not.toHaveBeenCalled();
+  });
+
   it("persists a local mirror for plain-browser runs", async () => {
     await persistObservabilitySettings(
       {
@@ -75,6 +96,7 @@ describe("observability persistence", () => {
   });
 
   it("flushes successful store writes", async () => {
+    mocks.isTauri.mockReturnValue(true);
     mocks.load.mockResolvedValue({ get: vi.fn(), set: mocks.storeSet, save: mocks.storeSave });
 
     const settings = {

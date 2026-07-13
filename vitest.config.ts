@@ -34,16 +34,15 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-07, after Spec 11 — push notifications — added the
-        // `usePush` hook + notifications-panel wiring tests: lines 78.07 /
-        // statements 76.25 / functions 68.34 / branches 76.58), so any
-        // regression fails CI. When you add tests and coverage rises, raise
-        // these to the new floor in the same PR — never lower them just to
-        // make CI pass.
-        lines: 77,
-        statements: 75,
-        functions: 68,
-        branches: 76,
+        // 2026-07-13, after Spec 26 Phase 2 — bottom-up virtualized timeline
+        // rendering: lines 84.53 / statements 82.74 / functions 75.12 /
+        // branches 81.9), so any regression fails CI. When you add tests and
+        // coverage rises, raise these to the new floor in the same PR — never
+        // lower them just to make CI pass.
+        lines: 84,
+        statements: 82,
+        functions: 75,
+        branches: 81,
       },
     },
   },

@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { InviteMemberDialog } from "./InviteMemberDialog";
-import { renderWithProviders } from "./testUtils";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const inviteMember = vi.fn().mockResolvedValue(undefined);
 

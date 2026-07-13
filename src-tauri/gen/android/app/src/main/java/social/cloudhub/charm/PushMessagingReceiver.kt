@@ -1,5 +1,6 @@
 package social.cloudhub.charm
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import org.unifiedpush.android.connector.FailedReason
 import org.unifiedpush.android.connector.MessagingReceiver
@@ -27,7 +28,11 @@ class PushMessagingReceiver : MessagingReceiver() {
 
     external fun nativeOnUnregistered()
 
-    external fun nativeOnMessage(payloadJson: String)
+    external fun nativeOnMessage(
+        context: Context,
+        pendingResult: BroadcastReceiver.PendingResult,
+        payloadJson: String,
+    )
 
     override fun onNewEndpoint(
         context: Context,
@@ -64,7 +69,11 @@ class PushMessagingReceiver : MessagingReceiver() {
         message: PushMessage,
         instance: String,
     ) {
-        nativeOnMessage(String(message.content, Charsets.UTF_8))
+        nativeOnMessage(
+            context.applicationContext,
+            goAsync(),
+            String(message.content, Charsets.UTF_8),
+        )
     }
 
     companion object {

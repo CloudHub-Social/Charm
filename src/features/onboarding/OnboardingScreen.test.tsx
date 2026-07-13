@@ -1,8 +1,7 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingScreen } from "./OnboardingScreen";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const crossSigningStatus = vi.fn();
 const getCrossSigningResetUrl = vi.fn();
@@ -11,6 +10,8 @@ const getOwnProfile = vi.fn();
 const onSelfProfileUpdate = vi.fn();
 const setDisplayName = vi.fn();
 const listDevices = vi.fn();
+const onSasUpdate = vi.fn();
+const requestDeviceVerification = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   crossSigningStatus: (...args: unknown[]) => crossSigningStatus(...args),
@@ -23,6 +24,11 @@ vi.mock("@/lib/matrix", () => ({
   },
   setDisplayName: (...args: unknown[]) => setDisplayName(...args),
   listDevices: (...args: unknown[]) => listDevices(...args),
+  onSasUpdate: (...args: unknown[]) => {
+    onSasUpdate(...args);
+    return Promise.resolve(() => {});
+  },
+  requestDeviceVerification: (...args: unknown[]) => requestDeviceVerification(...args),
 }));
 
 const VERIFIED_CURRENT_DEVICE = {
@@ -35,11 +41,6 @@ const VERIFIED_CURRENT_DEVICE = {
 };
 
 const UNVERIFIED_CURRENT_DEVICE = { ...VERIFIED_CURRENT_DEVICE, is_verified: false };
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 /**
  * The orientation pane's "Continue" is disabled until `crossSigningStatus`
@@ -54,12 +55,14 @@ async function clickContinue() {
 }
 
 const UNVERIFIED_STATUS = {
+  has_identity: false,
   has_master_key: false,
   has_self_signing_key: false,
   has_user_signing_key: false,
 };
 
 const VERIFIED_STATUS = {
+  has_identity: true,
   has_master_key: true,
   has_self_signing_key: true,
   has_user_signing_key: true,
@@ -78,6 +81,8 @@ beforeEach(() => {
   });
   setDisplayName.mockReset().mockResolvedValue(undefined);
   listDevices.mockReset().mockResolvedValue([VERIFIED_CURRENT_DEVICE]);
+  onSasUpdate.mockReset();
+  requestDeviceVerification.mockReset().mockResolvedValue("flow-id");
 });
 
 describe("OnboardingScreen", () => {

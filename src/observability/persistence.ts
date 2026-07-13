@@ -55,6 +55,14 @@ function writeLocalEnvelope(envelope: PersistedEnvelope): void {
 }
 
 async function getStore() {
+  // The plugin's `load()` waits on a Tauri IPC callback that never arrives
+  // outside the native shell — it doesn't reject, it hangs forever. Guard
+  // with isTauri() the same way syncRustLogConsent does, or every web build
+  // deadlocks on the top-level `await bootstrapSentry()` in main.tsx before
+  // React ever mounts.
+  if (!isTauri()) {
+    return null;
+  }
   const { load } = await import("@tauri-apps/plugin-store");
   return load(OBSERVABILITY_STORE_FILENAME, { autoSave: false, defaults: {} });
 }
@@ -75,6 +83,7 @@ async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
   try {
     const store = await getStore();
+    if (!store) return null;
     return envelopeFromUnknown(await store.get<unknown>(OBSERVABILITY_STORE_KEY));
   } catch {
     return null;
@@ -111,7 +120,7 @@ export async function persistObservabilitySettings(
         return false;
       }
       const store = await getStore();
-      if (mutationId !== persistMutationId) {
+      if (!store || mutationId !== persistMutationId) {
         return false;
       }
       await store.set(OBSERVABILITY_STORE_KEY, envelope);

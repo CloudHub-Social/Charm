@@ -57,7 +57,17 @@ function PermissionGate({ allowed, reason, children }: PermissionGateProps) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <span className="inline-flex">{children}</span>
+        {/* `children` here is a disabled native control (Input/textarea/Button),
+            so a real <button> wrapper would be invalid HTML (interactive
+            content inside <button>). A span is the correct element; the
+            `no-noninteractive-tabindex` rule doesn't special-case this
+            documented disabled-tooltip pattern (Radix's own recommendation
+            for making a disabled, pointer-events:none control's tooltip
+            reachable by keyboard). */}
+        {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
+        <span className="inline-flex" tabIndex={0}>
+          {children}
+        </span>
       </TooltipTrigger>
       <TooltipContent>{reason ?? "You need a higher power level to do this"}</TooltipContent>
     </Tooltip>

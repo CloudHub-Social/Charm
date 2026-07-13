@@ -11,7 +11,8 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
-import { bootstrapSentry } from "./observability/instrument";
+import { isTauri } from "./lib/platform";
+import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
@@ -49,7 +50,20 @@ function Root() {
   );
 }
 
-await bootstrapSentry();
+// Bounded, not `await bootstrapSentry()` directly: this gates React's first
+// render, so a hung settings read (e.g. a stuck Tauri IPC round-trip) must
+// never be able to leave the app permanently blank.
+await bootstrapSentryWithTimeout();
+
+if (isTauri()) {
+  // Forwards the native side's `tauri-plugin-log` Webview target into this
+  // window's actual DevTools console — without this call the Rust logger's
+  // Webview target is configured but silently inert (per the plugin's own
+  // docs). Dynamically imported so `@tauri-apps/plugin-log` isn't pulled
+  // into the web build, which has no Tauri IPC to attach to.
+  const { attachConsole } = await import("@tauri-apps/plugin-log");
+  void attachConsole();
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

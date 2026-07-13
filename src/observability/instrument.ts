@@ -1,5 +1,8 @@
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
+import { getBuildId } from "../lib/buildId";
+import { platformTag, preloadPlatformTag } from "../lib/platform";
+import { recordCount } from "./metrics";
 import { readObservabilitySettings } from "./persistence";
 import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
 import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
@@ -17,9 +20,16 @@ let feedbackDialogPromiseKey: string | null = null;
 let feedbackDialogGeneration = 0;
 let feedbackSubmissionContext: SentryFeedbackDialogOptions = {};
 
+/**
+ * Two categories only for v1 (Spec 22) — a third bucket (e.g. "Question") is
+ * a future consideration, not designed in now.
+ */
+export type FeedbackCategory = "bug" | "feature_request";
+
 export interface SentryFeedbackDialogOptions {
   associatedEventId?: string;
   surface?: "crash-fallback" | "manual" | "settings";
+  category?: FeedbackCategory;
 }
 
 function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undefined): void {
@@ -32,7 +42,7 @@ function removeFeedbackDialog(dialog: { removeFromDom?: unknown } | null | undef
 }
 
 function feedbackOptionsKey(options: SentryFeedbackDialogOptions): string {
-  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}`;
+  return `${options.surface ?? "manual"}:${options.associatedEventId ?? ""}:${options.category ?? ""}`;
 }
 
 type SentryIntegration =
@@ -55,6 +65,36 @@ function sampleRate(): number {
   return environment() === "production" ? 0.5 : 1.0;
 }
 
+/**
+ * Origins the browser SDK is allowed to attach `sentry-trace`/`baggage`
+ * headers to (`browserTracingIntegration`'s outbound `fetch` instrumentation
+ * checks this list before injecting anything, so an unmatched origin never
+ * gets trace headers at all). Always includes `charm-web-server`'s real API
+ * origin — `VITE_CHARM_WEB_API_BASE_URL`, the same env var
+ * `lib/matrixTransport.ts`'s `apiBase()` reads — so a web-build trace
+ * actually continues into the backend it's deployed against, not just
+ * localhost. When that env var is unset, the web build calls relative paths
+ * against its own origin (`matrixTransport.ts`'s `apiBase()` falls back to
+ * `""`), so `window.location.origin` is included too. `localhost` stays for
+ * local dev regardless of either.
+ */
+function tracePropagationTargets(): (string | RegExp)[] {
+  const targets: (string | RegExp)[] = ["localhost", /^https?:\/\/localhost(?::\d+)?\//];
+  const apiBase = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
+  if (apiBase) {
+    // Trim trailing slashes the same way `matrixTransport.ts`'s `apiBase()`
+    // does before every fetch — this must match the actual request URL
+    // (`${apiBase()}${path}`), or a configured value with extra trailing
+    // slashes (e.g. `https://example.com/charm///`) never matches the
+    // trimmed request Sentry's string matcher sees, and no trace headers
+    // ever get attached.
+    targets.push(apiBase.replace(/\/+$/, ""));
+  } else if (typeof window !== "undefined") {
+    targets.push(window.location.origin);
+  }
+  return targets;
+}
+
 function integrations(settings: ObservabilitySettings): SentryIntegration[] {
   const enabledIntegrations: SentryIntegration[] = [Sentry.browserTracingIntegration()];
   if (settings.replayEnabled) {
@@ -70,6 +110,13 @@ function integrations(settings: ObservabilitySettings): SentryIntegration[] {
     enabledIntegrations.push(Sentry.replayCanvasIntegration());
   }
   if (settings.profilingEnabled) {
+    // Requires the Document-Policy: js-profiling response header (set in
+    // vite.config.ts and the web Worker in build-web-worker/action.yml) or the
+    // browser's Profiler API silently no-ops. Tauri's packaged desktop builds
+    // can't set this header — its app.security.headers config only allows a
+    // fixed whitelist that doesn't include Document-Policy — so profiling only
+    // takes effect on the web target until that's solved (e.g. a custom
+    // on_web_resource_request webview hook).
     enabledIntegrations.push(Sentry.browserProfilingIntegration());
   }
   if (settings.logsEnabled) {
@@ -111,15 +158,18 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     release: release(),
     environment: environment(),
     tracesSampleRate: rate,
-    tracePropagationTargets: ["localhost", /^https?:\/\/localhost(?::\d+)?\//],
+    tracePropagationTargets: tracePropagationTargets(),
     replaysSessionSampleRate: settings.replayEnabled ? rate : 0,
     replaysOnErrorSampleRate: settings.replayEnabled ? 1.0 : 0,
     profilesSampleRate: settings.profilingEnabled ? rate : 0,
     enableLogs: settings.logsEnabled,
+    enableMetrics: true,
     integrations: integrations(settings),
     initialScope: {
       tags: {
-        platform: "webview",
+        "charm.platform": platformTag(),
+        "charm.build.id": getBuildId(),
+        "charm.build.version": packageJson.version,
       },
       user: settings.anonymousUserId ? { id: settings.anonymousUserId } : undefined,
     },
@@ -148,14 +198,20 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
       ...event.tags,
       "charm.feedback.surface": surface,
       "charm.feedback.screenshot": "optional",
+      ...(feedbackSubmissionContext.category
+        ? { "charm.feedback.category": feedbackSubmissionContext.category }
+        : {}),
     };
     if (feedbackSubmissionContext.associatedEventId && event.contexts?.feedback) {
       event.contexts.feedback.associated_event_id = feedbackSubmissionContext.associatedEventId;
     }
     Object.assign(event, scrubSentryValue(event));
   });
-  Sentry.setTag("platform", "webview");
+  Sentry.setTag("charm.platform", platformTag());
+  Sentry.setTag("charm.build.id", getBuildId());
+  Sentry.setTag("charm.build.version", packageJson.version);
   initialized = true;
+  recordCount("app.boot", 1, { platform: platformTag() });
   return true;
 }
 
@@ -165,10 +221,60 @@ function setSentryClientEnabled(enabled: boolean): void {
   client.getOptions().enabled = enabled;
 }
 
+async function readBootstrapSettings(): Promise<ObservabilitySettings> {
+  const [settings] = await Promise.all([readObservabilitySettings(), preloadPlatformTag()]);
+  return settings;
+}
+
 export async function bootstrapSentry(): Promise<ObservabilitySettings> {
-  const settings = await readObservabilitySettings();
+  const settings = await readBootstrapSettings();
   initializeSentry(settings);
   return settings;
+}
+
+/**
+ * Milliseconds to wait for {@link bootstrapSentry} before giving up and letting
+ * `main.tsx` render anyway. `readObservabilitySettings` awaits a Tauri IPC
+ * round-trip (the `plugin-store` `load()`/`get()` calls in `persistence.ts`)
+ * that has no built-in timeout — if it ever hangs (a locked store file, a
+ * stuck IPC channel), the app was left permanently blank, because
+ * `main.tsx` used a top-level `await bootstrapSentry()` gating the very
+ * first `ReactDOM.createRoot(...).render(...)` call. See the 2026-07-13
+ * blank-page-on-launch investigation.
+ */
+export const BOOTSTRAP_TIMEOUT_MS = 3000;
+
+/**
+ * Runs the same settings read {@link bootstrapSentry} does, but never blocks
+ * the caller past {@link BOOTSTRAP_TIMEOUT_MS} — `main.tsx` awaits this
+ * instead of `bootstrapSentry()` directly so a stuck settings read can no
+ * longer keep React from ever mounting. If the timeout wins, Sentry stays
+ * uninitialized for this session (same as `VITE_SENTRY_DSN` being unset)
+ * rather than the whole app staying blank forever.
+ *
+ * Deliberately does *not* delegate to `bootstrapSentry()` — the read and the
+ * `initializeSentry` call only happen together, gated on this function's own
+ * timeout, so a settings read that keeps running in the background after
+ * losing the race (there is no way to cancel an in-flight Tauri IPC call)
+ * can never reach `initializeSentry` at all. Without that separation, a slow
+ * (not hung) read could resolve after the user already opened Settings and
+ * turned Sentry off, silently re-enabling it.
+ */
+export async function bootstrapSentryWithTimeout(
+  timeoutMs: number = BOOTSTRAP_TIMEOUT_MS,
+): Promise<ObservabilitySettings | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), timeoutMs);
+  });
+  try {
+    const result = await Promise.race([readBootstrapSettings(), timeout]);
+    if (result === "timed-out") return null;
+    initializeSentry(result);
+    return result;
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 export async function closeSentry(): Promise<void> {
@@ -209,6 +315,7 @@ export async function openSentryFeedbackDialog(
           tags: {
             "charm.feedback.surface": options.surface ?? "manual",
             "charm.feedback.screenshot": "optional",
+            ...(options.category ? { "charm.feedback.category": options.category } : {}),
           },
         }),
       )

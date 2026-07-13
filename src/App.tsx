@@ -3,6 +3,7 @@ import { LoginScreen } from "@/features/auth/LoginScreen";
 import { OnboardingScreen } from "@/features/onboarding/OnboardingScreen";
 import { useOnboardingGate } from "@/features/onboarding/useOnboardingGate";
 import { RoomsScreen } from "@/features/rooms/RoomsScreen";
+import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { clearSettingsHash } from "@/features/settings/settingsAtoms";
 import { watchDeepLinks } from "@/lib/deepLink";
 import { tryRestoreSession, type LoginResponse } from "@/lib/matrix";
@@ -62,7 +63,12 @@ function App({ onLoggedOut }: AppProps) {
   }
 
   if (onboarding.status === "pending") {
-    return <OnboardingScreen onDone={onboarding.complete} />;
+    return (
+      <>
+        <OnboardingScreen onDone={onboarding.complete} />
+        <VerificationOverlay />
+      </>
+    );
   }
 
   return (

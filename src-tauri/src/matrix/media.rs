@@ -480,7 +480,7 @@ mod tests {
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
 
         let tmp = tempfile_dir();
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         let server = MatrixMockServer::new().await;
@@ -504,8 +504,6 @@ mod tests {
         // not require another network round trip.
         let cached_path = cache.cached_path(&source, MediaKind::File).await;
         assert_eq!(cached_path, Some(path));
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     /// The declared-size cap (see `MAX_AUTO_DOWNLOAD_BYTES`) should reject a
@@ -517,7 +515,7 @@ mod tests {
         use matrix_sdk::test_utils::mocks::MatrixMockServer;
 
         let tmp = tempfile_dir();
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         let server = MatrixMockServer::new().await;
@@ -548,7 +546,7 @@ mod tests {
     #[tokio::test]
     async fn store_and_cached_path_round_trip() {
         let tmp = tempfile_dir();
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         let source = plain_source("mxc://example.org/roundtrip");
@@ -563,30 +561,24 @@ mod tests {
 
         let cached = cache.cached_path(&source, MediaKind::File).await.unwrap();
         assert_eq!(cached, path);
-
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
     async fn rebuild_index_discovers_existing_files() {
         let tmp = tempfile_dir();
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("deadbeef"), b"cached bytes").unwrap();
+        std::fs::write(tmp.path().join("deadbeef"), b"cached bytes").unwrap();
 
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         let index = cache.index.lock().await;
         assert!(index.contains_key("deadbeef"));
-
-        drop(index);
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
     async fn expires_entries_older_than_seven_days() {
         let tmp = tempfile_dir();
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         let source = plain_source("mxc://example.org/old");
@@ -613,15 +605,12 @@ mod tests {
         assert!(!path.exists());
         let index = cache.index.lock().await;
         assert!(index.values().all(|e| e.path != path));
-
-        drop(index);
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
     async fn evicts_oldest_ten_percent_when_over_budget() {
         let tmp = tempfile_dir();
-        let cache = MediaCache::new(tmp.clone());
+        let cache = MediaCache::new(tmp.path().to_path_buf());
         cache.rebuild_index().await.unwrap();
 
         // Simulate an over-budget cache directly on the index (writing
@@ -632,7 +621,7 @@ mod tests {
         {
             let mut index = cache.index.lock().await;
             for i in 0..10u32 {
-                let path = tmp.join(format!("entry-{i}"));
+                let path = tmp.path().join(format!("entry-{i}"));
                 std::fs::write(&path, b"x").unwrap();
                 let modified = SystemTime::now() - Duration::from_secs((10 - i) as u64 * 3600);
                 index.insert(
@@ -655,28 +644,36 @@ mod tests {
         assert!(!index.contains_key("entry-0"));
         assert!(index.contains_key("entry-9"));
         assert!(!paths[0].exists());
-
-        drop(index);
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
-    fn tempfile_dir() -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("charm-media-cache-test-{}", unique_suffix()));
-        dir
-    }
-
-    fn unique_suffix() -> String {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        format!(
-            "{}-{n}",
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        )
+    /// Creates a fresh, guaranteed-unique-and-already-created temp
+    /// directory for a test to use as its cache dir. The returned `TempDir`
+    /// must be kept alive for the duration of the test (bind it to a
+    /// variable, don't drop it) — its `Drop` impl removes the directory,
+    /// which also means cleanup happens even on an early return or panic,
+    /// unlike the previous manual `remove_dir_all` convention.
+    ///
+    /// Previously this hand-rolled a path (unused pid + wall-clock-nanos +
+    /// a process-local counter, under `std::env::temp_dir()`) without
+    /// actually creating it — the directory only came into existence later,
+    /// whenever the test happened to call `MediaCache::rebuild_index`/
+    /// `store` (both of which `create_dir_all` the cache dir lazily). That
+    /// left a window where two tests could compute paths that collided (the
+    /// nanosecond clock's resolution isn't guaranteed finer than the gap
+    /// between two `SystemTime::now()` calls on a loaded CI runner) before
+    /// either had actually created its directory, and was the suspected
+    /// cause of `evicts_oldest_ten_percent_when_over_budget` intermittently
+    /// panicking on `std::fs::write(..).unwrap()` with `Os { code: 22 }`
+    /// (EINVAL) in CI (#133) — e.g. one test's `create_dir_all` racing
+    /// another test's file write into what it believed was its own,
+    /// exclusively-owned directory. `tempfile::Builder::tempdir()` creates
+    /// the directory atomically (retrying on collision) before returning,
+    /// eliminating that race.
+    fn tempfile_dir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("charm-media-cache-test-")
+            .tempdir()
+            .unwrap()
     }
 
     fn set_mtime(path: &Path, time: SystemTime) {

@@ -1,9 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DevicesPanel } from "./DevicesPanel";
 import type { DeviceSummary } from "@/lib/matrix";
+import { renderWithProviders } from "@/test/renderWithProviders";
 
 const listDevices = vi.fn();
 const crossSigningStatus = vi.fn();
@@ -14,6 +13,8 @@ const getDeviceDeleteUrl = vi.fn();
 const requestDeviceVerification = vi.fn();
 const onSasUpdate = vi.fn();
 const getProfile = vi.fn();
+const recoveryStatus = vi.fn();
+const recoverFromKey = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   listDevices: (...args: unknown[]) => listDevices(...args),
@@ -25,17 +26,14 @@ vi.mock("@/lib/matrix", () => ({
   requestDeviceVerification: (...args: unknown[]) => requestDeviceVerification(...args),
   onSasUpdate: (...args: unknown[]) => onSasUpdate(...args),
   getProfile: (...args: unknown[]) => getProfile(...args),
+  recoveryStatus: (...args: unknown[]) => recoveryStatus(...args),
+  recoverFromKey: (...args: unknown[]) => recoverFromKey(...args),
 }));
 
 const openUrl = vi.fn();
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: (...args: unknown[]) => openUrl(...args),
 }));
-
-function renderWithProviders(children: ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{children}</QueryClientProvider>);
-}
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */
 function openActionsMenu(name: string) {
@@ -68,6 +66,7 @@ const DEVICES: DeviceSummary[] = [
 beforeEach(() => {
   listDevices.mockReset().mockResolvedValue(DEVICES);
   crossSigningStatus.mockReset().mockResolvedValue({
+    has_identity: true,
     has_master_key: true,
     has_self_signing_key: true,
     has_user_signing_key: true,
@@ -85,6 +84,8 @@ beforeEach(() => {
     avatar_url: null,
     uses_oauth: false,
   });
+  recoveryStatus.mockReset().mockResolvedValue("enabled");
+  recoverFromKey.mockReset().mockResolvedValue(undefined);
 });
 
 describe("DevicesPanel", () => {
@@ -99,6 +100,7 @@ describe("DevicesPanel", () => {
 
   it("offers Set up when cross-signing isn't bootstrapped", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -112,6 +114,7 @@ describe("DevicesPanel", () => {
 
   it("still offers Set up when only some cross-signing keys are present", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: true,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -123,6 +126,7 @@ describe("DevicesPanel", () => {
 
   it("prompts for the account password on a UIA challenge, then succeeds and refreshes the status", async () => {
     crossSigningStatus.mockResolvedValueOnce({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -146,6 +150,7 @@ describe("DevicesPanel", () => {
 
   it("surfaces a non-UIA bootstrap error on the first attempt instead of prompting for a password", async () => {
     crossSigningStatus.mockResolvedValueOnce({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,
@@ -174,8 +179,54 @@ describe("DevicesPanel", () => {
     expect(screen.queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
   });
 
+  it("does not show the recovery-key prompt when recovery is enabled", async () => {
+    renderWithProviders(<DevicesPanel />);
+    await screen.findByText("This laptop");
+    expect(screen.queryByLabelText("Recovery key")).not.toBeInTheDocument();
+  });
+
+  it("prompts for a recovery key when this session is missing secrets, and restores on submit", async () => {
+    recoveryStatus.mockResolvedValue("incomplete");
+    renderWithProviders(<DevicesPanel />);
+
+    const input = await screen.findByLabelText("Recovery key");
+    const crossSigningCallsBeforeSubmit = crossSigningStatus.mock.calls.length;
+    const devicesCallsBeforeSubmit = listDevices.mock.calls.length;
+    fireEvent.change(input, { target: { value: "EsTx some-recovery-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    await waitFor(() => expect(recoverFromKey).toHaveBeenCalledWith("EsTx some-recovery-key"));
+    // Clears the input and re-fetches status on success — with the mock
+    // still returning "incomplete", the card stays up rather than vanishing,
+    // but the field itself should be blank again.
+    await waitFor(() => expect(input).toHaveValue(""));
+    // recover() imports cross-signing secrets too, not just the backup key,
+    // and can mark this device verified — both the cross-signing tile and
+    // the devices list must refetch too, or they can keep showing stale
+    // state.
+    await waitFor(() =>
+      expect(crossSigningStatus.mock.calls.length).toBeGreaterThan(crossSigningCallsBeforeSubmit),
+    );
+    await waitFor(() =>
+      expect(listDevices.mock.calls.length).toBeGreaterThan(devicesCallsBeforeSubmit),
+    );
+  });
+
+  it("surfaces a recovery error instead of silently failing on a wrong key", async () => {
+    recoveryStatus.mockResolvedValue("incomplete");
+    recoverFromKey.mockRejectedValue(new Error("invalid recovery key"));
+    renderWithProviders(<DevicesPanel />);
+
+    const input = await screen.findByLabelText("Recovery key");
+    fireEvent.change(input, { target: { value: "wrong-key" } });
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    expect(await screen.findByText("Error: invalid recovery key")).toBeInTheDocument();
+  });
+
   it("routes an un-bootstrapped OAuth account to account management instead of the in-app password flow", async () => {
     crossSigningStatus.mockResolvedValue({
+      has_identity: false,
       has_master_key: false,
       has_self_signing_key: false,
       has_user_signing_key: false,

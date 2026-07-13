@@ -25,7 +25,7 @@ serde_json = "1"
 matrix-sdk = { version = "0.18.0", features = ["sqlite", "e2e-encryption", "sso-login", "qrcode"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
 ts-rs = "12.0.1"
-sentry = { version = "0.48.3", features = ["logs", "tracing"] }
+sentry = { version = "0.48.3", features = ["logs", "metrics", "tracing"] }
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-deep-link = "2.4.9"
@@ -45,11 +45,23 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
 lru = "0.12"
+# Direct dep so timeline.rs can pass matrix-sdk-ui's returned
+# `imbl::Vector<Arc<TimelineItem>>` straight into our own functions — Cargo
+# treats two semver-incompatible `imbl` versions as distinct types even with
+# the same crate name, so stay on imbl 6.x until matrix-sdk-ui (currently
+# pinned to `imbl = "6.1.0"` itself) moves past 6.x — don't jump to the
+# latest imbl release independently. Bumping the major version breaks that
+# type match (see PR #42); dependabot is configured to ignore major-version
+# imbl bumps (.github/dependabot.yml) until matrix-sdk-ui moves.
 imbl = "6.1.0"
 regex = "1"
 async-trait = "0.1"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+fs4 = { version = "1.1.0", features = ["sync"] }
+tauri-plugin-log = "2"
+log = "0.4.33"
+tracing-appender = "0.2.5"
 
 
 # `keyring`'s "apple-native" feature backs both macOS and iOS (same Keychain
@@ -87,9 +99,18 @@ matrix-sdk = { version = "0.18.0", features = ["testing"] }
 # with a cookie jar, exactly like a browser would.
 reqwest = { version = "0.13", features = ["cookies"] }
 wiremock = "0.6"
+tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Spec 13: WebKitGTK's `permission-request` signal has no default handler and
+# no OS-level consent gate the way macOS/Windows/Android do — unhandled, it
+# denies silently and getUserMedia never resolves for camera/mic. Tauri's own
+# `PlatformWebview::inner()` already returns this exact `webkit2gtk::WebView`
+# type, so this is a direct (not vendored/transitive-only) dependency to
+# connect the signal ourselves in `lib.rs`. Version matches what tauri/wry
+# already pin, so this doesn't add a second copy of the crate to the build.
+webkit2gtk = "2.0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # reqwest's default native-tls backend pulls in openssl-sys, which can't find

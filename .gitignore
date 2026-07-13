@@ -55,7 +55,10 @@ ds-bundle/
 
 # graphify code graph — built locally with `graphify update .`, not committed:
 # it goes stale on every code change and oxfmt would fight the generated JSON.
-graphify-out/
+# No trailing slash: worktrees link this in as a symlink (see
+# scripts/git-hooks/post-checkout), and a trailing-slash pattern only matches
+# an actual directory, not a symlink of the same name.
+graphify-out
 
 # Sentry snapshot capture output (see .github/workflows/sentry-snapshots.yml)
 .artifacts/

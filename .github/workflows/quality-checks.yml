@@ -6,6 +6,19 @@ on:
     branches: [main]
   merge_group:
   workflow_dispatch:
+  schedule:
+    # 08:00 UTC daily, an hour ahead of nightly.yml's 09:00
+    # cron — runs the Tier 1/2 checks against the current tip of main even
+    # on a day with no pushes. Two benefits: (1) catches drift that a
+    # gated/skipped check on the last merged PR could have missed (e.g. a
+    # newly published cargo-audit advisory, or an environment/toolchain
+    # change unrelated to any diff), same rationale as nightly platform
+    # builds; (2) keeps the sccache/Swatinem rust-cache and Playwright
+    # browser caches warm daily instead of only whenever someone happens to
+    # push to main. Non-blocking by construction — a schedule run has no PR
+    # to gate — but failures are tracked via the same GitHub-issue pattern
+    # nightly.yml uses (see scheduled-failure-tracking).
+    - cron: "0 8 * * *"
 
 permissions:
   contents: read
@@ -79,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|sentry-release-artifacts)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -93,8 +106,15 @@ jobs:
             # (not redirected to /dev/null) so a genuine fetch failure is visible
             # in the job log rather than silently triggering the fallback below.
             # stdout carries only the changed-file list, for capture.
+            #
+            # --no-renames: default rename detection can report ONLY the
+            # destination path for a moved file (e.g. src/Foo.tsx ->
+            # docs/Foo.tsx shows up as just "docs/Foo.tsx"), silently hiding
+            # that a gated-path file left the tree entirely. Verified
+            # empirically — plain `git diff --name-only` omits the source
+            # side of a rename; --no-renames reports both.
             git fetch --no-tags --depth=1 --quiet origin "$1" \
-              && git diff --name-only "$1" "${{ github.sha }}"
+              && git diff --no-renames --name-only "$1" "${{ github.sha }}"
           }
           # On a fetch/diff failure, run every gated job (safe default — this
           # can only over-run, never wrongly skip) AND log why, so an unexpected
@@ -112,9 +132,11 @@ jobs:
             # exist for this event type).
             base="${{ github.event.merge_group.base_sha }}"
             changed=$(diff_from "$base") || fallback "$base"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "schedule" ]; then
             # Manual dispatch (e.g. re-running the platform jobs after a CI
-            # infra fix) always runs them — there's no "changed files" concept.
+            # infra fix) and the nightly schedule run both always run every
+            # gated job — there's no "changed files" concept for either (a
+            # schedule run has no prior commit of its own to diff against).
             changed=$'src-tauri/\nsrc/'
           elif [ "${{ github.event.before }}" = "$zero_sha" ]; then
             # New branch / force-push with no prior tip to diff against —
@@ -177,6 +199,25 @@ jobs:
       # Audit stays unconditional because fresh advisory data is not tied to
       # changed frontend files. Frontend-specific checks are gated below.
       - run: pnpm audit --audit-level=high
+
+      # Unconditional like audit above: it's a cheap grep-based count over
+      # both src/ and src-tauri/src/, so it isn't tied to the frontend-path
+      # filter and should catch a rust-only PR that quietly removes
+      # instrumentation too. See observability-ratchet.json for the floors
+      # and scripts/check-observability-ratchet.mjs for the rationale.
+      #
+      # RATCHET_BASE_REF picks the branch the script diffs its stale-floor
+      # check against: a PR's real base (main, or a release/* backport base
+      # per require-main-base.yml) for pull_request, the merge queue's
+      # target branch (a full refs/heads/... ref; the script strips that
+      # prefix itself) for merge_group, and "main" as the fallback for a
+      # main push/schedule run where there's no "other side" to diff.
+      - env:
+          RATCHET_BASE_REF: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref
+             || github.event_name == 'merge_group' && github.event.merge_group.base_ref
+             || 'main' }}
+        run: pnpm check:observability-ratchet
       - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
         run: pnpm lint
       - if: needs.changes.outputs.frontend == 'true' && github.event_name != 'merge_group'
@@ -345,6 +386,13 @@ jobs:
     # integration tests run separately (see rust-integration below) — macOS
     # GitHub runners can't run Linux Docker containers.
     runs-on: macos-latest
+    # RUSTC_WRAPPER routes every rustc invocation through sccache, which
+    # caches at the individual compilation-unit level (object-code cache) —
+    # complementary to Swatinem/rust-cache's coarser whole-target/-dir
+    # caching below, catching cases where only a few crates in the
+    # dependency tree actually changed. The env block with credentials lives
+    # on just the clippy/nextest steps below (not job-level) — see those
+    # steps' comments for why.
     defaults:
       run:
         working-directory: src-tauri
@@ -355,9 +403,22 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # Prebuilt binary from the official installer, pinned to a version and
       # verified against a published SHA-256 (rather than piping an unpinned
@@ -381,11 +442,68 @@ jobs:
       # can depend on the combined queue tree.
       - if: github.event_name != 'merge_group'
         run: cargo fmt --check
+      # sccache credentials scoped to just the steps that actually invoke
+      # rustc — a job-level env would also expose the write key to every
+      # other step (checkout, toolchain install, etc.), which don't need it.
+      # SCCACHE_IGNORE_SERVER_IO_ERROR: sccache fails the build by default on
+      # any cache-server error (unreachable endpoint, bad/missing
+      # credentials — e.g. fork/Dependabot PRs, which GitHub withholds
+      # secrets from) — this makes it fall back to local compilation instead
+      # of hard-failing required checks that have nothing to do with the
+      # cache.
       - run: cargo clippy --all-targets -- -D warnings
+        env:
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
       # ts-rs regenerates src/bindings/*.ts as a side effect of the lib tests; if a
       # Rust IPC type changed without the generated bindings being regenerated and
       # committed, the working tree now differs — fail so bindings never drift.
       - run: cargo nextest run --lib
+        env:
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
       - name: ts-rs bindings are committed and up to date
         # --porcelain catches both modified tracked bindings and brand-new untracked
         # ones (a `git diff` alone would miss a newly generated, uncommitted file).
@@ -477,9 +595,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create Docker network
         # A bare `docker run` puts containers on the default bridge network,
@@ -557,7 +688,33 @@ jobs:
             -u "$TEST_MATRIX_USERNAME_2" -p "$TEST_MATRIX_PASSWORD_2" --no-admin \
             -c /data/homeserver.yaml http://localhost:8008
 
+      # sccache credentials scoped to just this step — see the `rust` job's
+      # clippy/nextest steps for the full rationale.
       - run: cargo test --test verification_flow --test alias_resolution --test discovery_and_registration --test sso_login --test persistence_isolation --test account_and_devices --test room_org
+        env:
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Stop Synapse and Dex
         if: always()
@@ -590,9 +747,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.16.0
+
+      # Only main saves its own cache — every PR/feature branch restores
+      # (falling back to main's) rather than each saving a near-identical
+      # ~168MB copy. Branch-scoped caches don't share storage across
+      # branches even on an identical key, so with many concurrently active
+      # branches this repo's total cache usage was blowing past GitHub's
+      # 10GB/repo cap (confirmed: 11GB+ across 76 entries, with e.g. the
+      # same iOS cache key duplicated 9x across 9 branches), causing
+      # eviction churn that undermined the cache for everyone.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: src-tauri
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Create Docker network
         run: docker network create charm-ci-mas
@@ -646,7 +816,33 @@ jobs:
         working-directory: dev/synapse
         run: ./configure-mas.sh synapse-mas charm-dev-mas
 
+      # sccache credentials scoped to just this step — see the `rust` job's
+      # clippy/nextest steps for the full rationale.
       - run: cargo test --test qr_login
+        env:
+          # Empty (not just unset) when neither key resolves — forks and
+          # Dependabot PRs get withheld secrets entirely, so even the
+          # read-only key below would be '' there. An empty RUSTC_WRAPPER
+          # makes cargo compile locally instead of invoking sccache with
+          # no usable credentials (which reproduces the same anonymous-
+          # request 400 InvalidArgument this file already works around).
+          RUSTC_WRAPPER: ${{ (github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID) != '' && 'sccache' || '' }}
+          SCCACHE_BUCKET: charm-sccache-storage
+          SCCACHE_REGION: tor1
+          SCCACHE_ENDPOINT: https://tor1.digitaloceanspaces.com
+          SCCACHE_S3_ENABLE_VIRTUAL_HOST_STYLE: "true"
+          SCCACHE_S3_USE_SSL: "true"
+          SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+          # Only a trusted ref (a push that already landed on main) gets the
+          # write-capable key — a same-repo PR (which DOES get full secrets
+          # access; only forks are denied) modifying src-tauri/build.rs could
+          # otherwise read a present write key regardless of which step it's
+          # attached to, since Cargo executes build scripts/build-dependency
+          # code before compiling. Every other ref (PR/merge_group builds)
+          # gets a read-only DO Spaces key instead — cache-read benefit
+          # without write-key exposure.
+          AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY }}
 
       - name: Stop synapse-mas, MAS, and mas-db
         if: always()
@@ -680,200 +876,47 @@ jobs:
           echo "::error::A required Rust job did not succeed: ${{ join(needs.*.result, ', ') }}"
           exit 1
 
-  # Baseline platform build verification (macOS/iOS/Windows/Linux/Android):
-  # compile/bundle the app on every supported platform. Deliberately scoped to
-  # "does it build" only — no test suite, no capability harness. This is
-  # distinct from the Spec 13 WebRTC capability spike (spike/voice-video-platform
-  # branch only, never merged to main): that proves getUserMedia/RTCPeerConnection
-  # work at runtime; these jobs only prove the app compiles per platform. Gated
-  # on src-tauri/** changes (via the `changes` job above) since frontend/doc-only
-  # PRs don't need 5 extra native builds.
-  macos:
-    name: macOS (tauri build)
-    needs: changes
-    if: needs.changes.outputs.platform == 'true'
-    runs-on: macos-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+  # Native platform builds (macOS/iOS/Windows/Linux/Android) used to live
+  # here, gated on this job's platform output. Moved to
+  # nightly.yml (Tier 3 of the CI/release model — see
+  # docs/ci-tiers.md): they only prove "does it compile and bundle," which
+  # doesn't need to gate every PR push/merge-queue entry, and were the
+  # dominant cost driver of CI wall time. They now run on a daily schedule
+  # off tip of main instead, non-blocking, opening/updating a tracking issue
+  # on failure rather than blocking a PR.
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Runs the beforeBuildCommand (pnpm build) itself, then cargo build +
-      # the macOS .app/.dmg bundler. Not signed or notarized — that's a
-      # separate concern from "does it build".
-      - run: pnpm tauri build
-
-  windows:
-    name: Windows (tauri build)
-    needs: changes
-    if: needs.changes.outputs.platform == 'true'
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Exercises the bundled-SQLite path fixed in PR #31 — Windows runners
-      # have no system sqlite3 on PATH, so this is the one platform where
-      # linking against the vendored copy is actually load-bearing.
-      - run: pnpm tauri build
-
-  linux:
-    name: Linux (tauri build)
-    needs: changes
-    if: needs.changes.outputs.platform == 'true'
+  # Only meaningful for the schedule trigger: a scheduled run has no PR to
+  # fail against, so without this a nightly break in lint/typecheck/tests/
+  # clippy/audit would be silent until the next real push to main happened
+  # to touch the same code path. Mirrors nightly.yml's
+  # tracking-issue pattern (search-or-create on title, comment if already
+  # open) instead of duplicating it per underlying job.
+  #
+  # needs the four top-level check surfaces: frontend/storybook-a11y/e2e
+  # report their own pass/fail/skip directly (no aggregator, unlike Rust),
+  # and rust-required is already the stable aggregator for the four gated
+  # Rust jobs. `if: always()` is load-bearing so this still runs (and can
+  # inspect results) even when an upstream job failed rather than being
+  # skipped itself.
+  scheduled-failure-tracking:
+    name: Track nightly quality-check failures
+    if: always() && github.event_name == 'schedule'
+    needs: [frontend, storybook-a11y, e2e, rust-required]
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Tauri Linux system dependencies
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # rust-integration (above) already covers `cargo test` on Linux; this is
-      # the full app bundle (AppImage/deb via the Tauri bundler plus frontend
-      # asset embedding), a build path nothing else here exercises.
-      - run: pnpm tauri build
-
-  ios:
-    name: iOS (tauri ios build, simulator target)
-    needs: changes
-    if: needs.changes.outputs.platform == 'true'
-    runs-on: macos-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          targets: aarch64-apple-ios-sim
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # aarch64-sim targets the iOS Simulator (macos-latest runners are Apple
-      # Silicon) rather than a device. This repo has no Apple Developer
-      # signing identity configured for CI, and simulator builds don't need
-      # one — compile verification only, not a distributable IPA.
-      - run: pnpm tauri ios build --target aarch64-sim --debug --ci
-
-  android:
-    name: Android (tauri android build)
-    needs: changes
-    if: needs.changes.outputs.platform == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          targets: aarch64-linux-android
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: src-tauri
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Android SDK/NDK
-        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
-
-      - name: Install NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
-
-      - run: pnpm install --frozen-lockfile
-
-      # Single arch (aarch64) — this is a compile check, not a release
-      # artifact, so building all 4 ABIs would just burn CI time for no
-      # extra coverage. No release keystore is configured (build.gradle.kts
-      # has no signingConfig for the release build type), which is fine: an
-      # unsigned APK still proves the Rust/Kotlin/NDK toolchain compiles.
-      - name: Build
-        # ANDROID_HOME is set by android-actions/setup-android via
-        # $GITHUB_ENV, which only becomes a real shell variable in later
-        # steps' `run:` — it is NOT reflected in the `env` context, so
-        # `${{ env.ANDROID_HOME }}` here would resolve to an empty string.
-        # Deriving NDK_HOME/RANLIB/AR from $ANDROID_HOME inside the shell
-        # avoids that trap.
-        run: |
-          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
-          # openssl-sys vendors OpenSSL from source for the Android target
-          # (see Cargo.toml); NDK r23+ dropped the <triple>-ranlib/<triple>-ar
-          # wrapper scripts openssl-src's Makefile expects, keeping only
-          # llvm-ranlib/llvm-ar. Pointing RANLIB/AR at those directly avoids
-          # "ranlib: not found" (make error 127) — same fix as commit c69b5a8
-          # on the Spec 13 spike branch, for the same vendored-OpenSSL build.
-          export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
-          export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-          pnpm tauri android build --target aarch64 --ci
+          set -euo pipefail
+          title="Nightly quality-checks failure on main"
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          existing=$(gh issue list --repo "${{ github.repository }}" --state open --search "\"$title\" in:title" --json number,title --jq "[.[] | select(.title == \"$title\") | .number] | .[0] // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "${{ github.repository }}" --body "Still failing: $run_url"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$title" --body "Scheduled quality-checks run against main failed. First occurrence: $run_url"
+          fi

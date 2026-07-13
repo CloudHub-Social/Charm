@@ -20,7 +20,14 @@ use matrix_sdk::encryption::verification::{SasState, Verification};
 use matrix_sdk::LoopCtrl;
 use tokio::time::{sleep, timeout};
 
-const POLL_TIMEOUT: Duration = Duration::from_secs(15);
+// 15s was tight enough to flake under CI load: device-list/to-device
+// propagation against the real Synapse container in this job occasionally
+// missed the old timeout even on unrelated `main` runs (e.g. CI run
+// 29049663045, job 86226974720 — same panic, same line, unrelated to
+// whatever else that run touched). 30s gives real propagation headroom
+// without masking an actual regression — the assertions themselves are
+// unchanged.
+const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::test]
 async fn sas_verification_completes_with_matching_emojis() {

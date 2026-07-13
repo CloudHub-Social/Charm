@@ -23,6 +23,18 @@ Fixes #
 - [ ] My changes generate no new warnings
 - [ ] `pnpm lint`, `pnpm fmt:check`, `pnpm typecheck`, `pnpm test:coverage`, `pnpm knip`, and `pnpm build` all pass locally
 
+### Observability & e2e coverage:
+
+<!--
+These two items are enforced by the "PR checklist gate" CI check, which reads
+this section of the PR body. Each line must either be checked `[x]` or contain
+an `N/A:` explanation after it on the same line — an unchecked box with no
+explanation fails the check. See SENTRY.md and CLAUDE.md's e2e section.
+-->
+
+- [ ] I added or updated Playwright e2e coverage (`e2e/*.spec.ts`) for this change.
+- [ ] I added Sentry breadcrumbs/logging/metrics for new error paths, IPC calls, or user actions in this change.
+
 ### AI disclosure:
 
 - [ ] Partially AI assisted (clarify which code was AI assisted and briefly explain what it does).

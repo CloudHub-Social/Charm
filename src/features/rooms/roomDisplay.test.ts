@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { avatarColor, displayName, initials, nickColor, resolveAvatar } from "./roomDisplay";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
@@ -37,6 +37,17 @@ describe("avatarColor", () => {
 
   it("returns a CSS custom-property reference", () => {
     expect(avatarColor("!abc:localhost")).toMatch(/^var\(--/);
+  });
+});
+
+describe("nickColor", () => {
+  it("is deterministic for the same id", () => {
+    expect(nickColor("@bob:localhost")).toBe(nickColor("@bob:localhost"));
+  });
+
+  it("returns a CSS custom-property reference, distinct from avatarColor's -solid palette", () => {
+    expect(nickColor("@bob:localhost")).toMatch(/^var\(--/);
+    expect(nickColor("@bob:localhost")).not.toMatch(/-solid\)$/);
   });
 });
 

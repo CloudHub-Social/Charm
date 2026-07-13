@@ -7,7 +7,9 @@ import {
   closeSentry,
   initializeSentry,
   openSentryFeedbackDialog,
+  type FeedbackCategory,
 } from "@/observability/instrument";
+import { FeedbackCategoryField } from "@/observability/FeedbackCategoryField";
 import { SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE } from "@/observability/messages";
 import {
   persistObservabilitySettings,
@@ -93,10 +95,15 @@ export function ObservabilityPanel() {
   const subDisabled = !settings.sentryEnabled;
   const canvasDisabled = subDisabled || !settings.replayEnabled;
   const [feedbackStatus, setFeedbackStatus] = useState<string | null>(null);
+  const [feedbackCategory, setFeedbackCategory] = useState<FeedbackCategory | null>(null);
 
   const openFeedback = async () => {
+    if (!feedbackCategory) return;
     setFeedbackStatus(null);
-    const opened = await openSentryFeedbackDialog({ surface: "settings" });
+    const opened = await openSentryFeedbackDialog({
+      surface: "settings",
+      category: feedbackCategory,
+    });
     if (!opened) {
       setFeedbackStatus(SENTRY_FEEDBACK_UNAVAILABLE_MESSAGE);
     }
@@ -167,15 +174,22 @@ export function ObservabilityPanel() {
         />
       </SettingsCard>
       <SettingsCard heading="Feedback">
+        <SettingTile>
+          <FeedbackCategoryField
+            name="settings-feedback-category"
+            value={feedbackCategory}
+            onChange={setFeedbackCategory}
+          />
+        </SettingTile>
         <SettingTile
-          title="Report a problem"
-          description="Open Sentry's feedback form. Optional screenshots may include visible room names, Matrix IDs, or message text and are not scrubbed like text fields."
+          title="Send feedback"
+          description="Open Sentry's feedback form. Includes your app version and platform. Optional screenshots may include visible room names, Matrix IDs, or message text and are not scrubbed like text fields."
           control={
             <Button
               type="button"
               size="sm"
               variant="outline"
-              disabled={subDisabled}
+              disabled={subDisabled || !feedbackCategory}
               onClick={() => void openFeedback()}
             >
               <MessageSquareWarning aria-hidden="true" />

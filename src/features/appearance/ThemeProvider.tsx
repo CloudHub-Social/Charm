@@ -1,6 +1,12 @@
 import { useAtomValue, useSetAtom } from "jotai";
 import { type ReactNode, useEffect } from "react";
-import { densityAtom, fontSizeAtom, reducedMotionAtom, themeAtom } from "./atoms";
+import {
+  densityAtom,
+  fontSizeAtom,
+  messageLayoutAtom,
+  reducedMotionAtom,
+  themeAtom,
+} from "./atoms";
 import { applyAppearanceToDom, resolveEffectiveTheme } from "./dom";
 import {
   mergeAppearance,
@@ -31,6 +37,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setFontSize = useSetAtom(fontSizeAtom);
   const setDensity = useSetAtom(densityAtom);
   const setReducedMotion = useSetAtom(reducedMotionAtom);
+  const setMessageLayout = useSetAtom(messageLayoutAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,6 +57,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setFontSize(state.fontSize);
       setDensity(state.density);
       setReducedMotion(state.reducedMotion);
+      setMessageLayout(state.messageLayout);
       applyAppearanceToDom(state);
     }
 
@@ -57,7 +65,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setDensity, setFontSize, setReducedMotion, setTheme]);
+  }, [setDensity, setFontSize, setMessageLayout, setReducedMotion, setTheme]);
 
   useEffect(() => {
     if (theme !== "system") return undefined;
