@@ -20,6 +20,12 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
+    /* TypeScript 6 requires opting in to @types packages explicitly instead of
+       auto-loading everything under node_modules/@types. This config's include
+       covers e2e/, .storybook/, and playwright.config.ts alongside src/, and
+       those files use Node ambient types (process, node:fs, node:crypto, ...). */
+    "types": ["node"],
+
     "paths": {
       "@/*": ["./src/*"],
       "@bindings/*": ["./src-tauri/src/bindings/*"]
