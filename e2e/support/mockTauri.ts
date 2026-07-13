@@ -279,8 +279,17 @@ export function installMockTauri(seed: {
       return undefined;
     },
     resolve_room_alias: () => room.room_id,
+    // A fresh array copy, not `messagesByRoom.get(...)` directly — same
+    // footgun `pushTimelineUpdate` above already guards against: that array
+    // is mutated in place by later handlers (e.g. replacing a pending echo
+    // with its sent counterpart by index), and the frontend keeps its own
+    // reference to whatever this returns to compare a *later* snapshot
+    // against. Handing back the live, still-mutating array means that
+    // comparison sees the *current* (already-mutated) content instead of
+    // the content as of this call, silently matching the real IPC layer's
+    // behavior of always deserializing a genuinely new array over the wire.
     get_timeline_page: (args) => ({
-      messages: messagesByRoom.get(args.roomId as string) ?? [],
+      messages: [...(messagesByRoom.get(args.roomId as string) ?? [])],
       next_cursor: null,
     }),
     // Mirrors the real `mark_room_read` Rust command, which only sends a read

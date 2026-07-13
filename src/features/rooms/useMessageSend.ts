@@ -41,8 +41,14 @@ export function useMessageSend({
     setCommandFeedback(null);
   }, [roomId]);
 
-  async function handleComposerSubmit(content: ComposerContent) {
-    if (!room) return;
+  // Returns whether the underlying queue call actually succeeded — `ChatShell`
+  // uses this to decide whether to scroll to present after a send/reply: if
+  // the queueing call itself rejects (network/validation error) before any
+  // local echo is created, there's no new message to scroll to, and
+  // unconditionally scrolling would yank a user who was reading history to
+  // the bottom for nothing.
+  async function handleComposerSubmit(content: ComposerContent): Promise<boolean> {
+    if (!room) return false;
     const targetRoom = room;
 
     if (editingEventId) {
@@ -54,7 +60,7 @@ export function useMessageSend({
       } catch (err) {
         console.error(err);
       }
-      return;
+      return false;
     }
 
     const replyingTo = replyTarget;
@@ -83,13 +89,26 @@ export function useMessageSend({
           content.mentions,
         );
       }
+      // The user may have switched rooms while this send was in flight —
+      // same reasoning as `handleSlashCommand`'s own guard below. Without
+      // this, `ChatShell`'s caller would scroll and mark-at-bottom/read
+      // whatever room is *now* showing (a fresh `virtuosoRef`, since
+      // Virtuoso remounts per room) for a message that landed in a
+      // different, no-longer-active room.
+      return currentRoomIdRef.current === targetRoom.room_id;
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 
-  async function handleSlashCommand(parsed: ParsedSlashCommand) {
-    if (!room) return;
+  // Returns whether the command succeeded — `ChatShell` uses this (together
+  // with `parsed.command` itself) to decide whether a message actually got
+  // appended and the view should scroll to it, since most slash commands
+  // (`/topic`, `/invite`, `/kick`, `/ban`, ...) never send a
+  // `RoomMessageSummary` even on success, and a failed `/me` doesn't either.
+  async function handleSlashCommand(parsed: ParsedSlashCommand): Promise<boolean> {
+    if (!room) return false;
     const targetRoomId = room.room_id;
     stopTyping();
     try {
@@ -98,10 +117,12 @@ export function useMessageSend({
       // don't show room A's feedback under room B, and don't leave a stale
       // failure banner up once a later command (in the still-active room)
       // succeeds.
-      if (currentRoomIdRef.current !== targetRoomId) return;
+      if (currentRoomIdRef.current !== targetRoomId) return false;
       setCommandFeedback(result.status === "success" ? null : result.message);
+      return result.status === "success";
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 

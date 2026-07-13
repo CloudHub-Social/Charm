@@ -37,6 +37,7 @@ export function DiscordMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onJumpToMessage,
   isPending,
   isError,
   disableRelationActions,
@@ -95,11 +96,7 @@ export function DiscordMessageRow({
         {message.in_reply_to && !message.redacted && (
           <ReplyPreview
             reply={message.in_reply_to}
-            onClick={() => {
-              document
-                .getElementById(`message-${message.in_reply_to?.event_id}`)
-                ?.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
+            onClick={() => onJumpToMessage(message.in_reply_to!.event_id)}
           />
         )}
         <div className="flex min-w-0 items-center gap-1">
