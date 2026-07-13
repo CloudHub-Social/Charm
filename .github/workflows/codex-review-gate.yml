@@ -1,0 +1,202 @@
+name: Codex review gate
+
+# Owns a deterministic `codex/review-gate` commit status that stays pending
+# until Codex has cleanly reviewed the current PR head, replacing the
+# hand-rolled Codex polling this repo used to do inside review-gate.yml (see
+# that file's git history — CloudHub-Social/Charm#227/#235 hit repeated races
+# and false-positive/negative signal bugs trying to infer "is Codex done" from
+# raw comments/reviews/reactions). This action (JoeyTeng/codex-review-gate-
+# action) solves the same problem properly: it posts its own controlled
+# "@codex review" marker comment and only trusts a clean completion comment or
+# APPROVED review that appears *after* that marker, so a stale result for an
+# older commit can never be mistaken for covering the current head — the
+# exact class of bug our own version kept running into. See
+# https://github.com/JoeyTeng/codex-review-gate-action for the full design.
+#
+# review-gate.yml still separately waits for Seer (a native check-run, no
+# race to solve there) and for zero unresolved review threads from anyone —
+# this workflow only owns the Codex-specific signal.
+#
+# Runs on pull_request_target (not pull_request): the action needs reliable
+# write access (comments/statuses) regardless of who opened the PR, which
+# pull_request from a fork would deny. It does not check out or execute any
+# PR code — see the action's own docs for why this is safe.
+#
+# Pinned to a commit SHA, not the `v1.2` tag, since this grants a third-party
+# action issues/pull-requests/statuses write on pull_request_target — a tag
+# can be moved to point at different code later; a SHA can't. Re-pin
+# deliberately (verify the new commit first) rather than trusting `@v1.2` to
+# always mean the same thing. Currently v1.2.1 per the action's own release
+# commit message.
+#
+# First-time setup: merge this workflow to the default branch and let it run
+# once on a real PR before adding `codex/review-gate` to the repository
+# ruleset's required status checks — requiring it before the workflow exists
+# on the base branch makes the very first PR fail with nothing to satisfy it.
+#
+# Two cases never reach the action itself, since it has no code path for
+# either (confirmed by reading its src/gate.mjs: an unrecognized event name
+# just returns a silent "skip") — meaning nothing would ever write the
+# `codex/review-gate` status for that head at all, leaving it stuck
+# "Expected" forever once the check is required:
+#   - `merge_group`: the merge queue's synthetic commit is never something
+#     Codex reviews (it reviews the PR head), but branch protection still
+#     needs a status posted for it once `codex/review-gate` is required —
+#     same reasoning as review-gate.yml's own merge_group no-op pass.
+#   - A non-Dependabot bot-authored PR (Renovate, etc.): Codex doesn't
+#     review those (matches review-gate.yml's `user.type != 'Bot'` skip),
+#     so nothing else would post a status for that head either. Detected
+#     per-event-shape below (IS_BOT_PR), not just for pull_request_target —
+#     a stray issue_comment/review/review_comment event on a bot PR needs
+#     the same bypass, or it would fall through to the action with the
+#     wrong (often empty) head-sha.
+# Both get a direct, trivial "success" status written below instead of
+# invoking the action, resolved via a live `gh api pulls/<n>` lookup rather
+# than `github.event.pull_request.head.sha` — that field doesn't exist on an
+# issue_comment payload (only `.issue`), which would otherwise crash the
+# `gh api statuses/<empty>` call once IS_BOT_PR started covering that event
+# shape too.
+#
+# Dependabot PRs are deliberately NOT handled by any of the above: GitHub
+# gives Dependabot-actor-triggered runs (github.actor == 'dependabot[bot]')
+# a read-only GITHUB_TOKEN *and* makes repo secrets entirely unavailable —
+# no permissions: block or fallback secret can write a status from inside
+# that run at all. Rather than something structurally impossible to satisfy,
+# Dependabot's GitHub App identity is instead added to the repository
+# ruleset's bypass_actors (bypass_mode: pull_request), so its PRs skip
+# required-status enforcement entirely, same as this repo's own admin
+# bypass. codex/review-gate (and any other required check) is intentionally
+# left unset for Dependabot PRs as a result — that's expected, not a gap.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  merge_group:
+  schedule:
+    # Retries a stalled gate (e.g. a marker Codex never acknowledged) without
+    # needing a human to notice and re-run — see the action's own retry/
+    # backoff behavior (marker-ack-timeout-seconds, max-wait-seconds). Per its
+    # own src/gate.mjs, a schedule run ignores the `pull-request` input
+    # entirely and scans all open PRs itself, so leaving that input empty for
+    # this trigger (see the step below) is expected, not a bug. That scan
+    # does touch Dependabot PRs too (its own recovery path deliberately
+    # bypasses its no-state skip for them) — harmless here since Dependabot
+    # no longer depends on this workflow at all (see the header comment).
+    - cron: "0 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      # Required, not optional: per src/gate.mjs's readTrigger(), a blank
+      # pull_request on workflow_dispatch makes the action scan *every* open
+      # PR with marker creation enabled — including bot-authored ones this
+      # workflow otherwise bypasses (IS_BOT_PR isn't computed for
+      # workflow_dispatch at all, so the "Run Codex review gate" step's own
+      # `if:` wouldn't skip them either). That would re-open a Codex request
+      # on any previously-bypassed bot PR, unrelated to whichever PR someone
+      # meant to manually re-gate. Requiring a number here forces a scoped,
+      # single-PR run instead.
+      pull_request:
+        description: Pull request number to gate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  # Scoped per-PR (falling back to the merge-queue entry's own SHA, then a
+  # shared "scheduled" key for the sweep cron, which targets no single PR) —
+  # NOT repo-wide. A repo-wide group allows only one run in-progress plus one
+  # queued across the *entire* repository; a third concurrent PR's (or merge
+  # queue entry's) event would silently evict the second queued run, and that
+  # head's `codex/review-gate` required check would never update, blocking it
+  # indefinitely. Matches the per-PR scoping review-gate.yml already uses for
+  # the same reason.
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request || github.event.merge_group.head_sha || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  codex-review-gate:
+    name: codex/review-gate runner
+    # Skips only events with genuinely nothing to do: an issue comment not on
+    # a PR (or not from Codex), or a review/review-comment not from Codex —
+    # none of these have a head commit that needs a *new* status write (the
+    # PR's existing codex/review-gate status, from its original
+    # pull_request_target trigger, already stands). merge_group and
+    # non-Dependabot bot-authored PRs are deliberately NOT filtered out
+    # here — see the header comment — they still need the bypass step below
+    # to run. Dependabot PRs bypass the ruleset directly and never reach
+    # this workflow's normal path, but aren't specifically excluded here
+    # either — they just fall through the same as any other bot PR and get
+    # the same log-only no-op (see the bypass step).
+    if: >-
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)))
+      && (github.event_name != 'pull_request_review' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.review.user.login))
+      && (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Whether the PR this event concerns is bot-authored, computed once per
+      # applicable event shape — issue_comment's PR-author field lives under
+      # `.issue.user` (the PR-as-issue's original author), while the other
+      # three event types carry a `.pull_request.user` object directly.
+      # merge_group/schedule/workflow_dispatch have no single PR-author
+      # concept at this level, so they're excluded here and merge_group is
+      # instead handled unconditionally in the bypass step's own `if:`.
+      IS_BOT_PR: >-
+        ${{
+          (github.event_name == 'pull_request_target' && github.event.pull_request.user.type == 'Bot')
+          || (github.event_name == 'issue_comment' && github.event.issue.user.type == 'Bot')
+          || (github.event_name == 'pull_request_review' && github.event.pull_request.user.type == 'Bot')
+          || (github.event_name == 'pull_request_review_comment' && github.event.pull_request.user.type == 'Bot')
+        }}
+      # Same idea, narrowed to Dependabot specifically by login rather than
+      # the broader `type == 'Bot'` — see the header comment for why this
+      # one skips the status write entirely instead of attempting it.
+      IS_DEPENDABOT_PR: >-
+        ${{
+          (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]')
+          || (github.event_name == 'issue_comment' && github.event.issue.user.login == 'dependabot[bot]')
+          || (github.event_name == 'pull_request_review' && github.event.pull_request.user.login == 'dependabot[bot]')
+          || (github.event_name == 'pull_request_review_comment' && github.event.pull_request.user.login == 'dependabot[bot]')
+        }}
+    steps:
+      - name: Trivially pass for merge_group and non-Dependabot bot PRs (Codex reviews neither)
+        if: github.event_name == 'merge_group' || env.IS_BOT_PR == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ env.IS_DEPENDABOT_PR }}" = "true" ]; then
+            echo "Dependabot PR — bypasses the ruleset directly (see repository ruleset bypass_actors); codex/review-gate is intentionally left unset here, not written."
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            sha="${{ github.event.merge_group.head_sha }}"
+          else
+            # Resolved via a live lookup, not github.event.pull_request.head.sha:
+            # that field doesn't exist on an issue_comment payload (only
+            # `.issue` does), which IS_BOT_PR can now trigger this step for.
+            pr_number="${{ github.event.pull_request.number || github.event.issue.number }}"
+            sha=$(gh api "repos/${{ github.repository }}/pulls/$pr_number" --jq .head.sha)
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$sha" \
+            -f state=success \
+            -f context=codex/review-gate \
+            -f description="Codex does not review merge-queue commits or bot-authored PRs"
+      - name: Run Codex review gate
+        if: github.event_name != 'merge_group' && env.IS_BOT_PR != 'true'
+        # v1.2 (v1.2.1 per its release commit message) — see the header
+        # comment for why this is pinned to a SHA rather than the mutable tag.
+        uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
+        with:
+          github-token: ${{ github.token }}
+          pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
+          head-sha: ${{ github.event.pull_request.head.sha || '' }}

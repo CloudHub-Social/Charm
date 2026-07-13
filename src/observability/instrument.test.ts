@@ -1,14 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Sentry from "@sentry/react";
 import packageJson from "../../package.json";
 import * as platformModule from "../lib/platform";
 import {
+  bootstrapSentryWithTimeout,
   closeSentry,
   initializeSentry,
   observabilityTestHooks,
   openSentryFeedbackDialog,
 } from "./instrument";
-import { DEFAULT_OBSERVABILITY_SETTINGS } from "./settings";
+import * as persistenceModule from "./persistence";
+import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
 
 const clientOptions = { enabled: true };
 const feedbackDialog = {
@@ -463,5 +465,74 @@ describe("Sentry instrumentation", () => {
 
     expect(feedbackDialog.appendToDom).not.toHaveBeenCalled();
     expect(feedbackDialog.open).not.toHaveBeenCalled();
+  });
+});
+
+describe("bootstrapSentryWithTimeout", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves with the settings once the underlying bootstrap finishes before the timeout", async () => {
+    const settings = { ...DEFAULT_OBSERVABILITY_SETTINGS, sentryEnabled: true };
+    vi.spyOn(persistenceModule, "readObservabilitySettings").mockResolvedValue(settings);
+
+    await expect(bootstrapSentryWithTimeout(3000)).resolves.toEqual(settings);
+  });
+
+  it("resolves with null instead of hanging forever when the settings read never resolves (2026-07-13 blank-page regression)", async () => {
+    vi.useFakeTimers();
+    // Simulates a stuck Tauri IPC round-trip (e.g. plugin-store's `load()`
+    // never calling back) — the exact failure mode that left the app
+    // permanently blank, since `main.tsx` previously gated its first render
+    // on this promise with no timeout at all.
+    vi.spyOn(persistenceModule, "readObservabilitySettings").mockReturnValue(
+      new Promise(() => {
+        // Never resolves.
+      }),
+    );
+
+    const result = bootstrapSentryWithTimeout(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+
+    await expect(result).resolves.toBeNull();
+  });
+
+  it("does not initialize Sentry when the timeout wins the race", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(persistenceModule, "readObservabilitySettings").mockReturnValue(
+      new Promise(() => {
+        // Never resolves.
+      }),
+    );
+
+    const result = bootstrapSentryWithTimeout(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    await result;
+
+    expect(Sentry.init).not.toHaveBeenCalled();
+  });
+
+  it("never initializes Sentry from a settings read that resolves after the timeout already gave up", async () => {
+    // A *slow* read (unlike the permanently-hung case above) still resolves
+    // eventually — if it could reach `initializeSentry` after losing the
+    // race, a user who opened Settings and disabled Sentry in that window
+    // would find it silently re-enabled once this stale read landed.
+    vi.useFakeTimers();
+    let resolveSettings!: (settings: ObservabilitySettings) => void;
+    vi.spyOn(persistenceModule, "readObservabilitySettings").mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+
+    const result = bootstrapSentryWithTimeout(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(result).resolves.toBeNull();
+
+    resolveSettings({ ...DEFAULT_OBSERVABILITY_SETTINGS, sentryEnabled: true });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(Sentry.init).not.toHaveBeenCalled();
   });
 });

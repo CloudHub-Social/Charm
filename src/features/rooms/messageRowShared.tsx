@@ -96,6 +96,14 @@ export interface MessageRowLayoutProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  /** Scrolls the timeline to a given loaded message by event id — used by the
+   * reply-preview "jump to the replied-to message" click. Routed through the
+   * Virtuoso instance (not a plain `document.getElementById(...)`
+   * `scrollIntoView`) because a loaded-but-currently-offscreen message under
+   * a virtualizer has no mounted DOM node to find; a no-op if the target
+   * isn't in the currently-loaded `messages` (e.g. further back than
+   * backward pagination has loaded). */
+  onJumpToMessage: (eventId: string) => void;
   isPending: boolean;
   isError: boolean;
   disableRelationActions: boolean;

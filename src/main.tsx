@@ -11,8 +11,9 @@ import "@fontsource/jetbrains-mono/500.css";
 import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
+import { isTauri } from "./lib/platform";
 import { checkUncleanPreviousSession } from "./observability/crashRecovery";
-import { bootstrapSentry } from "./observability/instrument";
+import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
 import "./styles/tokens.css";
 
@@ -53,13 +54,28 @@ function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean })
   );
 }
 
-const [{ sentryEnabled }, uncleanPreviousSession] = await Promise.all([
-  bootstrapSentry(),
+// Bounded, not `await bootstrapSentry()` directly: this gates React's first
+// render, so a hung settings read (e.g. a stuck Tauri IPC round-trip) must
+// never be able to leave the app permanently blank. Run alongside the
+// crash-recovery check rather than after it, so neither adds to the other's
+// latency.
+const [settings, uncleanPreviousSession] = await Promise.all([
+  bootstrapSentryWithTimeout(),
   checkUncleanPreviousSession(),
 ]);
 
+if (isTauri()) {
+  // Forwards the native side's `tauri-plugin-log` Webview target into this
+  // window's actual DevTools console — without this call the Rust logger's
+  // Webview target is configured but silently inert (per the plugin's own
+  // docs). Dynamically imported so `@tauri-apps/plugin-log` isn't pulled
+  // into the web build, which has no Tauri IPC to attach to.
+  const { attachConsole } = await import("@tauri-apps/plugin-log");
+  void attachConsole();
+}
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root showCrashRecoveryPrompt={uncleanPreviousSession && !sentryEnabled} />
+    <Root showCrashRecoveryPrompt={uncleanPreviousSession && !settings?.sentryEnabled} />
   </React.StrictMode>,
 );

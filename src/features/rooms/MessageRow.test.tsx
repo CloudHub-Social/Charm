@@ -33,6 +33,7 @@ function renderRow(messageLayout: MessageLayout) {
         onEdit={vi.fn()}
         onDelete={vi.fn()}
         onCopy={vi.fn()}
+        onJumpToMessage={vi.fn()}
       />
     </Provider>,
   );
