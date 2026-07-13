@@ -192,11 +192,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // changes, not just when new messages actually arrive.
   const atBottomRef = useRef(atBottom);
   atBottomRef.current = atBottom;
-  // Count of not-yet-seen messages (excluding the current user's own —
-  // sending a message is already an intentional "return to present" action,
-  // so it shouldn't need its own pill) that arrived while scrolled away from
-  // bottom. Reset to 0 once the user is back at bottom, whether by scrolling
-  // there themselves or by clicking the pill.
+  // Count of not-yet-seen messages that arrived while scrolled away from
+  // bottom, INCLUDING the current user's own — sending through the composer
+  // or a `/me` slash command already scrolls to present explicitly (see
+  // `scrollToPresentAfterOwnSend`), which flips `atBottom` back to `true`
+  // before that message ever lands, so it never reaches this counter in
+  // practice. But an own message can also arrive from a path this component
+  // doesn't explicitly scroll for — another device, or a future send path
+  // (e.g. an attachment upload) — and excluding *all* own messages
+  // unconditionally would leave the user with no visible way back to it in
+  // exactly that case. Reset to 0 once the user is back at bottom, whether
+  // by scrolling there themselves or by clicking the pill.
   const [newMessageCount, setNewMessageCount] = useState(0);
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
     handleAtBottomStateChange(bottom);
@@ -356,10 +362,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       return;
     }
     // "Jump to present" pill (Spec 26 Phase 2): counts `newMessageKeys` (the
-    // same genuinely-new-arrival diff the entrance animation uses, excluding
-    // the current user's own messages — sending is already an intentional
-    // "return to present" action) into `newMessageCount`, but *only inside
-    // this effect* — which fires exactly once per real `messages` update —
+    // same genuinely-new-arrival diff the entrance animation uses — see the
+    // state declaration above for why this no longer excludes the current
+    // user's own messages) into `newMessageCount`, but *only inside this
+    // effect* — which fires exactly once per real `messages` update —
     // reading `atBottomRef.current` at that exact moment, not as a
     // dependency. An earlier version depended on `[newMessageKeys, atBottom]`
     // directly: `newMessageKeys` is a `useMemo` that returns the *same*
@@ -372,12 +378,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // `atBottom` was true at that moment. Reset to 0 happens in
     // `handleVirtuosoAtBottomStateChange`/`handleJumpToPresent`/the
     // room-change effect above, not here.
-    if (!atBottomRef.current) {
-      const ownRowKeys = new Set(
-        messages.filter((m) => m.sender === currentUserId).map(messageRowKey),
-      );
-      const incoming = [...newMessageKeys].filter((key) => !ownRowKeys.has(key)).length;
-      if (incoming > 0) setNewMessageCount((count) => count + incoming);
+    if (!atBottomRef.current && newMessageKeys.size > 0) {
+      setNewMessageCount((count) => count + newMessageKeys.size);
     }
     messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
     previousFirstItemIndexRef.current = firstItemIndex;
@@ -505,13 +507,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes
   // through this separate path, not `onSubmit` — the same "scroll to the
   // user's own new message" gap applies here and was missed by the fix
-  // above. Scrolled unconditionally, not gated on the command's own
-  // success/failure result: an unsuccessful command (e.g. an unrecognized
-  // one) produces no new message, so this is a harmless no-op for that case
-  // rather than worth threading the async result through just to skip it.
-  function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
-    handleSlashCommand(parsed);
-    scrollToPresentAfterOwnSend();
+  // above. Gated on both `parsed.command === "me"` *and* the command
+  // actually succeeding: most slash commands (`/topic`, `/invite`, `/kick`,
+  // `/ban`, ...) never append a `RoomMessageSummary` even on success, and a
+  // failed `/me` (bad args, no permission) doesn't either — scrolling
+  // unconditionally would yank the user to the bottom (and mark them
+  // at-bottom/read) for a command that sent nothing.
+  async function handleSlashCommandAndScroll(parsed: Parameters<typeof handleSlashCommand>[0]) {
+    const succeeded = await handleSlashCommand(parsed);
+    if (parsed.command === "me" && succeeded) scrollToPresentAfterOwnSend();
   }
 
   async function handleAttachClick() {

@@ -88,8 +88,13 @@ export function useMessageSend({
     }
   }
 
-  async function handleSlashCommand(parsed: ParsedSlashCommand) {
-    if (!room) return;
+  // Returns whether the command succeeded — `ChatShell` uses this (together
+  // with `parsed.command` itself) to decide whether a message actually got
+  // appended and the view should scroll to it, since most slash commands
+  // (`/topic`, `/invite`, `/kick`, `/ban`, ...) never send a
+  // `RoomMessageSummary` even on success, and a failed `/me` doesn't either.
+  async function handleSlashCommand(parsed: ParsedSlashCommand): Promise<boolean> {
+    if (!room) return false;
     const targetRoomId = room.room_id;
     stopTyping();
     try {
@@ -98,10 +103,12 @@ export function useMessageSend({
       // don't show room A's feedback under room B, and don't leave a stale
       // failure banner up once a later command (in the still-active room)
       // succeeds.
-      if (currentRoomIdRef.current !== targetRoomId) return;
+      if (currentRoomIdRef.current !== targetRoomId) return false;
       setCommandFeedback(result.status === "success" ? null : result.message);
+      return result.status === "success";
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 

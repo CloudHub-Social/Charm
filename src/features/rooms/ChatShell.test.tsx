@@ -450,7 +450,12 @@ describe("ChatShell", () => {
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
-  it("does not count the current user's own messages toward the jump-to-present pill", async () => {
+  it("does not show a pill for the user's own message sent through the composer while scrolled away, because sending scrolls to present first", async () => {
+    // Own sends don't need special-case exclusion from the pill count
+    // (see the next test) — they simply never reach it, because
+    // `handleComposerSubmitAndScroll` flips `atBottom` back to `true`
+    // synchronously, before the eventual `timeline:update` for the sent
+    // message ever lands.
     getTimelinePage.mockResolvedValue({
       messages: [
         summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
@@ -460,6 +465,8 @@ describe("ChatShell", () => {
     renderChatShell();
     await screen.findByText("first");
     fireAtBottomStateChange(false);
+
+    sendDraft("my own reply");
 
     act(() => {
       timelineUpdateCallback?.({
@@ -478,6 +485,44 @@ describe("ChatShell", () => {
 
     await screen.findByText("my own reply");
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
+  it("shows a jump-to-present pill for the user's own message when it arrives from a path that isn't this composer", async () => {
+    // Regression test: an own message can arrive from a path this component
+    // never explicitly scrolls for — another device, or a future send path
+    // like an attachment upload. Unconditionally excluding every own
+    // message from the pill count (as an earlier version did) would leave
+    // the user with no visible way back to that message while scrolled
+    // away. The pill only avoids double-counting the composer/slash-command
+    // paths because those explicitly scroll to present first (see the
+    // previous test) — it doesn't special-case sender identity at all.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({
+            event_id: "$b",
+            sender: "@me:localhost",
+            body: "from another device",
+            timestamp_ms: 2,
+          }),
+        ],
+      });
+    });
+
+    await screen.findByText("from another device");
+    expect(await screen.findByRole("button", { name: "1 new message" })).toBeInTheDocument();
   });
 
   it("counts a live tail message toward the jump-to-present pill even while an unrelated backward-pagination request is in flight", async () => {
@@ -1112,6 +1157,71 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(3);
   });
 
+  it("does not fetch an unnecessary extra page when a live update already applies this request's own prepend first", async () => {
+    // Regression test (Codex P1): the opposite race from the previous test —
+    // a live `timeline:update` for this same `paginate_backwards` call can
+    // apply the prepend *before* the pagination response itself arrives. By
+    // the time this loop processes that (now redundant) response,
+    // `applyMessages`' own per-call return reports zero new prepends (the
+    // live update already moved the tracked front message), which an
+    // earlier version misread as "no progress, fetch another page" —
+    // needlessly walking further back than the single page the user's
+    // scroll-up asked for. Progress must be judged against the whole loop's
+    // starting point, not each individual response.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolvePaginationResponse:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolvePaginationResponse = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    // A live timeline:update lands with the same prepended history the
+    // pagination request is still awaiting its own response for.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("first");
+
+    // The pagination response finally resolves with the identical (now
+    // redundant) content.
+    act(() => {
+      resolvePaginationResponse?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    // Exactly the initial load plus the one pagination request — no
+    // additional page fetched just because that response's own diff looked
+    // like zero progress.
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
   it("shifts firstItemIndex forward when the previously-first message disappears from a later snapshot", async () => {
     // Regression test: if the old first message itself vanishes from a
     // later full snapshot (e.g. an UnableToDecrypt placeholder resolves into
@@ -1244,6 +1354,52 @@ describe("ChatShell", () => {
         expect.objectContaining({ index: "LAST", align: "end" }),
       ),
     );
+  });
+
+  it("does not scroll for a successful slash command that isn't /me", async () => {
+    // Regression test: most slash commands (/topic, /invite, /kick, /ban,
+    // ...) can succeed without ever appending a RoomMessageSummary —
+    // scrolling to bottom for one of those while scrolled up would yank the
+    // user down for no reason.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    runCommand.mockResolvedValue({ status: "success" });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    const composer = screen.getByPlaceholderText("Message general");
+    fireEvent.change(composer, { target: { value: "/topic new topic" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+
+    await vi.waitFor(() => expect(runCommand).toHaveBeenCalled());
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("does not scroll for a failed /me slash command", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    runCommand.mockResolvedValue({ status: "error", message: "not allowed" });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    const composer = screen.getByPlaceholderText("Message general");
+    fireEvent.change(composer, { target: { value: "/me waves" } });
+    fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
+
+    await screen.findByText("not allowed");
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
   it("gives the Virtuoso element a bounded flex height to fill the chat pane", async () => {

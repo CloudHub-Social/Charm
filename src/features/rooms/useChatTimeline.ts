@@ -278,19 +278,33 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // A single backend page can legitimately contribute zero renderable
     // `RoomMessageSummary` rows (its underlying timeline items were all
     // state events/polls/etc. `timeline_item_to_summary` filters out) while
-    // still advancing `next_cursor`. Progress is judged by `applyMessages`'
-    // own identity-based return value (how many messages actually landed
-    // ahead of whatever previously-loaded message survives), not a plain
-    // `messages.length` diff — a live tail message racing this same request
-    // can grow the total length without any real prepend, which would
-    // otherwise make this loop stop one page too early and strand the user
-    // behind an all-filtered-out page (the same class of bug the
-    // `firstItemIndex` math itself already had to be fixed for). Relying on
-    // the caller to notice and re-request wouldn't work for `ChatShell`'s
-    // Virtuoso `startReached` either way, since it's deduped by rendered
-    // range and won't refire on its own while an all-filtered-out response
-    // leaves that range unchanged — so this loops internally until a page
-    // actually adds a row or history is confirmed exhausted.
+    // still advancing `next_cursor`, so this loops internally until a page
+    // actually adds a row or history is confirmed exhausted — relying on the
+    // caller to notice and re-request wouldn't work for `ChatShell`'s
+    // Virtuoso `startReached`, which is deduped by rendered range and won't
+    // refire on its own while an all-filtered-out response leaves that range
+    // unchanged.
+    //
+    // Progress is judged by comparing the *whole loop's* starting front
+    // message against the current one after each response, not
+    // `applyMessages`' own per-call return value and not a plain
+    // `messages.length` diff:
+    // - A length diff breaks if a live tail message races this request:
+    //   the total grows with no real prepend, stopping the loop one page
+    //   too early (the same class of bug `firstItemIndex`'s own math had to
+    //   be fixed for).
+    // - `applyMessages`' per-call return breaks the *opposite* way if a live
+    //   `timeline:update` for this same `paginate_backwards` call applies
+    //   the prepend *before* this request's own response arrives: by the
+    //   time this loop processes that response, `applyMessages` finds
+    //   nothing new to shift (the live update already moved
+    //   `previousMessagesRef`), reports zero progress, and this loop
+    //   would call `getTimelinePage` again — needlessly walking further
+    //   back than the single page the user's scroll-up asked for.
+    // Comparing against the loop's own starting point catches genuine
+    // progress regardless of which path (this loop's own responses, or a
+    // racing live update) produced it.
+    const initialFirstKey = messages.length > 0 ? messageRowKey(messages[0]) : null;
     const startedEmpty = messages.length === 0;
     try {
       for (;;) {
@@ -302,12 +316,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         if (visitGenerationRef.current !== generation) return;
         nextCursorRef.current = page.next_cursor;
         setHasMore(page.next_cursor !== null);
-        const prepended = applyMessages(page.messages);
+        applyMessages(page.messages);
         setPaginationError(false);
-        // `applyMessages` can't detect the empty-to-non-empty transition
-        // itself (there's no previously-loaded message to anchor against
-        // when starting from nothing), so that case is checked directly.
-        const madeProgress = prepended > 0 || (startedEmpty && page.messages.length > 0);
+        const currentFirstKey =
+          previousMessagesRef.current.length > 0
+            ? messageRowKey(previousMessagesRef.current[0])
+            : null;
+        const madeProgress =
+          currentFirstKey !== initialFirstKey || (startedEmpty && page.messages.length > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
