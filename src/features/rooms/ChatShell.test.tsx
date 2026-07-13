@@ -1285,6 +1285,131 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(2);
   });
 
+  it("treats an offset-neutral prepend applied by a racing live update as progress, without an extra page fetch", async () => {
+    // Regression test (Codex P2, fresh evidence beyond the earlier fixes):
+    // the live update can win the race and apply an *offset-neutral*
+    // prepend itself (real content added, but an equal-count front-row
+    // removal cancels firstItemIndex's net shift — see the non-racing
+    // version of this test above). This request's own response then echoes
+    // that identical (now redundant) content. Recomputing applyMessages from
+    // scratch for that echo would report zero prepended rows (nothing left
+    // to compare against), needlessly fetching another page — the preserved
+    // prependedCount from the live update's own call must still count.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$undecryptable",
+          sender: "@alice:localhost",
+          body: "",
+          is_undecrypted: true,
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolveOffsetNeutralPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOffsetNeutralPage = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$x",
+            sender: "@alice:localhost",
+            body: "prepended x",
+            timestamp_ms: 0,
+          }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("prepended x");
+
+    act(() => {
+      resolveOffsetNeutralPage?.({
+        messages: [
+          summary({
+            event_id: "$x",
+            sender: "@alice:localhost",
+            body: "prepended x",
+            timestamp_ms: 0,
+          }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the prepended-row entrance-animation exclusion intact when a racing live update and this request's own response batch into the same commit", async () => {
+    // Regression test (Codex P1): if the live timeline:update and this
+    // pagination request's own (now-redundant) response are both processed
+    // before React commits either state update, applyMessages must not let
+    // the second (redundant) call overwrite the first's correct
+    // prependedCount with 0 — otherwise ChatShell renders the prepended row
+    // without suppression, animating it as if it were a brand new arrival.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolveRedundantPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRedundantPage = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    // Both calls land within the same `act`, so React batches their state
+    // updates into a single commit rather than rendering the live update's
+    // (correct) intermediate state first.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+      resolveRedundantPage?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("first");
+    expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+  });
+
   it("shifts firstItemIndex forward when the previously-first message disappears from a later snapshot", async () => {
     // Regression test: if the old first message itself vanishes from a
     // later full snapshot (e.g. an UnableToDecrypt placeholder resolves into

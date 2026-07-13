@@ -97,6 +97,11 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // next surviving row's logical index would silently be treated as
   // unchanged instead of shifting to compensate for the removal.
   const previousMessagesRef = useRef<RoomMessageSummary[]>([]);
+  // Mirrors `prependedCount` state synchronously — lets `applyMessages`
+  // recover the still-correct value for a *redundant echo* call (see that
+  // function's own comment) without racing the `prependedCount` state
+  // variable, which doesn't update until next render.
+  const prependedCountRef = useRef(0);
   // Tracks the room id these refs were last reset for — `undefined` (not
   // `null`) as the initial sentinel, since `null` ("no room active") is
   // itself a valid target state distinct from "never reset yet".
@@ -124,6 +129,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     nextCursorRef.current = null;
     loadingMoreRef.current = false;
     previousMessagesRef.current = [];
+    prependedCountRef.current = 0;
     firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
   }
 
@@ -145,6 +151,35 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // identical from `next_cursor` alone.
   function applyMessages(newMessages: RoomMessageSummary[]): number {
     const previous = previousMessagesRef.current;
+    // A *redundant echo*: this call's content is identical — by key AND by
+    // value, in the same order — to what's already loaded. This happens when
+    // a racing `timeline:update` and this same `loadMoreHistory` request's
+    // own response both carry the same diff — whichever call runs second
+    // finds nothing new to compare against (its "previous" already *is* this
+    // content), so recomputing from scratch would report zero prepended
+    // rows, overwriting the still-unconsumed real `prependedCount` the first
+    // call correctly set (React batches both into the same commit, so
+    // `ChatShell` never observes the correct intermediate value) — silently
+    // losing the entrance-animation/jump-to-present exclusion for those
+    // rows, or (see `loadMoreHistory`) misreading a genuine prepend as no
+    // progress and fetching an unneeded extra page. `newMessages.length > 0`
+    // guards against a room-switch reset (`previousMessagesRef` synchronously
+    // cleared to `[]`, `messages` state not yet caught up) where both sides
+    // being empty is coincidence, not a real duplicate to preserve. The value
+    // comparison (not just matching keys) matters because a message's key
+    // (`transaction_id ?? event_id`) can stay the same across a real content
+    // change this call must still apply — e.g. a local echo's `send_state`
+    // flipping from "pending" to "sent", or a message becoming `redacted` —
+    // which a key-only match would wrongly treat as "nothing changed" and
+    // silently drop.
+    if (
+      newMessages.length > 0 &&
+      previous.length === newMessages.length &&
+      previous.every((m, i) => messageRowKey(m) === messageRowKey(newMessages[i])) &&
+      JSON.stringify(previous) === JSON.stringify(newMessages)
+    ) {
+      return prependedCountRef.current;
+    }
     // The count of genuinely new *leading* entries in `newMessages` — i.e.
     // how many positions come before wherever the first surviving
     // previously-loaded message now sits. This is `newIndex` itself, not
@@ -186,6 +221,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // shift from; leave `firstItemIndex` as-is rather than guess.
     }
     previousMessagesRef.current = newMessages;
+    prependedCountRef.current = newPrependedCount;
     setPrependedCount(newPrependedCount);
     setMessages(newMessages);
     return newPrependedCount;
