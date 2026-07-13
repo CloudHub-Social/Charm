@@ -273,6 +273,19 @@ pub async fn send_attachment(
     txn_id: String,
 ) -> Result<(), String> {
     let operation_id = ipc_operation_id(&request);
+    // Continues a trace started in the webview (see `observability_trace`'s
+    // doc comment) — `None` when the frontend build predates this header or
+    // had no active span at call time, matching `operation_id`'s own
+    // "absent means off" shape just above.
+    let trace_transaction = crate::observability_trace::continue_ipc_trace(
+        request.headers(),
+        "send_attachment",
+        "tauri.ipc",
+    )
+    .map(sentry::start_transaction);
+    if let Some(transaction) = &trace_transaction {
+        sentry::configure_scope(|scope| scope.set_span(Some(transaction.clone().into())));
+    }
     let started_at = Instant::now();
     let mut breadcrumb_total_bytes = None;
     let mut breadcrumb_mime = None;
@@ -397,7 +410,7 @@ pub async fn send_attachment(
 
     let duration_ms = started_at.elapsed().as_millis();
     let tracing_duration_ms = u64::try_from(duration_ms).unwrap_or(u64::MAX);
-    match result {
+    let outcome = match result {
         Ok(_) => {
             add_attachment_ipc_breadcrumb(
                 sentry::Level::Info,
@@ -436,7 +449,19 @@ pub async fn send_attachment(
             );
             Err(error)
         }
+    };
+
+    if let Some(transaction) = trace_transaction {
+        transaction.set_status(if outcome.is_ok() {
+            sentry::protocol::SpanStatus::Ok
+        } else {
+            sentry::protocol::SpanStatus::UnknownError
+        });
+        transaction.finish();
+        sentry::configure_scope(|scope| scope.set_span(None));
     }
+
+    outcome
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`

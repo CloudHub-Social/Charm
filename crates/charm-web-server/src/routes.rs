@@ -270,6 +270,18 @@ pub fn router(state: AppState) -> Router {
         // -- live events --
         .route("/api/ws", get(ws_handler))
         .layer(axum::middleware::from_fn(record_request_metrics))
+        // Continues a Sentry trace from the web frontend's `sentry-trace`/
+        // `baggage` headers (see `src/observability/instrument.ts`'s
+        // `tracePropagationTargets`) into a transaction spanning this
+        // request — the HTTP-transport counterpart to
+        // `observability_trace::continue_ipc_trace` on the desktop/Tauri
+        // side. `axum` applies `.layer()` calls in the *opposite* order
+        // `tower::ServiceBuilder` would (confirmed by `sentry-tower`'s own
+        // docs), so `SentryHttpLayer` must come before `NewSentryLayer`
+        // here, not after — the wrong order silently leaks memory instead
+        // of failing loudly.
+        .layer(sentry_tower::SentryHttpLayer::new().enable_transaction())
+        .layer(sentry_tower::NewSentryLayer::<axum::extract::Request>::new_from_top())
         .layer(cors_layer())
         .with_state(state)
 }

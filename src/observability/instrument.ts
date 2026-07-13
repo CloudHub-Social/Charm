@@ -65,6 +65,30 @@ function sampleRate(): number {
   return environment() === "production" ? 0.5 : 1.0;
 }
 
+/**
+ * Origins the browser SDK is allowed to attach `sentry-trace`/`baggage`
+ * headers to (`browserTracingIntegration`'s outbound `fetch` instrumentation
+ * checks this list before injecting anything, so an unmatched origin never
+ * gets trace headers at all). Always includes `charm-web-server`'s real API
+ * origin — `VITE_CHARM_WEB_API_BASE_URL`, the same env var
+ * `lib/matrixTransport.ts`'s `apiBase()` reads — so a web-build trace
+ * actually continues into the backend it's deployed against, not just
+ * localhost. When that env var is unset, the web build calls relative paths
+ * against its own origin (`matrixTransport.ts`'s `apiBase()` falls back to
+ * `""`), so `window.location.origin` is included too. `localhost` stays for
+ * local dev regardless of either.
+ */
+function tracePropagationTargets(): (string | RegExp)[] {
+  const targets: (string | RegExp)[] = ["localhost", /^https?:\/\/localhost(?::\d+)?\//];
+  const apiBase = import.meta.env.VITE_CHARM_WEB_API_BASE_URL;
+  if (apiBase) {
+    targets.push(apiBase);
+  } else if (typeof window !== "undefined") {
+    targets.push(window.location.origin);
+  }
+  return targets;
+}
+
 function integrations(settings: ObservabilitySettings): SentryIntegration[] {
   const enabledIntegrations: SentryIntegration[] = [Sentry.browserTracingIntegration()];
   if (settings.replayEnabled) {
@@ -128,7 +152,7 @@ export function initializeSentry(settings: ObservabilitySettings): boolean {
     release: release(),
     environment: environment(),
     tracesSampleRate: rate,
-    tracePropagationTargets: ["localhost", /^https?:\/\/localhost(?::\d+)?\//],
+    tracePropagationTargets: tracePropagationTargets(),
     replaysSessionSampleRate: settings.replayEnabled ? rate : 0,
     replaysOnErrorSampleRate: settings.replayEnabled ? 1.0 : 0,
     profilesSampleRate: settings.profilingEnabled ? rate : 0,

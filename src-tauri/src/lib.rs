@@ -7,6 +7,7 @@
 
 pub mod matrix;
 pub mod observability_scrub;
+pub mod observability_trace;
 pub mod push;
 
 use std::borrow::Cow;

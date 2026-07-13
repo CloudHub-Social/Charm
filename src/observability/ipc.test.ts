@@ -7,6 +7,7 @@ vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
   captureException: vi.fn(),
   getClient: vi.fn(),
+  getTraceData: vi.fn(() => ({})),
   metrics: {
     count: vi.fn(),
     gauge: vi.fn(),
@@ -99,6 +100,28 @@ describe("IPC observability", () => {
           },
         }),
       }),
+    );
+  });
+
+  it("merges Sentry.getTraceData()'s sentry-trace/baggage into the IPC headers", async () => {
+    vi.mocked(Sentry.getTraceData).mockReturnValueOnce({
+      "sentry-trace": "12345678901234567890123456789012-1234567890123456-1",
+      baggage: "sentry-trace_id=12345678901234567890123456789012",
+    });
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(undefined);
+
+    await invoke("send_typing", { roomId: "!room:example.org" });
+
+    expect(tauriInvoke).toHaveBeenCalledWith(
+      "send_typing",
+      { roomId: "!room:example.org" },
+      {
+        headers: {
+          [IPC_OPERATION_ID_HEADER]: expect.stringMatching(/^ipc-/),
+          "sentry-trace": "12345678901234567890123456789012-1234567890123456-1",
+          baggage: "sentry-trace_id=12345678901234567890123456789012",
+        },
+      },
     );
   });
 
