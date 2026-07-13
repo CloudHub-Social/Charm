@@ -71,6 +71,9 @@ let uploadProgressCallback:
 // "jump to present" pill's own state machine.
 let virtuosoStartReached: (() => void) | undefined;
 let virtuosoAtBottomStateChange: ((atBottom: boolean) => void) | undefined;
+let virtuosoComputeItemKey:
+  | ((index: number, item: RoomMessageSummary, context: unknown) => string | number)
+  | undefined;
 const virtuosoScrollToIndexMock = vi.fn();
 
 vi.mock("react-virtuoso", () => ({
@@ -82,12 +85,18 @@ vi.mock("react-virtuoso", () => ({
       atBottomStateChange?: (atBottom: boolean) => void;
       context?: unknown;
       components?: { Header?: (props: { context?: unknown }) => React.ReactNode };
+      computeItemKey?: (
+        index: number,
+        item: RoomMessageSummary,
+        context: unknown,
+      ) => string | number;
       itemContent: (index: number, item: RoomMessageSummary, context: unknown) => React.ReactNode;
     },
     ref,
   ) {
     virtuosoStartReached = props.startReached;
     virtuosoAtBottomStateChange = props.atBottomStateChange;
+    virtuosoComputeItemKey = props.computeItemKey;
     useImperativeHandle(ref, () => ({
       scrollToIndex: (location: unknown) => virtuosoScrollToIndexMock(location),
     }));
@@ -96,9 +105,15 @@ vi.mock("react-virtuoso", () => ({
     return (
       <div data-testid="fake-virtuoso" data-first-item-index={base}>
         {Header ? <Header context={props.context} /> : null}
-        {props.data.map((item, i) => (
-          <div key={messageRowKey(item)}>{props.itemContent(base + i, item, props.context)}</div>
-        ))}
+        {props.data.map((item, i) => {
+          // Uses the real `computeItemKey` when ChatShell provides one, same
+          // as a real Virtuoso would, rather than always keying by identity
+          // regardless of what was actually passed — a test asserting on
+          // `computeItemKey`'s own behavior (see "keeps stable virtualized
+          // row keys...") needs the mock to actually route through it.
+          const key = props.computeItemKey?.(base + i, item, props.context) ?? messageRowKey(item);
+          return <div key={String(key)}>{props.itemContent(base + i, item, props.context)}</div>;
+        })}
       </div>
     );
   }),
@@ -936,6 +951,41 @@ describe("ChatShell", () => {
     expect(getTimelinePage).not.toHaveBeenCalled();
   });
 
+  it("auto-paginates when the newest page has zero renderable messages but more history remains", async () => {
+    // Regression test: some Matrix timeline items (state events, polls,
+    // etc.) are filtered out of `RoomMessageSummary` entirely — a room whose
+    // *newest* page happens to be all such items would return `messages: []`
+    // with a non-null `next_cursor`. Virtuoso only mounts when
+    // `messages.length > 0`, so its `startReached` sentinel would never
+    // exist to trigger the load the normal way, permanently stranding the
+    // user on "No messages yet" despite real history being available.
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: "more" });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "older text",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    await screen.findByText("older text");
+    expect(getTimelinePage).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
+  });
+
+  it("shows 'No messages yet' once an empty page's history is confirmed exhausted", async () => {
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: null });
+    renderChatShell();
+
+    await screen.findByText("No messages yet");
+    expect(getTimelinePage).toHaveBeenCalledTimes(1);
+  });
+
   it("does not mark the room read while room settings covers the chat, but does once it closes", async () => {
     const store = createStore();
     store.set(roomSettingsAtom, { roomId: room.room_id, section: "general" });
@@ -1717,15 +1767,21 @@ describe("ChatShell", () => {
     expect(screen.queryByText("@me:localhost")).not.toBeInTheDocument();
   });
 
-  it("clicking a reply preview scrolls the virtualizer to the replied-to message's absolute index", async () => {
+  it("clicking a reply preview scrolls the virtualizer to the replied-to message's plain array index", async () => {
     // Regression test: the reply-preview "jump to the replied-to message"
     // click used to be a plain `document.getElementById(...).scrollIntoView`
     // — that only ever worked because every message was permanently mounted
     // in the old flat `.map()`. Under Virtuoso, a loaded-but-offscreen
     // message has no DOM node to find, so ChatShell now looks up the
-    // target's position in `messages` and calls `scrollToIndex` directly,
-    // using the *absolute* index (`firstItemIndex + arrayIndex`), same as
-    // the jump-to-present pill's fix for the same class of bug.
+    // target's position in `messages` and calls `scrollToIndex` directly.
+    // Uses the *plain* 0-based array index, not `firstItemIndex + index` —
+    // unlike the numbering `itemContent`/`computeItemKey` receive,
+    // `scrollToIndex`'s numeric `index` is clamped against `data.length`
+    // directly; an earlier version passed the `firstItemIndex`-offset value
+    // here (matching the reasoning that led to the jump-to-present pill's
+    // "LAST" fix), which is a huge, always-out-of-range number that
+    // Virtuoso's own clamping silently resolved to the *last* item — every
+    // reply jump landed on the newest message instead of the replied-to one.
     getTimelinePage.mockResolvedValue({
       messages: [
         summary({ event_id: "$original", sender: "@me:localhost", body: "the original" }),
@@ -1745,14 +1801,11 @@ describe("ChatShell", () => {
     });
     renderChatShell();
     await screen.findByText("hi back");
-    const initialFirstItemIndex = Number(
-      screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"),
-    );
 
     fireEvent.click(screen.getByRole("button", { name: /the original/ }));
 
     expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
-      expect.objectContaining({ index: initialFirstItemIndex, align: "center" }),
+      expect.objectContaining({ index: 0, align: "center" }),
     );
   });
 
@@ -1780,6 +1833,51 @@ describe("ChatShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /long gone/ }));
 
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("keys virtualized rows by message identity, not position", async () => {
+    // Regression test: without `computeItemKey`, Virtuoso keys rendered rows
+    // by their current index. A full `timeline:update` snapshot can remove
+    // an item from the *middle* of `messages` (e.g. an `UnableToDecrypt`
+    // placeholder resolves into a msgtype `RoomMessageSummary` filters out
+    // entirely), shifting every later message's index by one — index-keyed
+    // rows would then have every later message inherit the previous row's
+    // React state and Virtuoso's measurement cache instead of getting a
+    // fresh mount. `computeItemKey` must return the same identity
+    // (`messageRowKey`) `ChatShell` already uses elsewhere for this exact
+    // purpose (the entrance-animation seen-set, the fake Virtuoso's own
+    // React keys in this test file).
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+
+    expect(virtuosoComputeItemKey).toBeDefined();
+    expect(
+      virtuosoComputeItemKey?.(
+        0,
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first" }),
+        undefined,
+      ),
+    ).toBe("$a");
+    // Own message identity is keyed by its (still-local) transaction id, not
+    // its eventual event id — same as `messageRowKey` everywhere else.
+    expect(
+      virtuosoComputeItemKey?.(
+        0,
+        summary({
+          event_id: "$b",
+          sender: "@me:localhost",
+          body: "pending",
+          transaction_id: "txn-1",
+        }),
+        undefined,
+      ),
+    ).toBe("txn-1");
   });
 
   it("keeps relation actions disabled for a sent message that still has a transaction-id echo", async () => {

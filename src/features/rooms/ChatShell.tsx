@@ -153,10 +153,24 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     messages,
     loading,
     loadingMore,
+    hasMore,
     firstItemIndex,
     loadMoreHistory,
     handleAtBottomStateChange,
   } = useChatTimeline(room, roomSettingsOpen);
+  // Auto-paginates when the newest page comes back with zero *renderable*
+  // messages but more history to page back through — some Matrix timeline
+  // items (state events, polls, etc.) are filtered out of
+  // `RoomMessageSummary` entirely, so a room whose latest page is all such
+  // items would otherwise render "No messages yet" with Virtuoso never
+  // mounted at all (gated on `messages.length > 0` below), meaning its
+  // `startReached` sentinel never exists to trigger the load the normal way.
+  useEffect(() => {
+    if (!loading && messages.length === 0 && hasMore && !loadingMore) {
+      loadMoreHistory();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
+  }, [loading, messages.length, hasMore, loadingMore]);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   // Mirrors Virtuoso's `atBottomStateChange` — drives the "jump to present"
   // pill's visibility (Spec 26 Phase 2). Starts `true` since a freshly
@@ -185,12 +199,14 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (bottom) setNewMessageCount(0);
   }
   function handleJumpToPresent() {
-    // `"LAST"` (not `messages.length - 1`): Virtuoso's `scrollToIndex` takes
-    // an *absolute* index — the same numbering `firstItemIndex + arrayIndex`
-    // that `itemContent` receives — once `firstItemIndex` is in play, so a
-    // plain array index scrolls to the wrong (and, after enough backward
-    // pagination, wildly wrong) row. `"LAST"` is Virtuoso's own sentinel for
-    // "the actual last data item," correct regardless of `firstItemIndex`.
+    // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
+    // own sentinel for "the actual last data item," regardless of
+    // `firstItemIndex` — reads slightly clearer than the plain arithmetic and
+    // needs no `messages` dependency to stay correct. (`scrollToIndex`'s
+    // numeric `index` is a plain 0-based position into `data`, clamped
+    // against its length — *not* offset by `firstItemIndex`, unlike the
+    // numbering `itemContent`/`computeItemKey` receive; see
+    // `handleJumpToMessage`'s comment for the bug that distinction caused.)
     virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
     // Same reconciliation path as Virtuoso's own `atBottomStateChange` (mark-
     // as-read, pill reset) rather than only updating local `atBottom` state
@@ -209,11 +225,21 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // (or is no longer) in the currently-loaded array — e.g. it's further back
   // than backward pagination has reached, same as the old behavior silently
   // doing nothing for a message that was never in the DOM to begin with.
+  //
+  // `scrollToIndex`'s numeric `index` is a plain 0-based position into the
+  // current `data` array — clamped against `data.length`, not offset by
+  // `firstItemIndex` — despite `itemContent`/`computeItemKey` receiving that
+  // `firstItemIndex`-shifted "absolute" numbering for their own (unrelated)
+  // purpose. Passing `firstItemIndex + index` here (as an earlier version
+  // did, matching the reasoning for `"LAST"` above) is a huge, always-out-
+  // of-range number that Virtuoso's own clamping silently resolves to the
+  // *last* item — every reply jump before this fix landed on the newest
+  // message instead of the replied-to one.
   function handleJumpToMessage(eventId: string) {
     const index = messages.findIndex((m) => m.event_id === eventId);
     if (index < 0) return;
     virtuosoRef.current?.scrollToIndex({
-      index: firstItemIndex + index,
+      index,
       align: "center",
       behavior: "smooth",
     });
@@ -546,8 +572,16 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {loading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
-        {!loading && messages.length === 0 && (
+        {/* While `messages` is empty but `hasMore` is true, older pages are
+            being auto-fetched (see the effect above) looking for a
+            renderable message — keep showing the loading state rather than
+            "No messages yet", which would otherwise flash misleadingly for a
+            room whose *newest* page happened to be entirely unsupported
+            item types. */}
+        {(loading || (messages.length === 0 && hasMore)) && (
+          <p className="p-4 text-sm text-muted-foreground">Loading…</p>
+        )}
+        {!loading && messages.length === 0 && !hasMore && (
           <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
         )}
         {!loading && messages.length > 0 && (
@@ -569,6 +603,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             atBottomStateChange={handleVirtuosoAtBottomStateChange}
             context={{ loadingMore }}
             components={{ Header: LoadingOlderHeader }}
+            // Without this, Virtuoso keys rendered rows by their current
+            // position, not identity. A full `timeline:update` snapshot can
+            // remove an item from the *middle* of `messages` (not just
+            // append/prepend) — e.g. an `UnableToDecrypt` placeholder
+            // resolving into a msgtype `RoomMessageSummary` filters out
+            // entirely — which shifts every later message's index by one.
+            // Index-keyed rows would then have every later message inherit
+            // the previous row's React state and Virtuoso's per-row
+            // measurement cache: open action menus, measured heights, and
+            // row-local UI state could all end up attached to the wrong
+            // message.
+            computeItemKey={(_index, message) => messageRowKey(message)}
             itemContent={(index, message) => {
               const i = index - firstItemIndex;
               const own = message.sender === currentUserId;

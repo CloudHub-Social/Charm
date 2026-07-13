@@ -24,6 +24,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
+  // Mirrors `nextCursorRef.current !== null` as reactive state — `ChatShell`
+  // needs this to auto-trigger `loadMoreHistory` when the newest page comes
+  // back with zero *renderable* messages (some Matrix timeline items —
+  // state events, polls, etc. — are filtered out of `RoomMessageSummary`
+  // entirely) but more history to page back through: with `messages` empty,
+  // Virtuoso never mounts at all, so there's no `startReached` sentinel to
+  // trigger that load the normal way.
+  const [hasMore, setHasMore] = useState(false);
   const lastMarkedReadRoomId = useRef<string | null>(null);
   const lastMarkedReadEventId = useRef<string | null>(null);
   // Mirrors Virtuoso's own `atBottomStateChange` callback — the single
@@ -100,6 +108,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     nextCursorRef.current = null;
     loadingMoreRef.current = false;
     setLoadingMore(false);
+    setHasMore(false);
     setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
     // A fresh room's first snapshot is never "prepended history" relative to
     // anything — reset so `applyMessages`' first call for this room doesn't
@@ -121,6 +130,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         if (cancelled) return;
         applyMessages(page.messages);
         nextCursorRef.current = page.next_cursor;
+        setHasMore(page.next_cursor !== null);
       })
       .catch(logAndIgnore)
       .finally(() => {
@@ -236,6 +246,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // Don't apply this response's messages or index shift in that case.
       if (visitGenerationRef.current !== generation) return;
       nextCursorRef.current = page.next_cursor;
+      setHasMore(page.next_cursor !== null);
       applyMessages(page.messages);
     } catch (err) {
       logAndIgnore(err);
@@ -251,6 +262,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     messages,
     loading,
     loadingMore,
+    hasMore,
     firstItemIndex,
     loadMoreHistory,
     handleAtBottomStateChange,
