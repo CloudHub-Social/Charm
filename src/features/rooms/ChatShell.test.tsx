@@ -428,7 +428,7 @@ describe("ChatShell", () => {
     fireEvent.click(pill);
 
     expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 1, align: "end" }),
+      expect.objectContaining({ index: "LAST", align: "end" }),
     );
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
@@ -508,6 +508,137 @@ describe("ChatShell", () => {
     // A newly-opened room is never scrolled away from bottom, regardless of
     // the previous room's state — no pill, even if a live update arrives.
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
+  it("clears an already-visible jump-to-present pill immediately when switching rooms, before room B's own atBottomStateChange fires", async () => {
+    // Regression test: `atBottom`/`newMessageCount` live in `ChatShell`, not
+    // in `useChatTimeline` or on the (per-room-remounted) Virtuoso instance,
+    // so switching rooms alone doesn't reset them for free — without an
+    // explicit reset, room A's stale pill would remain visible over room B's
+    // first render, before B's Virtuoso has had a chance to report its own
+    // `atBottomStateChange`.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "room A msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room A msg");
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$a",
+            sender: "@alice:localhost",
+            body: "room A msg",
+            timestamp_ms: 1,
+          }),
+          summary({
+            event_id: "$new",
+            sender: "@alice:localhost",
+            body: "room A new",
+            timestamp_ms: 2,
+          }),
+        ],
+      });
+    });
+    await screen.findByRole("button", { name: "1 new message" });
+
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$b",
+          sender: "@alice:localhost",
+          body: "room B msg",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    await screen.findByText("room B msg");
+    expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
+  it("does not show the pill for a message that arrived while at bottom, just because the user later scrolls away with nothing new arriving", async () => {
+    // Regression test: `newMessageKeys`'s `useMemo` returns the same
+    // memoized Set across renders where messages/loading/loadingMore/
+    // activeRoomId haven't changed. An earlier version's pill-counting
+    // effect depended on `[newMessageKeys, atBottom]` directly, so merely
+    // scrolling away from bottom (with no new message) re-ran that effect
+    // against the same stale "fresh" Set from the last real update and
+    // incorrectly counted an already-seen message toward the pill.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+
+    // A message arrives while still at bottom (the default) — no pill.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("second");
+    expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+
+    // Scrolling away afterward, with no further message arriving, must not
+    // retroactively count "second" toward the pill.
+    fireAtBottomStateChange(false);
+    expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
+  it("scrolls to the user's own newly-sent message even while scrolled away from bottom", async () => {
+    // Regression test: the jump-to-present pill deliberately excludes the
+    // user's own messages (sending is already an intentional "return to
+    // present" action), and Virtuoso's `followOutput="auto"` only follows
+    // new content while already at bottom — so without an explicit scroll on
+    // send, sending while scrolled up would leave the just-sent message
+    // offscreen with no pill and no way back to it.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    sendDraft("my own message");
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: "LAST", align: "end" }),
+    );
   });
 
   it("loads and prepends older history when Virtuoso reports the top has been reached, decrementing firstItemIndex", async () => {
@@ -648,11 +779,15 @@ describe("ChatShell", () => {
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
   });
 
-  it("does not animate history prepended by a live update racing an in-flight pagination request", async () => {
+  it("does not animate history prepended by a live update racing an in-flight pagination request, and shifts firstItemIndex exactly once", async () => {
     // Regression test: if a `timeline:update` pushes the same
     // paginate_backwards diff before `loadMoreHistory`'s own await resolves,
     // that snapshot arrives with `loadingMore` still `true`. It must still
-    // be treated as a pagination update, not a live arrival.
+    // be treated as a pagination update, not a live arrival — and
+    // `firstItemIndex` must shift by exactly one (the one message actually
+    // prepended), not twice just because both the live update and
+    // `loadMoreHistory`'s own response happen to carry the identical
+    // prepended diff (see `useChatTimeline.ts`'s `applyMessages`).
     getTimelinePage.mockResolvedValueOnce({
       messages: [
         summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
@@ -661,6 +796,9 @@ describe("ChatShell", () => {
     });
     renderChatShell();
     await screen.findByText("second");
+    const initialFirstItemIndex = Number(
+      screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"),
+    );
 
     let resolveOlderPage:
       | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
@@ -687,6 +825,10 @@ describe("ChatShell", () => {
     });
     await screen.findByText("first");
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+    // The live update alone already shifted firstItemIndex once.
+    expect(Number(screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"))).toBe(
+      initialFirstItemIndex - 1,
+    );
 
     act(() => {
       resolveOlderPage?.({
@@ -701,6 +843,10 @@ describe("ChatShell", () => {
       expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
     );
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+    // loadMoreHistory's own (identical) response must not shift it again.
+    expect(Number(screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"))).toBe(
+      initialFirstItemIndex - 1,
+    );
   });
 
   it("does not request another page once the room's history start has been reached", async () => {
@@ -1503,6 +1649,71 @@ describe("ChatShell", () => {
 
     expect(await screen.findByText("Message deleted")).toBeInTheDocument();
     expect(screen.queryByText("@me:localhost")).not.toBeInTheDocument();
+  });
+
+  it("clicking a reply preview scrolls the virtualizer to the replied-to message's absolute index", async () => {
+    // Regression test: the reply-preview "jump to the replied-to message"
+    // click used to be a plain `document.getElementById(...).scrollIntoView`
+    // — that only ever worked because every message was permanently mounted
+    // in the old flat `.map()`. Under Virtuoso, a loaded-but-offscreen
+    // message has no DOM node to find, so ChatShell now looks up the
+    // target's position in `messages` and calls `scrollToIndex` directly,
+    // using the *absolute* index (`firstItemIndex + arrayIndex`), same as
+    // the jump-to-present pill's fix for the same class of bug.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$original", sender: "@me:localhost", body: "the original" }),
+        summary({
+          event_id: "$reply",
+          sender: "@alice:localhost",
+          body: "hi back",
+          in_reply_to: {
+            event_id: "$original",
+            sender: "@me:localhost",
+            sender_display_name: null,
+            preview: "the original",
+          },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("hi back");
+    const initialFirstItemIndex = Number(
+      screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /the original/ }));
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: initialFirstItemIndex, align: "center" }),
+    );
+  });
+
+  it("does not scroll when clicking a reply preview whose target isn't in the currently-loaded messages", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$reply",
+          sender: "@alice:localhost",
+          body: "hi back",
+          in_reply_to: {
+            event_id: "$not-loaded",
+            sender: "@me:localhost",
+            sender_display_name: null,
+            preview: "long gone",
+          },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("hi back");
+    virtuosoScrollToIndexMock.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /long gone/ }));
+
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
   it("keeps relation actions disabled for a sent message that still has a transaction-id echo", async () => {

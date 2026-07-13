@@ -25,6 +25,7 @@ const baseArgs: MessageRowLayoutProps = {
   onEdit: () => {},
   onDelete: () => {},
   onCopy: () => {},
+  onJumpToMessage: () => {},
   isPending: false,
   isError: false,
   disableRelationActions: false,

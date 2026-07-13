@@ -162,6 +162,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // pill's visibility (Spec 26 Phase 2). Starts `true` since a freshly
   // opened room always renders scrolled to bottom.
   const [atBottom, setAtBottom] = useState(true);
+  // Mirrors `atBottom` for the "jump to present" pill's counting effect
+  // below, which must read its *current* value only at the moment a real
+  // `messages` update commits — not re-run its counting logic merely because
+  // `atBottom` itself changed. See that effect's comment for the bug this
+  // avoids: `newMessageKeys`'s `useMemo` returns the same memoized Set across
+  // renders where `messages`/`loading`/`loadingMore`/`activeRoomId` didn't
+  // change, so a plain `[newMessageKeys, atBottom]` dependency list would
+  // recount that same stale Set every time the user's scroll position
+  // changes, not just when new messages actually arrive.
+  const atBottomRef = useRef(atBottom);
+  atBottomRef.current = atBottom;
   // Count of not-yet-seen messages (excluding the current user's own —
   // sending a message is already an intentional "return to present" action,
   // so it shouldn't need its own pill) that arrived while scrolled away from
@@ -174,7 +185,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (bottom) setNewMessageCount(0);
   }
   function handleJumpToPresent() {
-    virtuosoRef.current?.scrollToIndex({ index: messages.length - 1, align: "end" });
+    // `"LAST"` (not `messages.length - 1`): Virtuoso's `scrollToIndex` takes
+    // an *absolute* index — the same numbering `firstItemIndex + arrayIndex`
+    // that `itemContent` receives — once `firstItemIndex` is in play, so a
+    // plain array index scrolls to the wrong (and, after enough backward
+    // pagination, wildly wrong) row. `"LAST"` is Virtuoso's own sentinel for
+    // "the actual last data item," correct regardless of `firstItemIndex`.
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
     // Same reconciliation path as Virtuoso's own `atBottomStateChange` (mark-
     // as-read, pill reset) rather than only updating local `atBottom` state
     // — a real Virtuoso may not synchronously report "at bottom" right after
@@ -182,6 +199,34 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // already arrived rather than waiting on that callback to catch up.
     handleVirtuosoAtBottomStateChange(true);
   }
+  // Scrolls to a loaded message by event id — the reply-preview "jump to the
+  // replied-to message" click used to be a plain
+  // `document.getElementById(...).scrollIntoView(...)`, which only ever
+  // worked because every message was permanently mounted in the old flat
+  // `.map()`. Under Virtuoso, a loaded-but-currently-offscreen message has no
+  // DOM node to find, so this instead looks up its position in `messages`
+  // and scrolls the virtualizer there directly. A no-op if the target isn't
+  // (or is no longer) in the currently-loaded array — e.g. it's further back
+  // than backward pagination has reached, same as the old behavior silently
+  // doing nothing for a message that was never in the DOM to begin with.
+  function handleJumpToMessage(eventId: string) {
+    const index = messages.findIndex((m) => m.event_id === eventId);
+    if (index < 0) return;
+    virtuosoRef.current?.scrollToIndex({
+      index: firstItemIndex + index,
+      align: "center",
+      behavior: "smooth",
+    });
+  }
+  // Jump-to-present state (Spec 26 Phase 2) lives here in `ChatShell`, not in
+  // `useChatTimeline` or on the (per-room-remounted) Virtuoso instance —
+  // switching rooms while scrolled away and mid-pill in room A must not
+  // leave A's stale `atBottom`/`newMessageCount` visible over room B's first
+  // render, before B's own `atBottomStateChange` has fired.
+  useEffect(() => {
+    setAtBottom(true);
+    setNewMessageCount(0);
+  }, [activeRoomId]);
   // Tracks which message rows have already been rendered once, keyed by
   // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
   // entrance — not every row on initial load/pagination.
@@ -267,26 +312,34 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       pendingPaginationRef.current = false;
       return;
     }
+    // "Jump to present" pill (Spec 26 Phase 2): counts `newMessageKeys` (the
+    // same genuinely-new-arrival diff the entrance animation uses, excluding
+    // the current user's own messages — sending is already an intentional
+    // "return to present" action) into `newMessageCount`, but *only inside
+    // this effect* — which fires exactly once per real `messages` update —
+    // reading `atBottomRef.current` at that exact moment, not as a
+    // dependency. An earlier version depended on `[newMessageKeys, atBottom]`
+    // directly: `newMessageKeys` is a `useMemo` that returns the *same*
+    // memoized Set across renders where `messages`/`loading`/`loadingMore`/
+    // `activeRoomId` didn't change, so merely scrolling away from bottom
+    // (changing only `atBottom`) re-ran that effect against the same stale
+    // Set and double-counted messages that had already arrived while at
+    // bottom. Gating on the ref instead of a dependency means this only ever
+    // evaluates once per actual data change, with whatever `atBottom` was
+    // true at that moment. Reset to 0 happens in
+    // `handleVirtuosoAtBottomStateChange`/`handleJumpToPresent`/the
+    // room-change effect above, not here.
+    if (!pendingPaginationRef.current && !atBottomRef.current) {
+      const ownRowKeys = new Set(
+        messages.filter((m) => m.sender === currentUserId).map(messageRowKey),
+      );
+      const incoming = [...newMessageKeys].filter((key) => !ownRowKeys.has(key)).length;
+      if (incoming > 0) setNewMessageCount((count) => count + incoming);
+    }
     if (pendingPaginationRef.current && !loadingMore) pendingPaginationRef.current = false;
     messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, loading, loadingMore, activeRoomId]);
-  // "Jump to present" pill (Spec 26 Phase 2): accumulates `newMessageKeys`
-  // (the same genuinely-new-arrival diff the entrance animation uses) while
-  // scrolled away from bottom, excluding the current user's own messages —
-  // sending a message is already an intentional "return to present" action,
-  // so it doesn't need its own pill. Reset to 0 happens in
-  // `handleVirtuosoAtBottomStateChange`/`handleJumpToPresent` once back at
-  // bottom, not here.
-  useEffect(() => {
-    if (atBottom || newMessageKeys.size === 0) return;
-    const ownRowKeys = new Set(
-      messages.filter((m) => m.sender === currentUserId).map(messageRowKey),
-    );
-    const incoming = [...newMessageKeys].filter((key) => !ownRowKeys.has(key)).length;
-    if (incoming > 0) setNewMessageCount((count) => count + incoming);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newMessageKeys, atBottom]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
@@ -385,6 +438,24 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
 
   const editingMessage = messages.find((m) => m.event_id === editingEventId) ?? null;
   const composerMode: ComposerMode = editingEventId ? "edit" : replyTarget ? "reply" : "send";
+
+  // Sending (or replying) always scrolls to the user's own new message,
+  // regardless of prior scroll position — `followOutput="auto"` alone won't
+  // do this, since Virtuoso only follows new content while already
+  // considered at bottom, and the "jump to present" pill deliberately
+  // excludes the user's own messages from its count (sending is already an
+  // intentional "return to present" action). Without this, sending while
+  // scrolled up would leave the just-sent message offscreen with no visible
+  // way back to it. Skipped for edits: saving an edit to an old message
+  // shouldn't relocate the view to it.
+  function handleComposerSubmitAndScroll(content: Parameters<typeof handleComposerSubmit>[0]) {
+    const wasEditing = composerMode === "edit";
+    handleComposerSubmit(content);
+    if (!wasEditing) {
+      virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end" });
+      handleVirtuosoAtBottomStateChange(true);
+    }
+  }
 
   async function handleAttachClick() {
     if (isWebBuild()) {
@@ -505,7 +576,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
               const readers = receiptsByEvent.get(message.event_id) ?? [];
 
               return (
-                <div className="pb-1">
+                // `flex flex-col` (not a plain block `div`): Virtuoso measures
+                // this wrapper's own box to estimate/settle row height, but
+                // `BubbleMessageRow`/`DiscordMessageRow` put their grouping
+                // spacing on the row root as a top *margin* (`mt-3`/`mt-0.5`),
+                // which a plain block parent with no padding/border lets
+                // collapse through its own top edge — Virtuoso would then
+                // under-measure the row by exactly that margin, breaking
+                // bottom-detection and prepend-anchoring math. A flex
+                // container's children never margin-collapse with it (they
+                // participate in the flex formatting context, not the block
+                // one), so this fully contains the row's true rendered height
+                // with no visual change (still a single child either way).
+                <div className="flex flex-col pb-1">
                   {isDateDividerBoundary(messages, i) && (
                     <div className="my-2 flex items-center gap-3 text-xs font-semibold text-muted-foreground">
                       {formatDateDividerLabel(message.timestamp_ms)}
@@ -550,6 +633,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                     onEdit={() => handleEdit(message.event_id)}
                     onDelete={() => handleDelete(message.event_id)}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
+                    onJumpToMessage={handleJumpToMessage}
                   />
                 </div>
               );
@@ -666,7 +750,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                 : undefined
             }
             placeholder={`Message ${displayName(room.room_id, room.name)}`}
-            onSubmit={handleComposerSubmit}
+            onSubmit={handleComposerSubmitAndScroll}
             onSlashCommand={handleSlashCommand}
             onEscape={() => {
               if (editingEventId) setEditingEventId(null);
