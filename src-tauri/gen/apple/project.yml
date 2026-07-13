@@ -64,8 +64,24 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 0.1.0
         CFBundleVersion: "0.1.0"
+        # Spec 11: lets the app receive remote (APNs) notifications,
+        # including while backgrounded, and run the Notification Service
+        # Extension that mutates content before display.
+        UIBackgroundModes:
+          - remote-notification
     entitlements:
       path: charm_iOS/charm_iOS.entitlements
+      properties:
+        # Spec 11: required for APNs registration to succeed at all;
+        # "development" until a real APNs certificate/provisioning profile
+        # exists, flip to "production" for release builds once it does.
+        aps-environment: development
+        # Spec 11: shares the SQLCipher store + keychain-derived passphrase
+        # lookup with the Notification Service Extension target. Must be
+        # mirrored on the NSE target's own entitlements once that target
+        # exists.
+        com.apple.security.application-groups:
+          - group.social.cloudhub.charm
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full
