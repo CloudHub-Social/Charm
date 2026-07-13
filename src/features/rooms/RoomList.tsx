@@ -365,7 +365,7 @@ export function RoomList({
                     className={cn(
                       "flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 text-[11px] font-bold",
                       badge.total_highlight > 0
-                        ? "bg-primary text-primary-foreground"
+                        ? "bg-primary-solid text-primary-foreground"
                         : "bg-muted text-muted-foreground",
                     )}
                     aria-label={unreadBadgeLabel(badge.total_unread, badge.total_highlight)}
