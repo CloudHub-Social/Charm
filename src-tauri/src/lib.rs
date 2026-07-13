@@ -450,6 +450,48 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     })
 }
 
+/// Enables getUserMedia and grants its camera/mic requests on WebKitGTK
+/// (Spec 13). Two separate gates, both closed by default:
+///
+/// 1. `Settings:enable-media-stream` (and `enable-webrtc`) default to
+///    `FALSE` in WebKitGTK — wry's own webview setup only turns on
+///    WebGL/WebAudio/page-cache, not these, so without enabling them here
+///    `getUserMedia` is undefined at the JS layer and the permission signal
+///    below is never even reached.
+/// 2. The `permission-request` signal itself has no default handler and no
+///    OS-level consent gate behind it (no TCC-style prompt) — left
+///    unhandled, it silently denies.
+///
+/// Tauri's own webview only ever loads this app's first-party frontend,
+/// never arbitrary web content, so granting unconditionally here matches
+/// wry's own macOS/iOS `WKUIDelegate` behavior — that also grants
+/// unconditionally at the webview layer, relying on the OS's own TCC prompt
+/// (triggered separately by AVFoundation) as the real consent gate. Linux has
+/// no equivalent OS-level camera/mic permission system for a non-sandboxed
+/// native binary, so there is no such second gate to rely on here.
+#[cfg(target_os = "linux")]
+fn linux_wire_user_media_permission(platform_webview: tauri::webview::PlatformWebview) {
+    use webkit2gtk::glib::Cast;
+    use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
+
+    let webview: webkit2gtk::WebView = platform_webview.inner();
+
+    if let Some(settings) = webview.settings() {
+        settings.set_enable_media_stream(true);
+        settings.set_enable_webrtc(true);
+    }
+
+    webview.connect_permission_request(|_webview, request| {
+        match request.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
+            Some(user_media) => {
+                user_media.allow();
+                true
+            }
+            None => false,
+        }
+    });
+}
+
 /// Builds the tray icon (with a Show/Quit menu) and, on macOS, the native app
 /// menu bar (App/Edit/Window with standard shortcuts) — Spec 10. Desktop-only:
 /// mobile has no tray and relies on the OS's own app-switcher/back gestures
@@ -610,6 +652,16 @@ pub fn run() {
             }
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
+            // Spec 13: WebKitGTK's `permission-request` signal has no default
+            // handler and, unlike macOS/Windows/Android, no OS-level consent
+            // gate behind it — left unhandled, it silently denies and
+            // getUserMedia never resolves. See `linux_wire_user_media_permission`.
+            #[cfg(target_os = "linux")]
+            if let Some(webview) = app.get_webview_window("main") {
+                if let Err(e) = webview.with_webview(linux_wire_user_media_permission) {
+                    eprintln!("failed to wire WebKitGTK user-media permission handling: {e}");
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -20,6 +20,17 @@
 	<string>0.1.0</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- Spec 13: required for in-webview getUserMedia (voice/video calling).
+	     Without these, iOS kills the app immediately (not just denies) the
+	     moment WKWebView asks AVFoundation for camera/mic access. wry's
+	     WKUIDelegate already implements
+	     webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:
+	     (iOS 15+) and auto-grants; the real OS-level consent prompt these
+	     usage strings back is shown by iOS itself, same as any native app. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Charm needs camera access for video calls.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Charm needs microphone access for voice and video calls.</string>
 	<!-- Spec 11: lets the app receive remote (APNs) notifications, including
 	     while backgrounded, and run the Notification Service Extension that
 	     mutates content before display. -->
