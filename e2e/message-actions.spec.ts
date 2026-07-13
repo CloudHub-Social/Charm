@@ -110,3 +110,34 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   await expect(page.getByText("Message deleted")).toBeVisible();
   await expect(page.getByText("replying now")).toHaveCount(0);
 });
+
+test("opening More-actions still closes another already-open Radix popover on the same row", async ({
+  page,
+}) => {
+  // Regression coverage for issue #231's review feedback on the #226 fix: an
+  // earlier version stopped the "More actions" trigger's pointerdown from
+  // propagating to fix #226 (reopening the menu was a no-op), but that also
+  // stopped the *same* event from reaching any other already-open Radix
+  // layer's outside-pointerdown listener — e.g. this row's own EmojiPicker
+  // popover, opened via "React", would no longer close when "More actions"
+  // was clicked next. The fix (deferring the DropdownMenu's own open-state
+  // update by a macrotask instead of stopping propagation) must both open
+  // the menu (not self-dismiss, #226) AND still let the pointerdown bubble
+  // far enough to dismiss the EmojiPicker popover (this issue).
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("cross-popover test");
+  await composer.press("Enter");
+  const row = page
+    .getByText("cross-popover test", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+
+  await row.getByRole("button", { name: "React", exact: true }).click();
+  await expect(page.getByRole("button", { name: "React with 👍" })).toBeVisible();
+
+  await row.getByRole("button", { name: "More actions" }).click();
+
+  // The click both opened the dropdown (not a #226 self-dismiss no-op)...
+  await expect(page.getByRole("menuitem", { name: "Edit" })).toBeVisible();
+  // ...and closed the EmojiPicker popover it interrupted.
+  await expect(page.getByRole("button", { name: "React with 👍" })).toHaveCount(0);
+});
