@@ -90,9 +90,18 @@ on:
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
+      # Required, not optional: per src/gate.mjs's readTrigger(), a blank
+      # pull_request on workflow_dispatch makes the action scan *every* open
+      # PR with marker creation enabled — including bot-authored ones this
+      # workflow otherwise bypasses (IS_BOT_PR isn't computed for
+      # workflow_dispatch at all, so the "Run Codex review gate" step's own
+      # `if:` wouldn't skip them either). That would re-open a Codex request
+      # on any previously-bypassed bot PR, unrelated to whichever PR someone
+      # meant to manually re-gate. Requiring a number here forces a scoped,
+      # single-PR run instead.
       pull_request:
-        description: Optional pull request number to gate
-        required: false
+        description: Pull request number to gate
+        required: true
         type: string
 
 permissions:
