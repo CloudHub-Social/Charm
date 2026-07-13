@@ -103,6 +103,14 @@ tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Spec 13: WebKitGTK's `permission-request` signal has no default handler and
+# no OS-level consent gate the way macOS/Windows/Android do — unhandled, it
+# denies silently and getUserMedia never resolves for camera/mic. Tauri's own
+# `PlatformWebview::inner()` already returns this exact `webkit2gtk::WebView`
+# type, so this is a direct (not vendored/transitive-only) dependency to
+# connect the signal ourselves in `lib.rs`. Version matches what tauri/wry
+# already pin, so this doesn't add a second copy of the crate to the build.
+webkit2gtk = "2.0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # reqwest's default native-tls backend pulls in openssl-sys, which can't find

@@ -1317,6 +1317,7 @@ dependencies = [
  "tracing-subscriber",
  "ts-rs",
  "url",
+ "webkit2gtk",
  "wiremock",
 ]
 
