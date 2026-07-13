@@ -280,10 +280,21 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     })
 }
 
-/// Grants camera/mic requests from WebKitGTK's `permission-request` signal
-/// (Spec 13). Tauri's own webview only ever loads this app's first-party
-/// frontend, never arbitrary web content, so granting unconditionally here
-/// matches wry's own macOS/iOS `WKUIDelegate` behavior — that also grants
+/// Enables getUserMedia and grants its camera/mic requests on WebKitGTK
+/// (Spec 13). Two separate gates, both closed by default:
+///
+/// 1. `Settings:enable-media-stream` (and `enable-webrtc`) default to
+///    `FALSE` in WebKitGTK — wry's own webview setup only turns on
+///    WebGL/WebAudio/page-cache, not these, so without enabling them here
+///    `getUserMedia` is undefined at the JS layer and the permission signal
+///    below is never even reached.
+/// 2. The `permission-request` signal itself has no default handler and no
+///    OS-level consent gate behind it (no TCC-style prompt) — left
+///    unhandled, it silently denies.
+///
+/// Tauri's own webview only ever loads this app's first-party frontend,
+/// never arbitrary web content, so granting unconditionally here matches
+/// wry's own macOS/iOS `WKUIDelegate` behavior — that also grants
 /// unconditionally at the webview layer, relying on the OS's own TCC prompt
 /// (triggered separately by AVFoundation) as the real consent gate. Linux has
 /// no equivalent OS-level camera/mic permission system for a non-sandboxed
@@ -291,9 +302,15 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
 #[cfg(target_os = "linux")]
 fn linux_wire_user_media_permission(platform_webview: tauri::webview::PlatformWebview) {
     use webkit2gtk::glib::Cast;
-    use webkit2gtk::{PermissionRequestExt, WebViewExt};
+    use webkit2gtk::{PermissionRequestExt, SettingsExt, WebViewExt};
 
     let webview: webkit2gtk::WebView = platform_webview.inner();
+
+    if let Some(settings) = webview.settings() {
+        settings.set_enable_media_stream(true);
+        settings.set_enable_webrtc(true);
+    }
+
     webview.connect_permission_request(|_webview, request| {
         match request.downcast_ref::<webkit2gtk::UserMediaPermissionRequest>() {
             Some(user_media) => {
