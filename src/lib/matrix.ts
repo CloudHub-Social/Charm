@@ -50,8 +50,67 @@ import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
+import * as Sentry from "@sentry/react";
+import type { InvokeOptions } from "@/observability/ipc";
+import { summarizeValue } from "@/observability/scrubbers";
 import { invoke, listen, type UnlistenFn } from "./matrixTransport";
 import { isWebBuild } from "./platform";
+
+function addMatrixIpcBreadcrumb(
+  level: "info" | "error",
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return;
+  Sentry.addBreadcrumb({ category: "matrix.ipc", level, message, data });
+}
+
+/**
+ * Calls a Matrix IPC command (routed through matrixTransport, so it works on
+ * both the Tauri desktop build and the web build) and adds a Matrix-aware
+ * Sentry breadcrumb with args/result/error run through `summarizeValue` —
+ * the same length-only/redacted-shape summarization `observability/ipc.ts`
+ * uses, rather than a denylist of known free-text field names, since Matrix
+ * commands keep growing new ones (captions, statuses, reasons, display
+ * names, local file paths, colonless `$eventId`s, ...) that a denylist can
+ * never fully enumerate. Passes `skipBreadcrumb: true` and
+ * `onFailureBreadcrumb` through to matrixTransport's underlying
+ * observability/ipc wrapper on the desktop build so a command doesn't get
+ * both its generic `tauri.ipc` breadcrumbs and this function's `matrix.ipc`
+ * one, and so the `matrix.ipc` failure breadcrumb is recorded before (not
+ * after) `captureOnError`'s exception capture — `captureOnError` itself is
+ * unaffected.
+ */
+export async function invokeMatrix<T>(
+  command: string,
+  args: Record<string, unknown>,
+  options?: InvokeOptions,
+): Promise<T> {
+  const result = await invoke<T>(command, args, {
+    ...options,
+    skipBreadcrumb: true,
+    onFailureBreadcrumb: (error, durationMs) => {
+      addMatrixIpcBreadcrumb("error", `${command} failed`, {
+        command,
+        durationMs,
+        args: summarizeValue(args),
+        error:
+          error instanceof Error
+            ? { name: error.name, message: summarizeValue(error.message) }
+            : summarizeValue(error),
+        status: "failure",
+      });
+    },
+  });
+  addMatrixIpcBreadcrumb("info", `${command} succeeded`, {
+    command,
+    args: summarizeValue(args),
+    result: summarizeValue(result),
+    status: "success",
+  });
+  return result;
+}
 
 /**
  * IPC types are generated from the Rust structs by ts-rs — see

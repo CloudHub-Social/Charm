@@ -597,7 +597,18 @@ export async function invoke<T>(
   options?: InvokeOptions,
 ): Promise<T> {
   if (!shouldUseWebTransport()) return tauriInvoke<T>(command, args, options);
-  return invokeWeb<T>(command, args ?? {});
+  // invokeWeb has no breadcrumb/capture logic of its own (unlike the Tauri
+  // path's observability/ipc wrapper), so options like skipBreadcrumb and
+  // captureOnError have nothing to do here — but a caller's
+  // onFailureBreadcrumb (e.g. lib/matrix.ts's invokeMatrix) still needs
+  // calling on failure, or it silently never fires on the web build.
+  const startedAt = performance.now();
+  try {
+    return await invokeWeb<T>(command, args ?? {});
+  } catch (error) {
+    options?.onFailureBreadcrumb?.(error, Math.round(performance.now() - startedAt));
+    throw error;
+  }
 }
 
 export async function listen<T>(event: string, callback: EventCallback<T>): Promise<UnlistenFn> {

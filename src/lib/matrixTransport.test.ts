@@ -560,6 +560,17 @@ describe("matrix web transport", () => {
     await expect(invoke("login", { request: {} })).rejects.toThrow("bad login");
   });
 
+  it("calls onFailureBreadcrumb on the web transport's failure path too", async () => {
+    fetchMock().mockResolvedValueOnce(new Response("bad login", { status: 401 }));
+    const onFailureBreadcrumb = vi.fn();
+
+    await expect(invoke("login", { request: {} }, { onFailureBreadcrumb })).rejects.toThrow(
+      "bad login",
+    );
+
+    expect(onFailureBreadcrumb).toHaveBeenCalledWith(expect.any(Error), expect.any(Number));
+  });
+
   it("surfaces JSON error response messages", async () => {
     fetchMock().mockResolvedValueOnce(
       new Response(JSON.stringify({ error: "bad login" }), {
