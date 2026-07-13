@@ -281,6 +281,13 @@ pub fn router(state: AppState) -> Router {
         // here, not after — the wrong order silently leaks memory instead
         // of failing loudly.
         .layer(sentry_tower::SentryHttpLayer::new().enable_transaction())
+        // Added *after* `SentryHttpLayer` above — under axum's reversed
+        // `.layer()` ordering (see that layer's comment) that makes this one
+        // "outer", running before `SentryHttpLayer` sees the request. Must
+        // stay outer: it rewrites `request.uri()` to the route template
+        // before `SentryHttpLayer` reads the raw path into its transaction's
+        // `request.url` (see `redact_request_uri_for_sentry`'s doc comment).
+        .layer(axum::middleware::from_fn(redact_request_uri_for_sentry))
         .layer(sentry_tower::NewSentryLayer::<axum::extract::Request>::new_from_top())
         .layer(cors_layer())
         .with_state(state)
@@ -319,6 +326,47 @@ async fn record_request_metrics(
         duration_ms,
     );
     response
+}
+
+/// Replaces the request's URI (path *and* query — e.g. `resolve_avatar`'s
+/// `?mxc=...` query param) with the matched route template before
+/// `SentryHttpLayer` (added downstream of this in `router()`'s `.layer()`
+/// chain, and therefore "outer"/earlier-executing than this middleware —
+/// see that layer's own comment) ever reads it. Without this, Matrix room/
+/// event/user IDs in the path reach Sentry's transaction (and, via
+/// `SentryHttpLayer`'s request-fallback event processor, any error event
+/// captured during the request) percent-encoded — `charm_lib::observability_scrub`'s
+/// `MATRIX_ID_PATTERN` only matches a literal `:`, not `%3A`, so those IDs
+/// silently bypass the scrubber `SENTRY.md` documents as unconditional.
+/// Rewriting the URI at its one source (both `SentryHttpLayer`'s transaction
+/// `request.url` and its event-fallback derive from the same
+/// `get_url_from_request` call) fixes both in one place, rather than
+/// patching each Sentry payload after the fact. Uses the same `MatchedPath`/
+/// `"unmatched"` fallback shape as `record_request_metrics` just above, for
+/// the same reason (cardinality there, PII here).
+async fn redact_request_uri_for_sentry(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let matched_path = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str());
+    *request.uri_mut() = redacted_route_uri(matched_path);
+    next.run(request).await
+}
+
+/// Pure helper behind [`redact_request_uri_for_sentry`] — a route template
+/// has no per-resource IDs to redact, so this is just a parse with a safe
+/// fallback for the pathological case of a template that somehow isn't a
+/// valid URI path (falls back to the same `"/unmatched"` this crate already
+/// treats as its no-route placeholder), kept separate from the middleware so
+/// it's unit-testable without spinning up a router.
+fn redacted_route_uri(matched_path: Option<&str>) -> axum::http::Uri {
+    matched_path
+        .unwrap_or("/unmatched")
+        .parse()
+        .unwrap_or_else(|_| axum::http::Uri::from_static("/unmatched"))
 }
 
 /// Builds the router's CORS layer from the same `CHARM_WEB_SERVER_ALLOWED_ORIGIN`
@@ -3267,6 +3315,57 @@ mod origin_allowlist_tests {
             "https://pr-**-preview.example.workers.dev",
             "https://pr-112-preview.example.workers.dev"
         ));
+    }
+}
+
+#[cfg(test)]
+mod redact_request_uri_for_sentry_tests {
+    use tower::ServiceExt;
+
+    use super::redacted_route_uri;
+    use crate::AppState;
+
+    #[test]
+    fn a_matched_route_template_has_no_room_or_event_id_left() {
+        let uri = redacted_route_uri(Some("/api/rooms/{room_id}/events/{event_id}/edit"));
+
+        assert_eq!(uri.path(), "/api/rooms/{room_id}/events/{event_id}/edit");
+        assert_eq!(uri.query(), None);
+    }
+
+    #[test]
+    fn no_matched_path_falls_back_to_the_same_unmatched_placeholder_as_metrics() {
+        assert_eq!(redacted_route_uri(None).path(), "/unmatched");
+    }
+
+    /// Regression test for the actual review finding: a request whose real
+    /// path/query carries percent-encoded Matrix identifiers (the shape
+    /// `matrixTransport.ts`'s `encodeSegment`/`query` helpers produce) must
+    /// never reach a route handler with those identifiers still attached to
+    /// `request.uri()` — this is what `SentryHttpLayer` would otherwise
+    /// read into the transaction's `request.url`.
+    #[tokio::test]
+    async fn a_real_request_with_encoded_matrix_ids_is_rewritten_to_the_route_template() {
+        let app = super::router(AppState::default());
+
+        // `/api/rooms/{room_id}` (get_room_details) requires a session, so
+        // this 401s before reaching the handler body — but `Path<String>`
+        // extraction (and thus route *matching*) happens before session
+        // resolution, so a 401 here (rather than some other rejection)
+        // already proves the request was successfully routed and matched
+        // despite this middleware's URI rewrite happening first.
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/rooms/!secretroom%3Aexample.org")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 }
 

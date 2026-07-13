@@ -261,7 +261,25 @@ Sentry's trace view instead of appearing as unlinked events:
   calls in the opposite order `tower::ServiceBuilder` would, so
   `SentryHttpLayer` is applied _before_ `NewSentryLayer` in the router's
   `.layer()` chain — reversing it silently leaks memory instead of failing
-  loudly (per `sentry-tower`'s own docs).
+  loudly (per `sentry-tower`'s own docs). `SentryHttpLayer` attaches the raw
+  request URL to its transaction (and, as a fallback, to any error event
+  captured during the request) — since Matrix room/event/user IDs in a path
+  like `/api/rooms/{room_id}/events/{event_id}/edit` are percent-encoded on
+  the wire, and `observability_scrub`'s `MATRIX_ID_PATTERN` only matches a
+  literal `:`, those IDs would otherwise reach Sentry unredacted despite
+  every other Sentry payload in this codebase going through that scrubber.
+  `routes.rs`'s `redact_request_uri_for_sentry` middleware rewrites the
+  request's URI (path and query) to the matched route template — via
+  `MatchedPath`, the same mechanism `record_request_metrics` already uses to
+  avoid per-room cardinality — before `SentryHttpLayer` ever reads it,
+  fixing both the transaction and the event fallback at their single shared
+  source rather than patching each payload after the fact. It must be
+  layered as the "outer" neighbor of `SentryHttpLayer` (added _after_ it in
+  the `.layer()` chain, given the reversed ordering above) so the rewrite
+  happens before `SentryHttpLayer`'s `Service::call` reads the URI —
+  `axum`'s `Path`/`Query` extractors are unaffected by this rewrite since
+  they read from a separately pre-captured `UrlParams` extension, not from
+  `request.uri()` itself, confirmed against `axum`'s own extractor source.
 - **Web/desktop frontend → Tauri Rust backend (IPC, not HTTP).** Tauri's
   invoke channel isn't `fetch`/`XHR`, so the browser SDK can't
   auto-instrument it. `src/observability/ipc.ts`'s `invoke()` — the single
