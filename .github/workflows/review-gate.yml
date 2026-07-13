@@ -145,9 +145,13 @@ jobs:
           # produce a signal this check can actually verify.
           # Nudge once via a marker-tagged comment rather than requiring a
           # human to notice the timeout and comment manually — but only once
-          # per PR: re-running this check (or a later unrelated push) must
-          # not re-nudge and spam the thread every time it's still slow.
-          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge -->"
+          # *per head commit*, not once ever for the whole PR: the marker
+          # embeds HEAD_SHA, so re-running this check (or polling again) for
+          # the *same* stuck commit doesn't spam a repeat nudge, but a later
+          # push that times out for a different reason still gets its own —
+          # a PR-lifetime marker would silently stop nudging after the first
+          # stuck push and stall with no further recovery action.
+          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for $HEAD_SHA -->"
           codex_nudge_already_posted() {
             gh api --paginate "repos/$REPO/issues/$PR/comments" \
               --jq '.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'")) | .id' \
@@ -155,12 +159,12 @@ jobs:
           }
           nudge_codex_once() {
             if codex_nudge_already_posted; then
-              echo "Codex nudge already posted on this PR; not posting again."
+              echo "Codex nudge already posted for $HEAD_SHA; not posting again."
               return
             fi
             gh api "repos/$REPO/issues/$PR/comments" \
               -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER"
-            echo "Posted a @codex review nudge comment."
+            echo "Posted a @codex review nudge comment for $HEAD_SHA."
           }
 
           while :; do
