@@ -86,27 +86,48 @@ struct SentryGuard {
 #[allow(dead_code)]
 struct TracingFileGuard(tracing_appender::non_blocking::WorkerGuard);
 
-/// Redacts each formatted line the same way `scrub_log` already does for
+/// Redacts each formatted event the same way `scrub_log` already does for
 /// Sentry logs before writing it to the persistent file. Unlike the Sentry
 /// path, this file layer is unconditional (not gated on the user's logs
 /// consent — see `install_tracing`'s doc comment), so without this a native
 /// error containing a Matrix ID, homeserver URL, or MXC URI (e.g. the
 /// `%error` fields logged in `matrix::sync`/`matrix::verification`) would
-/// land in cleartext on disk regardless of consent. `tracing_subscriber::fmt`
-/// writes one already-formatted buffer per event through the `Write` impl,
-/// so scrubbing at that boundary covers the timestamp/level/target/message
-/// as a whole rather than needing a custom `FormatEvent`.
-struct ScrubbingWriter<W>(W);
+/// land in cleartext on disk regardless of consent.
+///
+/// Buffers every `write()` call instead of scrubbing each one independently:
+/// `tracing_subscriber::fmt` can — and does, for a structured field like
+/// `access_token = %token` — split a single event's formatted output across
+/// several `write()` calls (field name, `=`, value written separately), so
+/// scrubbing per-call could see e.g. `access_token=` and the token itself as
+/// two unrelated chunks and redact neither. `MakeWriter::make_writer` is
+/// called once per event (a fresh `Self::Writer` each time — see
+/// `ScrubbingMakeWriter` below), so accumulating everything written through
+/// one instance and scrubbing it as a whole on `Drop` covers exactly one
+/// event's complete output, however many `write()` calls it took to produce.
+struct ScrubbingWriter<W: std::io::Write> {
+    inner: W,
+    buffer: Vec<u8>,
+}
 
 impl<W: std::io::Write> std::io::Write for ScrubbingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let scrubbed = observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(buf));
-        self.0.write_all(scrubbed.as_bytes())?;
+        self.buffer.extend_from_slice(buf);
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        self.inner.flush()
+    }
+}
+
+impl<W: std::io::Write> Drop for ScrubbingWriter<W> {
+    fn drop(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let scrubbed =
+            observability_scrub::scrub_sensitive_text(&String::from_utf8_lossy(&self.buffer));
+        let _ = self.inner.write_all(scrubbed.as_bytes());
     }
 }
 
@@ -123,7 +144,10 @@ where
     type Writer = ScrubbingWriter<M::Writer>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        ScrubbingWriter(self.0.make_writer())
+        ScrubbingWriter {
+            inner: self.0.make_writer(),
+            buffer: Vec::new(),
+        }
     }
 }
 
@@ -483,22 +507,23 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let builder = tauri::Builder::default();
 
-    // Registered first and independent of Sentry consent — this is the one
-    // thing that lets a launch problem (e.g. the app hanging/blanking before
-    // any UI or Sentry state exists) leave a trail on disk at all. Writes to
-    // the platform's standard app log dir (macOS: `~/Library/Logs/<bundle
-    // id>/`) in addition to stdout/the webview console, so `tail -f` on that
-    // directory works even for a release build launched from Finder with no
-    // attached terminal. See the 2026-07-13 blank-page-on-launch
-    // investigation — until this landed there was no persisted log for that
-    // report at all.
+    // Registered first and independent of Sentry consent — mirrors `log::*!`
+    // calls to stdout and the webview console. Deliberately omits
+    // `TargetKind::LogDir`: that target's file open happens inside this
+    // plugin's own `.setup()` and propagates any I/O error (permissions, a
+    // root-owned leftover file, a full disk) through `?` — since `run()`
+    // below `.expect()`s the overall `.run(...)` result, an unopenable log
+    // file there would panic and abort the whole app before any window
+    // renders, exactly the blank-page/no-page class of bug this file's
+    // `install_tracing` exists to fix. Persistent file logging instead comes
+    // entirely from `install_tracing`'s own tracing-appender layer, which
+    // already treats an unopenable file as "disable file logging for this
+    // run" rather than fatal (see its doc comment). See the 2026-07-13
+    // blank-page-on-launch investigation.
     let builder = builder.plugin(
         tauri_plugin_log::Builder::new()
             .targets([
                 tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
-                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
-                    file_name: None,
-                }),
                 tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
             ])
             .level(if cfg!(debug_assertions) {
@@ -756,14 +781,45 @@ mod observability_tests {
         use std::io::Write;
 
         let mut buffer = Vec::new();
-        let mut writer = ScrubbingWriter(&mut buffer);
-        writer
-            .write_all(b"failed for @alice:example.org access_token=secret")
-            .expect("write to an in-memory Vec never fails");
+        {
+            let mut writer = ScrubbingWriter {
+                inner: &mut buffer,
+                buffer: Vec::new(),
+            };
+            writer
+                .write_all(b"failed for @alice:example.org access_token=secret")
+                .expect("write to an in-memory Vec never fails");
+            // Drop flushes the buffered-and-scrubbed output to `inner`.
+        }
 
         assert_eq!(
             String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
             "failed for @[redacted]:[redacted] access_token=[redacted]"
+        );
+    }
+
+    #[test]
+    fn scrubbing_writer_redacts_a_secret_split_across_multiple_write_calls() {
+        // The exact failure mode Codex flagged on #227: tracing_subscriber's
+        // fmt formatter can write a structured field's name, separator, and
+        // value as separate `write()` calls — scrubbing each independently
+        // would see "access_token=" and "secret" as unrelated chunks and
+        // redact neither.
+        use std::io::Write;
+
+        let mut buffer = Vec::new();
+        {
+            let mut writer = ScrubbingWriter {
+                inner: &mut buffer,
+                buffer: Vec::new(),
+            };
+            writer.write_all(b"failed: access_token=").expect("write 1");
+            writer.write_all(b"super-secret-value").expect("write 2");
+        }
+
+        assert_eq!(
+            String::from_utf8(buffer).expect("scrubbed output is valid UTF-8"),
+            "failed: access_token=[redacted]"
         );
     }
 
