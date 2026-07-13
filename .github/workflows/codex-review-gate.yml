@@ -34,33 +34,39 @@ name: Codex review gate
 # ruleset's required status checks — requiring it before the workflow exists
 # on the base branch makes the very first PR fail with nothing to satisfy it.
 #
-# Three cases never reach the action itself, since it has no code path for
-# any of them (confirmed by reading its src/gate.mjs: an unrecognized event
-# name just returns a silent "skip") — meaning nothing would ever write the
+# Two cases never reach the action itself, since it has no code path for
+# either (confirmed by reading its src/gate.mjs: an unrecognized event name
+# just returns a silent "skip") — meaning nothing would ever write the
 # `codex/review-gate` status for that head at all, leaving it stuck
 # "Expected" forever once the check is required:
 #   - `merge_group`: the merge queue's synthetic commit is never something
 #     Codex reviews (it reviews the PR head), but branch protection still
 #     needs a status posted for it once `codex/review-gate` is required —
 #     same reasoning as review-gate.yml's own merge_group no-op pass.
-#   - Any bot-authored PR (Dependabot, Renovate, etc.): Codex doesn't review
-#     those (matches review-gate.yml's `user.type != 'Bot'` skip), so
-#     nothing else will ever post a status for that head either. Detected
+#   - A non-Dependabot bot-authored PR (Renovate, etc.): Codex doesn't
+#     review those (matches review-gate.yml's `user.type != 'Bot'` skip),
+#     so nothing else would post a status for that head either. Detected
 #     per-event-shape below (IS_BOT_PR), not just for pull_request_target —
 #     a stray issue_comment/review/review_comment event on a bot PR needs
 #     the same bypass, or it would fall through to the action with the
 #     wrong (often empty) head-sha.
-#   - Dependabot specifically has one more wrinkle: GitHub gives a hard
-#     read-only GITHUB_TOKEN whenever `github.actor == 'dependabot[bot]'`
-#     (i.e. Dependabot's own opened/synchronize events), regardless of the
-#     `permissions:` block above — no workflow permission can override this
-#     platform restriction. The bypass step below falls back to a separately
-#     created, narrowly-scoped PAT (`secrets.DEPENDABOT_STATUS_TOKEN` —
-#     Commit statuses: write only, scoped to this repo) for exactly that
-#     case; without that secret set, those specific runs log a warning and
-#     leave the status unwritten rather than failing the job.
-# Both merge_group and bot-authored PRs get a direct, trivial "success"
-# status written below instead of invoking the action.
+# Both get a direct, trivial "success" status written below instead of
+# invoking the action, resolved via a live `gh api pulls/<n>` lookup rather
+# than `github.event.pull_request.head.sha` — that field doesn't exist on an
+# issue_comment payload (only `.issue`), which would otherwise crash the
+# `gh api statuses/<empty>` call once IS_BOT_PR started covering that event
+# shape too.
+#
+# Dependabot PRs are deliberately NOT handled by any of the above: GitHub
+# gives Dependabot-actor-triggered runs (github.actor == 'dependabot[bot]')
+# a read-only GITHUB_TOKEN *and* makes repo secrets entirely unavailable —
+# no permissions: block or fallback secret can write a status from inside
+# that run at all. Rather than something structurally impossible to satisfy,
+# Dependabot's GitHub App identity is instead added to the repository
+# ruleset's bypass_actors (bypass_mode: pull_request), so its PRs skip
+# required-status enforcement entirely, same as this repo's own admin
+# bypass. codex/review-gate (and any other required check) is intentionally
+# left unset for Dependabot PRs as a result — that's expected, not a gap.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -77,7 +83,10 @@ on:
     # backoff behavior (marker-ack-timeout-seconds, max-wait-seconds). Per its
     # own src/gate.mjs, a schedule run ignores the `pull-request` input
     # entirely and scans all open PRs itself, so leaving that input empty for
-    # this trigger (see the step below) is expected, not a bug.
+    # this trigger (see the step below) is expected, not a bug. That scan
+    # does touch Dependabot PRs too (its own recovery path deliberately
+    # bypasses its no-state skip for them) — harmless here since Dependabot
+    # no longer depends on this workflow at all (see the header comment).
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -112,8 +121,12 @@ jobs:
     # none of these have a head commit that needs a *new* status write (the
     # PR's existing codex/review-gate status, from its original
     # pull_request_target trigger, already stands). merge_group and
-    # bot-authored PRs are deliberately NOT filtered out here — see the
-    # header comment — they still need the bypass step below to run.
+    # non-Dependabot bot-authored PRs are deliberately NOT filtered out
+    # here — see the header comment — they still need the bypass step below
+    # to run. Dependabot PRs bypass the ruleset directly and never reach
+    # this workflow's normal path, but aren't specifically excluded here
+    # either — they just fall through the same as any other bot PR and get
+    # the same log-only no-op (see the bypass step).
     if: >-
       (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)))
       && (github.event_name != 'pull_request_review' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.review.user.login))
@@ -135,26 +148,35 @@ jobs:
           || (github.event_name == 'pull_request_review' && github.event.pull_request.user.type == 'Bot')
           || (github.event_name == 'pull_request_review_comment' && github.event.pull_request.user.type == 'Bot')
         }}
+      # Same idea, narrowed to Dependabot specifically by login rather than
+      # the broader `type == 'Bot'` — see the header comment for why this
+      # one skips the status write entirely instead of attempting it.
+      IS_DEPENDABOT_PR: >-
+        ${{
+          (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]')
+          || (github.event_name == 'issue_comment' && github.event.issue.user.login == 'dependabot[bot]')
+          || (github.event_name == 'pull_request_review' && github.event.pull_request.user.login == 'dependabot[bot]')
+          || (github.event_name == 'pull_request_review_comment' && github.event.pull_request.user.login == 'dependabot[bot]')
+        }}
     steps:
-      - name: Trivially pass for merge_group and bot-authored PRs (Codex reviews neither)
+      - name: Trivially pass for merge_group and non-Dependabot bot PRs (Codex reviews neither)
         if: github.event_name == 'merge_group' || env.IS_BOT_PR == 'true'
         env:
-          # See the header comment's Dependabot paragraph: falls back to the
-          # default token when the PAT secret isn't set, which is correct for
-          # merge_group and any non-Dependabot bot PR (neither is subject to
-          # the read-only-token restriction) — only an actual
-          # actor==dependabot[bot] run needs the PAT to succeed.
-          GH_TOKEN: ${{ secrets.DEPENDABOT_STATUS_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -z "${{ secrets.DEPENDABOT_STATUS_TOKEN }}" ] && [ "${{ github.actor }}" = "dependabot[bot]" ]; then
-            echo "::warning::DEPENDABOT_STATUS_TOKEN is not set, and GITHUB_TOKEN is read-only on this Dependabot-triggered run — cannot write codex/review-gate here. Create a fine-grained PAT scoped to 'Commit statuses: write' on this repo and add it as the DEPENDABOT_STATUS_TOKEN secret to fix this."
+          if [ "${{ env.IS_DEPENDABOT_PR }}" = "true" ]; then
+            echo "Dependabot PR — bypasses the ruleset directly (see repository ruleset bypass_actors); codex/review-gate is intentionally left unset here, not written."
             exit 0
           fi
           if [ "${{ github.event_name }}" = "merge_group" ]; then
             sha="${{ github.event.merge_group.head_sha }}"
           else
-            sha="${{ github.event.pull_request.head.sha }}"
+            # Resolved via a live lookup, not github.event.pull_request.head.sha:
+            # that field doesn't exist on an issue_comment payload (only
+            # `.issue` does), which IS_BOT_PR can now trigger this step for.
+            pr_number="${{ github.event.pull_request.number || github.event.issue.number }}"
+            sha=$(gh api "repos/${{ github.repository }}/pulls/$pr_number" --jq .head.sha)
           fi
           gh api "repos/${{ github.repository }}/statuses/$sha" \
             -f state=success \
