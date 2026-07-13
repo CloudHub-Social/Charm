@@ -561,12 +561,25 @@ pub fn run() {
             if let Some(sentry_guard) = init_sentry_from_settings(app) {
                 app.manage(sentry_guard);
             }
-            if let Ok(app_data_dir) = app.path().app_data_dir() {
-                let crashed = take_previous_session_crash_flag(&app_data_dir);
-                app.manage(PreviousSessionCrash(crashed));
-            } else {
-                app.manage(PreviousSessionCrash(false));
+            // Desktop-only: a review bot on PR #228 correctly pointed out
+            // that Android/iOS routinely have their process killed by the
+            // OS during normal backgrounding lifecycle management, which
+            // never reaches `RunEvent::Exit` — treating that as "crashed"
+            // would show the crash-recovery prompt on ordinary mobile
+            // launches that never actually crashed. Desktop's tray-menu
+            // Quit/window-close paths don't have this ambiguity (see the
+            // `RunEvent::Exit` comment below).
+            #[cfg(desktop)]
+            {
+                if let Ok(app_data_dir) = app.path().app_data_dir() {
+                    let crashed = take_previous_session_crash_flag(&app_data_dir);
+                    app.manage(PreviousSessionCrash(crashed));
+                } else {
+                    app.manage(PreviousSessionCrash(false));
+                }
             }
+            #[cfg(not(desktop))]
+            app.manage(PreviousSessionCrash(false));
             let handle = app.handle().clone();
             // Stashed for platform push callbacks (Android's JNI
             // `onMessage`; iOS's Notification Service Extension runs as a
@@ -731,11 +744,14 @@ pub fn run() {
             // way, so clear the marker before it happens. A crash/kill never
             // reaches this callback, which is exactly what leaves the marker
             // behind for the next launch to notice.
+            #[cfg(desktop)]
             if let tauri::RunEvent::Exit = event {
                 if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
                     mark_clean_exit(&app_data_dir);
                 }
             }
+            #[cfg(not(desktop))]
+            let _ = (app_handle, event);
         });
 }
 

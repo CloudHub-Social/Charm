@@ -143,10 +143,13 @@ jobs:
           # reuses the release id "Configure Sentry debug-file upload" above
           # already computed (SENTRY_RELEASE), so this build's frontend
           # events tag the same release the debug-file upload associates
-          # symbols with.
+          # symbols with — exported below from the real `$SENTRY_RELEASE`
+          # process env var, not via `${{ env.SENTRY_RELEASE }}` (that
+          # expression context never sees a prior step's `$GITHUB_ENV`
+          # writes, only variables set via an explicit `env:` key — a review
+          # bot on PR #228 caught this).
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
@@ -163,6 +166,7 @@ jobs:
           # timeout-minutes: 20, and a shorter per-attempt cap would kill
           # and retry legitimately-still-compiling attempts as if they'd
           # hung.
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           max_attempts=3
           per_attempt_timeout=1200 # 20 minutes
           attempt=1
@@ -264,12 +268,15 @@ jobs:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
           # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
           # release/environment env, so it's safe to set here too.
+          # VITE_SENTRY_RELEASE is exported below from `$SENTRY_RELEASE`
+          # rather than set here, for the same `env` context reason.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
-        run: pnpm tauri build
+        run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
+          pnpm tauri build
 
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
       # `cargo build` runs inside a generated Xcode "Run Script" build phase
@@ -419,12 +426,16 @@ jobs:
           # See the Linux job's Build step comment — same IPC-tunnel wiring
           # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
           # release/environment env, so it's safe to set here too.
+          # VITE_SENTRY_RELEASE is exported below from `$env:SENTRY_RELEASE`
+          # (default shell here is pwsh) rather than set here, for the same
+          # `env` context reason.
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
-        run: pnpm tauri build
+        run: |
+          $env:VITE_SENTRY_RELEASE = $env:SENTRY_RELEASE
+          pnpm tauri build
 
       - name: Resolve Windows debug-file directory
         id: windows-debug-files
@@ -543,14 +554,15 @@ jobs:
           # Reuses the release id "Configure Sentry Android upload" above
           # already computed (SENTRY_RELEASE) — see the Linux job's Build
           # step comment for why this matters (matching the debug-file/
-          # mapping upload's release tag).
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
+          # mapping upload's release tag), and for why it's exported below
+          # from `$SENTRY_RELEASE` rather than set here.
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
           VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           # Build the generated default Android ABI set so uploaded native symbols
           # match the universal release artifact.
           pnpm tauri android build --ci

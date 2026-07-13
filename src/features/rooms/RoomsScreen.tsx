@@ -33,21 +33,28 @@ import {
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
+const noopDismissCrashRecoveryPrompt = () => {};
+
 interface RoomsScreenProps {
   currentUserId: string;
   deepLinkRoomId: string | null;
   onDeepLinkConsumed: () => void;
   onLoggedOut: () => void;
   /**
-   * Whether `main.tsx`'s crash-recovery check found an unclean previous
-   * session (and Sentry is currently disabled) — passed down rather than
-   * shown at the top-level `Root` because this is the first point in the
-   * component tree where `SettingsScreen`/`useSettingsHashSync` are actually
-   * mounted. Shown any earlier (restoring/login/onboarding), the prompt's
-   * "Review crash reporting settings" button would change the URL hash with
-   * nothing listening for it yet — see PR #228 review discussion.
+   * Whether to show `main.tsx`'s crash-recovery prompt right now. Controlled
+   * from `App` (not owned as local state here) — `RoomsScreen` unmounts on
+   * logout and remounts on the next sign-in within the same app process, so
+   * state initialized from a prop here would forget a dismissal and could
+   * reappear after a logout/login cycle. `App` doesn't unmount across that
+   * flow, so its state survives. Rendered from here rather than `App`
+   * directly (or `main.tsx`'s top-level `Root`) because this is the first
+   * point in the component tree where `SettingsScreen`/`useSettingsHashSync`
+   * are actually mounted — shown any earlier, the prompt's "Review crash
+   * reporting settings" button would change the URL hash with nothing
+   * listening for it yet — see PR #228 review discussion.
    */
-  showCrashRecoveryPrompt?: boolean;
+  crashRecoveryPromptOpen?: boolean;
+  onDismissCrashRecoveryPrompt?: () => void;
 }
 
 export function RoomsScreen({
@@ -55,9 +62,9 @@ export function RoomsScreen({
   deepLinkRoomId,
   onDeepLinkConsumed,
   onLoggedOut,
-  showCrashRecoveryPrompt = false,
+  crashRecoveryPromptOpen = false,
+  onDismissCrashRecoveryPrompt = noopDismissCrashRecoveryPrompt,
 }: RoomsScreenProps) {
-  const [crashPromptOpen, setCrashPromptOpen] = useState(showCrashRecoveryPrompt);
   const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -336,10 +343,10 @@ export function RoomsScreen({
       <VerificationOverlay />
       <SettingsScreen onLoggedOut={onLoggedOut} />
       <CrashRecoveryPrompt
-        open={crashPromptOpen}
-        onDismiss={() => setCrashPromptOpen(false)}
+        open={crashRecoveryPromptOpen}
+        onDismiss={onDismissCrashRecoveryPrompt}
         onOpenSettings={() => {
-          setCrashPromptOpen(false);
+          onDismissCrashRecoveryPrompt();
           openSettings("observability");
         }}
       />

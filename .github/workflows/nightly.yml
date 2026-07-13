@@ -280,7 +280,14 @@ jobs:
       # through the `forward_sentry_envelope` Tauri command instead, which
       # makes the real HTTP request from the Rust side — so the CSP no
       # longer needs loosening for this to work.
-      - run: pnpm tauri build
+      # SENTRY_RELEASE isn't referenced here via `${{ env.SENTRY_RELEASE }}`
+      # — a review bot on PR #228 caught that the GitHub Actions `env`
+      # context only sees variables set via an explicit `env:` key, not ones
+      # a previous step wrote to `$GITHUB_ENV` (that only makes them real
+      # process env vars for later steps' shells, per GitHub's own context
+      # docs), so that expression always evaluated to empty. `$SENTRY_RELEASE`
+      # below reads the real, already-exported value instead.
+      - name: Build
         env:
           # VITE_SENTRY_DSN gets inlined into the built JS bundle by Vite at
           # this build step (`beforeBuildCommand` runs it) — see the comment
@@ -290,16 +297,14 @@ jobs:
           # `option_env!("SENTRY_DSN")` (`BAKED_SENTRY_DSN` in lib.rs, same
           # mechanism as `BUILD_ID`) and baked into the binary, so this one
           # CI-only value does reach the installed app despite never being
-          # in its own runtime environment. VITE_SENTRY_RELEASE/
-          # VITE_SENTRY_ENVIRONMENT reuse the release id
-          # "Configure Sentry release env" above already computed
+          # in its own runtime environment. VITE_SENTRY_RELEASE reuses the
+          # release id "Configure Sentry release env" above already computed
           # (SENTRY_RELEASE), so the packaged frontend's events tag the same
           # release the debug-file upload below associates symbols with —
           # without this they'd fall back to the bare package version and
           # never match.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: nightly
           VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
@@ -312,6 +317,9 @@ jobs:
           SCCACHE_S3_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
+        run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
+          pnpm tauri build
 
       - name: Resolve Cargo target directory
         id: cargo-target
@@ -474,13 +482,17 @@ jobs:
             Set-Content -Path $configPath -Value $config -NoNewline -Encoding utf8NoBOM
             $configArgs = @("--config", $configPath)
           }
+          # $env:SENTRY_RELEASE, not `${{ env.SENTRY_RELEASE }}` in the env:
+          # block below — see the macOS job's Build step comment: the
+          # `env` expression context never sees a prior step's `$GITHUB_ENV`
+          # writes, only real process env vars do.
+          $env:VITE_SENTRY_RELEASE = $env:SENTRY_RELEASE
           pnpm tauri build @configArgs
         env:
           # VITE_SENTRY_DSN/SENTRY_DSN/release-env — see the macOS job's
           # Build step comment.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: nightly
           VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
@@ -727,10 +739,12 @@ jobs:
         timeout-minutes: 70
         env:
           # VITE_SENTRY_DSN/SENTRY_DSN/release-env — see the macOS job's
-          # Build step comment.
+          # Build step comment. VITE_SENTRY_RELEASE isn't set here via
+          # `${{ env.SENTRY_RELEASE }}` for the same reason documented
+          # there — it's exported from the real `$SENTRY_RELEASE` process
+          # env var below instead.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: nightly
           VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
@@ -744,6 +758,7 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_ACCESS_KEY_ID || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_ACCESS_KEY_ID || '' }}
           AWS_SECRET_ACCESS_KEY: ${{ github.ref == 'refs/heads/main' && secrets.SCCACHE_S3_SECRET_ACCESS_KEY || github.ref != 'refs/heads/main' && secrets.SCCACHE_S3_READONLY_SECRET_ACCESS_KEY || '' }}
         run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           max_attempts=3
           per_attempt_timeout=1200 # 20 minutes
           attempt=1
@@ -946,7 +961,6 @@ jobs:
           # release-builds.yml's Android job (which does set it) enabled it,
           # meaning nightly never exercised the IPC tunnel on Android.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          VITE_SENTRY_RELEASE: ${{ env.SENTRY_RELEASE }}
           SENTRY_ENVIRONMENT: nightly
           VITE_SENTRY_ENVIRONMENT: nightly
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
@@ -966,6 +980,9 @@ jobs:
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          # VITE_SENTRY_RELEASE not set via `${{ env.SENTRY_RELEASE }}` in the
+          # env: block above — see the macOS job's Build step comment.
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           pnpm tauri android build --target aarch64 --ci
 
       # The Gradle plugin (Build step above) already uploads Proguard mapping
