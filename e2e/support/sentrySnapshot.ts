@@ -20,24 +20,31 @@ const captureDir = process.env.SENTRY_SNAPSHOT_CAPTURE
  * baselines. Call this after the assertions that establish the state you want to
  * capture are already settled — this does not itself wait for anything.
  *
- * Resets every scrollable element (and the page itself) to its scroll-top
- * position first. No test asserts on a scrolled-down state before capturing,
- * so any non-zero scrollTop at capture time is incidental — usually
- * Playwright's own auto-scroll-into-view bringing a below-the-fold element
- * (e.g. a button in a long settings panel) into view before clicking it. That
- * auto-scroll's exact resting offset isn't guaranteed stable run-to-run, which
- * showed up as a flaky diff behind an otherwise-static dialog
- * (`settings-logout-confirm`, where the "Log out" button lives near the
- * bottom of the Account panel's scrollable content).
+ * If a dialog (Radix `role="dialog"`) is open, resets scroll to top on
+ * everything *outside* it — background bleed-through behind an otherwise-static
+ * modal, never the state under test. Playwright's auto-scroll-into-view (e.g.
+ * bringing a below-the-fold "Log out" button into view before clicking it)
+ * leaves that background at a non-deterministic offset, which showed up as a
+ * flaky diff on `settings-logout-confirm`. When no dialog is open, scroll is
+ * left untouched: a scrolled-down settings panel can itself be the subject of
+ * the snapshot (e.g. `settings-observability-opted-in` scrolls down to reach
+ * "Send feedback" and captures that state), so resetting it there would hide
+ * the very thing the test drove into view.
  */
 export async function captureSnapshot(page: Page, name: string): Promise<void> {
   if (!captureDir) return;
   await page.evaluate(() => {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    if (dialogs.length === 0) return;
+    const isBackground = (el: Element) => !dialogs.some((dialog) => dialog.contains(el));
+
     window.scrollTo(0, 0);
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
     let node = walker.currentNode as Element | null;
     while (node) {
-      if (node.scrollTop !== 0 || node.scrollLeft !== 0) node.scrollTo(0, 0);
+      if ((node.scrollTop !== 0 || node.scrollLeft !== 0) && isBackground(node)) {
+        node.scrollTo(0, 0);
+      }
       node = walker.nextNode() as Element | null;
     }
   });
