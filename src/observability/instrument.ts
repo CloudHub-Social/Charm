@@ -221,8 +221,13 @@ function setSentryClientEnabled(enabled: boolean): void {
   client.getOptions().enabled = enabled;
 }
 
-export async function bootstrapSentry(): Promise<ObservabilitySettings> {
+async function readBootstrapSettings(): Promise<ObservabilitySettings> {
   const [settings] = await Promise.all([readObservabilitySettings(), preloadPlatformTag()]);
+  return settings;
+}
+
+export async function bootstrapSentry(): Promise<ObservabilitySettings> {
+  const settings = await readBootstrapSettings();
   initializeSentry(settings);
   return settings;
 }
@@ -240,22 +245,33 @@ export async function bootstrapSentry(): Promise<ObservabilitySettings> {
 export const BOOTSTRAP_TIMEOUT_MS = 3000;
 
 /**
- * Runs {@link bootstrapSentry} but never blocks the caller past
- * {@link BOOTSTRAP_TIMEOUT_MS} — `main.tsx` awaits this instead of
- * `bootstrapSentry()` directly so a stuck settings read can no longer keep
- * React from ever mounting. If the timeout wins, Sentry stays uninitialized
- * for this session (same as `VITE_SENTRY_DSN` being unset) rather than the
- * whole app staying blank forever.
+ * Runs the same settings read {@link bootstrapSentry} does, but never blocks
+ * the caller past {@link BOOTSTRAP_TIMEOUT_MS} — `main.tsx` awaits this
+ * instead of `bootstrapSentry()` directly so a stuck settings read can no
+ * longer keep React from ever mounting. If the timeout wins, Sentry stays
+ * uninitialized for this session (same as `VITE_SENTRY_DSN` being unset)
+ * rather than the whole app staying blank forever.
+ *
+ * Deliberately does *not* delegate to `bootstrapSentry()` — the read and the
+ * `initializeSentry` call only happen together, gated on this function's own
+ * timeout, so a settings read that keeps running in the background after
+ * losing the race (there is no way to cancel an in-flight Tauri IPC call)
+ * can never reach `initializeSentry` at all. Without that separation, a slow
+ * (not hung) read could resolve after the user already opened Settings and
+ * turned Sentry off, silently re-enabling it.
  */
 export async function bootstrapSentryWithTimeout(
   timeoutMs: number = BOOTSTRAP_TIMEOUT_MS,
 ): Promise<ObservabilitySettings | null> {
   let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), timeoutMs);
+  const timeout = new Promise<"timed-out">((resolve) => {
+    timer = setTimeout(() => resolve("timed-out"), timeoutMs);
   });
   try {
-    return await Promise.race([bootstrapSentry(), timeout]);
+    const result = await Promise.race([readBootstrapSettings(), timeout]);
+    if (result === "timed-out") return null;
+    initializeSentry(result);
+    return result;
   } finally {
     clearTimeout(timer!);
   }

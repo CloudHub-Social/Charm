@@ -80,6 +80,12 @@ struct SentryGuard {
     logs_enabled: bool,
 }
 
+/// Keeps `tracing-appender`'s background flush thread alive for the app's
+/// lifetime — dropping this guard (e.g. if it were a local in `.setup()`)
+/// stops the writer and silently truncates the log file.
+#[allow(dead_code)]
+struct TracingFileGuard(tracing_appender::non_blocking::WorkerGuard);
+
 fn sentry_event_filter(
     metadata: &tracing::Metadata<'_>,
 ) -> sentry::integrations::tracing::EventFilter {
@@ -107,22 +113,54 @@ fn sentry_span_filter(metadata: &tracing::Metadata<'_>) -> bool {
     )
 }
 
-fn install_sentry_tracing() -> bool {
+/// Installs the process-global `tracing` subscriber exactly once, regardless
+/// of whether Sentry consent is on: the native app's own diagnostics (e.g.
+/// the sync-loop failures in `matrix::sync`) are emitted via `tracing::*!`
+/// macros, not the `log` crate, so `tauri-plugin-log`'s `LogDir` target (which
+/// only captures `log::*!` calls) never sees them on its own — before this,
+/// a user who hadn't opted into Sentry had literally no persisted trail of
+/// their own app's errors. The file layer here is unconditional; the Sentry
+/// bridging layer is attached alongside it only when `sentry_enabled` (i.e.
+/// `init_sentry_from_settings` is about to, or just did, call `sentry::init`).
+/// Called once from `run()`'s `.setup()`, before `init_sentry_from_settings`,
+/// since `tracing::subscriber::set_global_default` can only succeed once per
+/// process. See the 2026-07-13 blank-page-on-launch investigation.
+fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool) -> bool {
     if SENTRY_TRACING_INSTALLED.swap(true, Ordering::SeqCst) {
         return true;
     }
 
-    let sentry_layer = sentry::integrations::tracing::layer()
-        .event_filter(sentry_event_filter)
-        .span_filter(|metadata| {
-            sentry_span_filter(metadata) && runtime_observability_logs_enabled()
-        });
-    let subscriber = tracing_subscriber::registry().with(sentry_layer);
+    let file_layer = app.path().app_log_dir().ok().and_then(|dir| {
+        std::fs::create_dir_all(&dir).ok()?;
+        let appender = tracing_appender::rolling::daily(dir, "charm.log");
+        let (writer, guard) = tracing_appender::non_blocking(appender);
+        app.manage(TracingFileGuard(guard));
+        Some(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(writer),
+        )
+    });
+    if file_layer.is_none() {
+        eprintln!("failed to resolve app log dir; file logging disabled for this run");
+    }
+
+    let sentry_layer = sentry_enabled.then(|| {
+        sentry::integrations::tracing::layer()
+            .event_filter(sentry_event_filter)
+            .span_filter(|metadata| {
+                sentry_span_filter(metadata) && runtime_observability_logs_enabled()
+            })
+    });
+
+    let subscriber = tracing_subscriber::registry()
+        .with(file_layer)
+        .with(sentry_layer);
 
     match tracing::subscriber::set_global_default(subscriber) {
         Ok(()) => true,
         Err(error) => {
-            eprintln!("failed to install Sentry tracing subscriber: {error}");
+            eprintln!("failed to install tracing subscriber: {error}");
             SENTRY_TRACING_INSTALLED.store(false, Ordering::SeqCst);
             false
         }
@@ -201,10 +239,29 @@ fn resolve_build_id_tag(
         .or_else(|| build_id.map(str::to_owned))
 }
 
-fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<SentryGuard> {
-    let dsn = std::env::var("SENTRY_DSN")
+fn sentry_dsn() -> Option<String> {
+    std::env::var("SENTRY_DSN")
         .ok()
-        .filter(|value| !value.is_empty())?;
+        .filter(|value| !value.is_empty())
+}
+
+/// Whether `init_sentry_from_settings` is about to call `sentry::init` —
+/// computed ahead of that call so `install_tracing` (which must run first,
+/// see its doc comment) knows whether to attach the Sentry bridging layer.
+fn sentry_enabled_at_launch<R: tauri::Runtime>(app: &tauri::App<R>) -> bool {
+    sentry_dsn().is_some()
+        && app
+            .path()
+            .app_data_dir()
+            .ok()
+            .is_some_and(|dir| observability_enabled_from_store(&dir))
+}
+
+fn init_sentry_from_settings<R: tauri::Runtime>(
+    app: &tauri::App<R>,
+    tracing_installed: bool,
+) -> Option<SentryGuard> {
+    let dsn = sentry_dsn()?;
     let app_data_dir = app.path().app_data_dir().ok()?;
     if !observability_enabled_from_store(&app_data_dir) {
         return None;
@@ -259,7 +316,6 @@ fn init_sentry_from_settings<R: tauri::Runtime>(app: &tauri::App<R>) -> Option<S
     if let Some(build_id) = build_id_tag {
         sentry::configure_scope(|scope| scope.set_tag("charm.build.id", build_id));
     }
-    let tracing_installed = install_sentry_tracing();
     if tracing_installed {
         tracing::info!(logs_enabled, "Rust Sentry tracing/log bridge initialized");
     }
@@ -414,7 +470,11 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(matrix::MatrixState::default())
         .setup(|app| {
-            if let Some(sentry_guard) = init_sentry_from_settings(app) {
+            // Must run before `init_sentry_from_settings`: both attach to the
+            // one process-global `tracing` subscriber, which can only be set
+            // once — see `install_tracing`'s doc comment.
+            let tracing_installed = install_tracing(app, sentry_enabled_at_launch(app));
+            if let Some(sentry_guard) = init_sentry_from_settings(app, tracing_installed) {
                 app.manage(sentry_guard);
             }
             let handle = app.handle().clone();

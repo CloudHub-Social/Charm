@@ -10,7 +10,7 @@ import {
   openSentryFeedbackDialog,
 } from "./instrument";
 import * as persistenceModule from "./persistence";
-import { DEFAULT_OBSERVABILITY_SETTINGS } from "./settings";
+import { DEFAULT_OBSERVABILITY_SETTINGS, type ObservabilitySettings } from "./settings";
 
 const clientOptions = { enabled: true };
 const feedbackDialog = {
@@ -508,6 +508,29 @@ describe("bootstrapSentryWithTimeout", () => {
     const result = bootstrapSentryWithTimeout(3000);
     await vi.advanceTimersByTimeAsync(3000);
     await result;
+
+    expect(Sentry.init).not.toHaveBeenCalled();
+  });
+
+  it("never initializes Sentry from a settings read that resolves after the timeout already gave up", async () => {
+    // A *slow* read (unlike the permanently-hung case above) still resolves
+    // eventually — if it could reach `initializeSentry` after losing the
+    // race, a user who opened Settings and disabled Sentry in that window
+    // would find it silently re-enabled once this stale read landed.
+    vi.useFakeTimers();
+    let resolveSettings!: (settings: ObservabilitySettings) => void;
+    vi.spyOn(persistenceModule, "readObservabilitySettings").mockReturnValue(
+      new Promise((resolve) => {
+        resolveSettings = resolve;
+      }),
+    );
+
+    const result = bootstrapSentryWithTimeout(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(result).resolves.toBeNull();
+
+    resolveSettings({ ...DEFAULT_OBSERVABILITY_SETTINGS, sentryEnabled: true });
+    await vi.runOnlyPendingTimersAsync();
 
     expect(Sentry.init).not.toHaveBeenCalled();
   });
