@@ -203,36 +203,25 @@ jobs:
               | jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
           }
           # Best-effort: this is a bonus recovery action, not the actual
-          # failure being reported, so a failure to post the comment must not
-          # crash the script and obscure the real timeout error below. Returns
-          # 0 only when a comment was genuinely just posted (not "already
-          # posted before", not "failed to post") — the caller uses that to
-          # decide whether extending the wait is worth it at all.
-          #
-          # Captures gh's actual stderr rather than discarding it: an earlier
-          # version of this function redirected both stdout and stderr to
-          # /dev/null and hardcoded a guess ("likely a token permissions
-          # issue") into the warning it printed instead. That guess was never
-          # actually verified against a real error message, and on
-          # CloudHub-Social/Charm#227 it turned out to be wrong — both the
-          # repo's and org's default workflow permissions were already
-          # "read and write" the whole time, so whatever is actually blocking
-          # this POST is something else entirely (rate limiting, an
-          # interaction-limits/moderation setting restricting who may
-          # comment, etc.), and the swallowed stderr meant nobody could tell
-          # which. Surface the real message instead of asserting a cause.
+          # failure being reported, so a permission error posting the comment
+          # (e.g. the repo/org's default workflow token permissions don't
+          # actually grant `issues: write` despite this job requesting it —
+          # seen in practice) must not crash the script and obscure the real
+          # timeout error below with a raw API stack trace. Returns 0 only
+          # when a comment was genuinely just posted (not "already posted
+          # before", not "failed to post") — the caller uses that to decide
+          # whether extending the wait is worth it at all.
           nudge_codex_once() {
             if codex_nudge_already_posted; then
               echo "Codex nudge already posted for $HEAD_SHA; not posting again."
               return 1
             fi
-            local error
-            if error=$( { gh api "repos/$REPO/issues/$PR/comments" \
-              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" >/dev/null; } 2>&1 ); then
+            if gh api "repos/$REPO/issues/$PR/comments" \
+              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" >/dev/null 2>&1; then
               echo "Posted a @codex review nudge comment for $HEAD_SHA."
               return 0
             else
-              echo "::warning::Could not post the Codex nudge comment automatically — comment \"@codex review\" manually instead. gh api error: ${error//$'\n'/ }"
+              echo "::warning::Could not post the Codex nudge comment (likely a token permissions issue — this job's 'issues: write' permission may not be taking effect; check the repo/org's default workflow permissions). Comment '@codex review' manually instead."
               return 1
             fi
           }
