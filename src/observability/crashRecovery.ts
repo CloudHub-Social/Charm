@@ -1,4 +1,5 @@
 import { isTauri } from "@/lib/platform";
+import { BOOTSTRAP_TIMEOUT_MS } from "./instrument";
 
 /**
  * Whether the previous run of the app didn't shut down cleanly (crash, OOM
@@ -18,13 +19,27 @@ import { isTauri } from "@/lib/platform";
  *
  * Always `false` outside Tauri (the web build has no native process to crash
  * independently of the browser tab).
+ *
+ * Bounded by {@link BOOTSTRAP_TIMEOUT_MS}, same reasoning as
+ * `bootstrapSentryWithTimeout`: `main.tsx` awaits this alongside that call
+ * before its first render, so a hung `had_unclean_previous_session` IPC
+ * round-trip must not be able to block React from ever mounting the way a
+ * hung settings read could before that timeout existed — see the 2026-07-13
+ * blank-page-on-launch investigation this mirrors.
  */
-export async function checkUncleanPreviousSession(): Promise<boolean> {
+export async function checkUncleanPreviousSession(
+  timeoutMs: number = BOOTSTRAP_TIMEOUT_MS,
+): Promise<boolean> {
   if (!isTauri()) return false;
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<boolean>("had_unclean_previous_session");
-  } catch {
-    return false;
+    const check = invoke<boolean>("had_unclean_previous_session").catch(() => false);
+    return await Promise.race([check, timeout]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
