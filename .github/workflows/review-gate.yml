@@ -120,9 +120,13 @@ jobs:
           # equals HEAD_SHA proves Codex evaluated this code. --paginate in
           # case the PR has many reviews.
           codex_done() {
+            # gh's own --jq flag takes a single filter string, not --arg — it
+            # can't be combined with jq's --arg the way plain jq can, so pipe
+            # the raw JSON to jq ourselves instead (same fix as
+            # unresolved_review_thread_count above).
             gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-              --jq --arg sha "$HEAD_SHA" \
-              '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
+              | jq --arg sha "$HEAD_SHA" \
+                '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
               | grep -q .
           }
 
