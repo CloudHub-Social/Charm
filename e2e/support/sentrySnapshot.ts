@@ -41,11 +41,20 @@ const captureDir = process.env.SENTRY_SNAPSHOT_CAPTURE
  * opened dialog to the end of `document.body`, so the last `role="dialog"` in
  * document order is the active one; everything else — including an outer
  * dialog that's merely still mounted underneath — counts as background.
+ *
+ * Radix keeps a just-closed `DialogContent` mounted (with `data-state="closed"`)
+ * until its exit animation finishes (`dialog.tsx`'s `duration-200`
+ * `animate-out`), and this `evaluate` runs before Playwright's own
+ * `animations: "disabled"` takes effect on the screenshot call below — so a
+ * dialog that was closed just before calling this could still be the last
+ * `role="dialog"` in document order, wrongly becoming "topmost" and
+ * protecting itself instead of the now fully-visible dialog/panel underneath.
+ * Filtering to `data-state="open"` avoids that.
  */
 export async function captureSnapshot(page: Page, name: string): Promise<void> {
   if (!captureDir) return;
   await page.evaluate(() => {
-    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]'));
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"][data-state="open"]'));
     if (dialogs.length === 0) return;
     const topDialog = dialogs[dialogs.length - 1];
     const isBackground = (el: Element) => !topDialog.contains(el);
