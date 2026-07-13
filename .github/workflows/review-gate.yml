@@ -2,11 +2,15 @@ name: Review gate
 
 # Closes the timing race where a PR goes green and merges (or enters the merge
 # queue) *before* the async review bots — Seer and Codex — have finished
-# reviewing the current head. Their *findings* are already blocked by "require
-# conversation resolution"; the problem is that resolution is a point-in-time
-# check, so a PR that becomes mergeable while a bot is still reviewing has no
-# threads yet to block on. This gate makes queue-entry wait until both bots have
-# signalled "done" on the head commit.
+# reviewing the current head. "Require conversation resolution" is meant to
+# block on their *findings*, but that's a point-in-time check, so a PR that
+# becomes mergeable while a bot is still reviewing has no threads yet to block
+# on — and empirically (#220) a PR can still merge with a genuinely unresolved
+# bot thread open, so this gate does not rely on that rule alone. It instead
+# makes queue-entry wait until both bots have signalled "done" on the head
+# commit AND every review thread is resolved, polling both on the same
+# TIMEOUT_MINUTES budget — a thread resolved by a human while bots are still
+# finishing elsewhere in the loop is picked up without a manual re-run.
 #
 # (Copilot is intentionally excluded — it's advisory only, because Copilot review
 # runs on a monthly credit allowance that can run out and would then fail-closed
@@ -14,14 +18,29 @@ name: Review gate
 #
 # Each bot exposes a different reliable done-signal (verified empirically):
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
-#   - Codex  → a `+1` reaction on the PR body when clean, OR a submitted review
-#              when it has findings (not reliably head-anchored; see below).
+#   - Codex  → EITHER a submitted review whose `commit_id` exactly equals
+#              HEAD_SHA (the findings case), OR a general PR comment whose
+#              body names HEAD_SHA's short SHA via "**Reviewed commit:**
+#              `<10 chars>`" (the clean case) — verified empirically that a
+#              clean "@codex review" re-confirmation creates *only* that kind
+#              of comment plus an (idempotent, non-refreshing) `+1` reaction,
+#              never an actual pulls/reviews entry at all. Neither signal
+#              relies on a timestamp: a review can legitimately take a while
+#              and finish for an *older* commit if pushes arrive faster than
+#              Codex reviews them (that's not a bug, just "still working" —
+#              waiting longer is correct), and no timestamp trick can ever
+#              prove a review or reaction was *for this exact code* the way
+#              an exact commit-identifying string can.
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
 # there is nothing to wait for and blocking would only stall the queue). Branch
 # protection should require this context so a PR cannot enter the queue until it
 # passes.
+#
+# On timeout with Codex still not done, posts a one-time "@codex review" nudge
+# comment (marker-tagged so re-runs/later pushes don't repost it) instead of
+# requiring a human to notice the failure and comment manually.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -34,7 +53,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
-  issues: read
+  issues: write # to post the one-time Codex nudge comment on timeout — see below
   checks: read
 
 jobs:
@@ -58,6 +77,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           TIMEOUT_MINUTES: "10"
           POLL_SECONDS: "20"
+          # How much longer to keep polling after nudge_codex_once() actually
+          # posts a comment, since this workflow only triggers on pull_request
+          # lifecycle events — Codex's own follow-up review/comment won't
+          # start a new run, so without this the check would stay failed
+          # until a human manually re-runs it even though the nudge worked.
+          EXTRA_WAIT_AFTER_NUDGE_MINUTES: "10"
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
@@ -68,40 +93,186 @@ jobs:
           # skipped / timed_out run is still status=="completed" but did NOT
           # actually review — only success/failure/neutral mean a real review ran.
           # --paginate in case the head has >30 check-runs.
+          # jq itself decides true/false and prints exactly that one word —
+          # never pipe a multi-line jq/gh stream into `grep -q`: under
+          # `set -o pipefail`, grep -q exits (and closes its end of the pipe)
+          # as soon as it sees a match, and if more output was still coming
+          # the upstream writer gets SIGPIPE and the whole pipeline reports
+          # non-zero even though a match was found — confirmed reproducing
+          # (exit 141) with a large enough stream. Bit us for real here: a PR
+          # with >1 matching Seer/Codex result would silently fail this
+          # check even though the match existed.
           seer_done() {
-            gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion' \
-              | grep -qxE 'success|failure|neutral'
+            # check-runs returns an OBJECT ({total_count, check_runs: [...]}),
+            # not a bare array — unlike the reviews/comments endpoints below,
+            # gh's --paginate does NOT merge the nested check_runs array
+            # across pages for this shape; it just prints each page's raw
+            # object as its own separate JSON document (confirmed: forcing a
+            # small per_page produced multiple concatenated top-level docs,
+            # not one merged object). So this needs its own `jq -s` (slurp)
+            # to flatten `.[].check_runs[]` across pages, same idea as
+            # unresolved_review_thread_count()'s GraphQL query below.
+            [ "$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+              | jq -s '[.[].check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion]
+                | any(. == "success" or . == "failure" or . == "neutral")')" = "true" ]
           }
-          # Codex does NOT reliably re-review every push (its review's commit_id
-          # often lags the head), so pinning to HEAD_SHA would false-block. Treat it
-          # as "has engaged with this PR": a +1 reaction (clean) or any submitted
-          # review (findings). Seer above still anchors the latest commit.
-          # --paginate walks every page; the --jq emits one line per matching item
-          # (across all pages), and grep -c counts them. Do NOT use `… | length`
-          # with --paginate: that emits a length PER page, yielding a multi-line
-          # value that breaks the integer test on any PR with >1 page.
-          count_matches() { grep -c . || true; }
+          # --paginate: a PR can have >100 review threads, which `first: 100`
+          # alone would silently truncate — any unresolved thread past the
+          # first page would then never be seen. gh's own --slurp isn't usable
+          # together with --jq, so pipe the raw one-JSON-doc-per-page output
+          # through `jq -s` (slurp) ourselves to flatten across `.[]` before
+          # filtering. `$1` is an optional jq author-login filter (unfiltered
+          # when omitted).
+          unresolved_review_thread_count() {
+            gh api graphql --paginate -f query='
+              query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved
+                        comments(first: 1) { nodes { author { login } } }
+                      }
+                    }
+                  }
+                }
+              }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR" \
+              | jq -s --arg author "${1:-}" \
+                '[.[].data.repository.pullRequest.reviewThreads.nodes[]
+                  | select($author == "" or .comments.nodes[0].author.login == $author)
+                  | select(.isResolved == false)] | length'
+          }
+          # See the header comment for why these are the two signals. gh's
+          # own --jq flag takes a single filter string, not --arg — it can't
+          # be combined with jq's --arg the way plain jq can, so pipe the raw
+          # JSON to jq ourselves instead (same fix as
+          # unresolved_review_thread_count above). --paginate in case the PR
+          # has many reviews/comments.
           codex_done() {
-            local react rev
-            react=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-                     --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1") | .id' | count_matches)
-            rev=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-                   --jq '.[] | select(.user.login == "chatgpt-codex-connector[bot]") | .id' | count_matches)
-            [ "$react" -gt 0 ] || [ "$rev" -gt 0 ]
+            local matched
+            matched=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              | jq --arg sha "$HEAD_SHA" \
+                '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha)] | length > 0')
+            if [ "$matched" = "true" ]; then return 0; fi
+
+            # Don't assume a fixed short-SHA length (verified 10 chars once,
+            # but that's this bot's current formatting, not a guarantee) —
+            # extract whatever hex string follows "Reviewed commit:" and check
+            # it's a genuine prefix of HEAD_SHA instead. Bind via `as $m` first
+            # rather than chaining `capture(...)?.field` directly — the
+            # ubuntu-latest runner's jq rejects that as a syntax error even
+            # though it parses fine locally on a newer jq (confirmed: CI's jq
+            # errored "unexpected FIELD" on every poll). capture() already
+            # produces no output at all on a non-match (not an error), so `?`
+            # was never actually needed for that case either.
+            matched=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              | jq --arg sha "$HEAD_SHA" \
+                '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")
+                  | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")) as $m
+                  | select($m.c != null and ($sha | startswith($m.c)))] | length > 0')
+            [ "$matched" = "true" ]
           }
 
+          # Codex normally self-triggers on open/synchronize (per its own
+          # description: "Reviews are triggered when you open a PR / mark
+          # ready / comment @codex review"). A timeout with codex=false always
+          # gets nudged, regardless of whether Codex engaged before: waiting
+          # the full TIMEOUT_MINUTES already rules out "still working, will
+          # finish shortly" as the explanation, so either it never triggered
+          # at all (missed webhook, ...) or it reviewed an older head and
+          # hasn't caught up to this one — an explicit "@codex review" comment
+          # is the right recovery either way.
+          # Nudge once via a marker-tagged comment rather than requiring a
+          # human to notice the timeout and comment manually — but only once
+          # *per head commit*, not once ever for the whole PR: the marker
+          # embeds HEAD_SHA, so re-running this check (or polling again) for
+          # the *same* stuck commit doesn't spam a repeat nudge, but a later
+          # push that times out for a different reason still gets its own —
+          # a PR-lifetime marker would silently stop nudging after the first
+          # stuck push and stall with no further recovery action.
+          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for $HEAD_SHA -->"
+          codex_nudge_already_posted() {
+            # gh's own --paginate + --jq combo applies the filter PER PAGE
+            # before merging — confirmed: forcing per_page=1 produced
+            # "true\ntrue\ntrue" (one per page), not one merged result. Pipe
+            # the raw --paginate output (which DOES merge bare-array REST
+            # responses into one array) to an external jq instead, same
+            # pattern as codex_done() above.
+            [ "$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              | jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
+          }
+          # Best-effort: this is a bonus recovery action, not the actual
+          # failure being reported, so a permission error posting the comment
+          # (e.g. the repo/org's default workflow token permissions don't
+          # actually grant `issues: write` despite this job requesting it —
+          # seen in practice) must not crash the script and obscure the real
+          # timeout error below with a raw API stack trace. Returns 0 only
+          # when a comment was genuinely just posted (not "already posted
+          # before", not "failed to post") — the caller uses that to decide
+          # whether extending the wait is worth it at all.
+          nudge_codex_once() {
+            if codex_nudge_already_posted; then
+              echo "Codex nudge already posted for $HEAD_SHA; not posting again."
+              return 1
+            fi
+            if gh api "repos/$REPO/issues/$PR/comments" \
+              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" >/dev/null 2>&1; then
+              echo "Posted a @codex review nudge comment for $HEAD_SHA."
+              return 0
+            else
+              echo "::warning::Could not post the Codex nudge comment (likely a token permissions issue — this job's 'issues: write' permission may not be taking effect; check the repo/org's default workflow permissions). Comment '@codex review' manually instead."
+              return 1
+            fi
+          }
+
+          nudge_extended=false
           while :; do
             s=false; c=false
             seer_done && s=true || true
             codex_done && c=true || true
-            echo "head=$HEAD_SHA  seer=$s  codex=$c"
+            unresolved=0
             if $s && $c; then
-              echo "Seer and Codex have finished on $HEAD_SHA."
+              unresolved=$(unresolved_review_thread_count)
+            fi
+            echo "head=$HEAD_SHA  seer=$s  codex=$c  unresolved=$unresolved"
+            if $s && $c && [ "$unresolved" -eq 0 ]; then
+              echo "Seer and Codex have finished on $HEAD_SHA, with no unresolved review threads."
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
+              # This workflow only triggers on pull_request lifecycle events,
+              # so Codex's own follow-up review/comment after a successful
+              # nudge won't start a new run on its own — extend the wait
+              # once (only when a fresh nudge genuinely just went out, not
+              # when it was already posted before or failed) so that
+              # follow-up has a real chance to land within this same run
+              # instead of leaving the check failed until a manual re-run.
+              if ! $c && ! $nudge_extended && nudge_codex_once; then
+                nudge_extended=true
+                deadline=$(( $(date +%s) + EXTRA_WAIT_AFTER_NUDGE_MINUTES * 60 ))
+                echo "Extending wait by ${EXTRA_WAIT_AFTER_NUDGE_MINUTES}m after nudging Codex."
+                sleep "$POLL_SECONDS"
+                continue
+              fi
+              if $s && $c; then
+                # Both bots finished but a thread is still open — this is
+                # deliberately NOT an instant exit-1 the moment it's first
+                # seen (unlike the old behavior): a thread can be resolved by
+                # a human at any point while bots are still being waited on
+                # elsewhere in the loop, e.g. right after replying to a
+                # finding — the exact pattern that happened repeatedly while
+                # developing this workflow itself. Keep polling on the same
+                # TIMEOUT_MINUTES budget so a resolution that lands mid-run
+                # is picked up without needing a manual re-run, and only
+                # actually fail once that budget is exhausted with something
+                # still open. "Require conversation resolution" alone isn't
+                # enough here either way — #220 showed it doesn't reliably
+                # stop a merge on its own.
+                echo "::error::Seer and Codex have both finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved after ${TIMEOUT_MINUTES}m. Resolve them before merging. If a bot (usually Codex) needs to take another look — e.g. after pushing a fix — comment \"@codex address that feedback\" to prompt a fresh review, then re-run this check."
+              else
+                echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
+              fi
               exit 1
             fi
             sleep "$POLL_SECONDS"
