@@ -128,6 +128,30 @@ jobs:
         # kills the step mid-retry, before its own error handling/logging
         # can run.
         timeout-minutes: 70
+        env:
+          # Safe to send straight to the webview build here (unlike the
+          # Android job below, which historically kept this unset): the
+          # frontend SDK's transport (`instrument.ts`'s
+          # `makeTauriIpcTransport`) pipes every envelope through the
+          # `forward_sentry_envelope` Tauri command instead of a direct
+          # fetch, so the desktop CSP's `connect-src` never needs to allow
+          # Sentry's ingest host — see nightly.yml's Linux job for the same
+          # wiring. SENTRY_DSN (bare) is read at Rust *runtime* normally, but
+          # `option_env!("SENTRY_DSN")` (`BAKED_SENTRY_DSN` in lib.rs) bakes
+          # this CI-only value into the binary at compile time, same
+          # mechanism as BUILD_ID — see lib.rs's doc comment. VITE_SENTRY_RELEASE
+          # reuses the release id "Configure Sentry debug-file upload" above
+          # already computed (SENTRY_RELEASE), so this build's frontend
+          # events tag the same release the debug-file upload associates
+          # symbols with — exported below from the real `$SENTRY_RELEASE`
+          # process env var, not via `${{ env.SENTRY_RELEASE }}` (that
+          # expression context never sees a prior step's `$GITHUB_ENV`
+          # writes, only variables set via an explicit `env:` key — a review
+          # bot on PR #228 caught this).
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           # GH Actions runs this as `bash -e` by default, so a non-zero exit
           # from `timeout` (including the expected 124/137 on a hang) would
@@ -142,6 +166,7 @@ jobs:
           # timeout-minutes: 20, and a shorter per-attempt cap would kill
           # and retry legitimately-still-compiling attempts as if they'd
           # hung.
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           max_attempts=3
           per_attempt_timeout=1200 # 20 minutes
           attempt=1
@@ -239,7 +264,19 @@ jobs:
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri macOS app with release debuginfo
-        run: pnpm tauri build
+        env:
+          # See the Linux job's Build step comment — same IPC-tunnel wiring
+          # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
+          # release/environment env, so it's safe to set here too.
+          # VITE_SENTRY_RELEASE is exported below from `$SENTRY_RELEASE`
+          # rather than set here, for the same `env` context reason.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+        run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
+          pnpm tauri build
 
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
       # `cargo build` runs inside a generated Xcode "Run Script" build phase
@@ -252,8 +289,16 @@ jobs:
       # falling back to the bare Cargo version. Write it into cargo's own
       # config.toml instead, same as that nightly job, so cargo forwards it
       # to rustc regardless of what env xcodebuild's wrapper process handed
-      # down.
-      - name: Persist BUILD_ID for cargo (xcodebuild doesn't forward step env into its Run Script phase)
+      # down. SENTRY_DSN goes through the same file for the same reason — a
+      # review bot on PR #228 caught that VITE_SENTRY_DSN below is opted
+      # into for this simulator build, but without this the Rust-side
+      # BAKED_SENTRY_DSN (`option_env!("SENTRY_DSN")` in lib.rs) would stay
+      # unset here specifically, so an opted-in test run would get the
+      # frontend SDK trying to tunnel envelopes to a Rust command that
+      # always reports "SENTRY_DSN not configured".
+      - name: Persist BUILD_ID/SENTRY_DSN for cargo (xcodebuild doesn't forward step env into its Run Script phase)
+        env:
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
         run: |
           set -euo pipefail
           cargo_home="${CARGO_HOME:-$HOME/.cargo}"
@@ -262,17 +307,34 @@ jobs:
           # Guard against a duplicate [env] table (a TOML parse error) in
           # case some earlier step/action already created this file with its
           # own [env] section.
-          if [ -f "$config" ] && grep -q '^\[env\]' "$config"; then
-            echo "BUILD_ID = \"${BUILD_ID}\"" >> "$config"
-          else
-            {
-              echo '[env]'
-              echo "BUILD_ID = \"${BUILD_ID}\""
-            } >> "$config"
+          if [ ! -f "$config" ] || ! grep -q '^\[env\]' "$config"; then
+            echo '[env]' >> "$config"
+          fi
+          echo "BUILD_ID = \"${BUILD_ID}\"" >> "$config"
+          if [ -n "$SENTRY_DSN" ]; then
+            echo "SENTRY_DSN = \"${SENTRY_DSN}\"" >> "$config"
           fi
 
       - name: Build Tauri iOS simulator app with debuginfo
-        run: pnpm tauri ios build --target aarch64-sim --debug --ci
+        env:
+          # This is a simulator debug build for Sentry debug-file upload,
+          # not a shipped artifact — but the previous step now also bakes
+          # SENTRY_DSN into cargo's config.toml the same way it bakes
+          # BUILD_ID, so an opted-in test run of this simulator build can
+          # actually round-trip through the IPC tunnel
+          # (`forward_sentry_envelope`) instead of failing with "SENTRY_DSN
+          # not configured" the way it would if only this VITE_ var were set.
+          # VITE_SENTRY_RELEASE/VITE_SENTRY_ENVIRONMENT are exported below
+          # from the real process env vars, same reason as every other
+          # build step in this file — unlike SENTRY_DSN/BUILD_ID, these are
+          # consumed by the Vite build `pnpm tauri ios build` runs directly
+          # in *this* step (not inside xcodebuild's nested Run Script), so a
+          # plain shell export reaches it fine.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: |
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
+          export VITE_SENTRY_ENVIRONMENT="${{ github.event.inputs.environment || 'production' }}"
+          pnpm tauri ios build --target aarch64-sim --debug --ci
 
       - name: Resolve Apple debug-file directories
         id: apple-debug-files
@@ -369,7 +431,20 @@ jobs:
         run: bash .github/scripts/configure-sentry-release-env.sh
 
       - name: Build Tauri Windows app with release debuginfo
-        run: pnpm tauri build
+        env:
+          # See the Linux job's Build step comment — same IPC-tunnel wiring
+          # (`forward_sentry_envelope`), SENTRY_DSN compile-time baking, and
+          # release/environment env, so it's safe to set here too.
+          # VITE_SENTRY_RELEASE is exported below from `$env:SENTRY_RELEASE`
+          # (default shell here is pwsh) rather than set here, for the same
+          # `env` context reason.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+        run: |
+          $env:VITE_SENTRY_RELEASE = $env:SENTRY_RELEASE
+          pnpm tauri build
 
       - name: Resolve Windows debug-file directory
         id: windows-debug-files
@@ -477,15 +552,26 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
           SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
-          # Feed native Android BuildConfig only; keep VITE_* unset here so the
-          # Android WebView Sentry client stays disabled until CSP/sourcemap
-          # wiring is handled explicitly.
           SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          # The Android WebView frontend SDK's transport
+          # (`instrument.ts`'s `makeTauriIpcTransport`) pipes every envelope
+          # through the `forward_sentry_envelope` Tauri command instead of a
+          # direct fetch — same as the desktop platforms (see the Linux
+          # job's Build step comment) — so it's now safe to set VITE_SENTRY_DSN
+          # here too, rather than keeping the WebView client disabled.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          # Reuses the release id "Configure Sentry Android upload" above
+          # already computed (SENTRY_RELEASE) — see the Linux job's Build
+          # step comment for why this matters (matching the debug-file/
+          # mapping upload's release tag), and for why it's exported below
+          # from `$SENTRY_RELEASE` rather than set here.
           SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
+          VITE_SENTRY_ENVIRONMENT: ${{ github.event.inputs.environment || 'production' }}
         run: |
           export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           export RANLIB="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib"
           export AR="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export VITE_SENTRY_RELEASE="$SENTRY_RELEASE"
           # Build the generated default Android ABI set so uploaded native symbols
           # match the universal release artifact.
           pnpm tauri android build --ci

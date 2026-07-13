@@ -13,6 +13,8 @@ import { logAndIgnore } from "@/lib/logAndIgnore";
 interface AppProps {
   /** Resets any client state `App` itself doesn't own — e.g. `main.tsx`'s Jotai store, so account-scoped atoms (settings-open, per-room reply/edit drafts) don't survive into the next signed-in account. */
   onLoggedOut?: () => void;
+  /** Initial value for the crash-recovery prompt's open state, owned here (not `RoomsScreen`) so a dismissal survives a logout/login cycle within the same process — see `RoomsScreen`'s `crashRecoveryPromptOpen` prop doc comment. */
+  showCrashRecoveryPrompt?: boolean;
 }
 
 /**
@@ -24,10 +26,11 @@ interface AppProps {
  * held here and is only consumed by `RoomsScreen` once onboarding
  * completes.
  */
-function App({ onLoggedOut }: AppProps) {
+function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   const [session, setSession] = useState<LoginResponse | null>(null);
   const [restoring, setRestoring] = useState(true);
   const [deepLinkRoomId, setDeepLinkRoomId] = useState<string | null>(null);
+  const [crashRecoveryPromptOpen, setCrashRecoveryPromptOpen] = useState(showCrashRecoveryPrompt);
   const onboarding = useOnboardingGate(session?.user_id ?? null);
 
   useEffect(() => {
@@ -76,6 +79,8 @@ function App({ onLoggedOut }: AppProps) {
       currentUserId={session.user_id}
       deepLinkRoomId={deepLinkRoomId}
       onDeepLinkConsumed={() => setDeepLinkRoomId(null)}
+      crashRecoveryPromptOpen={crashRecoveryPromptOpen}
+      onDismissCrashRecoveryPrompt={() => setCrashRecoveryPromptOpen(false)}
       onLoggedOut={() => {
         // Clears every account-scoped cache entry (profile, devices,
         // notification settings, room list, ...) so a subsequent sign-in as
