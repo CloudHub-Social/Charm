@@ -16,18 +16,19 @@ name: Review gate
 #
 # Each bot exposes a different reliable done-signal (verified empirically):
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
-#   - Codex  → a submitted review whose `commit_id` exactly equals HEAD_SHA.
-#              This is the one signal that's actually authoritative: a review
-#              can legitimately take a while and finish for an *older* commit
-#              if pushes arrive faster than Codex reviews them (that's not a
-#              bug, just "still working" — waiting longer is correct), but no
-#              timestamp trick can ever prove a review or a `+1` reaction was
-#              *for this exact code*, only that it happened at some point in
-#              time. A `+1` reaction especially can't: it has no commit_id at
-#              all, and re-adding the same reaction is idempotent server-side
-#              (its created_at never advances), so a repeat-clean pass leaves
-#              no fresh signal whatsoever to check. See nudge_codex_once()
-#              below for how a stuck "clean, reaction-only" PR recovers.
+#   - Codex  → EITHER a submitted review whose `commit_id` exactly equals
+#              HEAD_SHA (the findings case), OR a general PR comment whose
+#              body names HEAD_SHA's short SHA via "**Reviewed commit:**
+#              `<10 chars>`" (the clean case) — verified empirically that a
+#              clean "@codex review" re-confirmation creates *only* that kind
+#              of comment plus an (idempotent, non-refreshing) `+1` reaction,
+#              never an actual pulls/reviews entry at all. Neither signal
+#              relies on a timestamp: a review can legitimately take a while
+#              and finish for an *older* commit if pushes arrive faster than
+#              Codex reviews them (that's not a bug, just "still working" —
+#              waiting longer is correct), and no timestamp trick can ever
+#              prove a review or reaction was *for this exact code* the way
+#              an exact commit-identifying string can.
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
@@ -116,33 +117,38 @@ jobs:
                   | select($author == "" or .comments.nodes[0].author.login == $author)
                   | select(.isResolved == false)] | length'
           }
-          # See the header comment: only a review whose commit_id exactly
-          # equals HEAD_SHA proves Codex evaluated this code. --paginate in
-          # case the PR has many reviews.
+          # See the header comment for why these are the two signals. gh's
+          # own --jq flag takes a single filter string, not --arg — it can't
+          # be combined with jq's --arg the way plain jq can, so pipe the raw
+          # JSON to jq ourselves instead (same fix as
+          # unresolved_review_thread_count above). --paginate in case the PR
+          # has many reviews/comments.
           codex_done() {
-            # gh's own --jq flag takes a single filter string, not --arg — it
-            # can't be combined with jq's --arg the way plain jq can, so pipe
-            # the raw JSON to jq ourselves instead (same fix as
-            # unresolved_review_thread_count above).
-            gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+            local short_sha
+            short_sha="${HEAD_SHA:0:10}"
+
+            if gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
               | jq --arg sha "$HEAD_SHA" \
                 '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
+              | grep -q .; then
+              return 0
+            fi
+
+            gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              | jq --arg marker "**Reviewed commit:** \`$short_sha\`" \
+                '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and (.body | contains($marker))) | .id' \
               | grep -q .
           }
 
           # Codex normally self-triggers on open/synchronize (per its own
           # description: "Reviews are triggered when you open a PR / mark
-          # ready / comment @codex review"), and a proper `@codex review`
-          # comment reliably produces a fresh, commit_id-anchored review even
-          # when clean — unlike the automatic webhook path, which for a
-          # repeat-clean pass leaves only an idempotent (never-refreshing) +1
-          # reaction and no way to prove it looked at the new head at all (see
-          # header comment). So a timeout with codex=false always gets
-          # nudged, regardless of whether Codex engaged before: waiting the
-          # full TIMEOUT_MINUTES already rules out "still working, will
-          # finish shortly" as the explanation, and a stuck "clean, reaction-
-          # only" PR needs exactly this kind of explicit re-trigger to ever
-          # produce a signal this check can actually verify.
+          # ready / comment @codex review"). A timeout with codex=false always
+          # gets nudged, regardless of whether Codex engaged before: waiting
+          # the full TIMEOUT_MINUTES already rules out "still working, will
+          # finish shortly" as the explanation, so either it never triggered
+          # at all (missed webhook, ...) or it reviewed an older head and
+          # hasn't caught up to this one — an explicit "@codex review" comment
+          # is the right recovery either way.
           # Nudge once via a marker-tagged comment rather than requiring a
           # human to notice the timeout and comment manually — but only once
           # *per head commit*, not once ever for the whole PR: the marker
