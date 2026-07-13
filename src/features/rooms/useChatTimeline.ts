@@ -7,6 +7,7 @@ import {
   type RoomSummary,
 } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { messageRowKey } from "./messageRowShared";
 
 // `react-virtuoso`'s prepend recipe: `firstItemIndex` is the logical index of
 // `messages[0]` in an unbounded conceptual list that grows *backwards* as
@@ -187,7 +188,17 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const generation = visitGenerationRef.current;
-    const previousLength = messages.length;
+    // Identifies the message that was previously first-loaded, not just its
+    // *count* — a plain `messages.length` diff against the new page's length
+    // breaks if a live `timeline:update` (Spec 14's full re-snapshot) lands
+    // and appends a new message to the tail while this request is still in
+    // flight: the new page's length would then differ from `previousLength`
+    // by (older messages prepended) + (new live messages appended), and
+    // `setFirstItemIndex` would shift by the wrong amount, causing exactly
+    // the kind of scroll jump this migration exists to prevent. Finding the
+    // previously-first message's *position* in the new page is correct
+    // regardless of anything concurrently appended at the tail.
+    const previousFirstKey = messages.length > 0 ? messageRowKey(messages[0]) : null;
     try {
       const page = await getTimelinePage(roomId);
       // Stale if the room has changed since this request was issued —
@@ -196,7 +207,13 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // Don't apply this response's messages or index shift in that case.
       if (visitGenerationRef.current !== generation) return;
       nextCursorRef.current = page.next_cursor;
-      const prepended = page.messages.length - previousLength;
+      const prepended =
+        previousFirstKey === null
+          ? 0
+          : Math.max(
+              0,
+              page.messages.findIndex((m) => messageRowKey(m) === previousFirstKey),
+            );
       if (prepended > 0) {
         setFirstItemIndex((current) => current - prepended);
       }

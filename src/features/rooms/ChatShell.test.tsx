@@ -561,6 +561,70 @@ describe("ChatShell", () => {
     );
   });
 
+  it("computes firstItemIndex by the previously-first message's new position, not a length diff, when a live message races pagination", async () => {
+    // Regression test: a plain `newLength - previousLength` diff would
+    // over-count here — a live `timeline:update` appends a new message to
+    // the tail *while* `loadMoreHistory`'s own request is still in flight,
+    // so by the time that request resolves, the page it returns reflects
+    // both the prepended history AND the appended live message. Diffing
+    // lengths would misattribute the live arrival as more prepended history
+    // and shift `firstItemIndex` (and so the visual anchor) by one too many.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+    const initialFirstItemIndex = Number(
+      screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"),
+    );
+
+    let resolveOlderPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOlderPage = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    // A live message arrives at the tail while the pagination request is
+    // still in flight.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+      });
+    });
+    await screen.findByText("third");
+
+    // The pagination request resolves with exactly one older message
+    // prepended, plus the live "$c" appended at the tail — two more items
+    // than `previousLength`, but only one of them is actually older history.
+    act(() => {
+      resolveOlderPage?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+        next_cursor: null,
+      });
+    });
+
+    await screen.findByText("first");
+    expect(Number(screen.getByTestId("fake-virtuoso").getAttribute("data-first-item-index"))).toBe(
+      initialFirstItemIndex - 1,
+    );
+  });
+
   it("does not animate older history prepended by backward pagination", async () => {
     getTimelinePage.mockResolvedValueOnce({
       messages: [
