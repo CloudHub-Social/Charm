@@ -42,7 +42,7 @@ queue builds (the PR combined with whatever else is ahead of it in the
 queue). Still no native platform bundling. This is the last gate before a
 commit lands on `main`.
 
-## Tier 3 — Nightly platform builds (`nightly-platform-builds.yml`)
+## Tier 3 — Nightly platform builds (`nightly.yml`)
 
 **Implemented.** Full native builds — macOS, Windows, Linux, iOS
 (simulator), Android — on a daily cron (09:00 UTC) plus manual
@@ -52,21 +52,25 @@ job opens (or comments on, if one's already open) a GitHub issue titled
 `Nightly build failure: <Platform>`, so drift gets tracked and triaged
 without gating anyone's work.
 
-These builds only prove "does it compile and bundle" — they don't need to
-gate every commit, just catch breakage within a day.
-
-## Tier 3.5 — Release-candidate builds _(planned, not yet built)_
-
-The idea: when a `release/X.Y.Z` branch is cut (already a recognized PR base
-per `CLAUDE.md`), run the full native matrix in **release** mode (not the
-`--debug` used elsewhere) as a more rigorous pre-ship gate — this is where a
-release-mode-only bug (LTO/codegen differences, bundler-specific issues)
-would actually get caught before tagging. Not yet implemented; no new
-credentials needed to build it, just workflow wiring.
+Builds in **release** profile (not `--debug`) — this used to be split into a
+fast `--debug` workflow and a separate release-mode one, but that split
+didn't hold up: the installable nightly this workflow publishes
+(`publish-nightly`) is meant to represent what actually ships, so handing
+testers a `--debug` binary was actively counterproductive (different perf,
+different codegen, compiled-out `debug_assert!`s can mask or introduce
+different bugs than release does). Release mode also means the Sentry
+debug-symbol upload after each build (same pattern as `release-builds.yml`)
+actually matches what a real crash report would need to symbolicate, so
+Sentry's nightly symbolication baseline stays fresh between tagged releases
+too. The CI-cost tradeoff (release compiles slower, and the deb/rpm
+bundler's intermittent hang is more likely to bite here) is accepted since
+Tier 1/2 already catch plain compile errors — this only needs to catch
+native-bundler and release-mode-specific breakage, and there's no strong
+reason that needs to be fast.
 
 ## Tier 4 — Production release _(partially implemented)_
 
-Triggered by pushing a version tag (`v*`). `sentry-release-artifacts.yml`
+Triggered by pushing a version tag (`v*`). `release-builds.yml`
 already does part of this today: uploads debug symbols / release artifacts
 to Sentry for the tagged commit. The remaining piece — producing real
 **signed and notarized** shipping bundles (macOS notarization, code-signing
@@ -84,10 +88,12 @@ not something to wire up silently.
   dedicated DigitalOcean Spaces bucket (S3-compatible) rather than GitHub's
   Actions cache, so it isn't constrained by that same 10GB cap and every
   branch can freely read+write.
-- Native builds in Tier 1/2 (the `rust` job) and Tier 3 (nightly) both build
-  in `--debug` mode where they're pure compile-checks — release-mode
-  optimization (`opt-level=3`) is expensive and buys nothing for "does it
-  build."
+- Native builds in Tier 1/2 (the `rust` job) build in `--debug` mode where
+  they're pure compile-checks — release-mode optimization (`opt-level=3`) is
+  expensive and buys nothing for "does it build." Tier 3 and Tier 4 build in
+  release mode deliberately, to catch release-mode-only failures and to
+  produce artifacts (installable nightly, Sentry symbols) that actually
+  represent what ships.
 
 ## Future consideration — Moonrepo (Day 4)
 

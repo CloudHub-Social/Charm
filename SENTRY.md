@@ -83,7 +83,7 @@ instead of silently producing an unsymbolicated build.
 
 ## Release Artifacts
 
-`.github/workflows/sentry-release-artifacts.yml` runs on `v*` tags and manual
+`.github/workflows/release-builds.yml` runs on `v*` tags and manual
 dispatch. It currently uploads:
 
 - Frontend sourcemaps through `@sentry/vite-plugin`, with emitted `.map` files
@@ -117,7 +117,7 @@ build without those secrets and a real workflow run.
 Suggested owner-side dispatch for a release candidate:
 
 ```sh
-gh workflow run sentry-release-artifacts.yml \
+gh workflow run release-builds.yml \
   --ref main \
   -f release=charm@2.0.0-rc.1 \
   -f environment=production
@@ -127,7 +127,7 @@ For a tag release, prefer running from the tag ref and omit `release` so the
 workflow uses the tag name:
 
 ```sh
-gh workflow run sentry-release-artifacts.yml \
+gh workflow run release-builds.yml \
   --ref v2.0.0 \
   -f environment=production
 ```

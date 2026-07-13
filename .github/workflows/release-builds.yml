@@ -1,4 +1,4 @@
-name: Sentry release artifacts
+name: Release builds
 
 on:
   push:
@@ -119,7 +119,7 @@ jobs:
       # AppImage is deliberately excluded via --bundles: its own bundling
       # codepath has a separately-known upstream deadlock. deb/rpm
       # bundling is also prone to an *intermittent* hang of its own —
-      # see nightly-platform-builds.yml's Linux job for the full
+      # see nightly.yml's Linux job for the full
       # investigation history and why this retries on a timeout rather
       # than trying to prevent it outright.
       - name: Build Tauri Linux app with release debuginfo (retry on hang, not on a real failure)
@@ -244,7 +244,7 @@ jobs:
       # `pnpm tauri ios build` shells out to `xcodebuild`, and the actual
       # `cargo build` runs inside a generated Xcode "Run Script" build phase
       # (`tauri ios xcode-script`) that does not forward this step's env into
-      # it — the same env-forwarding gap nightly-platform-builds.yml's iOS
+      # it — the same env-forwarding gap nightly.yml's iOS
       # job already documents for sccache. BUILD_ID (written to $GITHUB_ENV
       # by the Sentry config step above) reaches the macOS build fine but
       # would silently be missing for this one, leaving

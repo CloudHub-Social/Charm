@@ -57,7 +57,7 @@ jobs:
           persist-credentials: false
           # Full history, not the default shallow clone — the Sentry vite
           # plugin (enabled below) associates commits with the release it
-          # creates; sentry-release-artifacts.yml uses the same fetch-depth
+          # creates; release-builds.yml uses the same fetch-depth
           # for the same reason.
           fetch-depth: 0
 
@@ -82,7 +82,7 @@ jobs:
             exit 1
           fi
 
-      # Reuses the same script sentry-release-artifacts.yml uses for tagged
+      # Reuses the same script release-builds.yml uses for tagged
       # desktop releases, so source-map upload + release naming behave the
       # same way here. RELEASE_INPUT is left unset so it defaults to
       # GITHUB_SHA — unique per dev deploy, same as every other non-tag run.
@@ -96,7 +96,7 @@ jobs:
       # step below runs that branch's pnpm install/build:web. Restricting to
       # main keeps SENTRY_AUTH_TOKEN out of an unreviewed branch's build
       # environment, same reasoning as the sccache credentials further down
-      # this repo's CI (see nightly-platform-builds.yml).
+      # this repo's CI (see nightly.yml).
       - name: Configure Sentry release upload
         if: github.ref == 'refs/heads/main'
         env:

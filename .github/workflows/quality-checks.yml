@@ -7,7 +7,7 @@ on:
   merge_group:
   workflow_dispatch:
   schedule:
-    # 08:00 UTC daily, an hour ahead of nightly-platform-builds.yml's 09:00
+    # 08:00 UTC daily, an hour ahead of nightly.yml's 09:00
     # cron — runs the Tier 1/2 checks against the current tip of main even
     # on a day with no pushes. Two benefits: (1) catches drift that a
     # gated/skipped check on the last merged PR could have missed (e.g. a
@@ -17,7 +17,7 @@ on:
     # browser caches warm daily instead of only whenever someone happens to
     # push to main. Non-blocking by construction — a schedule run has no PR
     # to gate — but failures are tracked via the same GitHub-issue pattern
-    # nightly-platform-builds.yml uses (see scheduled-failure-tracking).
+    # nightly.yml uses (see scheduled-failure-tracking).
     - cron: "0 8 * * *"
 
 permissions:
@@ -92,7 +92,7 @@ jobs:
           # Mirrors sentry-snapshots.yml's own path filter, extended with the
           # root config/test-support files that workflow doesn't need to care
           # about but lint/typecheck/build/test/drift checks do.
-          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|sentry-release-artifacts)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
+          frontend_pattern='^(src/|e2e/|\.storybook/|public/|\.design-sync/|scripts/tokens-pull\.mjs$|\.github/workflows/(quality-checks|release-builds)\.yml$|\.github/scripts/configure-sentry-release-env\.sh$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig.*\.json$|vite\.config\.ts$|vitest\.config\.ts$|playwright\.config\.ts$|oxlint\.config\.ts$|oxfmt\.config\.ts$|knip\.json$|components\.json$|index\.html$)'
           zero_sha="0000000000000000000000000000000000000000"
 
           # Fetch just the base commit (depth 1) then two-tree diff it against
@@ -878,7 +878,7 @@ jobs:
 
   # Native platform builds (macOS/iOS/Windows/Linux/Android) used to live
   # here, gated on this job's platform output. Moved to
-  # nightly-platform-builds.yml (Tier 3 of the CI/release model — see
+  # nightly.yml (Tier 3 of the CI/release model — see
   # docs/ci-tiers.md): they only prove "does it compile and bundle," which
   # doesn't need to gate every PR push/merge-queue entry, and were the
   # dominant cost driver of CI wall time. They now run on a daily schedule
@@ -888,7 +888,7 @@ jobs:
   # Only meaningful for the schedule trigger: a scheduled run has no PR to
   # fail against, so without this a nightly break in lint/typecheck/tests/
   # clippy/audit would be silent until the next real push to main happened
-  # to touch the same code path. Mirrors nightly-platform-builds.yml's
+  # to touch the same code path. Mirrors nightly.yml's
   # tracking-issue pattern (search-or-create on title, comment if already
   # open) instead of duplicating it per underlying job.
   #

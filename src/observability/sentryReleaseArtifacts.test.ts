@@ -43,7 +43,7 @@ function configureSentryReleaseEnv(env: Record<string, string | undefined> = {})
 
 describe("Sentry release artifact workflow", () => {
   it("keeps the frontend release build guarded and uploadable to Sentry", () => {
-    const workflow = readRepoFile(".github/workflows/sentry-release-artifacts.yml");
+    const workflow = readRepoFile(".github/workflows/release-builds.yml");
     const viteConfig = readRepoFile("vite.config.ts");
 
     expect(workflow).toContain("workflow_dispatch:");
@@ -63,7 +63,7 @@ describe("Sentry release artifact workflow", () => {
   });
 
   it("keeps native debug files and Android build analysis wired to blocking uploads", () => {
-    const workflow = readRepoFile(".github/workflows/sentry-release-artifacts.yml");
+    const workflow = readRepoFile(".github/workflows/release-builds.yml");
     const configureEnv = readRepoFile(".github/scripts/configure-sentry-release-env.sh");
     const androidGradle = readRepoFile("src-tauri/gen/android/app/build.gradle.kts");
 
@@ -86,7 +86,7 @@ describe("Sentry release artifact workflow", () => {
   it("documents manual dispatch requirements and Sentry-side verification", () => {
     const sentryDoc = readRepoFile("SENTRY.md");
 
-    expect(sentryDoc).toContain("gh workflow run sentry-release-artifacts.yml");
+    expect(sentryDoc).toContain("gh workflow run release-builds.yml");
     expect(sentryDoc).toContain("SENTRY_AUTH_TOKEN");
     expect(sentryDoc).toContain("VITE_SENTRY_DSN");
     expect(sentryDoc).toContain("Sentry-side verification");
