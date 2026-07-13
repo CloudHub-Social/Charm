@@ -171,7 +171,15 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // change this call must still apply — e.g. a local echo's `send_state`
     // flipping from "pending" to "sent", or a message becoming `redacted` —
     // which a key-only match would wrongly treat as "nothing changed" and
-    // silently drop.
+    // silently drop. This is exactly why `previousMessagesRef` is stored as a
+    // deep clone below rather than the live array/objects themselves: a
+    // *different* row (not this call's subject) can be mutated in place by
+    // something else — e.g. a reaction toggle mutating a message's
+    // `reactions` array — between when it was stored as "previous" and when
+    // this call runs; comparing against a live (still-mutating) reference
+    // would see that unrelated row's *current* content and misreport this
+    // call as a no-op redundant echo even though it's the first time this
+    // exact snapshot has actually reached `applyMessages`.
     if (
       newMessages.length > 0 &&
       previous.length === newMessages.length &&
@@ -220,7 +228,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // would have to have been replaced), there's no reliable anchor to
       // shift from; leave `firstItemIndex` as-is rather than guess.
     }
-    previousMessagesRef.current = newMessages;
+    // A deep clone, not `newMessages` itself — see the redundant-echo check
+    // above for why: a message object elsewhere in this array can still be
+    // mutated in place later (this is IPC-sourced data, but nothing stops a
+    // caller from holding onto and later touching one of these objects), and
+    // `previousMessagesRef` must keep reflecting the content *as of this
+    // call*, not whatever that object happens to look like by the time a
+    // later call reads it back out.
+    previousMessagesRef.current = JSON.parse(JSON.stringify(newMessages)) as RoomMessageSummary[];
     prependedCountRef.current = newPrependedCount;
     setPrependedCount(newPrependedCount);
     setMessages(newMessages);
