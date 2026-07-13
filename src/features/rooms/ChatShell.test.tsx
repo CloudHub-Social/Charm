@@ -464,6 +464,72 @@ describe("ChatShell", () => {
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
   });
 
+  it("counts a live tail message toward the jump-to-present pill even while an unrelated backward-pagination request is in flight", async () => {
+    // Regression test (Codex review on PR #232): an earlier version
+    // blanket-suppressed the entire jump-to-present count (and entrance
+    // animation) for *any* messages update that landed while `loadingMore`
+    // had been true, conflating "older history was just prepended" with "a
+    // live message happened to arrive during that same window." A live
+    // tail-only arrival (no prepend at all) must still animate in and count
+    // toward the pill, distinguished via `firstItemIndex` not changing for
+    // this specific update (see `previousFirstItemIndexRef` in ChatShell).
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+    fireAtBottomStateChange(false);
+
+    let resolveOlderPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveOlderPage = resolve;
+      }),
+    );
+    fireStartReached();
+    expect(await screen.findByText("Loading older messages…")).toBeInTheDocument();
+
+    // A live message arrives at the tail — unrelated to the in-flight
+    // pagination request, no history prepended.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+      });
+    });
+    await screen.findByText("third");
+
+    expect(await screen.findByRole("button", { name: "1 new message" })).toBeInTheDocument();
+    expect(document.getElementById("message-$c")?.className).toMatch(/animate-in/);
+
+    act(() => {
+      resolveOlderPage?.({
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "third", timestamp_ms: 3 }),
+        ],
+        next_cursor: null,
+      });
+    });
+    await screen.findByText("first");
+    await waitFor(() =>
+      expect(screen.queryByText("Loading older messages…")).not.toBeInTheDocument(),
+    );
+    // The prepended "first" must not itself animate or bump the pill count
+    // further once pagination resolves.
+    expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+    expect(screen.getByRole("button", { name: "1 new message" })).toBeInTheDocument();
+  });
+
   it("opens a newly-selected room bottom-anchored, remounting Virtuoso per room", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [
