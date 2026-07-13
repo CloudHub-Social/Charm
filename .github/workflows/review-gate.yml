@@ -187,8 +187,14 @@ jobs:
           # stuck push and stall with no further recovery action.
           CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for $HEAD_SHA -->"
           codex_nudge_already_posted() {
+            # gh's own --paginate + --jq combo applies the filter PER PAGE
+            # before merging — confirmed: forcing per_page=1 produced
+            # "true\ntrue\ntrue" (one per page), not one merged result. Pipe
+            # the raw --paginate output (which DOES merge bare-array REST
+            # responses into one array) to an external jq instead, same
+            # pattern as codex_done() above.
             [ "$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
-              --jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
+              | jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
           }
           # Best-effort: this is a bonus recovery action, not the actual
           # failure being reported, so a permission error posting the comment
