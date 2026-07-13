@@ -142,7 +142,40 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
           </button>
         </EmojiPicker>
 
-        <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
+        <DropdownMenu
+          open={menuOpen}
+          onOpenChange={(next) => {
+            // Issue #226/#231: reopening this trigger (e.g. clicking "More
+            // actions" again on an edited message, right after the previous
+            // menu was closed by selecting "Edit") is 100% reproducible as a
+            // no-op — the pointerdown that opens the menu also bubbles to
+            // `document`, where the newly-mounted (modal={false})
+            // DismissableLayer's own outside-pointerdown listener — attached
+            // synchronously via flushSync as part of the same pointerdown
+            // dispatch — treats it as a click "outside" the not-yet-rendered
+            // content and immediately closes the menu it just opened.
+            //
+            // An earlier version of this fix called stopPropagation() on the
+            // trigger's pointerdown, but review (#231) correctly flagged that
+            // as too broad: it also stops the SAME event from reaching any
+            // *other* already-open Radix layer's outside-pointerdown listener
+            // (a different row's menu, or the EmojiPicker popover), so those
+            // fail to close when this trigger is clicked. Deferring the state
+            // update by a macrotask instead lets the pointerdown finish
+            // bubbling (and dismiss any other open layer normally) before
+            // this menu's own Content/DismissableLayer mounts, so its
+            // listener only ever sees pointerdowns that happen afterward.
+            // Closing needs no such deferral. Verified via
+            // e2e/message-actions.spec.ts's edit-then-reply flow, which
+            // failed 5/5 runs before this fix and passes 5/5+ after.
+            if (next) {
+              setTimeout(() => setMenuOpen(true), 0);
+            } else {
+              setMenuOpen(false);
+            }
+          }}
+          modal={false}
+        >
           <DropdownMenuTrigger asChild>
             <button
               type="button"
