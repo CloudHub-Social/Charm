@@ -157,14 +157,23 @@ jobs:
               --jq '.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'")) | .id' \
               | grep -q .
           }
+          # Best-effort: this is a bonus recovery action, not the actual
+          # failure being reported, so a permission error posting the comment
+          # (e.g. the repo/org's default workflow token permissions don't
+          # actually grant `issues: write` despite this job requesting it —
+          # seen in practice) must not crash the script and obscure the real
+          # timeout error below with a raw API stack trace.
           nudge_codex_once() {
             if codex_nudge_already_posted; then
               echo "Codex nudge already posted for $HEAD_SHA; not posting again."
               return
             fi
-            gh api "repos/$REPO/issues/$PR/comments" \
-              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER"
-            echo "Posted a @codex review nudge comment for $HEAD_SHA."
+            if gh api "repos/$REPO/issues/$PR/comments" \
+              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" >/dev/null 2>&1; then
+              echo "Posted a @codex review nudge comment for $HEAD_SHA."
+            else
+              echo "::warning::Could not post the Codex nudge comment (likely a token permissions issue — this job's 'issues: write' permission may not be taking effect; check the repo/org's default workflow permissions). Comment '@codex review' manually instead."
+            fi
           }
 
           while :; do
