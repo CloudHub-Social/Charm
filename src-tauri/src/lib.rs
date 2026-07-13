@@ -360,12 +360,13 @@ fn sentry_enabled_at_launch<R: tauri::Runtime>(app: &tauri::App<R>) -> bool {
 fn init_sentry_from_settings<R: tauri::Runtime>(
     app: &tauri::App<R>,
     tracing_installed: bool,
+    sentry_enabled: bool,
 ) -> Option<SentryGuard> {
-    let dsn = sentry_dsn()?;
-    let app_data_dir = app.path().app_data_dir().ok()?;
-    if !observability_enabled_from_store(&app_data_dir) {
+    if !sentry_enabled {
         return None;
     }
+    let dsn = sentry_dsn()?;
+    let app_data_dir = app.path().app_data_dir().ok()?;
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
     update_runtime_observability_logs_enabled(logs_enabled);
@@ -613,11 +614,22 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(matrix::MatrixState::default())
         .setup(|app| {
+            // Read once and pass to both calls below, rather than letting
+            // each independently re-read observability.json from disk: the
+            // file can change between two reads (e.g. the frontend writing a
+            // settings update at the same moment), which could otherwise
+            // install_tracing's Sentry bridging layer for one value of
+            // sentryEnabled while init_sentry_from_settings initializes the
+            // client for a different one — silently dropping every
+            // tracing::*! event Sentry would otherwise have received.
+            let sentry_enabled = sentry_enabled_at_launch(app);
             // Must run before `init_sentry_from_settings`: both attach to the
             // one process-global `tracing` subscriber, which can only be set
             // once — see `install_tracing`'s doc comment.
-            let tracing_installed = install_tracing(app, sentry_enabled_at_launch(app));
-            if let Some(sentry_guard) = init_sentry_from_settings(app, tracing_installed) {
+            let tracing_installed = install_tracing(app, sentry_enabled);
+            if let Some(sentry_guard) =
+                init_sentry_from_settings(app, tracing_installed, sentry_enabled)
+            {
                 app.manage(sentry_guard);
             }
             let handle = app.handle().clone();
