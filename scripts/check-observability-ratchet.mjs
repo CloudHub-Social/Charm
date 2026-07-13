@@ -81,6 +81,21 @@ const actual = {
       "--exclude='*.test.ts' --exclude='*.test.tsx' " +
       "--exclude='*.spec.ts' --exclude='*.spec.tsx'",
   ),
+  // Sentry.metrics.(count|gauge|distribution) is only called directly inside
+  // observability/metrics.ts's own record*() wrappers — everywhere else in
+  // the app calls those wrappers (recordCount/recordGauge/recordDistribution)
+  // instead, so both forms are counted. Also matches metrics.ts's own
+  // function *declarations* (recordCount( appears in `export function
+  // recordCount(`), inflating the count by a fixed few — accepted the same
+  // way frontendSentryCallSites/rustSentryCallSites accept coarse
+  // over-counting elsewhere in this file: it only needs to fail closed on
+  // coverage going down, not be exact.
+  frontendMetricsCallSites: countMatches(
+    "Sentry\\.metrics\\.(count|gauge|distribution)\\(|\\brecord(Count|Gauge|Distribution)\\(",
+    "src --include='*.ts' --include='*.tsx' " +
+      "--exclude='*.test.ts' --exclude='*.test.tsx' " +
+      "--exclude='*.spec.ts' --exclude='*.spec.tsx'",
+  ),
   // Narrowed to actual event-emitting calls/macros, not every `sentry::`
   // reference — the original broad pattern also matched setup/config code
   // (sentry::init, sentry::ClientOptions, scrub_log's type signatures in
@@ -98,6 +113,13 @@ const actual = {
   // PR bot review).
   rustSentryCallSites: countMatches(
     "tracing::(info|warn|error|debug)!|capture_event|add_breadcrumb|capture_message",
+    "src-tauri/src crates --include='*.rs'",
+  ),
+  // `sentry::metrics::counter/gauge/distribution` is the Rust SDK's
+  // equivalent of the frontend's `Sentry.metrics.*`/`record*()` calls above
+  // — same coarse-count rationale, same two directories.
+  rustMetricsCallSites: countMatches(
+    "sentry::metrics::(counter|gauge|distribution)\\(",
     "src-tauri/src crates --include='*.rs'",
   ),
 };

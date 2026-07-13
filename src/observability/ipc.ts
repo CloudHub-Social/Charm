@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { recordCount, recordDistribution } from "./metrics";
 import { createIpcOperationId } from "./operationId";
 import { scrubSensitiveText } from "./scrubbers";
 
@@ -167,11 +168,17 @@ export async function invoke<T>(
         [IPC_OPERATION_ID_HEADER]: id,
       },
     });
+    const durationMs = Math.round(performance.now() - startedAt);
     addIpcBreadcrumb("info", `IPC ${command} succeeded`, {
       command,
       operationId: id,
-      durationMs: Math.round(performance.now() - startedAt),
+      durationMs,
       result: summarizeValue(result),
+    });
+    recordCount("ipc.invoke", 1, { command, outcome: "success" });
+    recordDistribution("ipc.invoke.duration", durationMs, {
+      unit: "millisecond",
+      attributes: { command, outcome: "success" },
     });
     return result;
   } catch (error) {
@@ -181,6 +188,11 @@ export async function invoke<T>(
       operationId: id,
       durationMs,
       error: summarizeError(error),
+    });
+    recordCount("ipc.invoke", 1, { command, outcome: "error" });
+    recordDistribution("ipc.invoke.duration", durationMs, {
+      unit: "millisecond",
+      attributes: { command, outcome: "error" },
     });
     if (shouldCaptureIpcException(command, error, captureOnError)) {
       captureIpcException(createCapturedIpcError(error), {

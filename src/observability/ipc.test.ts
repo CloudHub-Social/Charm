@@ -7,6 +7,11 @@ vi.mock("@sentry/react", () => ({
   addBreadcrumb: vi.fn(),
   captureException: vi.fn(),
   getClient: vi.fn(),
+  metrics: {
+    count: vi.fn(),
+    gauge: vi.fn(),
+    distribution: vi.fn(),
+  },
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({

@@ -269,8 +269,44 @@ pub fn router(state: AppState) -> Router {
         )
         // -- live events --
         .route("/api/ws", get(ws_handler))
+        .layer(axum::middleware::from_fn(record_request_metrics))
         .layer(cors_layer())
         .with_state(state)
+}
+
+/// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
+/// every HTTP request — the backend equivalent of the frontend's
+/// `src/observability/ipc.ts` `invoke()` wrapper, which already instruments
+/// every Tauri IPC call the desktop/mobile client makes. This crate has no
+/// such single dispatch point of its own (routes are plain axum handlers,
+/// not Tauri's `generate_handler!` macro), so a middleware layer is the
+/// equivalent chokepoint for its HTTP surface.
+///
+/// Uses the *matched route template* (`MatchedPath`, e.g.
+/// `/api/rooms/{room_id}/send`) rather than the raw request path as the
+/// metric's `http.route` attribute — the raw path would embed a distinct
+/// room/device/user ID per request, and Sentry bills/aggregates metrics by
+/// their attribute cardinality, so every unique room would silently mint a
+/// new metric series. Falls back to `"unmatched"` for a request that never
+/// matched a route at all (e.g. a 404) rather than embedding the raw path.
+async fn record_request_metrics(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let route = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_owned())
+        .unwrap_or_else(|| "unmatched".to_owned());
+    let started_at = std::time::Instant::now();
+    let response = next.run(request).await;
+    let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+    crate::observability::record_http_request_metric(
+        &route,
+        response.status().as_u16(),
+        duration_ms,
+    );
+    response
 }
 
 /// Builds the router's CORS layer from the same `CHARM_WEB_SERVER_ALLOWED_ORIGIN`

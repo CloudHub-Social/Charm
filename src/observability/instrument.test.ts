@@ -41,6 +41,11 @@ vi.mock("@sentry/react", () => ({
   setTag: vi.fn(),
   getClient: vi.fn(() => client),
   getFeedback: vi.fn(() => feedbackIntegration),
+  metrics: {
+    count: vi.fn(),
+    gauge: vi.fn(),
+    distribution: vi.fn(),
+  },
 }));
 
 beforeEach(() => {
