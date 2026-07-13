@@ -26,6 +26,12 @@ matrix-sdk = { version = "0.18.0", features = ["sqlite", "e2e-encryption", "sso-
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "time"] }
 ts-rs = "12.0.1"
 sentry = { version = "0.48.3", features = ["logs", "metrics", "tracing"] }
+base64 = "0.22"
+# Also present as a dev-dependency below (cookie-jar OIDC test flow); this is
+# the runtime use — forwarding Sentry envelopes through the desktop CSP, see
+# `forward_sentry_envelope` in src/lib.rs. Cargo unifies the two declarations'
+# features across the build graph.
+reqwest = "0.13"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-deep-link = "2.4.9"

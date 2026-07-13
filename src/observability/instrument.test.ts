@@ -28,6 +28,7 @@ const client = {
 };
 
 vi.mock("../lib/platform", () => ({
+  isTauri: vi.fn(() => false),
   platformTag: vi.fn(() => "web"),
   preloadPlatformTag: vi.fn(() => Promise.resolve("web")),
 }));

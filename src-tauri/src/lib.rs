@@ -54,6 +54,59 @@ const DESKTOP_SENTRY_TRACING_CRATES: &[&str] = &["charm", "charm_lib"];
 /// consumer below falls back the same way `release_name!()` already did.
 const BUILD_ID: Option<&str> = option_env!("BUILD_ID");
 
+/// Compile-time-baked fallback for `SENTRY_DSN`, same reasoning as
+/// `BUILD_ID` above: an installed app's launch environment has no
+/// `SENTRY_DSN` set (that's only ever present in the CI job that built it),
+/// so a pure `std::env::var` lookup at runtime would silently find nothing
+/// in every shipped desktop/Android build — both `init_sentry_from_settings`
+/// and `forward_sentry_envelope` need this baked-in value as their fallback.
+/// CI sets `SENTRY_DSN` before invoking `pnpm tauri build`/
+/// `pnpm tauri android build` (see nightly.yml/release-builds.yml) purely so
+/// this `option_env!` captures it; `std::env::var("SENTRY_DSN")` still wins
+/// when actually present (e.g. a local dev override), matching
+/// `resolve_build_id_tag`'s priority order.
+const BAKED_SENTRY_DSN: Option<&str> = option_env!("SENTRY_DSN");
+
+/// Compile-time-baked fallback for `SENTRY_ENVIRONMENT` — same reasoning as
+/// `BAKED_SENTRY_DSN` above, and needed for the same reason: a review bot on
+/// PR #228 caught that once the baked DSN lets native Rust Sentry actually
+/// activate in an installed nightly, `init_sentry_from_settings`'s
+/// `std::env::var("SENTRY_ENVIRONMENT")` read would still find nothing at
+/// runtime, filing Rust events under Sentry's default environment while the
+/// frontend (`import.meta.env.VITE_SENTRY_ENVIRONMENT`, inlined by Vite at
+/// compile time) correctly tags them `nightly`/`production`.
+const BAKED_SENTRY_ENVIRONMENT: Option<&str> = option_env!("SENTRY_ENVIRONMENT");
+
+/// Shared by `resolve_sentry_dsn`/`resolve_sentry_environment`: prefers a
+/// present, non-empty runtime env var, falling back to a present, non-empty
+/// compile-time-baked value. Pulled out as a pure function so this priority
+/// order (including the empty-string-is-unset case) is unit-testable
+/// without an actual process environment — same reasoning as
+/// `resolve_build_id_tag`.
+fn resolve_env_or_baked(env_value: Option<String>, baked: Option<&str>) -> Option<String> {
+    env_value.filter(|value| !value.is_empty()).or_else(|| {
+        // CI build steps that pass `SENTRY_DSN: ${{ ... && secrets.X || '' }}`
+        // (e.g. nightly runs without HAS_SENTRY_CREDS) bake in `Some("")`,
+        // not `None` — `option_env!` only sees "was this env var present at
+        // compile time", not "was it non-empty". Filtering here the same way
+        // as the runtime value above keeps an unconfigured build correctly
+        // disabled instead of treating an empty string as a real (and then
+        // invalid, once parsed as a Dsn) DSN.
+        baked.filter(|value| !value.is_empty()).map(str::to_owned)
+    })
+}
+
+fn resolve_sentry_dsn() -> Option<String> {
+    resolve_env_or_baked(std::env::var("SENTRY_DSN").ok(), BAKED_SENTRY_DSN)
+}
+
+fn resolve_sentry_environment() -> Option<String> {
+    resolve_env_or_baked(
+        std::env::var("SENTRY_ENVIRONMENT").ok(),
+        BAKED_SENTRY_ENVIRONMENT,
+    )
+}
+
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 
@@ -71,6 +124,153 @@ fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
     }
     observability_scrub::scrub_log_in_place(&mut log);
     Some(log)
+}
+
+/// Name of the marker file used to detect an unclean previous exit (Spec
+/// 27-ish "crash recovery prompt"): written as soon as this session starts,
+/// removed on a clean `RunEvent::Exit`. If it's still present at the *next*
+/// launch, the previous process never reached a clean shutdown — either a
+/// hard crash (segfault, OOM kill) or the OS killing the process outright,
+/// neither of which run our own exit handler. This is a coarse yes/no signal
+/// only; it carries no stack trace or diagnostic payload, since a native
+/// panic captured mid-session already goes to Sentry via the tracing bridge
+/// above *if* consent was already granted before the crash. Its purpose is
+/// to close the gap for users who never opted in: nudge them, after the
+/// fact, to turn on crash reporting for next time (see
+/// `had_unclean_previous_session` and the frontend's `crashRecovery.ts`),
+/// not to retroactively manufacture a report for a crash we have no data on.
+const CRASH_MARKER_FILENAME: &str = "last_session.marker";
+
+fn crash_marker_path(app_data_dir: &Path) -> std::path::PathBuf {
+    app_data_dir.join(CRASH_MARKER_FILENAME)
+}
+
+/// Reads whether the previous session's marker is still present (= unclean
+/// exit), then immediately overwrites it to mark *this* session as running.
+/// Consumes the signal in the sense that a second call within the same
+/// process still reports the same thing (the marker now says "running", not
+/// "crashed") — callers should ask once, e.g. at boot.
+fn take_previous_session_crash_flag(app_data_dir: &Path) -> bool {
+    if let Err(error) = std::fs::create_dir_all(app_data_dir) {
+        tracing::warn!(%error, "failed to create app data dir for the crash marker");
+        return false;
+    }
+    let path = crash_marker_path(app_data_dir);
+    let previous_session_unclean = path.exists();
+    // Best-effort: a failure here (disk full, permissions) just means this
+    // session's own marker doesn't get written, so a crash mid-session
+    // wouldn't be detected next launch — logged (not propagated) since
+    // there's no reasonable recovery action and the crash-recovery prompt
+    // is itself only a nice-to-have nudge, not safety-critical.
+    if let Err(error) = std::fs::write(&path, b"running") {
+        tracing::warn!(%error, "failed to write the crash marker file");
+    }
+    previous_session_unclean
+}
+
+fn mark_clean_exit(app_data_dir: &Path) {
+    let _ = std::fs::remove_file(crash_marker_path(app_data_dir));
+}
+
+/// Frontend-visible result of `take_previous_session_crash_flag`, captured
+/// once during `setup()` and handed out by `had_unclean_previous_session` —
+/// the frontend calls that once at boot, same lifetime as this state.
+struct PreviousSessionCrash(bool);
+
+#[tauri::command]
+fn had_unclean_previous_session(state: tauri::State<PreviousSessionCrash>) -> bool {
+    state.0
+}
+
+/// What `forward_sentry_envelope` hands back to the frontend transport —
+/// mirrors the SDK's own `TransportMakeRequestResponse` shape
+/// (`src/observability/instrument.ts`) so `makeTauriIpcTransport` can pass
+/// rate-limit headers straight through instead of only ever seeing a status
+/// code. Sentry's browser SDK uses `X-Sentry-Rate-Limits`/`Retry-After` to
+/// back off per-category (errors vs. replays vs. logs) rather than treating
+/// every 429 the same, so dropping these here would make the webview keep
+/// sending envelopes a category-specific limit already asked it to pause.
+#[derive(serde::Serialize)]
+struct SentryEnvelopeForwardResult {
+    status_code: u16,
+    #[serde(rename = "x-sentry-rate-limits")]
+    rate_limits: Option<String>,
+    #[serde(rename = "retry-after")]
+    retry_after: Option<String>,
+}
+
+/// Forwards a Sentry envelope from the frontend SDK to Sentry's ingest API
+/// over a plain Rust-side HTTP request instead of the webview's own
+/// fetch/XHR — the desktop CSP's `connect-src` doesn't allow the webview to
+/// reach Sentry's ingest host directly (see `instrument.ts`'s
+/// `makeTauriIpcTransport` doc comment), so the frontend SDK is configured
+/// with a custom `transport` that pipes every outgoing envelope through this
+/// IPC command instead. `envelope_base64` because Tauri IPC arguments are
+/// JSON-encoded strings and Sentry envelopes (especially replay/profiling
+/// attachments) are binary. Gated on the same `observability.json` consent
+/// check `init_sentry_from_settings` uses — belt-and-suspenders, since the
+/// frontend only calls this after its own `Sentry.init` already checked
+/// `settings.sentryEnabled`.
+///
+/// Builds its own `X-Sentry-Auth` header via `Dsn::to_auth` — unlike
+/// `store_api_url`/`envelope_api_url`, which are bare endpoint URLs with no
+/// embedded credentials, Sentry's ingest API rejects an envelope POST that
+/// doesn't authenticate this way (the browser SDK's own transport builds the
+/// same header; this just replicates it on the Rust side of the tunnel).
+#[tauri::command]
+async fn forward_sentry_envelope<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    envelope_base64: String,
+) -> Result<SentryEnvelopeForwardResult, String> {
+    use base64::Engine as _;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !observability_enabled_from_store(&app_data_dir) {
+        return Err("observability consent not granted".to_string());
+    }
+
+    let dsn = resolve_sentry_dsn().ok_or_else(|| "SENTRY_DSN not configured".to_string())?;
+    let parsed: sentry::types::Dsn = dsn
+        .parse()
+        .map_err(|e| format!("invalid Sentry DSN: {e}"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(envelope_base64)
+        .map_err(|e| format!("invalid envelope encoding: {e}"))?;
+
+    let auth = parsed
+        .to_auth(Some("sentry.charm-tauri-tunnel/1.0"))
+        .to_string();
+    let client = reqwest::Client::new();
+    let response = client
+        .post(parsed.envelope_api_url().as_str())
+        .header("Content-Type", "application/x-sentry-envelope")
+        .header("X-Sentry-Auth", auth)
+        .body(bytes)
+        .send()
+        .await
+        .map_err(|e| format!("envelope forward failed: {e}"))?;
+
+    let status = response.status();
+    let header = |name: &str| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    let rate_limits = header("x-sentry-rate-limits");
+    let retry_after = header("retry-after");
+    if !status.is_success() {
+        tracing::warn!(
+            status = status.as_u16(),
+            "Sentry envelope forward returned a non-success status"
+        );
+    }
+    Ok(SentryEnvelopeForwardResult {
+        status_code: status.as_u16(),
+        rate_limits,
+        retry_after,
+    })
 }
 
 #[allow(dead_code)]
@@ -339,17 +539,14 @@ fn resolve_build_id_tag(
         .or_else(|| build_id.map(str::to_owned))
 }
 
-fn sentry_dsn() -> Option<String> {
-    std::env::var("SENTRY_DSN")
-        .ok()
-        .filter(|value| !value.is_empty())
-}
-
 /// Whether `init_sentry_from_settings` is about to call `sentry::init` —
 /// computed ahead of that call so `install_tracing` (which must run first,
 /// see its doc comment) knows whether to attach the Sentry bridging layer.
+/// Uses `resolve_sentry_dsn()` (not a bare runtime-only lookup) so this
+/// agrees with `init_sentry_from_settings` on whether a compile-time-baked
+/// DSN counts — see that function's own baked-DSN doc comment (PR #228).
 fn sentry_enabled_at_launch<R: tauri::Runtime>(app: &tauri::App<R>) -> bool {
-    sentry_dsn().is_some()
+    resolve_sentry_dsn().is_some()
         && app
             .path()
             .app_data_dir()
@@ -365,15 +562,12 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
     if !sentry_enabled {
         return None;
     }
-    let dsn = sentry_dsn()?;
+    let dsn = resolve_sentry_dsn()?;
     let app_data_dir = app.path().app_data_dir().ok()?;
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
     update_runtime_observability_logs_enabled(logs_enabled);
-    let environment = std::env::var("SENTRY_ENVIRONMENT")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(Cow::Owned);
+    let environment = resolve_sentry_environment().map(Cow::Owned);
     // Priority: an explicit runtime SENTRY_RELEASE override, then the
     // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
     // binary), then the bare Cargo-version fallback release_name!() already
@@ -632,6 +826,25 @@ pub fn run() {
             {
                 app.manage(sentry_guard);
             }
+            // Desktop-only: a review bot on PR #228 correctly pointed out
+            // that Android/iOS routinely have their process killed by the
+            // OS during normal backgrounding lifecycle management, which
+            // never reaches `RunEvent::Exit` — treating that as "crashed"
+            // would show the crash-recovery prompt on ordinary mobile
+            // launches that never actually crashed. Desktop's tray-menu
+            // Quit/window-close paths don't have this ambiguity (see the
+            // `RunEvent::Exit` comment below).
+            #[cfg(desktop)]
+            {
+                if let Ok(app_data_dir) = app.path().app_data_dir() {
+                    let crashed = take_previous_session_crash_flag(&app_data_dir);
+                    app.manage(PreviousSessionCrash(crashed));
+                } else {
+                    app.manage(PreviousSessionCrash(false));
+                }
+            }
+            #[cfg(not(desktop))]
+            app.manage(PreviousSessionCrash(false));
             let handle = app.handle().clone();
             // Stashed for platform push callbacks (Android's JNI
             // `onMessage`; iOS's Notification Service Extension runs as a
@@ -696,6 +909,8 @@ pub fn run() {
             greet,
             get_platform,
             update_observability_log_consent,
+            had_unclean_previous_session,
+            forward_sentry_envelope,
             matrix::auth::login,
             matrix::auth::register,
             matrix::auth::discover_homeserver,
@@ -796,8 +1011,23 @@ pub fn run() {
             push::unregister_push,
             push::get_push_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Mirror of `take_previous_session_crash_flag` in `setup()`: a
+            // clean `Exit` means this process is shutting down in an orderly
+            // way, so clear the marker before it happens. A crash/kill never
+            // reaches this callback, which is exactly what leaves the marker
+            // behind for the next launch to notice.
+            #[cfg(desktop)]
+            if let tauri::RunEvent::Exit = event {
+                if let Ok(app_data_dir) = app_handle.path().app_data_dir() {
+                    mark_clean_exit(&app_data_dir);
+                }
+            }
+            #[cfg(not(desktop))]
+            let _ = (app_handle, event);
+        });
 }
 
 #[cfg(test)]
@@ -996,5 +1226,77 @@ mod observability_tests {
     #[test]
     fn build_id_tag_is_none_without_release_env_or_compile_time_build_id() {
         assert_eq!(resolve_build_id_tag(None, None), None);
+    }
+
+    #[test]
+    fn crash_flag_is_false_on_first_launch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn crash_flag_is_true_after_an_unclean_exit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // First launch: no marker yet, so no crash reported, but this
+        // session's own marker is now written...
+        assert!(!take_previous_session_crash_flag(dir.path()));
+        // ...and never cleared (simulating a crash/kill instead of the
+        // `RunEvent::Exit` handler running `mark_clean_exit`), so the next
+        // launch sees it and reports true.
+        assert!(take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn crash_flag_is_false_after_a_clean_exit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!take_previous_session_crash_flag(dir.path()));
+        mark_clean_exit(dir.path());
+        assert!(!take_previous_session_crash_flag(dir.path()));
+    }
+
+    #[test]
+    fn sentry_dsn_prefers_runtime_env_over_baked() {
+        let resolved = resolve_env_or_baked(
+            Some("https://runtime@example/1".to_owned()),
+            Some("https://baked@example/2"),
+        );
+        assert_eq!(resolved.as_deref(), Some("https://runtime@example/1"));
+    }
+
+    #[test]
+    fn sentry_dsn_falls_back_to_baked_value() {
+        let resolved = resolve_env_or_baked(None, Some("https://baked@example/2"));
+        assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
+    }
+
+    #[test]
+    fn sentry_dsn_treats_empty_env_value_as_unset() {
+        let resolved = resolve_env_or_baked(Some(String::new()), Some("https://baked@example/2"));
+        assert_eq!(resolved.as_deref(), Some("https://baked@example/2"));
+    }
+
+    #[test]
+    fn sentry_dsn_treats_empty_baked_value_as_unset() {
+        // The bug a review bot caught: `SENTRY_DSN: ${{ cond && secrets.X || '' }}`
+        // bakes `Some("")` via option_env! when `cond` is false, not `None`.
+        let resolved = resolve_env_or_baked(None, Some(""));
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn sentry_dsn_is_none_without_env_or_baked_value() {
+        assert_eq!(resolve_env_or_baked(None, None), None);
+    }
+
+    #[test]
+    fn sentry_environment_prefers_runtime_env_over_baked() {
+        let resolved = resolve_env_or_baked(Some("staging".to_owned()), Some("production"));
+        assert_eq!(resolved.as_deref(), Some("staging"));
+    }
+
+    #[test]
+    fn sentry_environment_falls_back_to_baked_value() {
+        let resolved = resolve_env_or_baked(None, Some("nightly"));
+        assert_eq!(resolved.as_deref(), Some("nightly"));
     }
 }
