@@ -38,9 +38,19 @@ name: Review gate
 # protection should require this context so a PR cannot enter the queue until it
 # passes.
 #
-# On timeout with Codex still not done, posts a one-time "@codex review" nudge
-# comment (marker-tagged so re-runs/later pushes don't repost it) instead of
-# requiring a human to notice the failure and comment manually.
+# On timeout with Codex still not done, the response depends on whether Codex
+# has engaged with this PR at all (any review or comment from it, on any
+# commit): if it never has, something is actually wrong (missed webhook,
+# integration not installed, ...) and this posts a one-time "@codex review"
+# nudge comment (marker-tagged so later timeouts on the same PR don't repost
+# it — see codex_nudge_already_posted). If Codex HAS engaged before, a timeout
+# almost always just means "still working, hasn't caught up to the latest
+# commit yet" — nudging there would be redundant (Codex already self-triggers
+# on every push per its own docs) and previously caused CloudHub-Social/Charm#227
+# to accumulate several manual "@codex review" comments across its lifetime
+# purely because each new commit's timeout looked identical to "never
+# started." That case instead just fails with a message suggesting a longer
+# wait or a re-run, and never posts a comment.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -75,7 +85,12 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TIMEOUT_MINUTES: "10"
+          # 20, not 10: Codex commonly takes longer than 10m to catch up to a
+          # fresh push, and that's normal "still working" latency, not
+          # something a nudge should try to fix (see codex_has_ever_engaged
+          # below) — a longer base wait means fewer timeouts for the
+          # ordinary case in the first place.
+          TIMEOUT_MINUTES: "20"
           POLL_SECONDS: "20"
           # How much longer to keep polling after nudge_codex_once() actually
           # posts a comment, since this workflow only triggers on pull_request
@@ -174,24 +189,36 @@ jobs:
             [ "$matched" = "true" ]
           }
 
-          # Codex normally self-triggers on open/synchronize (per its own
-          # description: "Reviews are triggered when you open a PR / mark
-          # ready / comment @codex review"). A timeout with codex=false always
-          # gets nudged, regardless of whether Codex engaged before: waiting
-          # the full TIMEOUT_MINUTES already rules out "still working, will
-          # finish shortly" as the explanation, so either it never triggered
-          # at all (missed webhook, ...) or it reviewed an older head and
-          # hasn't caught up to this one — an explicit "@codex review" comment
-          # is the right recovery either way.
+          # Whether Codex has EVER reviewed or commented on this PR, on ANY
+          # commit — deliberately not scoped to HEAD_SHA (unlike codex_done
+          # above). Distinguishes "Codex never engaged with this PR at all"
+          # (something is actually broken — missed webhook, the integration
+          # isn't installed, ...) from "Codex has been reviewing every push
+          # fine, it just hasn't caught up to this one yet" (completely
+          # normal latency). Only the former should ever get a nudge; treating
+          # every timeout the same regardless of history is what caused
+          # CloudHub-Social/Charm#227 to end up with several redundant manual
+          # "@codex review" comments over its lifetime, one per commit that
+          # happened to time out.
+          codex_has_ever_engaged() {
+            local matched
+            matched=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              | jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")] | length > 0')
+            if [ "$matched" = "true" ]; then return 0; fi
+            matched=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              | jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")] | length > 0')
+            [ "$matched" = "true" ]
+          }
+
           # Nudge once via a marker-tagged comment rather than requiring a
-          # human to notice the timeout and comment manually — but only once
-          # *per head commit*, not once ever for the whole PR: the marker
-          # embeds HEAD_SHA, so re-running this check (or polling again) for
-          # the *same* stuck commit doesn't spam a repeat nudge, but a later
-          # push that times out for a different reason still gets its own —
-          # a PR-lifetime marker would silently stop nudging after the first
-          # stuck push and stall with no further recovery action.
-          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for $HEAD_SHA -->"
+          # human to notice the timeout and comment manually — scoped to the
+          # whole PR, not HEAD_SHA: since nudge_codex_once is now only ever
+          # called when codex_has_ever_engaged is false (see the main loop
+          # below), needing more than one nudge across the PR's entire
+          # lifetime would mean the first one didn't actually fix whatever was
+          # stopping Codex from engaging at all — spamming a second one
+          # wouldn't help either.
+          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for PR #$PR -->"
           codex_nudge_already_posted() {
             # gh's own --paginate + --jq combo applies the filter PER PAGE
             # before merging — confirmed: forcing per_page=1 produced
@@ -259,7 +286,11 @@ jobs:
               # when it was already posted before or failed) so that
               # follow-up has a real chance to land within this same run
               # instead of leaving the check failed until a manual re-run.
-              if ! $c && ! $nudge_extended && nudge_codex_once; then
+              # Gated on ! codex_has_ever_engaged — see that function's doc
+              # comment for why a PR Codex has already been actively
+              # reviewing should never get nudged, only one that's never
+              # heard from it at all.
+              if ! $c && ! $nudge_extended && ! codex_has_ever_engaged && nudge_codex_once; then
                 nudge_extended=true
                 deadline=$(( $(date +%s) + EXTRA_WAIT_AFTER_NUDGE_MINUTES * 60 ))
                 echo "Extending wait by ${EXTRA_WAIT_AFTER_NUDGE_MINUTES}m after nudging Codex."
@@ -281,6 +312,13 @@ jobs:
                 # enough here either way — #220 showed it doesn't reliably
                 # stop a merge on its own.
                 echo "::error::Seer and Codex have both finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved after ${TIMEOUT_MINUTES}m. Resolve them before merging. If a bot (usually Codex) needs to take another look — e.g. after pushing a fix — comment \"@codex address that feedback\" to prompt a fresh review, then re-run this check."
+              elif ! $c; then
+                # Codex has engaged with this PR before (just not yet for
+                # this exact commit) — that's ordinary "still working"
+                # latency, not something a nudge comment would fix, so this
+                # never posts one. Re-running the check (rather than pushing
+                # a new commit) is usually enough once Codex catches up.
+                echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for Codex to review $HEAD_SHA (seer=$s). Codex has reviewed earlier commits on this PR, so this is most likely still in progress — re-run this check, or increase TIMEOUT_MINUTES if it keeps happening."
               else
                 echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
               fi
