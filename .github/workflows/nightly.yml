@@ -459,7 +459,7 @@ jobs:
       - name: Install Tauri Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xdg-utils
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
@@ -502,6 +502,93 @@ jobs:
           BUILD_ID_KIND: nightly
         run: bash .github/scripts/configure-sentry-release-env.sh
 
+      # tauri-bundler's AppImage path (crates/tauri-bundler/src/bundle/linux/
+      # appimage/linuxdeploy.rs, prepare_tools()) shells out to linuxdeploy
+      # and unconditionally prepares all four of its plugins (gtk, appimage,
+      # gstreamer — even though this repo's tauri.conf.json doesn't opt into
+      # bundleMediaFramework, so gstreamer is never actually invoked, it's
+      # still fetched) plus AppRun, downloading each from upstream the first
+      # time it doesn't find them already present at
+      # $XDG_CACHE_HOME/tauri (~/.cache/tauri here, since we don't pass
+      # --local-tools-directory). There's no env var to redirect those
+      # downloads — prepare_tools() only ever checks that fixed cache path
+      # for each exact filename it expects. Three of the five are pulled
+      # from mutable refs (the gtk and gstreamer plugins from their
+      # respective `master` branches; the appimage plugin from linuxdeploy/
+      # linuxdeploy-plugin-appimage's `continuous` release), and this job
+      # holds live sccache S3 credentials (see HAS_SCCACHE_CREDS above), so
+      # executing an unpinned binary fetched at build time here is a
+      # supply-chain risk. Pre-populate the cache with pinned,
+      # digest-verified copies so prepare_tools() finds everything already
+      # present and never fetches anything at build time.
+      - name: Prefetch and pin linuxdeploy tools for AppImage bundling
+        run: |
+          set -euo pipefail
+          tools_dir="$HOME/.cache/tauri"
+          mkdir -p "$tools_dir"
+
+          fetch_pinned() {
+            local url="$1" dest="$2" sha256="$3"
+            curl -fsSL -o "$dest" "$url"
+            echo "$sha256  $dest" | sha256sum -c -
+            chmod +x "$dest"
+          }
+
+          # AppRun-x86_64 and linuxdeploy-x86_64.AppImage come from Tauri's
+          # own binary-releases mirror (fixed release tags, not upstream
+          # linuxdeploy/linuxdeploy directly) — still pinned by digest here
+          # rather than trusted implicitly.
+          fetch_pinned \
+            "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64" \
+            "$tools_dir/AppRun-x86_64" \
+            "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
+
+          fetch_pinned \
+            "https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage" \
+            "$tools_dir/linuxdeploy-x86_64.AppImage" \
+            "e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
+
+          # linuxdeploy-plugin-gtk ships as a shell script served from a
+          # mutable `master` branch — pin to a specific commit SHA instead
+          # of the branch ref, and still verify by digest.
+          fetch_pinned \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh" \
+            "$tools_dir/linuxdeploy-plugin-gtk.sh" \
+            "cb379f9b0733e9ad9f8bd78f8c2fa038aef2478523bb7d4c8e64ff6a1ea3501a"
+
+          # linuxdeploy-plugin-appimage's `continuous` release tag is
+          # mutable by design (it's a rolling pre-release), so this pins to
+          # today's asset by digest; bump the digest here when
+          # intentionally picking up a newer continuous build.
+          fetch_pinned \
+            "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage" \
+            "$tools_dir/linuxdeploy-plugin-appimage.AppImage" \
+            "1da16a46fa5e058ae740e7c35ed0d36d86cb869ac9cc8a5fd9a1847d7978d99a"
+
+          # linuxdeploy-plugin-gstreamer: prepare_tools() downloads this
+          # unconditionally (from another mutable `master` branch) even
+          # though our tauri.conf.json doesn't set
+          # bundle.linux.appimage.bundleMediaFramework, so linuxdeploy is
+          # never actually invoked with `--plugin gstreamer` — the fetch
+          # still happens regardless, so it still needs pinning here.
+          fetch_pinned \
+            "https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gstreamer/2a2e67491c32995a3f279ad0ecbe77abd512b42a/linuxdeploy-plugin-gstreamer.sh" \
+            "$tools_dir/linuxdeploy-plugin-gstreamer.sh" \
+            "c107b49d84edbffc6ab226ed1007e0626a4f7aa2c3a36b7782bef62351d49e94"
+
+      # AppImage is re-enabled here: linuxdeploy (the tool Tauri shells out
+      # to for AppImage packaging) previously downloaded itself and its GTK/
+      # AppImage plugins from mutable upstream URLs (master branch,
+      # continuous release) at build time, which was a supply-chain risk
+      # given this job's live AWS sccache credentials — see the "Prefetch
+      # and pin linuxdeploy tools" step above, which now pre-populates
+      # ~/.cache/tauri with digest-verified copies so no such download
+      # happens at build time. (AppImage was also excluded for a time by a
+      # separately-known upstream tauri-bundler deadlock, tauri-apps/
+      # tauri#146 — root-caused via a live /proc snapshot on a hung runner —
+      # but that predates the rpm-rs 0.25 upgrade this branch carries; it
+      # has not reproduced since.)
+      #
       # PR #212 (tauri-apps/tauri#15698): installs cargo-tauri from the
       # tauri deps/rpm branch (rpm-rs 0.25) instead of the npm-installed
       # @tauri-apps/cli binary, so the build step below calls
@@ -547,7 +634,7 @@ jobs:
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "::group::Build attempt $attempt/$max_attempts"
             status=0
-            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --bundles deb,rpm || status=$?
+            timeout --kill-after=30 "$per_attempt_timeout" cargo tauri build --bundles deb,rpm,appimage || status=$?
             echo "::endgroup::"
             if [ "$status" -eq 0 ]; then
               echo "Build succeeded on attempt $attempt."
@@ -599,6 +686,7 @@ jobs:
           path: |
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
+            target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 14
 

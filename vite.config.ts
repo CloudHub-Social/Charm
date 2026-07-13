@@ -63,6 +63,10 @@ export default defineConfig(async () => ({
     port: 1420,
     strictPort: true,
     host: host || false,
+    // Required for Sentry's browser JS profiler (Profiler API is gated behind this policy).
+    headers: {
+      "Document-Policy": "js-profiling",
+    },
     hmr: host
       ? {
           protocol: "ws",
