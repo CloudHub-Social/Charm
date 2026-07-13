@@ -347,8 +347,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // unsafe.) The consuming writes that depend on this render's `fresh` diff
   // (marking rows seen) happen in the `useEffect` below, which — sharing
   // this memo's exact dependency list — fires exactly once per committed
-  // `messages`/`loading`/`loadingMore`/`activeRoomId`/`prependedCount`
-  // change, not on every incidental re-render.
+  // `messages`/`loading`/`loadingMore`/`activeRoomId`/`prependedCount`/
+  // `hasMore`/`paginationError` change, not on every incidental re-render.
+  // The last two are read only indirectly, via `awaitingEmptyPagePagination`
+  // (declared above) — without them in the dependency list, a
+  // `paginationError`/`hasMore` transition landing in a commit that doesn't
+  // also change one of the other tracked values would leave this memo
+  // returning its previous (possibly `readyToSeed`-gated-empty) cached Set.
   //
   // Excludes the first `prependedCount` entries — `useChatTimeline`'s own
   // identity-based prepend detection (see `applyMessages`), not a coarse
@@ -382,7 +387,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     });
     return fresh;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, loading, loadingMore, activeRoomId, prependedCount]);
+  }, [messages, loading, loadingMore, activeRoomId, prependedCount, hasMore, paginationError]);
   useEffect(() => {
     const readyToSeed =
       !loading &&
@@ -406,7 +411,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // dependency. An earlier version depended on `[newMessageKeys, atBottom]`
     // directly: `newMessageKeys` is a `useMemo` that returns the *same*
     // memoized Set across renders where `messages`/`loading`/`loadingMore`/
-    // `activeRoomId`/`prependedCount` didn't change, so merely scrolling away
+    // `activeRoomId`/`prependedCount`/`hasMore`/`paginationError` didn't
+    // change, so merely scrolling away
     // from bottom (changing only `atBottom`) re-ran that effect against the
     // same stale Set and double-counted messages that had already arrived
     // while at bottom. Gating on the ref instead of a dependency means this
@@ -422,7 +428,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       if (m.sender === currentUserId) seenOwnTimestampsRef.current.add(m.timestamp_ms);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, loading, loadingMore, activeRoomId, prependedCount]);
+  }, [messages, loading, loadingMore, activeRoomId, prependedCount, hasMore, paginationError]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
