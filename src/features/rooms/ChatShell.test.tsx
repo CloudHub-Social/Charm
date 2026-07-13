@@ -1399,6 +1399,58 @@ describe("ChatShell", () => {
     expect(getTimelinePage).toHaveBeenCalledTimes(3);
   });
 
+  it("excludes every genuinely-prepended row from entrance animation when a prepend and a front-row removal land in the same snapshot", async () => {
+    // Regression test: excluding leading rows from "fresh" (entrance
+    // animation / jump-to-present) by a plain firstItemIndex diff
+    // under-counts when an update both prepends history *and* drops the old
+    // front row in the same snapshot (e.g. an UnableToDecrypt placeholder
+    // resolving into a filtered-out type) — the diff is only the *net*
+    // shift. Here two rows are prepended ($x, $y) while the old front row
+    // ($undecryptable) disappears, so the net shift is only 1, but the
+    // correct skip count is 2 (both $x and $y are old history, not new
+    // arrivals) — using the net shift would incorrectly treat $y as fresh.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$undecryptable",
+          sender: "@alice:localhost",
+          body: "",
+          is_undecrypted: true,
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({
+            event_id: "$x",
+            sender: "@alice:localhost",
+            body: "prepended x",
+            timestamp_ms: 0,
+          }),
+          summary({
+            event_id: "$y",
+            sender: "@alice:localhost",
+            body: "prepended y",
+            timestamp_ms: 0.5,
+          }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+
+    await screen.findByText("prepended y");
+    expect(document.getElementById("message-$x")?.className).not.toMatch(/animate-in/);
+    expect(document.getElementById("message-$y")?.className).not.toMatch(/animate-in/);
+  });
+
   it("ignores a pagination failure from a room the user has since left", async () => {
     // Regression test: the catch block set paginationError unconditionally,
     // without the same visitGenerationRef guard the success/finally paths

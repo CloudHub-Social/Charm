@@ -24,6 +24,15 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
+  // How many *leading* entries in the current `messages` were genuinely
+  // prepended (older history just loaded), as of the last `applyMessages`
+  // call — see that function's own comment for why this must be `newIndex`
+  // (the surviving anchor's new position), not the `firstItemIndex` shift.
+  // `ChatShell` uses this to exclude those specific leading rows from its
+  // entrance-animation/jump-to-present "fresh" diff, since they're old
+  // history that was never seen before but shouldn't be treated as a new
+  // arrival either.
+  const [prependedCount, setPrependedCount] = useState(0);
   // Mirrors `firstItemIndex` synchronously, so `loadMoreHistory`'s pagination
   // loop can read its *current* value mid-call — the `firstItemIndex`
   // component-state variable itself only updates on the next render, which
@@ -88,6 +97,35 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // next surviving row's logical index would silently be treated as
   // unchanged instead of shifting to compensate for the removal.
   const previousMessagesRef = useRef<RoomMessageSummary[]>([]);
+  // Tracks the room id these refs were last reset for — `undefined` (not
+  // `null`) as the initial sentinel, since `null` ("no room active") is
+  // itself a valid target state distinct from "never reset yet".
+  const lastResetRoomIdRef = useRef<string | null | undefined>(undefined);
+  // Resets the refs `loadMoreHistory`/`applyMessages` depend on for
+  // correctness *synchronously during render*, not inside the `useEffect`
+  // below — a child component (Virtuoso, keyed by room id so it remounts on
+  // every room switch) can call `startReached` from its own mount-time
+  // effect, and React fires child effects before parent effects in the same
+  // commit. If these refs were only reset inside this hook's own effect,
+  // a short enough room B that immediately "reaches the top" could trigger
+  // `loadMoreHistory` while `currentRoomIdRef`/`nextCursorRef` still held
+  // room A's values from before the switch — issuing a stateful backward-
+  // pagination request against the wrong room's Timeline. Plain mutations
+  // during render are safe for this exact "adjust bookkeeping when a prop
+  // changed" pattern (see react.dev's guidance on storing information from
+  // previous renders); the actual data fetch still has to happen in the
+  // effect below, since starting a request during render is not allowed.
+  const timelineRoomId = room?.room_id ?? null;
+  if (lastResetRoomIdRef.current !== timelineRoomId) {
+    lastResetRoomIdRef.current = timelineRoomId;
+    visitGenerationRef.current += 1;
+    isAtBottomRef.current = true;
+    currentRoomIdRef.current = timelineRoomId;
+    nextCursorRef.current = null;
+    loadingMoreRef.current = false;
+    previousMessagesRef.current = [];
+    firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
+  }
 
   // Applies a fresh full message snapshot (from either the initial/backward-
   // pagination `getTimelinePage` response or a live `timeline:update`),
@@ -107,7 +145,21 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // identical from `next_cursor` alone.
   function applyMessages(newMessages: RoomMessageSummary[]): number {
     const previous = previousMessagesRef.current;
-    let prepended = 0;
+    // The count of genuinely new *leading* entries in `newMessages` — i.e.
+    // how many positions come before wherever the first surviving
+    // previously-loaded message now sits. This is `newIndex` itself, not
+    // the `firstItemIndex` shift (`oldIndex - newIndex`): those two only
+    // coincide when `oldIndex` is 0 (a plain prepend with no front-row
+    // removal). If the update *both* prepends history *and* drops one or
+    // more old front rows (e.g. an `UnableToDecrypt` placeholder resolving
+    // into a filtered-out type, mixed with a real prepend in the same
+    // snapshot), the shift is only the *net* movement — using it here would
+    // under-count and let some genuinely-old prepended rows slip through as
+    // "fresh" to `ChatShell`'s entrance-animation/jump-to-present logic.
+    // `newIndex` is unaffected by that: it's exactly the boundary between
+    // "new content ahead of the anchor" and the anchor itself, regardless of
+    // how many old rows were removed along the way.
+    let newPrependedCount = 0;
     if (previous.length > 0 && newMessages.length > 0) {
       const newKeys = new Map(newMessages.map((m, i) => [messageRowKey(m), i]));
       for (let oldIndex = 0; oldIndex < previous.length; oldIndex++) {
@@ -125,7 +177,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
           firstItemIndexRef.current += shift;
           setFirstItemIndex(firstItemIndexRef.current);
         }
-        prepended = shift < 0 ? -shift : 0;
+        newPrependedCount = newIndex;
         break;
       }
       // If no previously-loaded message survives anywhere in the new
@@ -134,8 +186,9 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
       // shift from; leave `firstItemIndex` as-is rather than guess.
     }
     previousMessagesRef.current = newMessages;
+    setPrependedCount(newPrependedCount);
     setMessages(newMessages);
-    return prepended;
+    return newPrependedCount;
   }
 
   useEffect(() => {
@@ -145,23 +198,16 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // (Spec 14), so re-running this on every such refresh would silently
     // walk further back into history each time instead of just loading the
     // room once.
-    const timelineRoomId = room?.room_id;
-    visitGenerationRef.current += 1;
-    // A new room always opens scrolled to bottom, regardless of whether the
-    // previously active room was scrolled up reading history.
-    isAtBottomRef.current = true;
-    currentRoomIdRef.current = timelineRoomId ?? null;
-    nextCursorRef.current = null;
-    loadingMoreRef.current = false;
+    //
+    // The refs `loadMoreHistory` depends on for correctness were already
+    // reset synchronously during render, above — this effect only resets
+    // the *state* (which can safely lag a commit, since nothing reads it
+    // before this effect runs) and kicks off the actual fetch.
     setLoadingMore(false);
     setHasMore(false);
     setPaginationError(false);
-    firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
     setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
-    // A fresh room's first snapshot is never "prepended history" relative to
-    // anything — reset so `applyMessages`' first call for this room doesn't
-    // compare against the *previous* room's last-known messages.
-    previousMessagesRef.current = [];
+    setPrependedCount(0);
     if (!timelineRoomId) {
       setMessages([]);
       setLoading(false);
@@ -191,10 +237,10 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   }, [room?.room_id]);
 
   useEffect(() => {
-    const timelineRoomId = room?.room_id;
-    if (!timelineRoomId) return undefined;
+    const listenerRoomId = room?.room_id;
+    if (!listenerRoomId) return undefined;
     const unlisten = onTimelineUpdate((update) => {
-      if (update.room_id !== timelineRoomId) return;
+      if (update.room_id !== listenerRoomId) return;
       // `update.messages` is a full re-snapshot of the room's live Timeline
       // (Spec 14) — every call to `timeline:update` carries the complete
       // current item list, not a delta to merge onto existing state. Merging
@@ -371,6 +417,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     hasMore,
     paginationError,
     firstItemIndex,
+    prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
   };

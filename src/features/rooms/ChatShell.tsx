@@ -156,6 +156,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     hasMore,
     paginationError,
     firstItemIndex,
+    prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
   } = useChatTimeline(room, roomSettingsOpen);
@@ -334,35 +335,36 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     seededRoomIdRef.current = null;
     hasStartedLoadingRoomIdRef.current = null;
   }
-  // Tracks `firstItemIndex` as of the last time this hook's effect fully
-  // processed a `messages` update, so the memo below can tell precisely how
-  // many *leading* entries in the current `messages` array are freshly-
-  // prepended older history (from `useChatTimeline`'s own identity-based
-  // prepend detection — see `applyMessages`), rather than a coarse
-  // "was any pagination request in flight" flag. That coarser approach (an
-  // earlier version of this file) blanket-suppressed the *entire* update
-  // whenever `loadingMore` had been true, which also wrongly suppressed a
-  // genuinely new live message appended to the tail if it happened to race
-  // an in-flight `loadMoreHistory` request — it would never animate in or
-  // count toward the jump-to-present pill. Since `firstItemIndex` only ever
-  // decreases for a true prepend (a same-update tail-only live arrival
-  // leaves it unchanged), comparing it here separates the two cases exactly.
-  const previousFirstItemIndexRef = useRef(firstItemIndex);
   // The memo callback below is pure — no ref mutation inside it. `React.
   // StrictMode` (see `src/main.tsx`) double-invokes memo callbacks for the
-  // same commit; mutating `seenRowKeysRef`/`previousFirstItemIndexRef`/
-  // `seededRoomIdRef` *inside this memo* would make the second invocation
-  // see state already consumed by the first, silently returning an empty
-  // `fresh` set for a message that should have animated. (The plain
-  // assignments above and in the paired `useEffect` below are fine under
-  // double-invocation — they're unconditional/idempotent, not reads of this
-  // memo's own prior output — it's specifically conditional mutation from
-  // inside the memo body that's unsafe.) The consuming writes that depend on
-  // this render's `fresh` diff (marking rows seen, advancing the tracked
-  // `firstItemIndex`) happen in the `useEffect` below, which — sharing this
-  // memo's exact dependency list — fires exactly once per committed
-  // `messages`/`loading`/`loadingMore`/`activeRoomId`/`firstItemIndex`
+  // same commit; mutating `seenRowKeysRef`/`seededRoomIdRef` *inside this
+  // memo* would make the second invocation see state already consumed by
+  // the first, silently returning an empty `fresh` set for a message that
+  // should have animated. (The plain assignments above and in the paired
+  // `useEffect` below are fine under double-invocation — they're
+  // unconditional/idempotent, not reads of this memo's own prior output —
+  // it's specifically conditional mutation from inside the memo body that's
+  // unsafe.) The consuming writes that depend on this render's `fresh` diff
+  // (marking rows seen) happen in the `useEffect` below, which — sharing
+  // this memo's exact dependency list — fires exactly once per committed
+  // `messages`/`loading`/`loadingMore`/`activeRoomId`/`prependedCount`
   // change, not on every incidental re-render.
+  //
+  // Excludes the first `prependedCount` entries — `useChatTimeline`'s own
+  // identity-based prepend detection (see `applyMessages`), not a coarse
+  // "was any pagination request in flight" flag. That coarser approach (an
+  // earlier version of this file, keyed on a `firstItemIndex` diff computed
+  // here) blanket-suppressed the *entire* update whenever `loadingMore` had
+  // been true, which also wrongly suppressed a genuinely new live message
+  // appended to the tail if it happened to race an in-flight
+  // `loadMoreHistory` request. A plain `firstItemIndex` diff has its own bug
+  // too: if an update both prepends history *and* drops one or more old
+  // front rows in the same snapshot (e.g. an `UnableToDecrypt` placeholder
+  // resolving into a filtered-out type), the diff is only the *net* shift,
+  // under-counting how many leading rows are genuinely prepended history.
+  // `prependedCount` is `useChatTimeline`'s own `newIndex` — the boundary
+  // between new content and the surviving anchor — which isn't affected by
+  // that.
   const newMessageKeys = useMemo(() => {
     const readyToSeed =
       !loading &&
@@ -370,7 +372,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       !awaitingEmptyPagePagination;
     if (!readyToSeed) return new Set<string>();
     if (seededRoomIdRef.current !== activeRoomId) return new Set<string>();
-    const prependedCount = Math.max(0, previousFirstItemIndexRef.current - firstItemIndex);
     const fresh = new Set<string>();
     messages.forEach((m, i) => {
       if (i < prependedCount) return;
@@ -381,7 +382,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     });
     return fresh;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, loading, loadingMore, activeRoomId, firstItemIndex]);
+  }, [messages, loading, loadingMore, activeRoomId, prependedCount]);
   useEffect(() => {
     const readyToSeed =
       !loading &&
@@ -394,7 +395,6 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       seenOwnTimestampsRef.current = new Set(
         messages.filter((m) => m.sender === currentUserId).map((m) => m.timestamp_ms),
       );
-      previousFirstItemIndexRef.current = firstItemIndex;
       return;
     }
     // "Jump to present" pill (Spec 26 Phase 2): counts `newMessageKeys` (the
@@ -406,7 +406,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     // dependency. An earlier version depended on `[newMessageKeys, atBottom]`
     // directly: `newMessageKeys` is a `useMemo` that returns the *same*
     // memoized Set across renders where `messages`/`loading`/`loadingMore`/
-    // `activeRoomId`/`firstItemIndex` didn't change, so merely scrolling away
+    // `activeRoomId`/`prependedCount` didn't change, so merely scrolling away
     // from bottom (changing only `atBottom`) re-ran that effect against the
     // same stale Set and double-counted messages that had already arrived
     // while at bottom. Gating on the ref instead of a dependency means this
@@ -421,9 +421,8 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       seenRowKeysRef.current.add(messageRowKey(m));
       if (m.sender === currentUserId) seenOwnTimestampsRef.current.add(m.timestamp_ms);
     });
-    previousFirstItemIndexRef.current = firstItemIndex;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, loading, loadingMore, activeRoomId, firstItemIndex]);
+  }, [messages, loading, loadingMore, activeRoomId, prependedCount]);
   // The "New messages" divider's position is frozen at the *identity* of
   // the first unread message as of opening this room — not re-derived from
   // live `messages.length` on every render. `useChatTimeline` marks the
