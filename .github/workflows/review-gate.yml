@@ -95,8 +95,17 @@ jobs:
           # with >1 matching Seer/Codex result would silently fail this
           # check even though the match existed.
           seer_done() {
+            # check-runs returns an OBJECT ({total_count, check_runs: [...]}),
+            # not a bare array — unlike the reviews/comments endpoints below,
+            # gh's --paginate does NOT merge the nested check_runs array
+            # across pages for this shape; it just prints each page's raw
+            # object as its own separate JSON document (confirmed: forcing a
+            # small per_page produced multiple concatenated top-level docs,
+            # not one merged object). So this needs its own `jq -s` (slurp)
+            # to flatten `.[].check_runs[]` across pages, same idea as
+            # unresolved_review_thread_count()'s GraphQL query below.
             [ "$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '[.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion]
+              | jq -s '[.[].check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion]
                 | any(. == "success" or . == "failure" or . == "neutral")')" = "true" ]
           }
           # --paginate: a PR can have >100 review threads, which `first: 100`
