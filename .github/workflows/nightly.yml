@@ -59,6 +59,91 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Uploads the frontend's sourcemaps exactly once per nightly run, under a
+  # release id tagging it as this nightly's commit — separate from the four
+  # platform jobs below, which each build their own copy of the same
+  # frontend as part of `pnpm tauri build`/`pnpm tauri android build`.
+  # Deliberately NOT enabling SENTRY_UPLOAD in those jobs too: the frontend
+  # bundle Vite produces doesn't fork by native platform, so uploading it
+  # from all four would just spam Sentry with four duplicate sets of maps
+  # for the same commit. This job — a plain `pnpm build` matching
+  # release-builds.yml's `frontend-sourcemaps` job, just with
+  # BUILD_ID_KIND=nightly instead of that job's release/environment
+  # workflow_dispatch inputs — is the one canonical upload nightlies get.
+  # Release builds aren't byte-identical to nightly builds (different
+  # release id, potentially different source at cut time), so this
+  # intentionally doesn't try to reuse or skip based on the release
+  # workflow's own upload; each covers its own build.
+  frontend-sourcemaps:
+    name: Frontend sourcemaps
+    runs-on: ubuntu-latest
+    # See the macOS job's HAS_SENTRY_CREDS comment — same main-only gating.
+    env:
+      HAS_SENTRY_CREDS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          # Full history, not the default shallow clone — the Sentry vite
+          # plugin associates commits with the release it creates, same
+          # reasoning as release-builds.yml's frontend-sourcemaps job.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Compute build id
+        env:
+          SHA: ${{ github.sha }}
+          BUILD_KIND: nightly
+        run: node scripts/compute-build-id.mjs
+
+      - name: Configure Sentry release upload
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+          REQUIRE_VITE_SENTRY_DSN: "true"
+          WRITE_FRONTEND_UPLOAD_ENV: "true"
+          ENVIRONMENT_INPUT: nightly
+          # The script recomputes its own release id from BUILD_ID_KIND (not
+          # the BUILD_KIND the "Compute build id" step above already used)
+          # and then overwrites BUILD_ID/VITE_BUILD_ID with it — see the
+          # macOS job's identical comment on its own "Configure Sentry
+          # release env" step.
+          BUILD_ID_KIND: nightly
+        run: bash .github/scripts/configure-sentry-release-env.sh
+
+      # `vite.config.ts` wires @sentry/vite-plugin when SENTRY_UPLOAD=true
+      # (set by the step above) and the three Sentry secrets are present.
+      # Gated to main the same as every other Sentry-touching step in this
+      # workflow — off main this whole job is a no-op.
+      - name: Build and upload frontend sourcemaps
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
+        run: pnpm build
+
+      - name: Verify sourcemaps are not left in dist
+        if: ${{ env.HAS_SENTRY_CREDS == 'true' }}
+        run: |
+          if find dist -name '*.map' -print -quit | grep -q .; then
+            echo "::error::Sentry sourcemap upload left .map files in dist"
+            find dist -name '*.map' -print
+            exit 1
+          fi
+
   macos:
     name: macOS (tauri build)
     runs-on: macos-latest
