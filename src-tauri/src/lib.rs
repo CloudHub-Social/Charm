@@ -130,15 +130,35 @@ fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool)
         return true;
     }
 
+    // Same Info/Debug split as the tauri-plugin-log registration below —
+    // without this filter the layer accepts every level from every crate
+    // (including matrix-sdk's own DEBUG/TRACE spans) into the persistent
+    // file regardless of build type.
+    let file_level = if cfg!(debug_assertions) {
+        tracing::level_filters::LevelFilter::DEBUG
+    } else {
+        tracing::level_filters::LevelFilter::INFO
+    };
     let file_layer = app.path().app_log_dir().ok().and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
-        let appender = tracing_appender::rolling::daily(dir, "charm.log");
+        // The non-`Builder` `rolling::daily` constructor panics on an
+        // unopenable file (e.g. permissions changed, disk full); go through
+        // the fallible `Builder` instead so that case just disables file
+        // logging for this run rather than aborting startup from inside
+        // `.setup()`.
+        let appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix("charm.log")
+            .build(&dir)
+            .inspect_err(|error| eprintln!("failed to open log file in {dir:?}: {error}"))
+            .ok()?;
         let (writer, guard) = tracing_appender::non_blocking(appender);
         app.manage(TracingFileGuard(guard));
         Some(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
-                .with_writer(writer),
+                .with_writer(writer)
+                .with_filter(file_level),
         )
     });
     if file_layer.is_none() {
