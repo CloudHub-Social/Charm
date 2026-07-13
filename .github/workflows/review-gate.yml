@@ -124,9 +124,6 @@ jobs:
           # unresolved_review_thread_count above). --paginate in case the PR
           # has many reviews/comments.
           codex_done() {
-            local short_sha
-            short_sha="${HEAD_SHA:0:10}"
-
             if gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
               | jq --arg sha "$HEAD_SHA" \
                 '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
@@ -134,9 +131,16 @@ jobs:
               return 0
             fi
 
+            # Don't assume a fixed short-SHA length (verified 10 chars once,
+            # but that's this bot's current formatting, not a guarantee) —
+            # extract whatever hex string follows "Reviewed commit:" and check
+            # it's a genuine prefix of HEAD_SHA instead.
             gh api --paginate "repos/$REPO/issues/$PR/comments" \
-              | jq --arg marker "**Reviewed commit:** \`$short_sha\`" \
-                '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and (.body | contains($marker))) | .id' \
+              | jq --arg sha "$HEAD_SHA" \
+                '.[] | select(.user.login == "chatgpt-codex-connector[bot]")
+                  | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")?.c) as $c
+                  | select($c != null and ($sha | startswith($c)))
+                  | .id' \
               | grep -q .
           }
 
