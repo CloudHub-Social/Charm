@@ -8,7 +8,9 @@ name: Review gate
 # on — and empirically (#220) a PR can still merge with a genuinely unresolved
 # bot thread open, so this gate does not rely on that rule alone. It instead
 # makes queue-entry wait until both bots have signalled "done" on the head
-# commit, then explicitly fails if any review thread is still unresolved.
+# commit AND every review thread is resolved, polling both on the same
+# TIMEOUT_MINUTES budget — a thread resolved by a human while bots are still
+# finishing elsewhere in the loop is picked up without a manual re-run.
 #
 # (Copilot is intentionally excluded — it's advisory only, because Copilot review
 # runs on a monthly credit allowance that can run out and would then fail-closed
@@ -211,25 +213,35 @@ jobs:
             s=false; c=false
             seer_done && s=true || true
             codex_done && c=true || true
-            echo "head=$HEAD_SHA  seer=$s  codex=$c"
+            unresolved=0
             if $s && $c; then
-              # Both bots have signalled done on this exact head — but "done
-              # reviewing" isn't the same as "nothing left to fix". Fail
-              # outright (don't just keep polling — a human, not time, is what
-              # resolves a thread) rather than trust "require conversation
-              # resolution" alone, since #220 showed that rule doesn't
-              # reliably stop a merge on its own.
               unresolved=$(unresolved_review_thread_count)
-              if [ "$unresolved" -gt 0 ]; then
-                echo "::error::Seer and Codex have both finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved. Resolve them before merging. If a bot (usually Codex) needs to take another look — e.g. after pushing a fix — comment \"@codex address that feedback\" to prompt a fresh review, then re-run this check."
-                exit 1
-              fi
+            fi
+            echo "head=$HEAD_SHA  seer=$s  codex=$c  unresolved=$unresolved"
+            if $s && $c && [ "$unresolved" -eq 0 ]; then
               echo "Seer and Codex have finished on $HEAD_SHA, with no unresolved review threads."
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               if ! $c; then nudge_codex_once; fi
-              echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
+              if $s && $c; then
+                # Both bots finished but a thread is still open — this is
+                # deliberately NOT an instant exit-1 the moment it's first
+                # seen (unlike the old behavior): a thread can be resolved by
+                # a human at any point while bots are still being waited on
+                # elsewhere in the loop, e.g. right after replying to a
+                # finding — the exact pattern that happened repeatedly while
+                # developing this workflow itself. Keep polling on the same
+                # TIMEOUT_MINUTES budget so a resolution that lands mid-run
+                # is picked up without needing a manual re-run, and only
+                # actually fail once that budget is exhausted with something
+                # still open. "Require conversation resolution" alone isn't
+                # enough here either way — #220 showed it doesn't reliably
+                # stop a merge on its own.
+                echo "::error::Seer and Codex have both finished reviewing $HEAD_SHA, but $unresolved review thread(s) are still unresolved after ${TIMEOUT_MINUTES}m. Resolve them before merging. If a bot (usually Codex) needs to take another look — e.g. after pushing a fix — comment \"@codex address that feedback\" to prompt a fresh review, then re-run this check."
+              else
+                echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
+              fi
               exit 1
             fi
             sleep "$POLL_SECONDS"
