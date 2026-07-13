@@ -61,7 +61,14 @@ permissions:
   statuses: write
 
 concurrency:
-  group: codex-review-gate-${{ github.repository }}
+  # Scoped per-PR (falling back to a shared "scheduled" key for the sweep
+  # cron, which targets no single PR) — NOT repo-wide. A repo-wide group
+  # allows only one run in-progress plus one queued across the *entire*
+  # repository; a third concurrent PR's event would silently evict the
+  # second queued run, and that PR's `codex/review-gate` required check
+  # would never update, blocking it indefinitely. Matches the per-PR scoping
+  # review-gate.yml already uses for the same reason.
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
