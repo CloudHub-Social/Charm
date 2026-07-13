@@ -70,6 +70,12 @@ export function installMockTauri(seed: {
    * `"incomplete"` to drive settings.spec.ts's recovery-restore flow.
    */
   recoveryState?: "unknown" | "enabled" | "disabled" | "incomplete";
+  /**
+   * `had_unclean_previous_session`'s response — defaults to `false`/unset so
+   * every other spec never sees `main.tsx`'s `CrashRecoveryPrompt`. Set to
+   * `true` to drive crash-recovery.spec.ts's prompt flow.
+   */
+  previousSessionCrashed?: boolean;
 }) {
   // `RoomSummary` grew several Spec-06 org fields (favourite/muted/space/etc)
   // that `list_rooms` must always return a complete shape for — `RoomList.tsx`
@@ -306,6 +312,8 @@ export function installMockTauri(seed: {
     can_redact: () => true,
     get_room_members: () => seed.members ?? [],
     run_command: () => ({ status: "success" }),
+    // main.tsx's crash-recovery nudge — see `previousSessionCrashed` above.
+    had_unclean_previous_session: () => Boolean(seed.previousSessionCrashed),
 
     // Spec 02: media and attachments.
     send_attachment: async (args) => {
