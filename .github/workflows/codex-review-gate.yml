@@ -33,6 +33,22 @@ name: Codex review gate
 # once on a real PR before adding `codex/review-gate` to the repository
 # ruleset's required status checks — requiring it before the workflow exists
 # on the base branch makes the very first PR fail with nothing to satisfy it.
+#
+# Two cases never reach the action itself, since it has no code path for
+# either (confirmed by reading its src/gate.mjs: an unrecognized event name
+# just returns a silent "skip", and a dependabot pull_request_target is
+# filtered out before that) — meaning nothing would ever write the
+# `codex/review-gate` status for that head at all, leaving it stuck
+# "Expected" forever once the check is required:
+#   - `merge_group`: the merge queue's synthetic commit is never something
+#     Codex reviews (it reviews the PR head), but branch protection still
+#     needs a status posted for it once `codex/review-gate` is required —
+#     same reasoning as review-gate.yml's own merge_group no-op pass.
+#   - Dependabot-authored PRs: Codex doesn't review those (matches
+#     review-gate.yml's bot-author skip), so nothing else will ever post a
+#     status for that head either.
+# Both get a direct, trivial "success" status written below instead of
+# invoking the action.
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -42,10 +58,14 @@ on:
     types: [submitted]
   pull_request_review_comment:
     types: [created]
+  merge_group:
   schedule:
     # Retries a stalled gate (e.g. a marker Codex never acknowledged) without
     # needing a human to notice and re-run — see the action's own retry/
-    # backoff behavior (marker-ack-timeout-seconds, max-wait-seconds).
+    # backoff behavior (marker-ack-timeout-seconds, max-wait-seconds). Per its
+    # own src/gate.mjs, a schedule run ignores the `pull-request` input
+    # entirely and scans all open PRs itself, so leaving that input empty for
+    # this trigger (see the step below) is expected, not a bug.
     - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
@@ -61,35 +81,58 @@ permissions:
   statuses: write
 
 concurrency:
-  # Scoped per-PR (falling back to a shared "scheduled" key for the sweep
-  # cron, which targets no single PR) — NOT repo-wide. A repo-wide group
-  # allows only one run in-progress plus one queued across the *entire*
-  # repository; a third concurrent PR's event would silently evict the
-  # second queued run, and that PR's `codex/review-gate` required check
-  # would never update, blocking it indefinitely. Matches the per-PR scoping
-  # review-gate.yml already uses for the same reason.
-  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request || 'scheduled' }}
+  # Scoped per-PR (falling back to the merge-queue entry's own SHA, then a
+  # shared "scheduled" key for the sweep cron, which targets no single PR) —
+  # NOT repo-wide. A repo-wide group allows only one run in-progress plus one
+  # queued across the *entire* repository; a third concurrent PR's (or merge
+  # queue entry's) event would silently evict the second queued run, and that
+  # head's `codex/review-gate` required check would never update, blocking it
+  # indefinitely. Matches the per-PR scoping review-gate.yml already uses for
+  # the same reason.
+  group: codex-review-gate-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request || github.event.merge_group.head_sha || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
   codex-review-gate:
     name: codex/review-gate runner
-    # Skips dependabot-authored PRs/events (Codex doesn't review those, so
-    # waiting would fail-closed and block every automated dependency bump —
-    # same reasoning as review-gate.yml's bot-author skip) and, for the
-    # comment/review/review-comment events, only runs when the actor is
-    # actually Codex so unrelated PR activity doesn't spawn a wasted gate run.
+    # Skips only events with genuinely nothing to do: an issue comment not on
+    # a PR (or not from Codex), or a review/review-comment not from Codex —
+    # none of these have a head commit that needs a *new* status write (the
+    # PR's existing codex/review-gate status, from its original
+    # pull_request_target trigger, already stands). merge_group and
+    # Dependabot pull_request_target are deliberately NOT filtered out here —
+    # see the header comment — they still need the bypass step below to run.
     if: >-
-      (github.event_name != 'pull_request_target' || github.event.pull_request.user.login != 'dependabot[bot]')
-      && (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)))
+      (github.event_name != 'issue_comment' || (github.event.issue.pull_request != null && contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)))
       && (github.event_name != 'pull_request_review' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.review.user.login))
       && (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]'), github.event.comment.user.login))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # v1.2 (v1.2.1 per its release commit message) — see the header comment
-      # for why this is pinned to a SHA rather than the mutable tag.
-      - uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
+      - name: Trivially pass for merge_group and Dependabot (Codex reviews neither)
+        if: >-
+          github.event_name == 'merge_group'
+          || (github.event_name == 'pull_request_target' && github.event.pull_request.user.login == 'dependabot[bot]')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ]; then
+            sha="${{ github.event.merge_group.head_sha }}"
+          else
+            sha="${{ github.event.pull_request.head.sha }}"
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$sha" \
+            -f state=success \
+            -f context=codex/review-gate \
+            -f description="Codex does not review merge-queue commits or Dependabot PRs"
+      - name: Run Codex review gate
+        if: >-
+          github.event_name != 'merge_group'
+          && (github.event_name != 'pull_request_target' || github.event.pull_request.user.login != 'dependabot[bot]')
+        # v1.2 (v1.2.1 per its release commit message) — see the header
+        # comment for why this is pinned to a SHA rather than the mutable tag.
+        uses: JoeyTeng/codex-review-gate-action@80c0dbf39a3b0f932c915c139993d7c2527ba000
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.pull_request }}
