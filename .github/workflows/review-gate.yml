@@ -30,6 +30,10 @@ name: Review gate
 # there is nothing to wait for and blocking would only stall the queue). Branch
 # protection should require this context so a PR cannot enter the queue until it
 # passes.
+#
+# On timeout with Codex still not done, posts a one-time "@codex review" nudge
+# comment (marker-tagged so re-runs/later pushes don't repost it) instead of
+# requiring a human to notice the failure and comment manually.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -42,7 +46,7 @@ concurrency:
 permissions:
   contents: read
   pull-requests: read
-  issues: read
+  issues: write # to post the one-time Codex nudge comment on timeout — see below
   checks: read
 
 jobs:
@@ -177,6 +181,31 @@ jobs:
             return 1
           }
 
+          # Codex normally self-triggers on open/synchronize (per its own
+          # description: "Reviews are triggered when you open a PR / mark
+          # ready / comment @codex review"), so a timeout with codex=false
+          # means either it's unusually slow or, for whatever reason (a
+          # missed webhook, rate limiting, ...), never actually started.
+          # Nudge it once via a marker-tagged comment rather than requiring a
+          # human to notice the timeout and comment manually — but only once
+          # per PR: re-running this check (or a later unrelated push) must
+          # not re-nudge and spam the thread every time it's still slow.
+          CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge -->"
+          codex_nudge_already_posted() {
+            gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              --jq '.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'")) | .id' \
+              | grep -q .
+          }
+          nudge_codex_once() {
+            if codex_nudge_already_posted; then
+              echo "Codex nudge already posted on this PR; not posting again."
+              return
+            fi
+            gh api "repos/$REPO/issues/$PR/comments" \
+              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER"
+            echo "Posted a @codex review nudge comment."
+          }
+
           while :; do
             s=false; c=false
             seer_done && s=true || true
@@ -198,6 +227,7 @@ jobs:
               exit 0
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
+              if ! $c; then nudge_codex_once; fi
               echo "::error::Timed out after ${TIMEOUT_MINUTES}m waiting for review bots (seer=$s codex=$c). Re-run this check once they finish, or push a new commit."
               exit 1
             fi
