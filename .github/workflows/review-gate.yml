@@ -85,10 +85,19 @@ jobs:
           # skipped / timed_out run is still status=="completed" but did NOT
           # actually review — only success/failure/neutral mean a real review ran.
           # --paginate in case the head has >30 check-runs.
+          # jq itself decides true/false and prints exactly that one word —
+          # never pipe a multi-line jq/gh stream into `grep -q`: under
+          # `set -o pipefail`, grep -q exits (and closes its end of the pipe)
+          # as soon as it sees a match, and if more output was still coming
+          # the upstream writer gets SIGPIPE and the whole pipeline reports
+          # non-zero even though a match was found — confirmed reproducing
+          # (exit 141) with a large enough stream. Bit us for real here: a PR
+          # with >1 matching Seer/Codex result would silently fail this
+          # check even though the match existed.
           seer_done() {
-            gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-              --jq '.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion' \
-              | grep -qxE 'success|failure|neutral'
+            [ "$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+              --jq '[.check_runs[] | select(.name == "Seer Code Review" and .status == "completed") | .conclusion]
+                | any(. == "success" or . == "failure" or . == "neutral")')" = "true" ]
           }
           # --paginate: a PR can have >100 review threads, which `first: 100`
           # alone would silently truncate — any unresolved thread past the
@@ -124,12 +133,11 @@ jobs:
           # unresolved_review_thread_count above). --paginate in case the PR
           # has many reviews/comments.
           codex_done() {
-            if gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+            local matched
+            matched=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
               | jq --arg sha "$HEAD_SHA" \
-                '.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha) | .id' \
-              | grep -q .; then
-              return 0
-            fi
+                '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .commit_id == $sha)] | length > 0')
+            if [ "$matched" = "true" ]; then return 0; fi
 
             # Don't assume a fixed short-SHA length (verified 10 chars once,
             # but that's this bot's current formatting, not a guarantee) —
@@ -141,13 +149,12 @@ jobs:
             # errored "unexpected FIELD" on every poll). capture() already
             # produces no output at all on a non-match (not an error), so `?`
             # was never actually needed for that case either.
-            gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            matched=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
               | jq --arg sha "$HEAD_SHA" \
-                '.[] | select(.user.login == "chatgpt-codex-connector[bot]")
+                '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")
                   | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")) as $m
-                  | select($m.c != null and ($sha | startswith($m.c)))
-                  | .id' \
-              | grep -q .
+                  | select($m.c != null and ($sha | startswith($m.c)))] | length > 0')
+            [ "$matched" = "true" ]
           }
 
           # Codex normally self-triggers on open/synchronize (per its own
@@ -169,9 +176,8 @@ jobs:
           # stuck push and stall with no further recovery action.
           CODEX_NUDGE_MARKER="<!-- review-gate: codex nudge for $HEAD_SHA -->"
           codex_nudge_already_posted() {
-            gh api --paginate "repos/$REPO/issues/$PR/comments" \
-              --jq '.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'")) | .id' \
-              | grep -q .
+            [ "$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+              --jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
           }
           # Best-effort: this is a bonus recovery action, not the actual
           # failure being reported, so a permission error posting the comment
