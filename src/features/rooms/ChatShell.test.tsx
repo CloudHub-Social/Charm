@@ -525,6 +525,67 @@ describe("ChatShell", () => {
     expect(await screen.findByRole("button", { name: "1 new message" })).toBeInTheDocument();
   });
 
+  it("does not re-count an own message toward the pill when its pending echo is acknowledged after the user scrolls away", async () => {
+    // Regression test: `messageRowKey` (transaction_id ?? event_id) changes
+    // the moment a pending own send is acknowledged — the row was already
+    // marked "seen" under its pending (transaction id) key while still at
+    // bottom, but the acked version's key (its real event id) was never
+    // seen before, so a naive fresh-diff would count the *same* message a
+    // second time under its new key once the user has since scrolled away.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+
+    // The pending echo renders while still at bottom (default state).
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({
+            event_id: "txn-1",
+            sender: "@me:localhost",
+            body: "my message",
+            timestamp_ms: 2,
+            transaction_id: "txn-1",
+            send_state: { state: "pending" },
+          }),
+        ],
+      });
+    });
+    await screen.findByText("my message");
+
+    // The user scrolls away before the ack snapshot lands.
+    fireAtBottomStateChange(false);
+
+    // The homeserver ack replaces the echo in place: same timestamp, but a
+    // real event id and no transaction_id (per `timeline.rs`).
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({
+            event_id: "$real:localhost",
+            sender: "@me:localhost",
+            body: "my message",
+            timestamp_ms: 2,
+            transaction_id: null,
+            send_state: { state: "sent" },
+          }),
+        ],
+      });
+    });
+
+    await waitFor(() => expect(document.getElementById("message-txn-1")).not.toBeInTheDocument());
+    expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
   it("counts a live tail message toward the jump-to-present pill even while an unrelated backward-pagination request is in flight", async () => {
     // Regression test (Codex review on PR #232): an earlier version
     // blanket-suppressed the entire jump-to-present count (and entrance
@@ -763,8 +824,10 @@ describe("ChatShell", () => {
 
     sendDraft("my own message");
 
-    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
-      expect.objectContaining({ index: "LAST", align: "end" }),
+    await vi.waitFor(() =>
+      expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+        expect.objectContaining({ index: "LAST", align: "end" }),
+      ),
     );
   });
 
@@ -1267,6 +1330,75 @@ describe("ChatShell", () => {
     );
   });
 
+  it("does not treat a front-row removal as pagination progress when the fetched page itself adds nothing", async () => {
+    // Regression test: comparing "did the front key change at all" (rather
+    // than requiring firstItemIndex to actually *decrease*) breaks if the
+    // old front message disappears (see the previous test) at the same time
+    // a fetched page contributes zero renderable rows — the loop must keep
+    // going rather than stop just because *something* changed at the front.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$undecryptable",
+          sender: "@alice:localhost",
+          body: "",
+          is_undecrypted: true,
+          timestamp_ms: 1,
+        }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    let resolveZeroProgressPage:
+      | ((page: { messages: unknown[]; next_cursor: string | null }) => void)
+      | undefined;
+    getTimelinePage.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveZeroProgressPage = resolve;
+      }),
+    );
+    fireStartReached();
+    await screen.findByText("Loading older messages…");
+
+    // The undecryptable placeholder disappears (a front-row removal, not a
+    // prepend) while the pagination request is still in flight.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await waitFor(() =>
+      expect(document.getElementById("message-$undecryptable")).not.toBeInTheDocument(),
+    );
+
+    // The fetched page itself contributes nothing new (same "$b", no "$a")
+    // but still has a next_cursor — the loop must continue.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    act(() => {
+      resolveZeroProgressPage?.({
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+        next_cursor: "more",
+      });
+    });
+
+    await screen.findByText("first");
+    expect(getTimelinePage).toHaveBeenCalledTimes(3);
+  });
+
   it("ignores a pagination failure from a room the user has since left", async () => {
     // Regression test: the catch block set paginationError unconditionally,
     // without the same visitGenerationRef guard the success/finally paths
@@ -1399,6 +1531,30 @@ describe("ChatShell", () => {
     fireEvent.keyDown(composer, { key: "Enter", shiftKey: false });
 
     await screen.findByText("not allowed");
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("does not scroll when sending a message fails before any local echo is created", async () => {
+    // Regression test: `handleComposerSubmit`'s underlying `sendMessage`
+    // call can reject (network/validation error) before any local echo is
+    // ever created. Scrolling to bottom unconditionally in that case yanks
+    // a user who was reading history down for a message that never
+    // actually appeared.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    sendMessage.mockRejectedValueOnce(new Error("network error"));
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+    virtuosoScrollToIndexMock.mockClear();
+
+    sendDraft("this will fail");
+
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
@@ -2103,6 +2259,54 @@ describe("ChatShell", () => {
     const messageBAfter = document.getElementById("message-$b") as HTMLElement;
     expect(isBefore(messageAAfter, dividerAfterUpdate)).toBe(true);
     expect(isBefore(dividerAfterUpdate, messageBAfter)).toBe(true);
+  });
+
+  it("still shows the unread divider in a room whose newest page was empty and had to auto-paginate to find content", async () => {
+    // Regression test: seeding the unread-divider boundary (and the
+    // entrance-animation seen-set) used to run as soon as `!loading`, which
+    // could fire while `messages` was still empty — the newest page having
+    // zero renderable rows but more history behind it (see the empty-first-
+    // page auto-pagination effect). That permanently froze the unread
+    // boundary against an empty snapshot, so the room's *real* first batch
+    // (whenever auto-pagination found it) rendered with no divider at all,
+    // even though the room genuinely has unread messages.
+    const unreadRoom = makeRoomSummary({ unread_messages: 1 });
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: "more" });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "one", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "two", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("New messages");
+    const messageA = document.getElementById("message-$a") as HTMLElement;
+    const messageB = document.getElementById("message-$b") as HTMLElement;
+    const divider = screen.getByText("New messages");
+    expect(isBefore(messageA, divider)).toBe(true);
+    expect(isBefore(divider, messageB)).toBe(true);
+  });
+
+  it("does not entrance-animate a room's real first batch after auto-pagination past an empty newest page", async () => {
+    const unreadRoom = makeRoomSummary({ unread_messages: 0 });
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: "more" });
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({
+          event_id: "$a",
+          sender: "@alice:localhost",
+          body: "older text",
+          timestamp_ms: 1,
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), unreadRoom);
+
+    await screen.findByText("older text");
+    expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
   });
 
   it("breaks a same-sender message group across the unread divider", async () => {

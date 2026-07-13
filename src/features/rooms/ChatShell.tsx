@@ -176,6 +176,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `loadMoreHistory` closes over refs, not state.
   }, [loading, messages.length, hasMore, loadingMore, paginationError]);
+  // While this is true, `messages` is empty only because the empty-first-
+  // page auto-pagination above is still working toward either real content
+  // or a confirmed-exhausted history — not because the room's history is
+  // actually empty. The various "seed once per room" effects below
+  // (entrance-animation seen-set, unread-divider boundary) must not treat
+  // this transient empty array as the room's real initial state: doing so
+  // would permanently mark the seed as done against zero messages, so the
+  // *real* first batch (whenever auto-pagination finds it) would incorrectly
+  // read as a fresh arrival — animating in and (if scrolled away, though
+  // unlikely this early) counting toward the jump-to-present pill — and
+  // would freeze the unread divider's position against an empty snapshot
+  // instead of the room's actual unread boundary.
+  const awaitingEmptyPagePagination = messages.length === 0 && hasMore && !paginationError;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   // Mirrors Virtuoso's `atBottomStateChange` — drives the "jump to present"
   // pill's visibility (Spec 26 Phase 2). Starts `true` since a freshly
@@ -296,6 +309,18 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // flip a message's `isNew` back to `false` before the animation ever gets
   // committed to the DOM.
   const seenRowKeysRef = useRef<Set<string>>(new Set());
+  // Own messages' `messageRowKey` (transaction_id ?? event_id) changes the
+  // moment the homeserver acks a pending send — `transaction_id` reverts to
+  // `null` and `event_id` becomes the real Matrix event id (see
+  // `messageRowKey`'s own doc comment). A message already marked seen under
+  // its pending key would otherwise look "fresh" again under its post-ack
+  // key if the user scrolled away between the two — reappearing in the
+  // jump-to-present pill for a message that was already visible before they
+  // left. `timestamp_ms` doesn't change across that transition, so it's used
+  // here as a stable secondary identity for the current user's own messages
+  // specifically (this doesn't apply to the entrance animation, which
+  // already excludes all own messages from `isNew` unconditionally).
+  const seenOwnTimestampsRef = useRef<Set<number>>(new Set());
   const seededRoomIdRef = useRef<string | null>(null);
   const hasStartedLoadingRoomIdRef = useRef<string | null>(null);
   if (loading) hasStartedLoadingRoomIdRef.current = activeRoomId;
@@ -339,7 +364,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   // `messages`/`loading`/`loadingMore`/`activeRoomId`/`firstItemIndex`
   // change, not on every incidental re-render.
   const newMessageKeys = useMemo(() => {
-    const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    const readyToSeed =
+      !loading &&
+      hasStartedLoadingRoomIdRef.current === activeRoomId &&
+      !awaitingEmptyPagePagination;
     if (!readyToSeed) return new Set<string>();
     if (seededRoomIdRef.current !== activeRoomId) return new Set<string>();
     const prependedCount = Math.max(0, previousFirstItemIndexRef.current - firstItemIndex);
@@ -347,17 +375,25 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     messages.forEach((m, i) => {
       if (i < prependedCount) return;
       const key = messageRowKey(m);
-      if (!seenRowKeysRef.current.has(key)) fresh.add(key);
+      if (seenRowKeysRef.current.has(key)) return;
+      if (m.sender === currentUserId && seenOwnTimestampsRef.current.has(m.timestamp_ms)) return;
+      fresh.add(key);
     });
     return fresh;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, loading, loadingMore, activeRoomId, firstItemIndex]);
   useEffect(() => {
-    const readyToSeed = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    const readyToSeed =
+      !loading &&
+      hasStartedLoadingRoomIdRef.current === activeRoomId &&
+      !awaitingEmptyPagePagination;
     if (!readyToSeed) return;
     if (seededRoomIdRef.current !== activeRoomId) {
       seededRoomIdRef.current = activeRoomId;
       seenRowKeysRef.current = new Set(messages.map(messageRowKey));
+      seenOwnTimestampsRef.current = new Set(
+        messages.filter((m) => m.sender === currentUserId).map((m) => m.timestamp_ms),
+      );
       previousFirstItemIndexRef.current = firstItemIndex;
       return;
     }
@@ -381,7 +417,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     if (!atBottomRef.current && newMessageKeys.size > 0) {
       setNewMessageCount((count) => count + newMessageKeys.size);
     }
-    messages.forEach((m) => seenRowKeysRef.current.add(messageRowKey(m)));
+    messages.forEach((m) => {
+      seenRowKeysRef.current.add(messageRowKey(m));
+      if (m.sender === currentUserId) seenOwnTimestampsRef.current.add(m.timestamp_ms);
+    });
     previousFirstItemIndexRef.current = firstItemIndex;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages, loading, loadingMore, activeRoomId, firstItemIndex]);
@@ -414,6 +453,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
   if (
     !loading &&
     hasStartedLoadingRoomIdRef.current === activeRoomId &&
+    !awaitingEmptyPagePagination &&
     seededUnreadRoomIdRef.current !== activeRoomId
   ) {
     seededUnreadRoomIdRef.current = activeRoomId;
@@ -497,11 +537,15 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
     handleVirtuosoAtBottomStateChange(true);
   }
   // Skipped for edits: saving an edit to an old message shouldn't relocate
-  // the view to it.
-  function handleComposerSubmitAndScroll(content: Parameters<typeof handleComposerSubmit>[0]) {
+  // the view to it. Gated on `handleComposerSubmit`'s own success signal —
+  // if the queueing call itself rejected (network/validation error) before
+  // any local echo was created, there's no new message to scroll to.
+  async function handleComposerSubmitAndScroll(
+    content: Parameters<typeof handleComposerSubmit>[0],
+  ) {
     const wasEditing = composerMode === "edit";
-    handleComposerSubmit(content);
-    if (!wasEditing) scrollToPresentAfterOwnSend();
+    const succeeded = await handleComposerSubmit(content);
+    if (!wasEditing && succeeded) scrollToPresentAfterOwnSend();
   }
   // A slash command (e.g. `/me ...`, which sends an emote message the same
   // way a plain send does — see `src-tauri/src/matrix/commands.rs`) goes

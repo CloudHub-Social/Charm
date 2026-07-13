@@ -41,8 +41,14 @@ export function useMessageSend({
     setCommandFeedback(null);
   }, [roomId]);
 
-  async function handleComposerSubmit(content: ComposerContent) {
-    if (!room) return;
+  // Returns whether the underlying queue call actually succeeded — `ChatShell`
+  // uses this to decide whether to scroll to present after a send/reply: if
+  // the queueing call itself rejects (network/validation error) before any
+  // local echo is created, there's no new message to scroll to, and
+  // unconditionally scrolling would yank a user who was reading history to
+  // the bottom for nothing.
+  async function handleComposerSubmit(content: ComposerContent): Promise<boolean> {
+    if (!room) return false;
     const targetRoom = room;
 
     if (editingEventId) {
@@ -54,7 +60,7 @@ export function useMessageSend({
       } catch (err) {
         console.error(err);
       }
-      return;
+      return false;
     }
 
     const replyingTo = replyTarget;
@@ -83,8 +89,10 @@ export function useMessageSend({
           content.mentions,
         );
       }
+      return true;
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 

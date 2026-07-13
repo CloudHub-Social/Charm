@@ -24,6 +24,13 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [firstItemIndex, setFirstItemIndex] = useState(INITIAL_FIRST_ITEM_INDEX);
+  // Mirrors `firstItemIndex` synchronously, so `loadMoreHistory`'s pagination
+  // loop can read its *current* value mid-call — the `firstItemIndex`
+  // component-state variable itself only updates on the next render, which
+  // is too late for a same-call before/after comparison across loop
+  // iterations (`setFirstItemIndex`'s updater form batches, it doesn't
+  // resolve synchronously).
+  const firstItemIndexRef = useRef(INITIAL_FIRST_ITEM_INDEX);
   // Mirrors `nextCursorRef.current !== null` as reactive state — `ChatShell`
   // needs this to auto-trigger `loadMoreHistory` when the newest page comes
   // back with zero *renderable* messages (some Matrix timeline items —
@@ -114,7 +121,10 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         // was 0) were removed; negative when older history was prepended
         // ahead of it.
         const shift = oldIndex - newIndex;
-        if (shift !== 0) setFirstItemIndex((current) => current + shift);
+        if (shift !== 0) {
+          firstItemIndexRef.current += shift;
+          setFirstItemIndex(firstItemIndexRef.current);
+        }
         prepended = shift < 0 ? -shift : 0;
         break;
       }
@@ -146,6 +156,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     setLoadingMore(false);
     setHasMore(false);
     setPaginationError(false);
+    firstItemIndexRef.current = INITIAL_FIRST_ITEM_INDEX;
     setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
     // A fresh room's first snapshot is never "prepended history" relative to
     // anything — reset so `applyMessages`' first call for this room doesn't
@@ -285,26 +296,32 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // refire on its own while an all-filtered-out response leaves that range
     // unchanged.
     //
-    // Progress is judged by comparing the *whole loop's* starting front
-    // message against the current one after each response, not
-    // `applyMessages`' own per-call return value and not a plain
-    // `messages.length` diff:
-    // - A length diff breaks if a live tail message races this request:
-    //   the total grows with no real prepend, stopping the loop one page
-    //   too early (the same class of bug `firstItemIndex`'s own math had to
-    //   be fixed for).
+    // Progress is judged by whether `firstItemIndex` has *decreased* since
+    // the whole loop started (via the synchronous `firstItemIndexRef`, not
+    // the `firstItemIndex` component-state variable, which doesn't update
+    // until next render) — not `applyMessages`' own per-call return value,
+    // and not a plain `messages.length` diff:
+    // - A length diff breaks if a live tail message races this request: the
+    //   total grows with no real prepend, stopping the loop one page too
+    //   early.
     // - `applyMessages`' per-call return breaks the *opposite* way if a live
     //   `timeline:update` for this same `paginate_backwards` call applies
     //   the prepend *before* this request's own response arrives: by the
     //   time this loop processes that response, `applyMessages` finds
-    //   nothing new to shift (the live update already moved
-    //   `previousMessagesRef`), reports zero progress, and this loop
-    //   would call `getTimelinePage` again — needlessly walking further
-    //   back than the single page the user's scroll-up asked for.
-    // Comparing against the loop's own starting point catches genuine
-    // progress regardless of which path (this loop's own responses, or a
-    // racing live update) produced it.
-    const initialFirstKey = messages.length > 0 ? messageRowKey(messages[0]) : null;
+    //   nothing new to shift, reports zero progress, and this loop would
+    //   call `getTimelinePage` again — needlessly walking further back than
+    //   the single page the user's scroll-up asked for.
+    // - Comparing *any* front-key change (rather than requiring a genuine
+    //   decrease) breaks a third way: if the old front message disappears
+    //   from a later snapshot entirely (e.g. an `UnableToDecrypt`
+    //   placeholder resolving into a filtered-out type) while a fetched page
+    //   itself contributes zero renderable rows, `firstItemIndex` moves the
+    //   *other* direction (see `applyMessages`) — real progress requires it
+    //   to strictly decrease, not merely change.
+    // Comparing against the loop's own starting point (not each individual
+    // response) catches genuine progress regardless of which path (this
+    // loop's own responses, or a racing live update) produced it.
+    const initialFirstItemIndex = firstItemIndexRef.current;
     const startedEmpty = messages.length === 0;
     try {
       for (;;) {
@@ -318,12 +335,9 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
         setHasMore(page.next_cursor !== null);
         applyMessages(page.messages);
         setPaginationError(false);
-        const currentFirstKey =
-          previousMessagesRef.current.length > 0
-            ? messageRowKey(previousMessagesRef.current[0])
-            : null;
         const madeProgress =
-          currentFirstKey !== initialFirstKey || (startedEmpty && page.messages.length > 0);
+          firstItemIndexRef.current < initialFirstItemIndex ||
+          (startedEmpty && page.messages.length > 0);
         if (madeProgress || page.next_cursor === null) break;
       }
     } catch (err) {
