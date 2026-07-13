@@ -16,21 +16,35 @@ name: Review gate
 # runs on a monthly credit allowance that can run out and would then fail-closed
 # on every PR here. Re-add a copilot_done check to the loop if that changes.)
 #
-# Each bot exposes a different reliable done-signal (verified empirically):
+# Each bot exposes a different reliable done-signal:
 #   - Seer   → a per-commit `Seer Code Review` check-run reaching "completed".
-#   - Codex  → EITHER a submitted review whose `commit_id` exactly equals
-#              HEAD_SHA (the findings case), OR a general PR comment whose
-#              body names HEAD_SHA's short SHA via "**Reviewed commit:**
-#              `<10 chars>`" (the clean case) — verified empirically that a
-#              clean "@codex review" re-confirmation creates *only* that kind
-#              of comment plus an (idempotent, non-refreshing) `+1` reaction,
-#              never an actual pulls/reviews entry at all. Neither signal
-#              relies on a timestamp: a review can legitimately take a while
-#              and finish for an *older* commit if pushes arrive faster than
-#              Codex reviews them (that's not a bug, just "still working" —
-#              waiting longer is correct), and no timestamp trick can ever
-#              prove a review or reaction was *for this exact code* the way
-#              an exact commit-identifying string can.
+#   - Codex  → whichever of these three appears first:
+#              1. A submitted review whose `commit_id` exactly equals
+#                 HEAD_SHA (the findings case).
+#              2. A general PR comment whose body names HEAD_SHA's short SHA
+#                 via "**Reviewed commit:** `<10 chars>`" (a clean
+#                 confirmation, seen the first time Codex reviews a PR).
+#              3. Codex's own `+1` reaction on the PR/issue itself, with no
+#                 commit-identifying text attached (a clean confirmation on a
+#                 *later* commit — CloudHub-Social/Charm#235 showed empirically
+#                 that Codex doesn't always repost the "Reviewed commit" text
+#                 comment on every subsequent clean commit, just the reaction;
+#                 the doc comment above signal 2 previously claimed otherwise
+#                 based on only having observed the very first clean
+#                 confirmation).
+#              Signals 1 and 2 need no timestamp: a review can legitimately
+#              take a while and finish for an *older* commit if pushes arrive
+#              faster than Codex reviews them (that's not a bug, just "still
+#              working" — waiting longer is correct), and their
+#              commit-identifying text proves which exact code they're about.
+#              Signal 3 carries no such text, so it's only trusted if its
+#              `created_at` is at or after PR_UPDATED_AT (the timestamp of the
+#              push that produced HEAD_SHA, captured when this job started) —
+#              GitHub reactions are idempotent per user+content+subject, so a
+#              *pre-existing* `+1` from an earlier clean commit keeps its
+#              original timestamp rather than refreshing, and would correctly
+#              fail this check rather than being mistaken for covering the
+#              current head.
 #
 # It runs on pull_request (where it actually waits) and merge_group (where it is a
 # trivial pass — the bots review the PR head, never the synthetic merge commit, so
@@ -39,8 +53,22 @@ name: Review gate
 # passes.
 #
 # On timeout with Codex still not done, posts a one-time "@codex review" nudge
-# comment (marker-tagged so re-runs/later pushes don't repost it) instead of
-# requiring a human to notice the failure and comment manually.
+# comment (marker-tagged per HEAD_SHA so re-runs/later polls on the *same*
+# stuck commit don't repost it, but a later commit that also times out still
+# gets its own recovery attempt) instead of requiring a human to notice the
+# failure and comment manually.
+#
+# An earlier version of this gated the nudge on Codex never having engaged
+# with the PR at all (on any commit), on the theory that a PR it had already
+# reviewed once was just "still working, will catch up" and didn't need
+# nudging. Reverted: that's exactly backwards for the common real case — a PR
+# Codex reviewed on an *older* commit but hasn't picked up the newest push for
+# (a missed webhook on that one push, not a broken integration) is precisely
+# the "stuck on the current head" scenario this nudge exists to recover from,
+# and the gate would just fail it outright with no recovery action at all.
+# The higher TIMEOUT_MINUTES below (20, not 10) already absorbs Codex's
+# ordinary catch-up latency for a fresh push, so a real timeout at that point
+# is worth nudging regardless of past history on the PR.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -75,7 +103,18 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          TIMEOUT_MINUTES: "10"
+          # Timestamp of the push that produced HEAD_SHA (this workflow
+          # triggers on `synchronize`, so the event payload's `updated_at` is
+          # captured essentially at push time) — the freshness boundary
+          # codex_done's reaction-based signal checks against. See the header
+          # comment's "signal 3" for why a reaction alone needs this anchor
+          # and a commit-identifying review/comment doesn't.
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+          # 20, not 10: Codex commonly takes longer than 10m to catch up to a
+          # fresh push, and that's normal "still working" latency — a longer
+          # base wait means fewer spurious timeouts (and fewer nudges) for
+          # the ordinary case in the first place.
+          TIMEOUT_MINUTES: "20"
           POLL_SECONDS: "20"
           # How much longer to keep polling after nudge_codex_once() actually
           # posts a comment, since this workflow only triggers on pull_request
@@ -143,7 +182,7 @@ jobs:
                   | select($author == "" or .comments.nodes[0].author.login == $author)
                   | select(.isResolved == false)] | length'
           }
-          # See the header comment for why these are the two signals. gh's
+          # See the header comment for why these are the three signals. gh's
           # own --jq flag takes a single filter string, not --arg — it can't
           # be combined with jq's --arg the way plain jq can, so pipe the raw
           # JSON to jq ourselves instead (same fix as
@@ -171,18 +210,28 @@ jobs:
                 '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")
                   | (.body | capture("\\*\\*Reviewed commit:\\*\\* `(?<c>[0-9a-f]{7,40})`")) as $m
                   | select($m.c != null and ($sha | startswith($m.c)))] | length > 0')
-            [ "$matched" = "true" ]
+            if [ "$matched" = "true" ]; then return 0; fi
+
+            codex_reacted_since_push
           }
 
-          # Codex normally self-triggers on open/synchronize (per its own
-          # description: "Reviews are triggered when you open a PR / mark
-          # ready / comment @codex review"). A timeout with codex=false always
-          # gets nudged, regardless of whether Codex engaged before: waiting
-          # the full TIMEOUT_MINUTES already rules out "still working, will
-          # finish shortly" as the explanation, so either it never triggered
-          # at all (missed webhook, ...) or it reviewed an older head and
-          # hasn't caught up to this one — an explicit "@codex review" comment
-          # is the right recovery either way.
+          # Signal 3 from the header comment: Codex's own `+1` reaction on
+          # the PR/issue, present and no older than the push that produced
+          # HEAD_SHA. `sort_by(.created_at) | last` picks the most recent
+          # `+1` if Codex has reacted more than once across the PR's
+          # lifetime — GitHub's reactions API is idempotent per
+          # user+content+subject, so re-"adding" the same reaction to an
+          # already-`+1`'d issue doesn't create a second entry or bump the
+          # timestamp; there is at most one to find.
+          codex_reacted_since_push() {
+            local reacted_at
+            reacted_at=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+              | jq -r '[.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")]
+                | sort_by(.created_at) | last | .created_at // empty')
+            [ -n "$reacted_at" ] \
+              && [ "$(date -d "$reacted_at" +%s)" -ge "$(date -d "$PR_UPDATED_AT" +%s)" ]
+          }
+
           # Nudge once via a marker-tagged comment rather than requiring a
           # human to notice the timeout and comment manually — but only once
           # *per head commit*, not once ever for the whole PR: the marker
@@ -203,25 +252,35 @@ jobs:
               | jq '[.[] | select(.body | contains("'"$CODEX_NUDGE_MARKER"'"))] | length > 0')" = "true" ]
           }
           # Best-effort: this is a bonus recovery action, not the actual
-          # failure being reported, so a permission error posting the comment
-          # (e.g. the repo/org's default workflow token permissions don't
-          # actually grant `issues: write` despite this job requesting it —
-          # seen in practice) must not crash the script and obscure the real
-          # timeout error below with a raw API stack trace. Returns 0 only
-          # when a comment was genuinely just posted (not "already posted
-          # before", not "failed to post") — the caller uses that to decide
-          # whether extending the wait is worth it at all.
+          # failure being reported, so a failure to post the comment must not
+          # crash the script and obscure the real timeout error below. Returns
+          # 0 only when a comment was genuinely just posted (not "already
+          # posted before", not "failed to post") — the caller uses that to
+          # decide whether extending the wait is worth it at all.
+          #
+          # Captures gh's actual output (stdout AND stderr combined) rather
+          # than discarding it: an earlier version of this function redirected
+          # both to /dev/null and hardcoded a guess ("likely a token
+          # permissions issue") into the warning it printed instead. That
+          # guess was never actually verified against a real error message,
+          # and on CloudHub-Social/Charm#227 it turned out to be wrong — both
+          # the repo's and org's default workflow permissions were already
+          # "read and write" the whole time. A non-2xx `gh api` response
+          # prints its JSON body (message/errors/documentation_url) to
+          # stdout, not just an error to stderr, so both streams need
+          # capturing to actually see why a failed POST failed.
           nudge_codex_once() {
             if codex_nudge_already_posted; then
               echo "Codex nudge already posted for $HEAD_SHA; not posting again."
               return 1
             fi
-            if gh api "repos/$REPO/issues/$PR/comments" \
-              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" >/dev/null 2>&1; then
+            local output
+            if output=$(gh api "repos/$REPO/issues/$PR/comments" \
+              -f body=$'@codex review\n\n'"$CODEX_NUDGE_MARKER" 2>&1); then
               echo "Posted a @codex review nudge comment for $HEAD_SHA."
               return 0
             else
-              echo "::warning::Could not post the Codex nudge comment (likely a token permissions issue — this job's 'issues: write' permission may not be taking effect; check the repo/org's default workflow permissions). Comment '@codex review' manually instead."
+              echo "::warning::Could not post the Codex nudge comment automatically — comment \"@codex review\" manually instead. gh api response: ${output//$'\n'/ }"
               return 1
             fi
           }
