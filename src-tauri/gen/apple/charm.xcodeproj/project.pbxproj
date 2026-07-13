@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1AD7E6BD57323C778EA99649 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 780F3100343505CCD9F572E6 /* libsqlite3.tbd */; };
 		3605F57EEBDEFC982F7839EE /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 350287490CF163C4F78E2274 /* LaunchScreen.storyboard */; };
 		45F436C5E8AC79AFC20DAF5B /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 99C826131736C117FF1B1395 /* MetalKit.framework */; };
 		46EC8D962866DC913432AB49 /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3CB41BA73F6010E5FFDF3F94 /* CoreGraphics.framework */; };
@@ -22,40 +23,107 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		00BDE08875493EFB03A5E114 /* SelfProfileUpdate.ts */ = {isa = PBXFileReference; path = SelfProfileUpdate.ts; sourceTree = "<group>"; };
+		016CB278772535964CCDD740 /* room_admin.rs */ = {isa = PBXFileReference; path = room_admin.rs; sourceTree = "<group>"; };
+		0271F509ED81CDD0660118EC /* auth.rs */ = {isa = PBXFileReference; path = auth.rs; sourceTree = "<group>"; };
 		02CE1B384E5040F8E6773BED /* charm_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = charm_iOS.entitlements; sourceTree = "<group>"; };
 		0794A38046F4C94BA3915041 /* VerificationRequestSummary.ts */ = {isa = PBXFileReference; path = VerificationRequestSummary.ts; sourceTree = "<group>"; };
+		09E4E129A810D529F5E19F18 /* SendState.ts */ = {isa = PBXFileReference; path = SendState.ts; sourceTree = "<group>"; };
+		0BBA40B2577F399DE1C99893 /* PresenceStateDto.ts */ = {isa = PBXFileReference; path = PresenceStateDto.ts; sourceTree = "<group>"; };
+		10F8A3BA38E86CD93822EC3B /* shell.rs */ = {isa = PBXFileReference; path = shell.rs; sourceTree = "<group>"; };
+		12E497CC8BD1FEF50414D1FF /* account.rs */ = {isa = PBXFileReference; path = account.rs; sourceTree = "<group>"; };
 		14BBBADEFD9C4C295EBE8547 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		152924DA9FBA135E5810363C /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		1CA0137104BC5D3231B6C2F8 /* UiaCommandError.ts */ = {isa = PBXFileReference; path = UiaCommandError.ts; sourceTree = "<group>"; };
+		1E728ACDD7307A702CE36053 /* observability_scrub.rs */ = {isa = PBXFileReference; path = observability_scrub.rs; sourceTree = "<group>"; };
+		21A04C15C86A9A3D62FDD9E7 /* RoomDetails.ts */ = {isa = PBXFileReference; path = RoomDetails.ts; sourceTree = "<group>"; };
 		227963FC105E108CBBCF5518 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		254018D085A61CF706344C41 /* PushRegistration.ts */ = {isa = PBXFileReference; path = PushRegistration.ts; sourceTree = "<group>"; };
+		254187F4EB881D1432FF8DD8 /* sync.rs */ = {isa = PBXFileReference; path = sync.rs; sourceTree = "<group>"; };
 		25A3DFDD774BFF5390E6E737 /* timeline.rs */ = {isa = PBXFileReference; path = timeline.rs; sourceTree = "<group>"; };
+		28DFC0933722A8B8D23889F2 /* devices.rs */ = {isa = PBXFileReference; path = devices.rs; sourceTree = "<group>"; };
+		2B15BD76DD30DB76E0B739F4 /* commands.rs */ = {isa = PBXFileReference; path = commands.rs; sourceTree = "<group>"; };
+		2B7AF2BA89DC83E8D133594E /* DiscoverHomeserverResponse.ts */ = {isa = PBXFileReference; path = DiscoverHomeserverResponse.ts; sourceTree = "<group>"; };
 		2CF960494402AE3561536CEC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2E354BAE772FB496C47E086F /* RoomSummary.ts */ = {isa = PBXFileReference; path = RoomSummary.ts; sourceTree = "<group>"; };
 		2F874894BFA8D54721ED2B6D /* persistence.rs */ = {isa = PBXFileReference; path = persistence.rs; sourceTree = "<group>"; };
+		348051AA22445F43472F65EF /* profiles.rs */ = {isa = PBXFileReference; path = profiles.rs; sourceTree = "<group>"; };
 		350287490CF163C4F78E2274 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		37FFB321A1057BCFAFDFF404 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		3BAACC63A2348A654C789830 /* RoomMemberSummary.ts */ = {isa = PBXFileReference; path = RoomMemberSummary.ts; sourceTree = "<group>"; };
 		3CB41BA73F6010E5FFDF3F94 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		42AC4E8756D44B29603B1EBE /* ReactionGroup.ts */ = {isa = PBXFileReference; path = ReactionGroup.ts; sourceTree = "<group>"; };
+		474A8A02BF128A46C4386413 /* DeviceSummary.ts */ = {isa = PBXFileReference; path = DeviceSummary.ts; sourceTree = "<group>"; };
+		4C3CF8FBEB225BA84B380589 /* OwnProfile.ts */ = {isa = PBXFileReference; path = OwnProfile.ts; sourceTree = "<group>"; };
+		4E59A540E82534D572AE9811 /* CommandResult.ts */ = {isa = PBXFileReference; path = CommandResult.ts; sourceTree = "<group>"; };
 		4E8ACEF6460079D2BB4767AC /* send.rs */ = {isa = PBXFileReference; path = send.rs; sourceTree = "<group>"; };
 		4F50CB6EDBAC30AB4332D18A /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		528234AFF48A1B8FB10B46A1 /* SasUpdateEvent.ts */ = {isa = PBXFileReference; path = SasUpdateEvent.ts; sourceTree = "<group>"; };
+		53BFD31415DF4CD4554650DC /* EventReceipt.ts */ = {isa = PBXFileReference; path = EventReceipt.ts; sourceTree = "<group>"; };
+		56DE3B23F1D82CF45B970EF7 /* TypingUpdate.ts */ = {isa = PBXFileReference; path = TypingUpdate.ts; sourceTree = "<group>"; };
+		585B141D35345DD10A109321 /* JoinedRoom.ts */ = {isa = PBXFileReference; path = JoinedRoom.ts; sourceTree = "<group>"; };
 		5A1492A6AA090F541517F051 /* TimelinePage.ts */ = {isa = PBXFileReference; path = TimelinePage.ts; sourceTree = "<group>"; };
+		5A50F16240A15A5023995A35 /* SpaceHierarchyNode.ts */ = {isa = PBXFileReference; path = SpaceHierarchyNode.ts; sourceTree = "<group>"; };
+		5B13328F6990E23F5B55ED31 /* ReceiptTypeDto.ts */ = {isa = PBXFileReference; path = ReceiptTypeDto.ts; sourceTree = "<group>"; };
+		5C3C8A6175C76C0E6CDB99B9 /* actions.rs */ = {isa = PBXFileReference; path = actions.rs; sourceTree = "<group>"; };
+		5E8D2E9DD7C52CFBEE654183 /* SlashCommand.ts */ = {isa = PBXFileReference; path = SlashCommand.ts; sourceTree = "<group>"; };
 		645CB6AF75C98CD823D6055F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6F3692C4465FE2215F8172F8 /* RegisterRequest.ts */ = {isa = PBXFileReference; path = RegisterRequest.ts; sourceTree = "<group>"; };
+		6F56907BB956EA32D22C93F7 /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		715F33E1F27707B9D4615A75 /* PresenceUpdate.ts */ = {isa = PBXFileReference; path = PresenceUpdate.ts; sourceTree = "<group>"; };
 		767DF2F0A99CFF060C839CD9 /* verification.rs */ = {isa = PBXFileReference; path = verification.rs; sourceTree = "<group>"; };
 		770A716F992C8264BB452A6A /* SyncStateEvent.ts */ = {isa = PBXFileReference; path = SyncStateEvent.ts; sourceTree = "<group>"; };
+		770F04DAD521F1B1157923F0 /* ProfileSummary.ts */ = {isa = PBXFileReference; path = ProfileSummary.ts; sourceTree = "<group>"; };
+		780F3100343505CCD9F572E6 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		7822FB64EADFCBB28D357CFC /* JoinRuleKind.ts */ = {isa = PBXFileReference; path = JoinRuleKind.ts; sourceTree = "<group>"; };
+		7BF11CBDB21A65C8A1FD5856 /* ThirdPartyIdSummary.ts */ = {isa = PBXFileReference; path = ThirdPartyIdSummary.ts; sourceTree = "<group>"; };
+		7FD385B2D1B23AD85AA852CF /* ReactionToggleResult.ts */ = {isa = PBXFileReference; path = ReactionToggleResult.ts; sourceTree = "<group>"; };
 		81FDBD392BFE5B5B7861D0BA /* mod.rs */ = {isa = PBXFileReference; path = mod.rs; sourceTree = "<group>"; };
+		82375EF24FC0605D3B211453 /* account_data.rs */ = {isa = PBXFileReference; path = account_data.rs; sourceTree = "<group>"; };
+		8260C25B6A37FDAE13272B70 /* MediaContent.ts */ = {isa = PBXFileReference; path = MediaContent.ts; sourceTree = "<group>"; };
 		828B740D86A7C73E3376AF63 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		83A2144AF26D114DB1C144AA /* ReceiptUpdate.ts */ = {isa = PBXFileReference; path = ReceiptUpdate.ts; sourceTree = "<group>"; };
 		84F6552648C81ACC878FA3D3 /* charm_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = charm_iOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		86AFE10DBF81B0060D457AF1 /* BadgeState.ts */ = {isa = PBXFileReference; path = BadgeState.ts; sourceTree = "<group>"; };
+		8CA1B6AC0A60CDBFF1E08E56 /* qr_login.rs */ = {isa = PBXFileReference; path = qr_login.rs; sourceTree = "<group>"; };
+		9331815946A1F832D56B3099 /* RoomPermissions.ts */ = {isa = PBXFileReference; path = RoomPermissions.ts; sourceTree = "<group>"; };
 		933811D5ECD65716112B27D3 /* LoginResponse.ts */ = {isa = PBXFileReference; path = LoginResponse.ts; sourceTree = "<group>"; };
+		983388D58D0BB0AA1E7336A6 /* ephemeral.rs */ = {isa = PBXFileReference; path = ephemeral.rs; sourceTree = "<group>"; };
 		99C826131736C117FF1B1395 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		9CC4FEBF6BC6B5FFFDCD01F5 /* observability_trace.rs */ = {isa = PBXFileReference; path = observability_trace.rs; sourceTree = "<group>"; };
 		9DAFF2B76B36132A64CDF4F5 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		9F6D66A77996CF4DEF9EA8FA /* rooms.rs */ = {isa = PBXFileReference; path = rooms.rs; sourceTree = "<group>"; };
+		A01CBB647CE14196A1A00C33 /* RecoveryStatusSummary.ts */ = {isa = PBXFileReference; path = RecoveryStatusSummary.ts; sourceTree = "<group>"; };
+		A049883EB80F558A52BC0008 /* spaces.rs */ = {isa = PBXFileReference; path = spaces.rs; sourceTree = "<group>"; };
 		A113BCF7B1048ABA00A43727 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		A9093BC19F0A773590CADEB7 /* EmojiPair.ts */ = {isa = PBXFileReference; path = EmojiPair.ts; sourceTree = "<group>"; };
+		AA181DDC3632A3F154572E76 /* PowerLevelThresholds.ts */ = {isa = PBXFileReference; path = PowerLevelThresholds.ts; sourceTree = "<group>"; };
 		AC2813118EC8D079ACAB12FF /* RoomTimelineUpdate.ts */ = {isa = PBXFileReference; path = RoomTimelineUpdate.ts; sourceTree = "<group>"; };
+		AD8F1711895B8DF2DC9287DA /* notifications.rs */ = {isa = PBXFileReference; path = notifications.rs; sourceTree = "<group>"; };
 		AD9CC9BFDFEF67FAAF983219 /* RoomMessageSummary.ts */ = {isa = PBXFileReference; path = RoomMessageSummary.ts; sourceTree = "<group>"; };
+		B28E29ED6075DFF7DC5A424A /* secret_store.rs */ = {isa = PBXFileReference; path = secret_store.rs; sourceTree = "<group>"; };
+		B703F5D4AD14EF66589FAD55 /* HistoryVisibilityKind.ts */ = {isa = PBXFileReference; path = HistoryVisibilityKind.ts; sourceTree = "<group>"; };
+		B7F42F3B0E354F44C68E2120 /* SpaceJoinRule.ts */ = {isa = PBXFileReference; path = SpaceJoinRule.ts; sourceTree = "<group>"; };
+		B9B3F0821A58BD55FD01463E /* android.rs */ = {isa = PBXFileReference; path = android.rs; sourceTree = "<group>"; };
+		BD1BB92640EC0D5E3052E9BE /* UploadProgress.ts */ = {isa = PBXFileReference; path = UploadProgress.ts; sourceTree = "<group>"; };
+		C07E44B2248D887D0D7F8156 /* RoomNotificationModeKind.ts */ = {isa = PBXFileReference; path = RoomNotificationModeKind.ts; sourceTree = "<group>"; };
+		C0ECF6BD6DCDF9F6219D32CC /* ReplyRef.ts */ = {isa = PBXFileReference; path = ReplyRef.ts; sourceTree = "<group>"; };
+		C5083BF9D24B055BC02FB08A /* QrLoginProgressEvent.ts */ = {isa = PBXFileReference; path = QrLoginProgressEvent.ts; sourceTree = "<group>"; };
+		C5DD54B96335778DA3A75E6F /* SpaceBadgeState.ts */ = {isa = PBXFileReference; path = SpaceBadgeState.ts; sourceTree = "<group>"; };
 		C5E45672352FE867DC0AE1FB /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		C9BCC90A9325D150C37685D4 /* presence.rs */ = {isa = PBXFileReference; path = presence.rs; sourceTree = "<group>"; };
 		CAFCB150BC4CBDA2871C4732 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		D177AC298E1A73A41C4055D4 /* LoginRequest.ts */ = {isa = PBXFileReference; path = LoginRequest.ts; sourceTree = "<group>"; };
+		D5E8C1242C9EA4349C07073C /* PushStatus.ts */ = {isa = PBXFileReference; path = PushStatus.ts; sourceTree = "<group>"; };
+		D7B379F7D0F523AB5F0A71A3 /* MembershipKind.ts */ = {isa = PBXFileReference; path = MembershipKind.ts; sourceTree = "<group>"; };
+		E167641E61A9B70435D25BCF /* NotificationSettingsSummary.ts */ = {isa = PBXFileReference; path = NotificationSettingsSummary.ts; sourceTree = "<group>"; };
 		E2B2D82844050676A1CD5BBC /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		E3343127A6135D7ED80592C7 /* SpaceChild.ts */ = {isa = PBXFileReference; path = SpaceChild.ts; sourceTree = "<group>"; };
 		E6AAF2EB30C6C411354E6ABE /* CrossSigningStatusSummary.ts */ = {isa = PBXFileReference; path = CrossSigningStatusSummary.ts; sourceTree = "<group>"; };
+		EBF1A1DFA145692AEE491693 /* PusherKind.ts */ = {isa = PBXFileReference; path = PusherKind.ts; sourceTree = "<group>"; };
+		F42B574BE7DE77F52BABABC2 /* ios.rs */ = {isa = PBXFileReference; path = ios.rs; sourceTree = "<group>"; };
+		F7543323F368994F59784957 /* media.rs */ = {isa = PBXFileReference; path = media.rs; sourceTree = "<group>"; };
+		F816625453400DDD5669FAE9 /* members.rs */ = {isa = PBXFileReference; path = members.rs; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -71,6 +139,7 @@
 				B7E9EB02C441CE6EDA615831 /* Security.framework in Frameworks */,
 				60D3523C1191B313104CF208 /* UIKit.framework in Frameworks */,
 				D38A76D99694D9BD5DF985BA /* WebKit.framework in Frameworks */,
+				1AD7E6BD57323C778EA99649 /* libsqlite3.tbd in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,9 +157,28 @@
 		3340AD140D9EC8DF1F29EC3F /* matrix */ = {
 			isa = PBXGroup;
 			children = (
+				82375EF24FC0605D3B211453 /* account_data.rs */,
+				12E497CC8BD1FEF50414D1FF /* account.rs */,
+				5C3C8A6175C76C0E6CDB99B9 /* actions.rs */,
+				0271F509ED81CDD0660118EC /* auth.rs */,
+				2B15BD76DD30DB76E0B739F4 /* commands.rs */,
+				28DFC0933722A8B8D23889F2 /* devices.rs */,
+				983388D58D0BB0AA1E7336A6 /* ephemeral.rs */,
+				F7543323F368994F59784957 /* media.rs */,
+				F816625453400DDD5669FAE9 /* members.rs */,
 				81FDBD392BFE5B5B7861D0BA /* mod.rs */,
+				AD8F1711895B8DF2DC9287DA /* notifications.rs */,
 				2F874894BFA8D54721ED2B6D /* persistence.rs */,
+				C9BCC90A9325D150C37685D4 /* presence.rs */,
+				348051AA22445F43472F65EF /* profiles.rs */,
+				8CA1B6AC0A60CDBFF1E08E56 /* qr_login.rs */,
+				016CB278772535964CCDD740 /* room_admin.rs */,
+				9F6D66A77996CF4DEF9EA8FA /* rooms.rs */,
+				B28E29ED6075DFF7DC5A424A /* secret_store.rs */,
 				4E8ACEF6460079D2BB4767AC /* send.rs */,
+				10F8A3BA38E86CD93822EC3B /* shell.rs */,
+				A049883EB80F558A52BC0008 /* spaces.rs */,
+				254187F4EB881D1432FF8DD8 /* sync.rs */,
 				25A3DFDD774BFF5390E6E737 /* timeline.rs */,
 				767DF2F0A99CFF060C839CD9 /* verification.rs */,
 			);
@@ -100,16 +188,58 @@
 		44AA635AFB845A96186A0DD4 /* bindings */ = {
 			isa = PBXGroup;
 			children = (
+				86AFE10DBF81B0060D457AF1 /* BadgeState.ts */,
+				4E59A540E82534D572AE9811 /* CommandResult.ts */,
 				E6AAF2EB30C6C411354E6ABE /* CrossSigningStatusSummary.ts */,
+				474A8A02BF128A46C4386413 /* DeviceSummary.ts */,
+				2B7AF2BA89DC83E8D133594E /* DiscoverHomeserverResponse.ts */,
 				A9093BC19F0A773590CADEB7 /* EmojiPair.ts */,
+				53BFD31415DF4CD4554650DC /* EventReceipt.ts */,
+				B703F5D4AD14EF66589FAD55 /* HistoryVisibilityKind.ts */,
+				585B141D35345DD10A109321 /* JoinedRoom.ts */,
+				7822FB64EADFCBB28D357CFC /* JoinRuleKind.ts */,
 				D177AC298E1A73A41C4055D4 /* LoginRequest.ts */,
 				933811D5ECD65716112B27D3 /* LoginResponse.ts */,
+				8260C25B6A37FDAE13272B70 /* MediaContent.ts */,
+				D7B379F7D0F523AB5F0A71A3 /* MembershipKind.ts */,
+				E167641E61A9B70435D25BCF /* NotificationSettingsSummary.ts */,
+				4C3CF8FBEB225BA84B380589 /* OwnProfile.ts */,
+				AA181DDC3632A3F154572E76 /* PowerLevelThresholds.ts */,
+				0BBA40B2577F399DE1C99893 /* PresenceStateDto.ts */,
+				715F33E1F27707B9D4615A75 /* PresenceUpdate.ts */,
+				770F04DAD521F1B1157923F0 /* ProfileSummary.ts */,
+				EBF1A1DFA145692AEE491693 /* PusherKind.ts */,
+				254018D085A61CF706344C41 /* PushRegistration.ts */,
+				D5E8C1242C9EA4349C07073C /* PushStatus.ts */,
+				C5083BF9D24B055BC02FB08A /* QrLoginProgressEvent.ts */,
+				42AC4E8756D44B29603B1EBE /* ReactionGroup.ts */,
+				7FD385B2D1B23AD85AA852CF /* ReactionToggleResult.ts */,
+				5B13328F6990E23F5B55ED31 /* ReceiptTypeDto.ts */,
+				83A2144AF26D114DB1C144AA /* ReceiptUpdate.ts */,
+				A01CBB647CE14196A1A00C33 /* RecoveryStatusSummary.ts */,
+				6F3692C4465FE2215F8172F8 /* RegisterRequest.ts */,
+				C0ECF6BD6DCDF9F6219D32CC /* ReplyRef.ts */,
+				21A04C15C86A9A3D62FDD9E7 /* RoomDetails.ts */,
+				3BAACC63A2348A654C789830 /* RoomMemberSummary.ts */,
 				AD9CC9BFDFEF67FAAF983219 /* RoomMessageSummary.ts */,
+				C07E44B2248D887D0D7F8156 /* RoomNotificationModeKind.ts */,
+				9331815946A1F832D56B3099 /* RoomPermissions.ts */,
 				2E354BAE772FB496C47E086F /* RoomSummary.ts */,
 				AC2813118EC8D079ACAB12FF /* RoomTimelineUpdate.ts */,
 				528234AFF48A1B8FB10B46A1 /* SasUpdateEvent.ts */,
+				00BDE08875493EFB03A5E114 /* SelfProfileUpdate.ts */,
+				09E4E129A810D529F5E19F18 /* SendState.ts */,
+				5E8D2E9DD7C52CFBEE654183 /* SlashCommand.ts */,
+				C5DD54B96335778DA3A75E6F /* SpaceBadgeState.ts */,
+				E3343127A6135D7ED80592C7 /* SpaceChild.ts */,
+				5A50F16240A15A5023995A35 /* SpaceHierarchyNode.ts */,
+				B7F42F3B0E354F44C68E2120 /* SpaceJoinRule.ts */,
 				770A716F992C8264BB452A6A /* SyncStateEvent.ts */,
+				7BF11CBDB21A65C8A1FD5856 /* ThirdPartyIdSummary.ts */,
 				5A1492A6AA090F541517F051 /* TimelinePage.ts */,
+				56DE3B23F1D82CF45B970EF7 /* TypingUpdate.ts */,
+				1CA0137104BC5D3231B6C2F8 /* UiaCommandError.ts */,
+				BD1BB92640EC0D5E3052E9BE /* UploadProgress.ts */,
 				0794A38046F4C94BA3915041 /* VerificationRequestSummary.ts */,
 			);
 			path = bindings;
@@ -156,11 +286,22 @@
 			path = charm;
 			sourceTree = "<group>";
 		};
+		B8C4B2340FB95DB2281E35F8 /* push */ = {
+			isa = PBXGroup;
+			children = (
+				B9B3F0821A58BD55FD01463E /* android.rs */,
+				F42B574BE7DE77F52BABABC2 /* ios.rs */,
+				6F56907BB956EA32D22C93F7 /* mod.rs */,
+			);
+			path = push;
+			sourceTree = "<group>";
+		};
 		B8F2C55C08101E8C35890DEB /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				3CB41BA73F6010E5FFDF3F94 /* CoreGraphics.framework */,
 				37FFB321A1057BCFAFDFF404 /* libapp.a */,
+				780F3100343505CCD9F572E6 /* libsqlite3.tbd */,
 				9DAFF2B76B36132A64CDF4F5 /* Metal.framework */,
 				99C826131736C117FF1B1395 /* MetalKit.framework */,
 				152924DA9FBA135E5810363C /* QuartzCore.framework */,
@@ -183,8 +324,11 @@
 			children = (
 				CAFCB150BC4CBDA2871C4732 /* lib.rs */,
 				E2B2D82844050676A1CD5BBC /* main.rs */,
+				1E728ACDD7307A702CE36053 /* observability_scrub.rs */,
+				9CC4FEBF6BC6B5FFFDCD01F5 /* observability_trace.rs */,
 				44AA635AFB845A96186A0DD4 /* bindings */,
 				3340AD140D9EC8DF1F29EC3F /* matrix */,
+				B8C4B2340FB95DB2281E35F8 /* push */,
 			);
 			name = src;
 			path = ../../src;
