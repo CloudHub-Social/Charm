@@ -74,8 +74,15 @@ if (isTauri()) {
   void attachConsole();
 }
 
+// `settings === null` means the read timed out, not that Sentry is
+// definitely disabled — `!settings?.sentryEnabled` would be `true` in that
+// case too (`undefined` is falsy), wrongly nudging a user who actually has
+// crash reporting on just because the settings read was slow. Only show the
+// prompt when we positively know it's off.
+const sentryDefinitelyDisabled = settings !== null && !settings.sentryEnabled;
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <Root showCrashRecoveryPrompt={uncleanPreviousSession && !settings?.sentryEnabled} />
+    <Root showCrashRecoveryPrompt={uncleanPreviousSession && sentryDefinitelyDisabled} />
   </React.StrictMode>,
 );
