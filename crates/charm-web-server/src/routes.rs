@@ -496,7 +496,15 @@ async fn finish_login(
             .save(&token, homeserver_url, matrix_session, crypto)
             .await
         {
-            Ok(()) => initial_save_succeeded = true,
+            Ok(()) => {
+                initial_save_succeeded = true;
+                if let Err(error) = persistence
+                    .snapshot_crypto_store(&token, matrix_session, crypto)
+                    .await
+                {
+                    tracing::warn!("failed to create initial durable crypto snapshot: {error}");
+                }
+            }
             Err(e) => tracing::warn!("failed to persist session: {e}"),
         }
     }
@@ -2488,10 +2496,30 @@ async fn recover_from_key(
     jar: CookieJar,
     Json(request): Json<RecoverFromKeyRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
+    let token = jar
+        .get(SESSION_COOKIE)
+        .map(|cookie| cookie.value().to_string())
+        .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
     let session = require_session(&state, &jar).await?;
     recover_from_key_impl(&session.client, &request.recovery_key)
         .await
         .map_err(ApiError::bad_request)?;
+    if let (Some(persistence), Some(matrix_session), Some(crypto)) = (
+        &state.persistence,
+        session.client.matrix_auth().session(),
+        session.persisted_crypto.as_ref(),
+    ) {
+        if let Err(error) = persistence
+            .snapshot_crypto_store(
+                &token,
+                &matrix_session,
+                Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
+            )
+            .await
+        {
+            tracing::error!("recovery succeeded but the durable crypto snapshot failed: {error}");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

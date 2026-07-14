@@ -5,10 +5,11 @@
 # reset-url 404 bug.
 #
 # One-time provisioning (not automated by this file or any workflow):
-#   1. Create the DO Spaces bucket this app's session persistence writes to
-#      (see crates/charm-web-server/src/persistence.rs's SPACES_* env vars) —
-#      e.g. `charm-web-server-sessions` in the tor1 region, matching this
-#      repo's existing sccache Spaces bucket.
+#   1. Create private `charm-web-server-sessions` and
+#      `charm-web-server-crypto` Spaces buckets in tor1. Give each a distinct
+#      bucket-scoped access key. The app retains three committed generations;
+#      an optional lifecycle expiry can clean up interrupted uploads, but also
+#      sets the maximum age of a dormant session's last usable snapshot.
 #   2. `doctl apps create --spec .do/app.yaml` once to provision the app and
 #      get its app ID; store that ID as the DO_APP_ID repo secret consumed by
 #      .github/workflows/web-server-deploy.yml.
@@ -60,6 +61,7 @@ services:
         value: https://charm-2-dev.cloudhub.social,https://pr-*-charm-preview.justin-tech.workers.dev
       - key: CHARM_WEB_SERVER_MASTER_KEY
         type: SECRET
+        scope: RUN_TIME
       - key: CHARM_WEB_SERVER_SPACES_BUCKET
         scope: RUN_TIME
         value: charm-web-server-sessions
@@ -71,8 +73,31 @@ services:
         value: https://tor1.digitaloceanspaces.com
       - key: CHARM_WEB_SERVER_SPACES_ACCESS_KEY_ID
         type: SECRET
+        scope: RUN_TIME
       - key: CHARM_WEB_SERVER_SPACES_SECRET_ACCESS_KEY
         type: SECRET
+        scope: RUN_TIME
+      # Durable Matrix crypto snapshots use a separate bucket credential and
+      # a backup key fetched directly from Doppler at process startup. The
+      # backup key itself is deliberately not synchronized into App Platform.
+      - key: CHARM_WEB_SERVER_CRYPTO_SPACES_BUCKET
+        scope: RUN_TIME
+        value: charm-web-server-crypto
+      - key: CHARM_WEB_SERVER_CRYPTO_SPACES_REGION
+        scope: RUN_TIME
+        value: tor1
+      - key: CHARM_WEB_SERVER_CRYPTO_SPACES_ENDPOINT
+        scope: RUN_TIME
+        value: https://tor1.digitaloceanspaces.com
+      - key: CHARM_WEB_SERVER_CRYPTO_SPACES_ACCESS_KEY_ID
+        type: SECRET
+        scope: RUN_TIME
+      - key: CHARM_WEB_SERVER_CRYPTO_SPACES_SECRET_ACCESS_KEY
+        type: SECRET
+        scope: RUN_TIME
+      - key: CHARM_WEB_SERVER_DOPPLER_TOKEN
+        type: SECRET
+        scope: RUN_TIME
       # CHARM_WEB_SERVER_SENTRY_DSN (see
       # crates/charm-web-server/src/observability.rs) is deliberately *not*
       # declared here, unlike every other SECRET above — scripts/merge-do-app-spec.py

@@ -66,7 +66,7 @@ pub fn generate_passphrase() -> String {
 /// generalized) externally-influenced value must never reach
 /// `PathBuf::join` unvalidated — same reasoning `media_cache.rs` hashes a
 /// homeserver-controlled device id for before using it as a path component.
-fn store_path(store_key: &str) -> Result<PathBuf, String> {
+pub(crate) fn store_dir_path(store_key: &str) -> Result<PathBuf, String> {
     if store_key.is_empty() || !store_key.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err(format!("invalid crypto store key: {store_key:?}"));
     }
@@ -80,7 +80,7 @@ fn store_path(store_key: &str) -> Result<PathBuf, String> {
 /// registration (see `auth.rs::build_client`), where "doesn't exist yet" is
 /// the expected, correct state to create it from.
 pub fn create_store_dir(store_key: &str) -> Result<PathBuf, String> {
-    let dir = store_path(store_key)?;
+    let dir = store_dir_path(store_key)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
@@ -93,7 +93,7 @@ pub fn create_store_dir(store_key: &str) -> Result<PathBuf, String> {
 /// that look like a legitimately-empty-but-real crypto store) and by logout
 /// cleanup (nothing to remove if it was never there).
 pub fn existing_store_dir(store_key: &str) -> Result<Option<PathBuf>, String> {
-    let dir = store_path(store_key)?;
+    let dir = store_dir_path(store_key)?;
     Ok(dir.is_dir().then_some(dir))
 }
 
