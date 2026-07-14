@@ -46,8 +46,17 @@ export async function initializeFeatureFlags(): Promise<void> {
   const mutationId = cacheMutationId;
   const [persistedOverrides, remote] = await Promise.all([readOverrides(), readRemoteFlags()]);
   // Remote is an independent cache — apply it regardless of an override change
-  // that raced this load.
-  remoteCache = remote;
+  // that raced this load. But only when an endpoint is configured: if the
+  // endpoint was removed, the remote layer must be inert, so drop any stale
+  // cache and clear it from the durable file too (the Rust core reads that file
+  // regardless of JS config, so leaving stale values there would keep a
+  // rolled-out flag on indefinitely).
+  if (isRemoteConfigured()) {
+    remoteCache = remote;
+  } else {
+    remoteCache = {};
+    if (Object.keys(remote).length > 0) void persistRemoteFlags({});
+  }
   if (mutationId === cacheMutationId) {
     overridesCache = persistedOverrides;
     persistedOverridesCache = persistedOverrides;
@@ -150,9 +159,14 @@ export async function refreshRemoteFlags(): Promise<void> {
   try {
     const result = await fetchRemoteFlags(getInstallId());
     if (result) {
-      remoteCache = result;
-      emit();
-      await persistRemoteFlags(result);
+      // Persist to the shared durable file first, then apply to the UI — so the
+      // frontend never enables a rolled-out feature that the Rust core (which
+      // reads only that file) hasn't seen yet. If the durable write fails, keep
+      // the previous cache; the next tick retries.
+      if (await persistRemoteFlags(result)) {
+        remoteCache = result;
+        emit();
+      }
     }
   } finally {
     refreshInFlight = false;

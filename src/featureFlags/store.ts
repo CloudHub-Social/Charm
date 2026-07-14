@@ -257,27 +257,43 @@ export async function readRemoteFlags(): Promise<FeatureFlagRemote> {
 }
 
 /**
- * Persists a fresh remote snapshot. Unlike overrides this is a cache with a
- * single writer (the refresh loop, which never overlaps itself), so it doesn't
- * need the override path's mutation-id rollback — last write wins, and a write
- * failure just leaves the previous cache in place (fail-open).
+ * Persists a fresh remote snapshot. Returns whether the durable write reached
+ * disk (always `true` on the web path, where `localStorage` is the store the
+ * caller reads back). Routed through the **same** `durablePersistTail` queue as
+ * `persistOverrides` so a remote refresh's `set`+`save` can never interleave
+ * with an override's — the plugin store flushes the whole file on `save()`, so
+ * an unserialized remote save could prematurely persist an in-flight override
+ * and break its rollback. On failure the previous durable cache stands
+ * (fail-open); the caller only applies the new values to the UI once this
+ * returns `true`, keeping the frontend consistent with what Rust reads.
  */
 export async function persistRemoteFlags(
   remote: FeatureFlagRemote,
   updatedAt: number = Date.now(),
-): Promise<void> {
+): Promise<boolean> {
   const envelope: RemoteEnvelope = { state: { remote }, updatedAt };
   try {
     localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
   } catch {
     // Best-effort mirror.
   }
-  try {
+  if (!isTauri()) return true;
+
+  const task = durablePersistTail.then(async () => {
     const store = await getStore();
-    if (!store) return;
+    if (!store) return false;
     await store.set(FEATURE_FLAGS_REMOTE_STORE_KEY, envelope);
     await store.save();
+    return true;
+  });
+  durablePersistTail = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  try {
+    return await task;
   } catch {
     // Keep the previous durable cache; Rust and the next launch fall back to it.
+    return false;
   }
 }

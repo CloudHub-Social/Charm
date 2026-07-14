@@ -3,18 +3,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => false),
   getClient: vi.fn(() => undefined),
+  load: vi.fn(),
 }));
 
 vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
 vi.mock("@sentry/react", () => ({ getClient: () => mocks.getClient() }));
 vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn().mockRejectedValue(new Error("store unavailable")),
+  load: (...args: unknown[]) => mocks.load(...args),
 }));
 
 beforeEach(async () => {
   localStorage.clear();
   vi.resetModules();
   mocks.isTauri.mockReturnValue(false);
+  mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   const { featureFlagTestHooks } = await import("./index");
   featureFlagTestHooks.reset();
 });
@@ -73,6 +75,45 @@ describe("refreshRemoteFlags", () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
     await mod.refreshRemoteFlags();
     expect(mod.getFlag("canary")).toBe(true); // previous cache stands
+  });
+
+  it("does not apply remote values when the durable Tauri save fails", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockRejectedValue(new Error("disk full")),
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ flags: [{ key: "canary", value: true }] }),
+      }),
+    );
+    const mod = await import("./index");
+    await mod.refreshRemoteFlags();
+    // Durable write failed → the frontend must stay consistent with the file
+    // Rust reads (default), not the not-yet-persisted remote value.
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+});
+
+describe("remote cache when no endpoint is configured", () => {
+  it("ignores and clears a stale cache so the layer is inert", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    localStorage.setItem(
+      "charm:featureFlagsRemote",
+      JSON.stringify({ state: { remote: { canary: true } }, updatedAt: 1 }),
+    );
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    expect(mod.getFlag("canary")).toBe(false);
+    // Stale cache cleared from the durable mirror (so the Rust core also ignores it).
+    expect(
+      JSON.parse(localStorage.getItem("charm:featureFlagsRemote") ?? "{}").state.remote,
+    ).toEqual({});
   });
 });
 
