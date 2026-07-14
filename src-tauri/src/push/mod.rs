@@ -783,6 +783,18 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         return Ok(());
     };
 
+    // Fetch/decrypt/display-name work above can take long enough for the user
+    // to enable Focus after the early fast-path guard. Re-check at the final
+    // dispatch point so an in-flight push cannot escape newly enabled DND.
+    // `build_push_notification` reserved the event in memory, so release that
+    // reservation when suppression wins; a later push after DND ends may then
+    // notify normally.
+    if crate::matrix::dnd::is_dnd_active(app) {
+        app.state::<MatrixState>()
+            .forget_notified(&notification.event_id);
+        return Ok(());
+    }
+
     use tauri_plugin_notification::NotificationExt;
     let show_result = app
         .notification()
