@@ -155,8 +155,8 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center p-8">
-      <div className="flex w-90 flex-col gap-5">
+    <main className="flex min-h-[100dvh] items-center justify-center p-4 sm:p-8">
+      <div className="flex w-full max-w-90 flex-col gap-5">
         <div className="flex flex-col gap-1 text-center">
           <h1 className="text-xl font-bold text-foreground">Charm</h1>
           <p className="text-sm text-muted-foreground">Sign in to your homeserver</p>

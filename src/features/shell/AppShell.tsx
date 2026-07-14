@@ -62,7 +62,7 @@ export function AppShell({
 
   if (layout === "desktop") {
     return (
-      <div className="flex h-screen">
+      <div className="flex h-[100dvh]">
         {spaceRail}
         {roomList}
         {content}
@@ -72,8 +72,8 @@ export function AppShell({
   }
 
   return (
-    <div className="flex h-screen flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden [&>div]:w-full [&>div]:border-l-0">
+    <div className="flex h-[100dvh] flex-col">
+      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:w-full [&>div]:border-l-0">
         {mobileView === "detail" && activeRoomId ? (
           (rightPanel ?? content)
         ) : (
@@ -83,7 +83,10 @@ export function AppShell({
           </div>
         )}
       </div>
-      <nav className="flex shrink-0 border-t bg-background" aria-label="Primary">
+      <nav
+        className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+        aria-label="Primary"
+      >
         <button
           type="button"
           aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
