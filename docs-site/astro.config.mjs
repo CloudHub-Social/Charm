@@ -1,6 +1,7 @@
 // @ts-check
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightObsidian, { obsidianSidebarEntries } from 'starlight-obsidian';
@@ -38,6 +39,62 @@ const vaultPath =
 // `**/00 *.md` also catches any future Johnny.Decimal-style index note
 // (`00 — ...`) added to the specs folder later.
 const publishSpecs = process.env.PUBLISH_SPECS === 'true';
+
+// starlight-obsidian's `copyFrontmatter: 'starlight'` is all-or-nothing: it
+// would pull in the vault's own `title` frontmatter alongside `sidebar`,
+// and that title has its own "Charm 2.0 Spec — " prefix, making every spec's
+// title longer, not just the ones that need shortening. So instead: leave
+// copyFrontmatter at its default (title stays filename-derived, exactly as
+// before), and after starlight-obsidian generates its pages, walk the
+// vault for any `sidebar.label` frontmatter and stitch just that into the
+// matching generated file. Runs after starlight() in the integrations
+// array below so the files it's reading already exist.
+function injectVaultSidebarLabels() {
+	return {
+		name: 'inject-vault-sidebar-labels',
+		hooks: {
+			'astro:config:setup': async () => {
+				if (!publishSpecs) return;
+
+				async function walk(dir) {
+					let entries;
+					try {
+						entries = await fs.readdir(dir, { withFileTypes: true });
+					} catch {
+						return [];
+					}
+					let files = [];
+					for (const entry of entries) {
+						if (entry.name.startsWith('.')) continue;
+						const full = path.join(dir, entry.name);
+						if (entry.isDirectory()) files = files.concat(await walk(full));
+						else if (entry.name.endsWith('.md')) files.push(full);
+					}
+					return files;
+				}
+
+				const labelByStem = new Map();
+				for (const file of await walk(vaultPath)) {
+					const raw = await fs.readFile(file, 'utf8');
+					const match = raw.match(/^sidebar:\s*\n\s*label:\s*"([^"]+)"/m);
+					if (match) labelByStem.set(path.basename(file, '.md'), match[1]);
+				}
+				if (labelByStem.size === 0) return;
+
+				const specsDir = path.join(process.cwd(), 'src/content/docs/specs');
+				for (const file of await walk(specsDir)) {
+					const raw = await fs.readFile(file, 'utf8');
+					if (raw.includes('\nsidebar:')) continue;
+					const titleMatch = raw.match(/^title:\s*"?([^"\n]+)"?\s*$/m);
+					const label = titleMatch && labelByStem.get(titleMatch[1].trim());
+					if (!label) continue;
+					const updated = raw.replace(/^(title:.*\n)/m, `$1sidebar:\n  label: "${label}"\n`);
+					await fs.writeFile(file, updated, 'utf8');
+				}
+			},
+		},
+	};
+}
 
 // https://astro.build/config
 export default defineConfig({
@@ -125,5 +182,6 @@ export default defineConfig({
 				},
 			],
 		}),
+		injectVaultSidebarLabels(),
 	],
 });
