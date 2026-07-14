@@ -16,20 +16,41 @@ document is the contributor guide; the design rationale lives in the vault spec
 - **Resolution is layered**, highest precedence first:
   1. **local override** — a per-key boolean the Labs panel / dev tooling
      persists into `feature-flags.json`;
-  2. **static default** — the flag's catalog default (also the offline value).
+  2. **remote** — GO Feature Flag (OFREP) rollout control (kill-switch,
+     staged/percentage rollout), from the last-known-good cached response;
+  3. **static default** — the flag's catalog default (the offline / not-yet-
+     rolled-out backstop).
 - Both the frontend (`src/featureFlags/`) and the Rust core read the same
-  override file and the same defaults, so a flag reads identically on both sides
-  of the IPC boundary for the same install.
+  `feature-flags.json` and the same defaults, so a flag reads identically on
+  both sides of the IPC boundary for the same install.
 
-> **Next increment (not yet shipped): the remote layer.** A GO Feature Flag
-> (OFREP) endpoint slots in _between_ override and default to provide the
-> production **kill-switch** and **staged/percentage rollout**. It is deployed
-> as a relay-proxy container on DO App Platform reading a config published from
-> a PR-reviewed `charm-flags` repo to DO Spaces, with a break-glass path for
-> emergency kills. Consumers already go through the stable seam
-> (`useFlag()` / `flag()`), so adding it changes no call site. Until it lands,
-> flags are controlled by catalog defaults + local overrides only, i.e. a flip
-> requires a client release. See Spec 35 for the full design and runbook.
+## The remote layer (GO Feature Flag / OFREP)
+
+A self-hosted [GO Feature Flag](https://gofeatureflag.org) relay proxy provides
+the production **kill-switch** and **staged/percentage rollout** — flip a flag
+without a client release. Config is a PR-reviewed
+[`charm-flags`](https://github.com/CloudHub-Social/charm-flags) repo, published
+to a DO Spaces CDN object the proxy reads.
+
+- **Single fetcher, shared file.** The frontend refresh loop
+  (`src/featureFlags/ofrep.ts`) is the only thing that talks to the proxy: it
+  bulk-evaluates over OFREP, then writes the last-known-good result into
+  `feature-flags.json` (a separate key). The Rust core reads that file — so it
+  sees remote state with **no HTTP client of its own**, and both sides stay
+  consistent.
+- **Fail-open.** No endpoint configured (`VITE_CHARM_OFREP_URL` unset),
+  unreachable proxy, or a flag missing from the response → that flag falls
+  through to its catalog default. A failed refresh keeps the previous cache, so
+  a rollout only ever moves forward from the last success. First paint never
+  blocks on the network.
+- **Refresh cadence.** Startup + every 5 min + on network-reconnect and
+  tab-visible, so a kill-switch reaches online clients within a few minutes.
+- **Rollout is edited in `charm-flags`**, not here — see that repo's README for
+  the flip / staged-rollout / kill / break-glass runbook.
+- **Deployment:** a thin non-`@openfeature/*` OFREP client (the protocol is a
+  plain REST call; staying protocol-native keeps vendor-neutral swappability
+  without a heavy SDK). The proxy is a standalone DO App Platform app reading
+  the CDN object; it needs no credentials (public config).
 
 ## Adding a flag
 
@@ -91,7 +112,10 @@ Flag keys and values are app-internal config identifiers — never user or room
 identity. Nothing about flag _state_ is sent to Sentry beyond the boolean, and
 it flows through the same scrubbers as all other Sentry data (Spec 21).
 
-Once the remote layer ships, the client will send an **anonymized per-install
-ID** to Charm's own flag proxy as the rollout targeting key. That ID is random,
-non-reversible, and **never** the Matrix ID / email / display name. This
-disclosure will also appear in `PRIVACY.md` when that layer lands.
+When a remote endpoint is configured, the client sends one thing to **Charm's
+own flag proxy**: an **anonymized per-install ID** (`installId.ts`) as the OFREP
+targeting key, so GO Feature Flag can bucket the install for percentage
+rollouts. That ID is random, non-reversible, generated locally, and **never**
+the Matrix ID / email / display name — and no other context (room, user
+attributes, message data) is sent. It is independent of Spec 21's Sentry ID, so
+it works regardless of observability consent. See `PRIVACY.md`.

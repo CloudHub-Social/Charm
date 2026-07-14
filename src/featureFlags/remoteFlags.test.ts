@@ -1,0 +1,101 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+  getClient: vi.fn(() => undefined),
+}));
+
+vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
+vi.mock("@sentry/react", () => ({ getClient: () => mocks.getClient() }));
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn().mockRejectedValue(new Error("store unavailable")),
+}));
+
+beforeEach(async () => {
+  localStorage.clear();
+  vi.resetModules();
+  mocks.isTauri.mockReturnValue(false);
+  const { featureFlagTestHooks } = await import("./index");
+  featureFlagTestHooks.reset();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
+
+describe("remote layer resolution", () => {
+  it("uses the remote value when there is no override", async () => {
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ canary: true });
+    expect(mod.getFlag("canary")).toBe(true);
+  });
+
+  it("lets a local override beat remote", async () => {
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ canary: true });
+    await mod.setFeatureFlagOverride("canary", false);
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+});
+
+describe("refreshRemoteFlags", () => {
+  it("fetches, applies, and caches remote evaluations", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ flags: [{ key: "canary", value: true }] }),
+      }),
+    );
+    const mod = await import("./index");
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("canary")).toBe(true);
+    // Cached to the remote localStorage mirror for the next launch.
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toContain("canary");
+  });
+
+  it("is a no-op when no endpoint is configured", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const mod = await import("./index");
+    await mod.refreshRemoteFlags();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+
+  it("keeps the last-known-good cache when a refresh fails (fail-open)", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    const mod = await import("./index");
+    mod.featureFlagTestHooks.setRemoteCache({ canary: true });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await mod.refreshRemoteFlags();
+    expect(mod.getFlag("canary")).toBe(true); // previous cache stands
+  });
+});
+
+describe("initializeFeatureFlags", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("seeds caches and starts the remote refresh loop when configured", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ flags: [{ key: "canary", value: true }] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    // startRemoteRefresh kicked an immediate fetch; let its microtasks settle.
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(mod.getFlag("canary")).toBe(true);
+  });
+});

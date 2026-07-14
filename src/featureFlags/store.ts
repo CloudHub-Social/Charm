@@ -1,7 +1,7 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
 import type { Store } from "@tauri-apps/plugin-store";
 import { FEATURE_FLAG_CATALOG } from "./catalog";
-import type { FeatureFlagOverrides } from "./resolve";
+import type { FeatureFlagOverrides, FeatureFlagRemote } from "./resolve";
 import { isTauri } from "@/lib/platform";
 
 /**
@@ -16,6 +16,10 @@ import { isTauri } from "@/lib/platform";
 export const FEATURE_FLAGS_STORE_FILENAME = "feature-flags.json";
 export const FEATURE_FLAGS_STORE_KEY = "featureFlags";
 export const FEATURE_FLAGS_LOCAL_STORAGE_KEY = "charm:featureFlags";
+// Remote (OFREP) last-known-good cache — a separate key so remote refreshes and
+// override writes never clobber each other in the shared file. Rust reads both.
+export const FEATURE_FLAGS_REMOTE_STORE_KEY = "featureFlagsRemote";
+export const FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY = "charm:featureFlagsRemote";
 
 interface OverridesState {
   overrides: FeatureFlagOverrides;
@@ -188,4 +192,92 @@ export async function persistOverrides(
     }
   }
   return persisted;
+}
+
+// --- Remote (OFREP) last-known-good cache -----------------------------------
+
+interface RemoteEnvelope {
+  state: { remote: FeatureFlagRemote };
+  updatedAt: number;
+}
+
+function normalizeRemote(value: unknown): FeatureFlagRemote {
+  if (typeof value !== "object" || value === null) return {};
+  const source = (value as { remote?: unknown }).remote ?? value;
+  if (typeof source !== "object" || source === null) return {};
+  const result: FeatureFlagRemote = {};
+  for (const [key, raw] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof raw === "boolean" && isKnownFlagKey(key)) {
+      result[key] = raw;
+    }
+  }
+  return result;
+}
+
+function remoteEnvelopeFromUnknown(value: unknown): RemoteEnvelope | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as { state?: unknown; updatedAt?: unknown };
+  if (record.state !== undefined) {
+    return {
+      state: { remote: normalizeRemote(record.state) },
+      updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+    };
+  }
+  return { state: { remote: normalizeRemote(value) }, updatedAt: 0 };
+}
+
+function readLocalRemoteEnvelope(): RemoteEnvelope | null {
+  try {
+    const raw = localStorage.getItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY);
+    return raw ? remoteEnvelopeFromUnknown(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readStoreRemoteEnvelope(): Promise<RemoteEnvelope | null> {
+  try {
+    const store = await getStore();
+    if (!store) return null;
+    return remoteEnvelopeFromUnknown(await store.get<unknown>(FEATURE_FLAGS_REMOTE_STORE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** Reads the cached last-known-good remote evaluations (fail-open source). */
+export async function readRemoteFlags(): Promise<FeatureFlagRemote> {
+  const [store, local] = await Promise.all([
+    readStoreRemoteEnvelope(),
+    Promise.resolve(readLocalRemoteEnvelope()),
+  ]);
+  const envelope =
+    store && local ? (store.updatedAt >= local.updatedAt ? store : local) : (store ?? local);
+  return envelope?.state.remote ?? {};
+}
+
+/**
+ * Persists a fresh remote snapshot. Unlike overrides this is a cache with a
+ * single writer (the refresh loop, which never overlaps itself), so it doesn't
+ * need the override path's mutation-id rollback — last write wins, and a write
+ * failure just leaves the previous cache in place (fail-open).
+ */
+export async function persistRemoteFlags(
+  remote: FeatureFlagRemote,
+  updatedAt: number = Date.now(),
+): Promise<void> {
+  const envelope: RemoteEnvelope = { state: { remote }, updatedAt };
+  try {
+    localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
+  } catch {
+    // Best-effort mirror.
+  }
+  try {
+    const store = await getStore();
+    if (!store) return;
+    await store.set(FEATURE_FLAGS_REMOTE_STORE_KEY, envelope);
+    await store.save();
+  } catch {
+    // Keep the previous durable cache; Rust and the next launch fall back to it.
+  }
 }
