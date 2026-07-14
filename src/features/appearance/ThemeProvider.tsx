@@ -3,6 +3,7 @@ import { type ReactNode, useEffect } from "react";
 import {
   densityAtom,
   fontSizeAtom,
+  jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   themeAtom,
@@ -38,6 +39,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setDensity = useSetAtom(densityAtom);
   const setReducedMotion = useSetAtom(reducedMotionAtom);
   const setMessageLayout = useSetAtom(messageLayoutAtom);
+  const setJumboEmojiSize = useSetAtom(jumboEmojiSizeAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +60,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setDensity(state.density);
       setReducedMotion(state.reducedMotion);
       setMessageLayout(state.messageLayout);
+      setJumboEmojiSize(state.jumboEmojiSize);
       applyAppearanceToDom(state);
     }
 
@@ -65,7 +68,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setDensity, setFontSize, setMessageLayout, setReducedMotion, setTheme]);
+  }, [setDensity, setFontSize, setJumboEmojiSize, setMessageLayout, setReducedMotion, setTheme]);
 
   useEffect(() => {
     if (theme !== "system") return undefined;

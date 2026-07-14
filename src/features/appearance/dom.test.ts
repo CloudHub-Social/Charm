@@ -89,6 +89,7 @@ describe("applyAppearanceToDom", () => {
       density: "compact",
       reducedMotion: "on",
       messageLayout: "bubble",
+      jumboEmojiSize: "lg",
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");

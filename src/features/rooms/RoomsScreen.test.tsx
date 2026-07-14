@@ -55,8 +55,22 @@ vi.mock("@/features/room-info/useRoomDetails", () => ({
 }));
 
 vi.mock("./ChatShell", () => ({
-  ChatShell: ({ room: activeRoom }: { room: RoomSummary | null }) => (
-    <div>chat-content:{activeRoom?.room_id ?? "none"}</div>
+  ChatShell: ({
+    room: activeRoom,
+    onNavigateToRoom,
+  }: {
+    room: RoomSummary | null;
+    onNavigateToRoom: (roomIdentifier: string) => void;
+  }) => (
+    <div>
+      chat-content:{activeRoom?.room_id ?? "none"}
+      <button type="button" onClick={() => onNavigateToRoom("!b:example.org")}>
+        direct-room-pill
+      </button>
+      <button type="button" onClick={() => onNavigateToRoom("#b:example.org")}>
+        alias-room-pill
+      </button>
+    </div>
   ),
 }));
 
@@ -544,6 +558,29 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("navigates joined room-id and alias pills through the visible room context", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!a:example.org" }),
+      room({ room_id: "!b:example.org" }),
+    ]);
+    resolveRoomAlias.mockResolvedValue("!b:example.org");
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!a:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "direct-room-pill" }));
+    await screen.findByText("chat-content:!b:example.org");
+
+    fireEvent.click(screen.getByRole("button", { name: "alias-room-pill" }));
+    await waitFor(() => expect(resolveRoomAlias).toHaveBeenCalledWith("#b:example.org"));
   });
 
   it("closes the members drawer when the layout narrows to mobile", async () => {

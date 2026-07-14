@@ -2,6 +2,7 @@ import type {
   AppearanceState,
   Density,
   FontSize,
+  JumboEmojiSize,
   MessageLayout,
   ReducedMotion,
   Theme,
@@ -10,6 +11,7 @@ import {
   DEFAULT_APPEARANCE,
   VALID_DENSITIES,
   VALID_FONT_SIZES,
+  VALID_JUMBO_EMOJI_SIZES,
   VALID_MESSAGE_LAYOUTS,
   VALID_REDUCED_MOTIONS,
   VALID_THEMES,
@@ -190,5 +192,8 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
     messageLayout: isValid<MessageLayout>(partial.messageLayout, VALID_MESSAGE_LAYOUTS)
       ? partial.messageLayout
       : DEFAULT_APPEARANCE.messageLayout,
+    jumboEmojiSize: isValid<JumboEmojiSize>(partial.jumboEmojiSize, VALID_JUMBO_EMOJI_SIZES)
+      ? partial.jumboEmojiSize
+      : DEFAULT_APPEARANCE.jumboEmojiSize,
   };
 }

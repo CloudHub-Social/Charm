@@ -300,6 +300,15 @@ describe("ChatShell", () => {
     virtuosoScrollToIndexMock.mockReset();
   });
 
+  it("marks the exhausted start of history as all caught up", async () => {
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$oldest", sender: "@alice:localhost", body: "oldest" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+    expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
+  });
+
   it("prompts to select a room when none is active", () => {
     render(<ChatShell room={null} currentUserId="@me:localhost" />);
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
