@@ -4,7 +4,10 @@
 	 * landing page focused on navigation rather than decorative whitespace. */
 	html[data-has-hero] .hero {
 		grid-template-columns: minmax(0, 1fr);
-		padding-block: clamp(3rem, 7vw, 5.5rem) clamp(2rem, 4vw, 3rem);
+		align-items: start;
+		margin-top: clamp(1rem, 3vw, 2rem);
+		padding: clamp(2.5rem, 5vw, 4rem) clamp(1.5rem, 5vw, 4rem)
+			clamp(2rem, 4vw, 3rem);
 		background:
 			radial-gradient(
 				circle at 15% 10%,
@@ -16,11 +19,12 @@
 				color-mix(in srgb, var(--sl-color-accent-low) 35%, transparent),
 				transparent 80%
 			);
-		border-bottom: 1px solid var(--sl-color-gray-5);
+		border: 1px solid var(--sl-color-gray-5);
+		border-radius: 1rem;
 	}
 
 	html[data-has-hero] .hero .stack {
-		max-width: 52rem;
+		max-width: 48rem;
 	}
 
 	html[data-has-hero] .hero .copy > * {
@@ -34,4 +38,77 @@
 	html[data-has-hero] .sl-markdown-content > .card-grid {
 		margin-top: 1.25rem;
 	}
+}
+
+.feature-gallery {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+	gap: 1.5rem;
+	margin-top: 2rem;
+}
+
+.feature-card {
+	display: flex;
+	min-width: 0;
+	flex-direction: column;
+	overflow: hidden;
+	border: 1px solid var(--sl-color-gray-5);
+	border-radius: 0.85rem;
+	background: var(--sl-color-bg-nav);
+	box-shadow: var(--sl-shadow-sm);
+}
+
+.feature-card > img {
+	display: block;
+	width: 100%;
+	height: clamp(12rem, 26vw, 19rem);
+	margin: 0;
+	border-bottom: 1px solid var(--sl-color-gray-5);
+	object-fit: contain;
+	background: #2f3136;
+}
+
+.feature-card__body {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	gap: 0.75rem;
+	padding: 1.1rem 1.2rem 1.25rem;
+}
+
+.feature-card__body > :where(h2, p, small) {
+	margin: 0;
+}
+
+.feature-card__body h2 {
+	font-size: var(--sl-text-h3);
+}
+
+.feature-card__body small {
+	margin-top: auto;
+	color: var(--sl-color-gray-2);
+}
+
+.feature-card__meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.45rem 0.75rem;
+	font-size: var(--sl-text-xs);
+	color: var(--sl-color-gray-2);
+}
+
+.feature-status {
+	padding: 0.15rem 0.5rem;
+	border: 1px solid currentcolor;
+	border-radius: 999px;
+	font-weight: 700;
+}
+
+.feature-status--stable {
+	color: var(--sl-color-green-high);
+}
+
+.feature-status--preview {
+	color: var(--sl-color-orange-high);
 }

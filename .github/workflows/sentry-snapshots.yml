@@ -20,6 +20,12 @@ on:
       - "playwright.config.ts"
       - "package.json"
       - "pnpm-lock.yaml"
+      - "docs-site/src/data/feature-gallery.json"
+      - "docs-site/public/features/**"
+      - "src-tauri/src/feature_flags.rs"
+      - "src-tauri/src/bindings/featureFlagCatalog.json"
+      - "src/featureFlags/catalog.ts"
+      - "scripts/sync-feature-docs.mjs"
       - ".github/workflows/sentry-snapshots.yml"
   push:
     branches: [main]
@@ -199,3 +205,49 @@ jobs:
               echo "- Captured e2e screenshots and uploaded them to Sentry."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  feature-docs:
+    name: Feature docs are current
+    needs: [e2e-snapshots]
+    if: always() && needs.e2e-snapshots.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Download E2E snapshots
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sentry-e2e-snapshots-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/sentry-e2e-snapshots
+
+      - name: Build curated feature-doc candidate
+        run: >
+          node scripts/sync-feature-docs.mjs --write
+          --target-dir .artifacts/feature-docs-candidate
+
+      - name: Upload curated candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: feature-docs-candidate-${{ github.event.pull_request.number || github.sha }}
+          path: .artifacts/feature-docs-candidate
+          retention-days: 14
+
+      - name: Verify committed feature screenshots
+        # PRs must bring their gallery along with visible UI changes. On main,
+        # drift is expected input for feature-docs-refresh, so preserve a
+        # successful workflow_run while still recording the failed step.
+        continue-on-error: ${{ github.event_name == 'push' }}
+        env:
+          FEATURE_DOC_E2E_DIR: .artifacts/sentry-e2e-snapshots
+        run: pnpm docs:features:check

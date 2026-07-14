@@ -1,0 +1,20 @@
+---
+title: Features
+description: A visual, CI-verified catalog of Charm's stable and preview features.
+---
+
+import FeatureGallery from '../../../components/FeatureGallery.astro';
+
+Charm's feature catalog is built from deterministic Playwright journeys through
+the complete app. **Stable** entries are part of the regular product surface.
+**Preview** entries ship dark behind a feature flag while they are tested and
+rolled out.
+
+<FeatureGallery />
+
+:::note[Living documentation]
+CI captures the complete visual-regression suite, but only the curated,
+synthetic fixtures listed here are published. A feature PR fails its feature-doc
+check when one of these public screenshots drifts or a public flag lacks an
+entry.
+:::

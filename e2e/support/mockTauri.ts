@@ -37,6 +37,14 @@ export function installMockTauri(seed: {
   otherDevices?: { device_id: string; display_name: string | null; is_verified: boolean }[];
   ignoredUsers?: string[];
   roomDetails?: Record<string, unknown>;
+  /** Messages present when the room first opens, for composed timeline states. */
+  initialMessages?: Record<string, unknown>[];
+  /** Deterministic homeserver URL previews, keyed by the original URL. */
+  urlPreviews?: Record<string, Record<string, unknown>>;
+  /** Server-published aliases returned by `get_room_local_aliases`. */
+  roomAliases?: string[];
+  /** Initial native Do Not Disturb state for Focus-mode journeys. */
+  dndState?: { enabled: boolean; until: number | null; revision: number };
   /**
    * `false` for onboarding.spec.ts's "brand-new account" scenario — every
    * other spec keeps the default (rooms present) so Spec 12's onboarding
@@ -161,6 +169,8 @@ export function installMockTauri(seed: {
   for (const r of allRooms) {
     messagesByRoom.set(r.room_id as string, []);
   }
+  messagesByRoom.set(room.room_id, [...(seed.initialMessages ?? [])]);
+  const roomAliases = [...(seed.roomAliases ?? [])];
 
   // Spec 12 (onboarding): both persistence layers the gate hook checks,
   // in-memory only — no reload-survives-relaunch simulation here, since a
@@ -179,6 +189,8 @@ export function installMockTauri(seed: {
   let crossSigningBootstrapped = true;
   let recoveryState = seed.recoveryState ?? "enabled";
   let autostartEnabled = false;
+  const hasSeededDndState = seed.dndState != null;
+  let dndState = seed.dndState ?? { enabled: false, until: null as number | null, revision: 0 };
   const ignoredUsers: string[] = [...(seed.ignoredUsers ?? [])];
   const notificationSettings = {
     default_mode: "all_messages",
@@ -241,7 +253,10 @@ export function installMockTauri(seed: {
       invite: true,
       kick: true,
       ban: true,
+      set_canonical_alias: true,
     },
+    canonical_alias: null,
+    alt_aliases: [],
     ...seed.roomDetails,
   };
 
@@ -403,6 +418,7 @@ export function installMockTauri(seed: {
       // `<video>`/`<a href>` src. A data URI keeps the lightbox/thumbnail
       // actually renderable without needing a real static asset on disk.
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    get_url_preview: (args) => seed.urlPreviews?.[args.url as string] ?? null,
 
     // Spec 05: read receipts, typing, presence.
     send_read_receipt: () => undefined,
@@ -615,9 +631,45 @@ export function installMockTauri(seed: {
       autostartEnabled = args.enabled as boolean;
       return undefined;
     },
+    // Preserve the historical unresolved/no-op behavior for specs that do
+    // not exercise Focus mode; a seeded journey opts into the full state.
+    get_dnd_state: () => (hasSeededDndState ? { ...dndState } : undefined),
+    set_dnd_state: (args) => {
+      dndState = {
+        enabled: args.enabled as boolean,
+        until: args.until as number | null,
+        revision: dndState.revision + 1,
+      };
+      emit("dnd:changed", { ...dndState });
+      return { ...dndState };
+    },
 
     get_room_details: () => ({ ...roomDetails }),
     get_room_member_list: () => [...memberList],
+    get_room_local_aliases: () => [...roomAliases],
+    check_room_alias_available: (args) => !roomAliases.includes(args.alias as string),
+    add_room_alias: (args) => {
+      const alias = args.alias as string;
+      if (!roomAliases.includes(alias)) roomAliases.push(alias);
+      return undefined;
+    },
+    remove_room_alias: (args) => {
+      const index = roomAliases.indexOf(args.alias as string);
+      if (index !== -1) roomAliases.splice(index, 1);
+      return undefined;
+    },
+    set_canonical_alias: (args) => {
+      roomDetails.canonical_alias = args.alias;
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
+    remove_alt_alias: (args) => {
+      roomDetails.alt_aliases = (roomDetails.alt_aliases as string[]).filter(
+        (alias) => alias !== args.alias,
+      );
+      pushRoomDetailsUpdate();
+      return undefined;
+    },
     set_room_name: (args) => {
       roomDetails.name = args.name;
       room.name = args.name as string | null;

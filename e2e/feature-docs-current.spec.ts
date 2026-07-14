@@ -1,0 +1,38 @@
+import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
+// snapshot-exempt: compares artifacts produced by the capture suite; it does not render app state.
+
+type Feature = {
+  slug: string;
+  snapshot: { suite: "e2e"; name: string };
+};
+
+const repoRoot = path.resolve(import.meta.dirname, "..");
+const snapshotRoot = path.resolve(
+  repoRoot,
+  process.env.FEATURE_DOC_E2E_DIR ?? ".artifacts/sentry-e2e-snapshots",
+);
+const manifest = JSON.parse(
+  await readFile(path.join(repoRoot, "docs-site/src/data/feature-gallery.json"), "utf8"),
+) as { features: Feature[] };
+
+test.describe("committed feature documentation", () => {
+  test.skip(!process.env.FEATURE_DOCS_COMPARE, "runs only in the feature-doc drift job");
+
+  for (const feature of manifest.features) {
+    test(`${feature.slug} matches its E2E journey`, async () => {
+      const actual = await readFile(path.join(snapshotRoot, `${feature.snapshot.name}.png`));
+
+      // The .png name selects Playwright's image comparator for this Buffer, so
+      // maxDiffPixels is applied rather than a byte-for-byte buffer comparison.
+      // One hundred pixels is 0.011% of a 1280x720 snapshot: enough for occasional
+      // SVG-edge antialiasing noise, but far below a visible UI change.
+      expect(actual).toMatchSnapshot({
+        name: `${feature.slug}.png`,
+        maxDiffPixels: 100,
+      });
+    });
+  }
+});

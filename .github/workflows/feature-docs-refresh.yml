@@ -1,0 +1,129 @@
+name: Feature docs refresh
+
+# Sentry Snapshots owns deterministic capture. This follow-up workflow consumes
+# the completed main-branch artifacts, curates only the public fixtures from the
+# feature manifest, and proposes changed PNGs as a normal reviewable PR.
+on:
+  workflow_run:
+    workflows: [Sentry Snapshots]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      snapshot_run_id:
+        description: Completed Sentry Snapshots workflow run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: feature-docs-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.event == 'push'
+          && github.event.workflow_run.head_branch == 'main'
+          && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    env:
+      FEATURE_DOCS_TOKEN: ${{ secrets.FEATURE_DOCS_TOKEN }}
+      SNAPSHOT_RUN_ID: ${{ inputs.snapshot_run_id || github.event.workflow_run.id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # workflow_run is privileged: only ever execute the trusted default
+          # branch, never code selected by event-controlled metadata.
+          ref: main
+          token: ${{ secrets.FEATURE_DOCS_TOKEN || github.token }}
+
+      - name: Ensure snapshot run matches current main
+        id: alignment
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$(git rev-parse HEAD)" = "$RUN_HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale snapshot run ${SNAPSHOT_RUN_ID}; main has advanced past ${RUN_HEAD_SHA}."
+          fi
+
+      - name: Download E2E snapshots
+        if: steps.alignment.outputs.current == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ env.SNAPSHOT_RUN_ID }}
+          pattern: sentry-e2e-snapshots-*
+          path: .artifacts/sentry-e2e-snapshots
+          merge-multiple: true
+
+      - name: Refresh curated screenshots
+        if: steps.alignment.outputs.current == 'true'
+        run: node scripts/sync-feature-docs.mjs --write
+
+      - name: Detect drift
+        if: steps.alignment.outputs.current == 'true'
+        id: drift
+        run: |
+          if git diff --quiet -- docs-site/public/features; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload changed feature screenshots
+        if: steps.drift.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: feature-docs-refresh-${{ env.SNAPSHOT_RUN_ID }}
+          path: docs-site/public/features
+          retention-days: 14
+
+      - name: Open refresh pull request
+        if: steps.drift.outputs.changed == 'true' && env.FEATURE_DOCS_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ env.FEATURE_DOCS_TOKEN }}
+        run: |
+          branch="automation/feature-docs-${SNAPSHOT_RUN_ID}"
+          git config user.name "charm-feature-docs[bot]"
+          git config user.email "charm-feature-docs[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add docs-site/public/features
+          git commit -m "docs: refresh feature screenshots"
+          git push origin "$branch"
+          pr_url="$(
+            printf '%s\n\n%s\n\n%s\n\n%s\n' \
+              "Automated refresh from Sentry Snapshots run ${SNAPSHOT_RUN_ID}. The curated images changed relative to the committed feature gallery." \
+              "This PR only updates deterministic public screenshots; review the visual diff before merging." \
+              "### AI disclosure" \
+              "- [x] Fully AI generated: CI selected the manifest-listed Playwright fixtures and copied their latest deterministic PNGs. No application code or feature metadata changed." \
+              | gh pr create \
+                  --base main \
+                  --head "$branch" \
+                  --title "docs: refresh feature screenshots" \
+                  --body-file -
+          )"
+          if ! gh pr edit "$pr_url" --add-label internal; then
+            echo "::warning::Refresh PR opened, but the optional internal label could not be applied."
+          fi
+
+      - name: Report refresh result
+        if: always()
+        run: |
+          {
+            echo "### Feature docs refresh"
+            echo
+            echo "- Snapshot run: ${SNAPSHOT_RUN_ID}"
+            echo "- Matches current main: ${{ steps.alignment.outputs.current }}"
+            echo "- Screenshot drift: ${{ steps.drift.outputs.changed || 'unknown' }}"
+            if [ "${{ steps.drift.outputs.changed }}" = "true" ] && [ -z "${FEATURE_DOCS_TOKEN:-}" ]; then
+              echo "- A candidate artifact was uploaded, but no PR was opened because FEATURE_DOCS_TOKEN is not configured."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

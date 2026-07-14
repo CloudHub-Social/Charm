@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "excludedFlags": ["canary"],
+  "features": [
+    {
+      "slug": "onboarding",
+      "title": "Guided onboarding",
+      "summary": "A short first-run tour introduces rooms, the composer, and account settings without blocking sign-in.",
+      "status": "stable",
+      "spec": "Spec 12",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "onboarding-welcome-screen",
+        "alt": "Charm welcome screen explaining rooms, messaging, and settings",
+        "caption": "The deterministic first-run welcome state captured by Playwright."
+      }
+    },
+    {
+      "slug": "room-invites",
+      "title": "Room invitations",
+      "summary": "Review pending invitations, see who invited you, and accept or decline without leaving the room list.",
+      "status": "preview",
+      "spec": "Spec 56",
+      "flag": "room_invites",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "room-invite-accepted",
+        "alt": "Charm room list after accepting an invitation to Project room",
+        "caption": "The accepted room opens immediately and joins the regular room list."
+      }
+    },
+    {
+      "slug": "rich-message-rendering",
+      "title": "Rich message rendering",
+      "summary": "Render formatted Matrix content including code, tables, pills, mentions, math, and jumbo emoji.",
+      "status": "preview",
+      "spec": "Spec 58",
+      "flag": "rich_message_rendering",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "composer-bold-text",
+        "alt": "A formatted message sent inside the complete Charm conversation view",
+        "caption": "Playwright drives the real composer and captures the formatted result in app context."
+      }
+    },
+    {
+      "slug": "mobile-chat",
+      "title": "Mobile chat layout",
+      "summary": "A compact header, touch-sized room actions, and a bottom-anchored composer adapt the conversation to narrow screens.",
+      "status": "preview",
+      "spec": "Spec 52",
+      "flag": "mobile_chat_redesign",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "responsive-mobile-shell",
+        "alt": "Charm mobile conversation view with compact header and bottom composer",
+        "caption": "The 375 by 812 Playwright viewport verifies the mobile shell and safe composer placement."
+      }
+    },
+    {
+      "slug": "focus-mode",
+      "title": "Focus mode",
+      "summary": "Temporarily silence notification delivery from Settings or the tray while keeping the chosen duration visible.",
+      "status": "preview",
+      "spec": "Spec 30",
+      "flag": "focus_mode",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-focus-mode",
+        "alt": "Charm settings open to Focus with Do Not Disturb enabled",
+        "caption": "Playwright opens the native settings flow with a deterministic active Do Not Disturb state."
+      }
+    },
+    {
+      "slug": "link-previews",
+      "title": "Link previews",
+      "summary": "Show homeserver-fetched titles and descriptions under shared links without contacting third-party image hosts directly.",
+      "status": "preview",
+      "spec": "Spec 29",
+      "flag": "link_previews",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-link-previews",
+        "alt": "A Matrix specification link preview rendered inside a Charm conversation",
+        "caption": "A homeserver-fetched preview appears beneath a message in the complete chat shell."
+      }
+    },
+    {
+      "slug": "room-aliases",
+      "title": "Room alias management",
+      "summary": "Publish local room addresses, remove obsolete aliases, and choose the canonical Matrix address from room settings.",
+      "status": "preview",
+      "spec": "Spec 32",
+      "flag": "room_alias_management",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-room-aliases",
+        "alt": "Charm room settings showing a canonical alias and published Matrix addresses",
+        "caption": "Playwright opens the room settings flow with deterministic published aliases."
+      }
+    },
+    {
+      "slug": "message-actions",
+      "title": "Message actions",
+      "summary": "React, reply, edit, redact, and inspect messages through contextual actions that respect ownership and power levels.",
+      "status": "stable",
+      "spec": "Spec 18",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "message-actions-reacted",
+        "alt": "Charm conversation with an emoji picker and a reaction on a sent message",
+        "caption": "The E2E fixture captures a real reaction interaction in the composed chat shell."
+      }
+    },
+    {
+      "slug": "media-attachments",
+      "title": "Media and attachments",
+      "summary": "Preview images, open a lightbox, track uploads, and download Matrix attachments from the timeline.",
+      "status": "stable",
+      "spec": "Spec 20",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "media-attachments-download-chip",
+        "alt": "A downloadable PDF attachment rendered in a Charm conversation",
+        "caption": "The full-shell capture shows attachment metadata and the download action."
+      }
+    },
+    {
+      "slug": "spaces",
+      "title": "Spaces and room organization",
+      "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages from one adaptable rail.",
+      "status": "stable",
+      "spec": "Specs 15 and 46",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "space-hierarchy-foundation",
+        "alt": "Charm space rail and room list showing a Team Space hierarchy",
+        "caption": "The hierarchy fixture documents nested spaces and unread badges."
+      }
+    },
+    {
+      "slug": "room-settings",
+      "title": "Room administration",
+      "summary": "Manage room profile, members, permissions, history visibility, join rules, avatars, and encryption from one modal.",
+      "status": "stable",
+      "spec": "Spec 17",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "room-settings-modal-open",
+        "alt": "Charm room settings modal open to the General section",
+        "caption": "A full application capture verifies the room-administration composition."
+      }
+    }
+  ]
+}
