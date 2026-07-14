@@ -50,8 +50,15 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // scrubbed-but-kept captured-exception text unredacted, even though the
 // exact same field name on an object would already be redacted via
 // SECRET_FIELD_NAME_PATTERN.
+// Field-name alternation uses `[_-]?` as an optional separator (rather than
+// enumerating snake_case/camelCase pairs) — mirrors SECRET_FIELD_NAME_PATTERN
+// below and, as a side effect, also covers hyphenated forms
+// (`access-token`, `recovery-key`, ...) seen in some header/debug formats.
+// The zero-width `?` match lets the same alternative match camelCase too
+// (`access[_-]?token` matches "accessToken" via a zero-length separator
+// before "Token", case-insensitively).
 const SECRET_FIELD_PATTERN =
-  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*)|\[((?:[^\]\\]|\\.)*)|\{((?:[^}\\]|\\.)*))/gi;
+  /((?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*)|\[((?:[^\]\\]|\\.)*)|\{((?:[^}\\]|\\.)*))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
