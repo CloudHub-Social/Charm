@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scrubSensitiveText, scrubSentryValue } from "./scrubbers";
+import { scrubSensitiveText, scrubSentryValue, summarizeErrorText } from "./scrubbers";
 
 describe("observability scrubbers", () => {
   it("redacts Matrix identifiers and secret fields", () => {
@@ -9,6 +9,32 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText(text)).toBe(
       'room ![redacted]:[redacted] user @[redacted]:[redacted] alias #[redacted]:[redacted] event $[redacted]:[redacted] mxc://[redacted]/[redacted] access_token="[redacted]"',
     );
+  });
+
+  it("redacts multi-word quoted secret values instead of leaking everything after the first space", () => {
+    expect(scrubSensitiveText('password="correct horse battery"')).toBe('password="[redacted]"');
+    expect(scrubSensitiveText("passphrase='correct horse battery'")).toBe(
+      "passphrase='[redacted]'",
+    );
+  });
+
+  it("reports the scrubbed (not original) length when truncating error text", () => {
+    const value = `password="${"x".repeat(400)}"`;
+    const result = summarizeErrorText(value);
+    expect(result).toContain('password="[redacted]"');
+    // Scrubbing shrinks the string well under the truncation cap, so no
+    // truncation marker should appear at all.
+    expect(result).not.toContain("truncated");
+  });
+
+  it("reports scrubbed length, not original length, when the string is still over the cap after scrubbing", () => {
+    const value = `${"x".repeat(350)} password="secret"`;
+    const scrubbedLength = value.length - "secret".length + "[redacted]".length;
+
+    const result = summarizeErrorText(value);
+
+    expect(result).toContain(`…[truncated, full length ${scrubbedLength}]`);
+    expect(scrubbedLength).not.toBe(value.length);
   });
 
   it("recursively redacts Sentry payload strings", () => {
