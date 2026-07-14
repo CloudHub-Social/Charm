@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from "n
 import { join, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import { PrefixedLogger, createTextHelpers } from "./utils/console-style.js";
 
@@ -17,6 +18,18 @@ const TARGETS = {
   "darwin-x64": "x86_64-apple-darwin",
   "darwin-arm64": "aarch64-apple-darwin",
   "win32-x64": "x86_64-pc-windows-msvc",
+};
+
+// SHA-256 digests published by GitHub for the pinned v0.22.3 release assets.
+// This script runs automatically during `pnpm install`, so executing a
+// downloaded binary without authenticating the archive would turn a
+// compromised release asset or download path into arbitrary code execution.
+const ARCHIVE_SHA256 = {
+  "x86_64-unknown-linux-musl": "67ef0bf50ad3f075413e796a8364e72025af26d3116edf6842bc24869fe0dbf7",
+  "aarch64-unknown-linux-musl": "5ffbc14453a383f241c2ce8214f4c02769a3376f3c61a89552d42fd10a1bd41b",
+  "x86_64-apple-darwin": "caeed621095069a8b7e07891dbd476d35bbb46efc29e89c68e3a2d76d4c8dc11",
+  "aarch64-apple-darwin": "4fc9b920bf511928d6d9ac45ac52fcfcd779c290b1fc5eb75e9c8ca423df793d",
+  "x86_64-pc-windows-msvc": "2ea29e6c9cd81f0f50c241ac26eb518b77d16202f87878d0aa3e6065f97526c0",
 };
 
 function parseKnopeVersion(output) {
@@ -183,6 +196,13 @@ if (!response.ok) {
   throw new Error(`Failed to download knope: ${response.status} ${response.statusText}`);
 }
 const gzipBytes = Buffer.from(await response.arrayBuffer());
+const actualDigest = createHash("sha256").update(gzipBytes).digest("hex");
+const expectedDigest = ARCHIVE_SHA256[target];
+if (actualDigest !== expectedDigest) {
+  throw new Error(
+    `Knope archive checksum mismatch for ${target}: expected ${expectedDigest}, got ${actualDigest}`,
+  );
+}
 const tarBytes = gunzipSync(gzipBytes);
 const expectedBinaryName = process.platform === "win32" ? "knope.exe" : "knope";
 const knopeBinary = extractRegularFileFromTar(tarBytes, expectedBinaryName);

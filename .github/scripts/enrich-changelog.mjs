@@ -71,7 +71,7 @@ async function githubRequest(token, path, { params, method = "GET", body, accept
     Authorization: `Bearer ${token}`,
     Accept: accept ?? "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "sable-changelog-enrich",
+    "User-Agent": "charm-changelog-enrich",
   };
 
   const init = { method, headers };
