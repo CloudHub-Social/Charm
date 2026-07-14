@@ -1,5 +1,13 @@
 const MATRIX_ID_PATTERN = /([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?/g;
 const MXC_URI_PATTERN = /mxc:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~-]+/g;
+// Plain `http(s)://` URLs — homeserver URLs in particular, which matrix-sdk
+// formats into its own error types verbatim (e.g. a discovery or sync
+// failure's Display output) and which neither MATRIX_ID_PATTERN nor
+// MXC_URI_PATTERN catches. Mirrors the Rust side's `URL_PATTERN` in
+// `src-tauri/src/observability_scrub.rs` — keep the two in sync. Deliberately
+// broad (any http(s) URL) since a false positive just redacts a harmless URL,
+// while a false negative leaks a self-hosted homeserver's address.
+const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // The value branch matches, in order: a fully-quoted string (including
 // embedded spaces — a multi-word passphrase like
 // `password="correct horse battery"` must not leak everything after the
@@ -26,6 +34,18 @@ export function scrubMatrixIds(text: string): string {
     .replace(MATRIX_ID_PATTERN, "$1[redacted]:[redacted]");
 }
 
+/**
+ * Redacts plain `http(s)://` URLs (e.g. homeserver addresses), preserving
+ * only the scheme. Runs after `scrubMatrixIds` so an already-redacted
+ * `mxc://[redacted]/[redacted]` (a different, non-`http(s)` scheme) is left
+ * untouched by this pass.
+ */
+export function scrubUrls(text: string): string {
+  return text.replace(URL_PATTERN, (match) =>
+    match.toLowerCase().startsWith("https://") ? "https://[redacted]" : "http://[redacted]",
+  );
+}
+
 export function scrubSecrets(text: string): string {
   return text.replace(
     SECRET_FIELD_PATTERN,
@@ -48,7 +68,7 @@ export function scrubSecrets(text: string): string {
 }
 
 export function scrubSensitiveText(text: string): string {
-  return scrubSecrets(scrubMatrixIds(text));
+  return scrubSecrets(scrubUrls(scrubMatrixIds(text)));
 }
 
 export function scrubSentryValue<T>(value: T, seen = new WeakSet<object>()): T {

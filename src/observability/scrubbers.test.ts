@@ -11,6 +11,20 @@ describe("observability scrubbers", () => {
     );
   });
 
+  it("redacts homeserver/plain URLs, preserving only the scheme", () => {
+    expect(scrubSensitiveText("failed to connect to https://matrix.example.org:8448/_matrix")).toBe(
+      "failed to connect to https://[redacted]",
+    );
+    expect(scrubSensitiveText("see http://example.org/path")).toBe("see http://[redacted]");
+    expect(scrubSensitiveText("see HTTPS://example.org/path")).toBe("see https://[redacted]");
+    expect(scrubSensitiveText("see HTTP://example.org/path")).toBe("see http://[redacted]");
+  });
+
+  it("does not touch already-redacted mxc:// URIs when scrubbing URLs", () => {
+    const alreadyScrubbed = "media at mxc://[redacted]/[redacted]";
+    expect(scrubSensitiveText(alreadyScrubbed)).toBe(alreadyScrubbed);
+  });
+
   it("redacts multi-word quoted secret values instead of leaking everything after the first space", () => {
     expect(scrubSensitiveText('password="correct horse battery"')).toBe('password="[redacted]"');
     expect(scrubSensitiveText("passphrase='correct horse battery'")).toBe(

@@ -325,11 +325,20 @@ describe("IPC observability", () => {
   });
 
   it("builds captured IPC errors that keep scrubbed diagnostic text", () => {
-    const error = new Error("https://homeserver.example login failed");
+    const error = new Error("connection reset while awaiting response");
 
     expect(ipcObservabilityTestHooks.createCapturedIpcError("login", error)).toMatchObject({
       message:
-        'IPC login failed: {"name":"Error","message":"https://homeserver.example login failed"}',
+        'IPC login failed: {"name":"Error","message":"connection reset while awaiting response"}',
+      name: "IpcError",
+    });
+  });
+
+  it("redacts a homeserver URL in captured IPC error text instead of leaking it", () => {
+    const error = new Error("https://homeserver.example login failed");
+
+    expect(ipcObservabilityTestHooks.createCapturedIpcError("login", error)).toMatchObject({
+      message: 'IPC login failed: {"name":"Error","message":"https://[redacted] login failed"}',
       name: "IpcError",
     });
   });
