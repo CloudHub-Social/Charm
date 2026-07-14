@@ -30,7 +30,9 @@ When a pull request changes documented behavior:
    deployment topology, or failure modes change.
 3. Add or update a deterministic feature journey when the user-visible flow
    changes materially.
-4. Run the docs content check and production build locally.
+4. Cross-link the feature evidence, governing spec, adjacent implementation
+   guide, and operator runbook where those relationships are real.
+5. Run the content check, production build, and generated graph check locally.
 
 The feature gallery is not a Storybook component catalog. It captures complete
 user journeys with deterministic state. See [Maintaining the feature
@@ -43,6 +45,11 @@ gallery](/features/maintaining/) for its CI contract.
   or owner-only dashboard URLs.
 - Prefer links to repository files, issues, pull requests, Matrix spec sections,
   and public operational documentation.
+- Give feature cards direct links to their governing specs. Add a short
+  `Related documentation` section when a spec depends on or materially extends
+  another spec, contributor guide, or runbook.
+- Do not add links merely to increase the graph count. Every edge should answer
+  why a reader of one page should continue to the other.
 - Keep frontmatter titles descriptive and statuses explicit.
 - Treat an implementation/spec mismatch as documentation debt to fix in the
   same change, not a future vault-sync task.

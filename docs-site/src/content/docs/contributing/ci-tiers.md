@@ -45,3 +45,14 @@ For the full rationale and supporting-infrastructure details (rust-cache,
 sccache, the Moonrepo backlog item), see
 [`docs/ci-tiers.md`](https://github.com/CloudHub-Social/Charm/blob/main/docs/ci-tiers.md)
 in the repository.
+
+## Related documentation
+
+- [Cloudflare previews](/operations/cloudflare-previews/) explains the
+  per-pull-request web deployment and smoke check.
+- [Sentry observability](/operations/sentry/) covers release artifacts,
+  symbols, and the full visual snapshot suite.
+- [Maintaining the feature gallery](/features/maintaining/) documents the
+  curated E2E evidence generated from those checks.
+- [Documentation workflow](../documentation/) defines when a code change must
+  update specs, runbooks, or feature evidence in the same pull request.

@@ -78,3 +78,12 @@ event support before choosing; prefer server-side for reliability.
 
 - Recurring scheduled messages / reminders if requested (a distinct feature).
 - Editing a scheduled message's content (not just time) before it sends.
+
+## Related documentation
+
+- [Spec 43: composer parity](/specs/day-1/spec-43--composer-parity/) owns the
+  composition and send entry points.
+- [Spec 04: composer upgrade](/specs/day-1/spec-04--composer-upgrade-rich-text-slash-commands-autocomplete/)
+  establishes the rich-content payload this feature delays.
+- [Spec 57: activity inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/)
+  is the natural surface for send completion and failure notices.

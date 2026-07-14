@@ -49,5 +49,13 @@ React frontend: {
   only way to change a binding; CI fails if committed bindings drift from
   the Rust source.
 
-For deeper architecture and design-decision history, see the project's
-planning documents (not yet published here).
+## Related documentation
+
+- [Product vision](/product/vision/) and [roadmap](/product/roadmap/) describe
+  the outcomes this architecture supports.
+- [Spec 16: web client architecture](/specs/day-1/spec-16--web-client-via-companion-matrix-server/)
+  extends the shared core into the browser through the Rust companion API.
+- [Rust companion API](/operations/web-server/) documents that production
+  transport and session boundary.
+- [Spec 35: feature-flag platform](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/)
+  records how native and web runtimes share staged rollout decisions.

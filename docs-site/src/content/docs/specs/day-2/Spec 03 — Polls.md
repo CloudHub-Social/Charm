@@ -72,3 +72,12 @@ Likely none beyond generic message-send (if content is just structured JSON body
 
 - Poll result export/analytics if requested by power users running large
   community rooms.
+
+## Related documentation
+
+- [Spec 14: matrix-sdk-ui Timeline](/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/)
+  supplies the event stream and update semantics.
+- [Spec 58: rich message rendering](/specs/day-1/spec-58--rich-message-content-rendering/)
+  is the adjacent structured-event presentation layer.
+- [Spec 43: composer parity](/specs/day-1/spec-43--composer-parity/) owns the
+  message-composition surface from which a poll is created.

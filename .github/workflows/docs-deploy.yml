@@ -70,6 +70,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm build
 
+      - name: Check generated site graph
+        working-directory: docs-site
+        run: pnpm check:graph
+
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         if: github.event_name != 'pull_request'
 

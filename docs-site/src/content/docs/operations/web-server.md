@@ -117,3 +117,14 @@ cargo test -p charm-web-server --test http_api
 The first two do not require a homeserver. `http_api` uses a real local
 homeserver at `localhost:8008` plus `TEST_MATRIX_USERNAME` and
 `TEST_MATRIX_PASSWORD`, and opens a real TCP listener for WebSocket coverage.
+
+## Related documentation
+
+- [Spec 16: web client architecture](/specs/day-1/spec-16--web-client-via-companion-matrix-server/)
+  defines the companion-server boundary and shared client contract.
+- [Spec 25: persistent crypto state](/specs/day-1/spec-25--persistent-crypto-state-and-recovery-key-sufficient-verification-web-client/)
+  governs durable browser-session crypto and recovery behavior.
+- [Cloudflare previews](../cloudflare-previews/) documents the same-origin
+  Worker proxy in front of this service.
+- [Sentry observability](../sentry/) covers backend telemetry, release tags,
+  and privacy scrubbing.

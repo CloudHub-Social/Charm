@@ -89,3 +89,12 @@ underlying SDK already supports paginating around an arbitrary event.
 
 - Message-density calendar heatmap if requested as a richer discovery aid on top
   of the basic date-jump.
+
+## Related documentation
+
+- [Spec 26: timeline scroll anchoring](/specs/day-1/spec-26--timeline-scroll-anchoring-and-bottom-up-rendering/)
+  governs viewport stability after the jump.
+- [Spec 28: cross-room search](/specs/day-1/spec-28--cross-room-message-search/)
+  is the complementary event-discovery flow.
+- [Export chat history](../spec-10--export-chat-history/) has the same partial
+  local-history constraint.

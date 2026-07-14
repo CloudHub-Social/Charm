@@ -80,3 +80,12 @@ transforms the blob before that call.
 
 - Additional tools (shapes beyond rectangle, sticker/emoji overlay) if requested —
   additive to the same flattening pipeline, not a rearchitecture.
+
+## Related documentation
+
+- [Spec 02: media and attachments](/specs/day-1/spec-02--media-and-attachments/)
+  defines the upload boundary this editor feeds.
+- [Spec 42: media send polish](/specs/day-1/spec-42--media-send-polish/)
+  owns previews, progress, failure recovery, and captions.
+- [Spec 43: composer parity](/specs/day-1/spec-43--composer-parity/) owns the
+  surrounding send workflow.

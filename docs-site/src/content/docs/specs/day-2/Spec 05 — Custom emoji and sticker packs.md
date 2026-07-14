@@ -81,3 +81,12 @@ account-data read surface before adding a pack-specific command.
 - Pack-creation/authoring UI as a follow-up once consumption is solid and there's
   real demand for authoring inside Charm specifically (vs using an existing
   third-party pack-builder tool and just subscribing).
+
+## Related documentation
+
+- [Spec 38: full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) owns
+  emoji discovery and selection.
+- [Spec 58: rich message rendering](/specs/day-1/spec-58--rich-message-content-rendering/)
+  governs custom-emoji rendering in timeline content.
+- [Spec 50: cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/)
+  is the account-data precedent for portable pack subscriptions.

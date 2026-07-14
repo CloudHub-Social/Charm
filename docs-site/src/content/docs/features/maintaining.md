@@ -15,7 +15,8 @@ public feature gallery.
 
 - `src-tauri/src/feature_flags.rs` owns feature-flag keys and metadata.
 - `docs-site/src/data/feature-gallery.json` chooses the public features and
-  their snapshot sources.
+  their snapshot sources, and links each journey to its governing product
+  specs.
 - `e2e/support/sentrySnapshot.ts` captures named Playwright states.
 - `scripts/sync-feature-docs.mjs` validates flag coverage and copies only the
   curated images into `docs-site/public/features/`.
@@ -54,3 +55,15 @@ refresh PR was skipped.
 
 The token is deliberately separate from Sentry credentials and is never passed
 to the screenshot jobs.
+
+## Related documentation
+
+- [Feature flags](/contributing/feature-flags/) defines the rollout contract
+  for preview entries.
+- [Sentry observability](/operations/sentry/) describes the complete snapshot
+  suite and its upload boundary.
+- [CI / release tiers](/contributing/ci-tiers/) explains which checks gate pull
+  requests and which run on trusted branches.
+- [Documentation workflow](/contributing/documentation/) covers cross-linking
+  specs, features, and operator guides without duplicating their source of
+  truth.

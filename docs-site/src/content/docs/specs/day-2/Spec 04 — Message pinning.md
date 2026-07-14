@@ -71,3 +71,12 @@ the array). No changes to existing timeline commands.
 ## What I'd revisit as this grows
 
 - None anticipated — this is a small, complete feature at the scope above.
+
+## Related documentation
+
+- [Spec 37: message action parity](/specs/day-1/spec-37--message-action-parity/)
+  owns the contextual pin and unpin entry points.
+- [Bookmarks and saved messages](../spec-12--bookmarks-and-saved-messages/)
+  provides the private, user-scoped counterpart to room-visible pins.
+- [Spec 07: room management](/specs/day-1/spec-07--room-management-and-moderation/)
+  defines the permissions and moderation context.

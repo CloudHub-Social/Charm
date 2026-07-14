@@ -6,7 +6,7 @@ created: "2026-07-10"
 status: draft
 ---
 
-**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability (error monitoring, tracing, replay, logs)](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
+**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
 
 ## Problem & why now
 
@@ -41,7 +41,7 @@ this near a crash) that the client already knows at submission time.
   the feedback product specifically, not just error events, before treating
   it as already solved).
 - `AboutPanel.tsx` shows `packageJson.version` only — no build/commit
-  identifier at all (see [Spec 24 — Build and release identification (short SHA, PR previews)](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/),
+  identifier at all (see [Spec 24 — Build and release identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/),
   which this spec depends on for a human-meaningful build tag).
 
 **Re-verified 2026-07-10 (later same day)** — resolving the hedges above:
@@ -54,7 +54,7 @@ this near a crash) that the client already knows at submission time.
   point that exists: `ErrorFallback.tsx:26-27` passes
   `associatedEventId: sentryEventId`. `ObservabilityPanel.tsx`'s manual
   "Send feedback" button correctly does *not* pass one (it isn't
-  error-adjacent). So item 3 of [Scope (in) — summary](#scope-in--summary) is effectively
+  error-adjacent). So item 3 of [Scope summary](#scope-in--summary) is effectively
   already done — no other call sites exist to audit.
 - Version *is* already implicitly on every event via Sentry's `release`
   field (confirmed both sides wire a release: `instrument.ts`'s `release()`
@@ -84,7 +84,7 @@ this near a crash) that the client already knows at submission time.
 | Field | Source | Notes |
 |---|---|---|
 | App version | `packageJson.version` (JS) / `CARGO_PKG_VERSION` (Rust, already used for `release_name!()`) | Already implicit via Sentry's `release` field on the event; add as an explicit `charm.build.version` tag anyway so it's visible without cross-referencing the release dropdown in Sentry's UI |
-| Build identifier (short SHA / PR number) | Whatever [Spec 24 — Build and release identification (short SHA, PR previews)](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/) lands as the canonical build-time constant | Depends on Spec 24 shipping first — see [Dependencies & sequencing](#dependencies--sequencing) |
+| Build identifier (short SHA / PR number) | Whatever [Spec 24 — Build and release identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/) lands as the canonical build-time constant | Depends on Spec 24 shipping first — see [Dependencies & sequencing](#dependencies--sequencing) |
 | Platform/OS | Tauri's `@tauri-apps/plugin-os` (or equivalent already-used API — check what Spec 21's `platform` tag used, reuse the same source) | `macos`/`windows`/`linux`/`android`/`ios` |
 | Environment | Existing `environment` tag from Spec 21 (`dev`/`preview`/`production`) | Already set at init; feedback events inherit it, no new work if confirmed |
 | Recent related error, if any | `associatedEventId` (already a supported option on `openSentryFeedbackDialog`, per `SentryFeedbackDialogOptions` in `instrument.ts`) | **Done, verified 2026-07-10.** `ErrorFallback.tsx` (the only error-adjacent entry point) already passes it; `ObservabilityPanel.tsx`'s manual entry point correctly doesn't. No remaining work here. |
@@ -137,7 +137,7 @@ screenshots not being scrubbed).
 
 ## Dependencies & sequencing
 
-- **Depends on [Spec 24 — Build and release identification (short SHA, PR previews)](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/)**
+- **Depends on [Spec 24 — Build and release identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/)**
   for `charm.build.id` — implement Spec 24 first, or land this spec's other
   tags first and add `charm.build.id` once Spec 24's constant exists (don't
   block the whole spec on Spec 24 if it's more convenient to sequence the

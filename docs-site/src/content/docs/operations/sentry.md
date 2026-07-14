@@ -111,3 +111,15 @@ After a trusted web or release deployment:
 For consent lifecycle details, crash-recovery behavior, Android limitations,
 feedback routing, and the complete release checklist, read
 [`SENTRY.md`](https://github.com/CloudHub-Social/Charm/blob/main/SENTRY.md).
+
+## Related documentation
+
+- [Spec 21: Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/)
+  defines the product and privacy contract this runbook operates.
+- [Spec 22: feedback categorization](/specs/day-1/spec-22--user-feedback-categorization-and-github-label-mapping/)
+  and [Spec 23: client context capture](/specs/day-1/spec-23--user-feedback-client-context-capture/)
+  govern the feedback data sent with reports.
+- [Spec 24: build identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/)
+  defines release and preview identifiers used for symbolication.
+- [Maintaining the feature gallery](/features/maintaining/) explains how the
+  curated E2E evidence is selected from the larger snapshot suite.

@@ -8,7 +8,7 @@ sidebar:
   label: "User feedback categorization"
 ---
 
-**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability (error monitoring, tracing, replay, logs)](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10, prompted by [issue #162](https://github.com/CloudHub-Social/Charm/issues/162)).
+**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10, prompted by [issue #162](https://github.com/CloudHub-Social/Charm/issues/162)).
 
 ## Problem & why now
 
@@ -162,7 +162,7 @@ spec's setup, not as a silent assumption).
 - Depends on Spec 21's feedback flow (shipped) — pure extension, no
   conflicting files expected.
 - Independent of [Spec 23 — User feedback client context capture](/specs/day-1/spec-23--user-feedback-client-context-capture/) and
-  [Spec 24 — Build and release identification (short SHA, PR previews)](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/),
+  [Spec 24 — Build and release identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/),
   though Spec 23's richer context (platform, version) is useful supporting
   information on the same GitHub issues this spec labels — fine to land in
   either order.

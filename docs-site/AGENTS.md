@@ -16,6 +16,9 @@ Manage the background server with `astro dev stop`, `astro dev status`, and `ast
   private deploy key, or content-copy step to the build pipeline.
 - Use standard Markdown links. Do not commit Obsidian wikilinks, private
   workspace paths, credentials, or owner-only dashboard URLs.
+- Cross-link feature evidence to its governing specs, and connect specs to
+  related implementation, contributor, and operations guides where the
+  relationship is substantive.
 - Update the relevant spec in the same PR when implementation changes its
   behavior, scope, acceptance criteria, dependencies, or status.
 - Feature gallery entries describe deterministic user journeys, not isolated
@@ -28,11 +31,14 @@ Run both checks before committing documentation changes:
 ```
 pnpm check:content
 pnpm build
+pnpm check:graph
 ```
 
 `check:content` catches private-path leakage, Obsidian links, missing linked
 Markdown files, and incomplete spec frontmatter. The production build catches
-MDX parsing, route, and integration failures.
+MDX parsing, route, and integration failures. `check:graph` verifies the
+generated site graph has no broken internal nodes and retains the deliberate
+feature/spec and implementation/operations bridges.
 
 ## Documentation
 

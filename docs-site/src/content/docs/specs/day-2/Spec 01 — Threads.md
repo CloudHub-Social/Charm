@@ -108,3 +108,12 @@ reply, don't render inline" without a second data shape.
 - Per-thread notification subscriptions if requested.
 - Thread-aware unread counts (distinguishing "unread in main timeline" from
   "unread in a thread") if the combined badge count proves confusing in practice.
+
+## Related documentation
+
+- [Spec 14: matrix-sdk-ui Timeline](/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/)
+  supplies the event model threads extend.
+- [Spec 37: message action parity](/specs/day-1/spec-37--message-action-parity/)
+  governs the reply entry point and contextual actions.
+- [Spec 28: cross-room search](/specs/day-1/spec-28--cross-room-message-search/)
+  is the adjacent discovery surface that must retain thread context.
