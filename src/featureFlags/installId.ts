@@ -23,19 +23,27 @@ function generateInstallId(): string {
   return `fallback-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
 }
 
+// Holds the id for the session when localStorage is unavailable (blocked
+// storage / private mode / quota), so a client whose storage throws doesn't
+// regenerate a new targeting key on every refresh and rebucket itself.
+let sessionFallbackId: string | undefined;
+
 /** Returns the stable per-install ID, generating and persisting one on first use. */
 export function getInstallId(): string {
+  if (sessionFallbackId) return sessionFallbackId;
   try {
     const existing = localStorage.getItem(INSTALL_ID_STORAGE_KEY);
     if (existing) return existing;
   } catch {
-    // localStorage unavailable — fall through to an ephemeral ID for this session.
+    // localStorage unavailable — fall through to a session-stable ephemeral id.
   }
   const id = generateInstallId();
   try {
     localStorage.setItem(INSTALL_ID_STORAGE_KEY, id);
   } catch {
-    // Non-persistent this session; cohorting still works, just not stable.
+    // Persistence blocked — keep a stable id for this session so cohorting
+    // doesn't rebucket on every refresh.
+    sessionFallbackId = id;
   }
   return id;
 }
