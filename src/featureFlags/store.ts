@@ -117,6 +117,27 @@ export async function readOverrides(): Promise<FeatureFlagOverrides> {
 let persistMutationId = 0;
 let durablePersistTail: Promise<void> = Promise.resolve();
 
+async function restoreUnsavedStoreValue(store: Store, previous: unknown): Promise<void> {
+  try {
+    // Prefer the file as the authority: save() may fail after partially
+    // updating the plugin's in-memory map, while reload() restores exactly
+    // what Rust and the next launch will read.
+    await store.reload();
+    return;
+  } catch {
+    // If reload itself is unavailable, at least restore this key in memory.
+  }
+  try {
+    if (previous === undefined) {
+      await store.delete(FEATURE_FLAGS_STORE_KEY);
+    } else {
+      await store.set(FEATURE_FLAGS_STORE_KEY, previous);
+    }
+  } catch {
+    // Preserve the original persistence error for the caller.
+  }
+}
+
 /** Persists overrides to the local mirror and (in Tauri) the durable store. */
 export async function persistOverrides(
   overrides: FeatureFlagOverrides,
@@ -134,9 +155,18 @@ export async function persistOverrides(
     const store = await getStore();
     if (!store) throw new Error("Feature flag store is unavailable");
     if (mutationId !== persistMutationId) return false;
+    const previous = await store.get<unknown>(FEATURE_FLAGS_STORE_KEY);
     await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
-    if (mutationId !== persistMutationId) return false;
-    await store.save();
+    if (mutationId !== persistMutationId) {
+      await restoreUnsavedStoreValue(store, previous);
+      return false;
+    }
+    try {
+      await store.save();
+    } catch (error) {
+      await restoreUnsavedStoreValue(store, previous);
+      throw error;
+    }
     // Once save starts, this envelope may have reached disk even if a newer
     // mutation arrives before the promise resolves. Treat it as persisted so
     // the local mirror remains a valid rollback source if that write fails.

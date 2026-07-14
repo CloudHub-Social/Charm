@@ -143,6 +143,31 @@ describe("feature-flag client", () => {
     expect(localStorage.getItem("charm:featureFlags")).toBeNull();
   });
 
+  it("reloads the durable store before rolling back a failed Tauri save", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let inMemory: unknown;
+    const reload = vi.fn().mockImplementation(() => {
+      inMemory = undefined;
+      return Promise.resolve();
+    });
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockImplementation(() => Promise.resolve(inMemory)),
+      set: vi.fn().mockImplementation((_key: string, value: unknown) => {
+        inMemory = value;
+        return Promise.resolve();
+      }),
+      save: vi.fn().mockRejectedValue(new Error("disk full")),
+      reload,
+    });
+
+    const mod = await import("./index");
+    await expect(mod.setFeatureFlagOverride("canary", true)).rejects.toThrow("disk full");
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(mod.getFeatureFlagOverrides()).toEqual({});
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+
   it("rolls back to durable state when a newer overlapping Tauri write fails", async () => {
     mocks.isTauri.mockReturnValue(true);
     mocks.load.mockResolvedValue({
