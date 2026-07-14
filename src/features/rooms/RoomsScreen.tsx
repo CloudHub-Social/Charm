@@ -322,7 +322,13 @@ export function RoomsScreen({
             onShowAllRoomsChange={setShowAllRooms}
           />
         }
-        content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
+        content={
+          <ChatShell
+            room={activeRoom}
+            currentUserId={currentUserId}
+            onBack={() => setMobileView("list")}
+          />
+        }
         rightPanel={
           activeRoom && membersDrawerOpen ? (
             <MembersDrawer

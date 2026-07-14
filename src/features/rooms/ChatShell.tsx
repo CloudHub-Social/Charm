@@ -1,12 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronDown, Info, Paperclip, Send, Settings, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  Info,
+  MessageCircle,
+  MoreVertical,
+  Paperclip,
+  Send,
+  Settings,
+  Type,
+  X,
+} from "lucide-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
+import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
 import { canRedact, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
@@ -44,6 +62,7 @@ import { useMessageSend } from "./useMessageSend";
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
+  onBack?: () => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
@@ -118,7 +137,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   return canRedactBySender;
 }
 
-export function ChatShell({ room, currentUserId }: ChatShellProps) {
+export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
+  const layout = useAdaptiveLayout();
+  const mobile = layout === "mobile";
+  const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   // Drives the Send button's `disabled` state — there's no attachment
@@ -612,7 +634,22 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDrop}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border p-4">
+      <div
+        className={cn(
+          "flex items-center justify-between border-b border-border",
+          mobile ? "h-14 gap-1 px-1.5" : "gap-2 p-4",
+        )}
+      >
+        {mobile && (
+          <button
+            type="button"
+            aria-label="Back to chats"
+            onClick={onBack}
+            className="flex size-11 shrink-0 items-center justify-center rounded-full text-foreground hover:bg-accent"
+          >
+            <ArrowLeft className="size-5" />
+          </button>
+        )}
         <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold text-foreground">
           <Avatar size="sm">
             <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
@@ -626,28 +663,58 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           </Avatar>
           <span className="truncate">{displayName(room.room_id, room.name)}</span>
         </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
-            aria-pressed={membersDrawerOpen}
-            onClick={() => setMembersDrawerOpen((open) => !open)}
-            className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-              membersDrawerOpen && "bg-accent text-accent-foreground",
-            )}
-          >
-            <Info className="size-4" />
-          </button>
-          <button
-            type="button"
-            aria-label="Room settings"
-            onClick={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
-            className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-          >
-            <Settings className="size-4" />
-          </button>
-        </div>
+        {mobile ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Room actions"
+                className="flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              >
+                <MoreVertical className="size-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-48">
+              <DropdownMenuItem
+                className="min-h-11"
+                onSelect={() => setMembersDrawerOpen((open) => !open)}
+              >
+                <Info />
+                {membersDrawerOpen ? "Hide members" : "Show members"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="min-h-11"
+                onSelect={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
+              >
+                <Settings />
+                Room settings
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
+              aria-pressed={membersDrawerOpen}
+              onClick={() => setMembersDrawerOpen((open) => !open)}
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                membersDrawerOpen && "bg-accent text-accent-foreground",
+              )}
+            >
+              <Info className="size-4" />
+            </button>
+            <button
+              type="button"
+              aria-label="Room settings"
+              onClick={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
+              className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              <Settings className="size-4" />
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -661,7 +728,17 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
         {!loading && messages.length === 0 && !hasMore && (
-          <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
+          <div className="flex flex-1 items-center justify-center px-6 text-center">
+            <div className="flex max-w-xs flex-col items-center">
+              <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
+                <MessageCircle className="size-6" aria-hidden="true" />
+              </span>
+              <p className="text-sm font-semibold text-foreground">No messages yet</p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                Send the first message to start the conversation.
+              </p>
+            </div>
+          </div>
         )}
         {!loading && messages.length === 0 && hasMore && paginationError && (
           <p className="p-4 text-sm text-muted-foreground">Couldn't load messages</p>
@@ -859,7 +936,13 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
         </div>
       )}
 
-      <div className="px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
+      <div
+        data-testid="composer-shell"
+        className={cn(
+          "pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]",
+          mobile ? "px-2" : "px-3",
+        )}
+      >
         <input
           ref={attachmentInputRef}
           type="file"
@@ -867,13 +950,19 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
           onChange={handleAttachmentInputChange}
         />
         <div
-          className="flex items-end gap-2 rounded-lg border border-border bg-card p-2"
+          className={cn(
+            "flex items-end border border-border bg-card",
+            mobile ? "gap-1 rounded-2xl p-1" : "gap-2 rounded-lg p-2",
+          )}
           onPaste={handlePaste}
         >
           <button
             aria-label="Attach"
             onClick={handleAttachClick}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent disabled:cursor-not-allowed"
+            className={cn(
+              "flex shrink-0 items-center justify-center text-muted-foreground hover:bg-accent disabled:cursor-not-allowed",
+              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+            )}
           >
             <Paperclip size={18} />
           </button>
@@ -889,7 +978,7 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
                   : escapeHtmlText(editingMessage.body)
                 : undefined
             }
-            placeholder={`Message ${displayName(room.room_id, room.name)}`}
+            placeholder={mobile ? "Message" : `Message ${displayName(room.room_id, room.name)}`}
             onSubmit={handleComposerSubmitAndScroll}
             onSlashCommand={handleSlashCommandAndScroll}
             onEscape={() => {
@@ -899,7 +988,22 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             onTypingInput={handleTypingInput}
             onBlur={stopTyping}
             onEmptyChange={setIsComposerEmpty}
+            showFormattingToolbar={!mobile || showMobileFormatting}
           />
+          {mobile && (
+            <button
+              type="button"
+              aria-label={showMobileFormatting ? "Hide formatting" : "Show formatting"}
+              aria-pressed={showMobileFormatting}
+              onClick={() => setShowMobileFormatting((visible) => !visible)}
+              className={cn(
+                "flex size-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent",
+                showMobileFormatting && "bg-accent text-accent-foreground",
+              )}
+            >
+              <Type className="size-5" />
+            </button>
+          )}
           {/* `bg-primary-solid` (not `bg-primary`): solid fill under
               near-white text/icon — see button.tsx's comment / tokens.css.
               Disabled while there's no text to send — this composer has no
@@ -910,7 +1014,10 @@ export function ChatShell({ room, currentUserId }: ChatShellProps) {
             aria-label="Send"
             onClick={() => composerRef.current?.submit()}
             disabled={isComposerEmpty}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            className={cn(
+              "flex shrink-0 items-center justify-center bg-primary-solid text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50",
+              mobile ? "size-11 rounded-full" : "size-9 rounded-md",
+            )}
           >
             <Send size={16} />
           </button>

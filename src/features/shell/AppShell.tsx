@@ -73,7 +73,7 @@ export function AppShell({
 
   return (
     <div className="flex h-[100dvh] flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:w-full [&>div]:border-l-0">
+      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
         {mobileView === "detail" && activeRoomId ? (
           (rightPanel ?? content)
         ) : (
@@ -83,29 +83,31 @@ export function AppShell({
           </div>
         )}
       </div>
-      <nav
-        className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
-        aria-label="Primary"
-      >
-        <button
-          type="button"
-          aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => onMobileViewChange("list")}
+      {mobileView === "list" && (
+        <nav
+          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+          aria-label="Primary"
         >
-          <MessageSquare className="size-5" aria-hidden="true" />
-          Chats
-        </button>
-        <button
-          type="button"
-          aria-current={isSettingsActive ? "page" : undefined}
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => openSettings("account")}
-        >
-          <SettingsIcon className="size-5" aria-hidden="true" />
-          Settings
-        </button>
-      </nav>
+          <button
+            type="button"
+            aria-current={!isSettingsActive ? "page" : undefined}
+            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+            onClick={() => onMobileViewChange("list")}
+          >
+            <MessageSquare className="size-5" aria-hidden="true" />
+            Chats
+          </button>
+          <button
+            type="button"
+            aria-current={isSettingsActive ? "page" : undefined}
+            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+            onClick={() => openSettings("account")}
+          >
+            <SettingsIcon className="size-5" aria-hidden="true" />
+            Settings
+          </button>
+        </nav>
+      )}
     </div>
   );
 }

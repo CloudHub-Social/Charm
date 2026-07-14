@@ -55,8 +55,13 @@ vi.mock("@/features/room-info/useRoomDetails", () => ({
 }));
 
 vi.mock("./ChatShell", () => ({
-  ChatShell: ({ room: activeRoom }: { room: RoomSummary | null }) => (
-    <div>chat-content:{activeRoom?.room_id ?? "none"}</div>
+  ChatShell: ({ room: activeRoom, onBack }: { room: RoomSummary | null; onBack: () => void }) => (
+    <div>
+      chat-content:{activeRoom?.room_id ?? "none"}
+      <button type="button" onClick={onBack}>
+        back-to-chats
+      </button>
+    </div>
   ),
 }));
 
@@ -623,9 +628,9 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith("!a:example.org"));
     setFocusedRoom.mockClear();
 
-    // Tapping the Chats tab navigates back to the list — the room is still
+    // The room header's back action navigates to the list — the room is still
     // "active" but no longer on-screen, so it must stop reading as focused.
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+    fireEvent.click(screen.getByRole("button", { name: "back-to-chats" }));
 
     await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith(null));
     hasFocus.mockRestore();

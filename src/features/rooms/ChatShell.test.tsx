@@ -13,9 +13,14 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { messageRowKey } from "./messageRowShared";
-import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
+
+const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
+vi.mock("@/features/shell/useAdaptiveLayout", () => ({
+  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -282,6 +287,7 @@ describe("ChatShell", () => {
   });
 
   beforeEach(() => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
@@ -303,6 +309,47 @@ describe("ChatShell", () => {
   it("prompts to select a room when none is active", () => {
     render(<ChatShell room={null} currentUserId="@me:localhost" />);
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
+  });
+
+  it("renders mobile chat navigation, compact formatting, and room actions", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const onBack = vi.fn();
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" onBack={onBack} />
+      </JotaiProvider>,
+    );
+
+    await screen.findByText("No messages yet");
+    expect(screen.getByText("Send the first message to start the conversation.")).toBeVisible();
+    expect(screen.getByPlaceholderText("Message")).toBeVisible();
+    expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    expect(onBack).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+    expect(screen.getByRole("button", { name: "Hide formatting" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Show members" }));
+    expect(store.get(membersDrawerOpenAtomFamily(room.room_id))).toBe(true);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Room settings" }));
+    expect(store.get(roomSettingsAtom)).toEqual({ roomId: room.room_id, section: "general" });
   });
 
   it("disables Send while the composer is empty, and enables it once text is typed", async () => {

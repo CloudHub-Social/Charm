@@ -47,6 +47,24 @@ describe("Composer", () => {
     await waitFor(() => expect(screen.getByLabelText("Message general")).toBeInTheDocument());
   });
 
+  it("can collapse the formatting toolbar for a compact mobile composer", async () => {
+    render(
+      <Composer
+        roomId="!room-mobile:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        showFormattingToolbar={false}
+      />,
+    );
+
+    expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeInTheDocument());
+  });
+
   it("does not render the autocomplete popover before any trigger is typed", () => {
     render(
       <Composer

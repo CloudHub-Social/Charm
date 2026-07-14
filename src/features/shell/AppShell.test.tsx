@@ -34,7 +34,7 @@ function Harness({
       isSettingsActive={isSettingsActive}
       spaceRail={<div>space-rail</div>}
       roomList={<div>room-list</div>}
-      content={<div>chat-content</div>}
+      content={<button onClick={() => setMobileView("list")}>chat-content</button>}
       rightPanel={rightPanel}
     />
   );
@@ -89,6 +89,7 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
   });
 
   it("shows the right panel instead of chat content in mobile detail view when it's open", () => {
@@ -99,16 +100,6 @@ describe("AppShell", () => {
     expect(screen.queryByText("chat-content")).not.toBeInTheDocument();
   });
 
-  it("tapping the Chats tab returns to the list view", () => {
-    mockUseAdaptiveLayout.mockReturnValue("mobile");
-    renderShell("!room:example.org");
-    expect(screen.getByText("chat-content")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
-
-    expect(screen.getByText("room-list")).toBeInTheDocument();
-  });
-
   it("tapping Settings opens the settings overlay via settingsOpenAtom", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const { store } = renderShell(null);
@@ -116,6 +107,15 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
     expect(store.get(settingsOpenAtom)).toBe("account");
+  });
+
+  it("keeps the mobile list visible when Chats is reselected", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderShell(null);
+
+    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+
+    expect(screen.getByText("room-list")).toBeInTheDocument();
   });
 
   it("marks Settings as current when isSettingsActive is true", () => {
@@ -145,7 +145,7 @@ describe("AppShell", () => {
     // Navigate back to the list without changing the active room — this is
     // the scenario the bug covers: tapping the same room again from the
     // list must still reopen detail, even though `activeRoomId` won't change.
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+    fireEvent.click(screen.getByText("chat-content"));
     expect(screen.getByText("room-list")).toBeInTheDocument();
 
     rerender(

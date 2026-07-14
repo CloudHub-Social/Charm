@@ -51,6 +51,8 @@ interface ComposerProps {
    * emptiness is the only signal Send's disabled state needs.
    */
   onEmptyChange?: (isEmpty: boolean) => void;
+  /** Mobile chat keeps formatting available without permanently spending a full toolbar row. */
+  showFormattingToolbar?: boolean;
 }
 
 /** Lets a parent (the Send button in `ChatShell`) trigger the same submit path as Enter. */
@@ -169,6 +171,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onTypingInput,
     onBlur,
     onEmptyChange,
+    showFormattingToolbar = true,
   },
   ref,
 ) {
@@ -456,7 +459,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="flex flex-1 flex-col gap-1">
-      <FormattingToolbar editor={editor} />
+      {showFormattingToolbar && <FormattingToolbar editor={editor} />}
       <EditorContent editor={editor} />
       {menu.state.open && (
         <AutocompletePopover
