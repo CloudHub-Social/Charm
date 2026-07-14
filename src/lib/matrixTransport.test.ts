@@ -435,6 +435,16 @@ describe("matrix web transport", () => {
     expect(fetchMock()).not.toHaveBeenCalled();
   });
 
+  it("resolves get_url_preview to null on the web transport instead of throwing (Spec 29)", async () => {
+    const preview = await invoke("get_url_preview", {
+      roomId: "!r:example.org",
+      url: "https://example.com",
+    });
+
+    expect(preview).toBeNull();
+    expect(fetchMock()).not.toHaveBeenCalled();
+  });
+
   it("uses same-origin HTTP and WebSocket routes when no API base URL is configured", async () => {
     vi.stubEnv("VITE_CHARM_WEB_API_BASE_URL", "");
     const originalLocation = window.location;
