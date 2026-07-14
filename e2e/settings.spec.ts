@@ -71,6 +71,7 @@ test("settings: shows a centered dialog on desktop widths", async ({ page }) => 
 
 test("settings: switches to a full page (no dialog) at mobile widths", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 800 });
+  await page.getByRole("button", { name: "Back to chats" }).click();
   await page.getByRole("button", { name: "Settings", exact: true }).click();
 
   await expect(page.getByRole("dialog")).toHaveCount(0);

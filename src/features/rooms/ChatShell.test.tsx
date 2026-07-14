@@ -315,7 +315,8 @@ describe("ChatShell", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const onBack = vi.fn();
     const store = createStore();
-    render(
+    const otherRoom = { ...room, room_id: "!other:localhost", name: "Other room" };
+    const view = render(
       <JotaiProvider store={store}>
         <ChatShell room={room} currentUserId="@me:localhost" onBack={onBack} />
       </JotaiProvider>,
@@ -335,13 +336,23 @@ describe("ChatShell", () => {
       "true",
     );
 
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={otherRoom} currentUserId="@me:localhost" onBack={onBack} />
+      </JotaiProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Show formatting" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
     fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
       button: 0,
       ctrlKey: false,
       pointerType: "mouse",
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Show members" }));
-    expect(store.get(membersDrawerOpenAtomFamily(room.room_id))).toBe(true);
+    expect(store.get(membersDrawerOpenAtomFamily(otherRoom.room_id))).toBe(true);
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
       button: 0,
@@ -349,7 +360,7 @@ describe("ChatShell", () => {
       pointerType: "mouse",
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Room settings" }));
-    expect(store.get(roomSettingsAtom)).toEqual({ roomId: room.room_id, section: "general" });
+    expect(store.get(roomSettingsAtom)).toEqual({ roomId: otherRoom.room_id, section: "general" });
   });
 
   it("disables Send while the composer is empty, and enables it once text is typed", async () => {

@@ -156,6 +156,9 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
   const activeRoomId = room?.room_id ?? null;
+  useEffect(() => {
+    setShowMobileFormatting(false);
+  }, [activeRoomId]);
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
   );
