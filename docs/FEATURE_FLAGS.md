@@ -55,7 +55,9 @@ to a DO Spaces CDN object the proxy reads.
   `'self' ipc:`, so `ofrep.ts` routes the request through the Rust
   `fetch_remote_flags` command (reqwest, not CSP-constrained) rather than a
   direct `fetch()` — the same reason Sentry envelopes tunnel through IPC. The
-  web build fetches directly.
+  command fixes the target URL server-side (`OFREP_PROXY_BASE_URL`, kept in sync
+  with `VITE_CHARM_OFREP_URL`) and only accepts the targeting key, so it can't be
+  used for SSRF. The web build fetches directly.
 
 ## Adding a flag
 

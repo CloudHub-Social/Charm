@@ -67,11 +67,10 @@ export function parseRemoteFlags(body: OfrepBulkResponse): FeatureFlagRemote {
 export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFlagRemote | null> {
   const base = ofrepBaseUrl();
   if (!base) return null;
-  const url = `${base}/ofrep/v1/evaluate/flags`;
   try {
     const body = isTauri()
-      ? await evaluateViaIpc(url, targetingKey)
-      : await evaluateViaHttp(url, targetingKey);
+      ? await evaluateViaIpc(targetingKey)
+      : await evaluateViaHttp(`${base}/ofrep/v1/evaluate/flags`, targetingKey);
     return body ? parseRemoteFlags(body) : null;
   } catch {
     return null;
@@ -82,14 +81,12 @@ export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFla
  * Desktop/mobile: the webview CSP (`connect-src 'self' ipc: http://ipc.localhost`)
  * blocks a direct `fetch()` to the external proxy, so route through the Rust
  * core's `fetch_remote_flags` command (reqwest, not CSP-constrained), mirroring
- * the Sentry envelope transport.
+ * the Sentry envelope transport. Only the targeting key is passed — the Rust
+ * command fixes the target URL itself, so this can't be abused for SSRF.
  */
-async function evaluateViaIpc(
-  url: string,
-  targetingKey: string,
-): Promise<OfrepBulkResponse | null> {
+async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse | null> {
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<OfrepBulkResponse>("fetch_remote_flags", { endpoint: url, targetingKey });
+  return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
 }
 
 /** Web build: direct fetch (no restrictive CSP), with a timeout. */

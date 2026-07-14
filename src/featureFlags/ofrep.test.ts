@@ -99,8 +99,9 @@ describe("fetchRemoteFlags", () => {
     const result = await fetchRemoteFlags("install-9");
     expect(result).toEqual({ canary: true });
     expect(fetchMock).not.toHaveBeenCalled();
+    // Only the targeting key is passed — the Rust command fixes the URL itself
+    // (no attacker-controllable endpoint → no SSRF).
     expect(mocks.invoke).toHaveBeenCalledWith("fetch_remote_flags", {
-      endpoint: "https://flags.example.com/ofrep/v1/evaluate/flags",
       targetingKey: "install-9",
     });
   });
