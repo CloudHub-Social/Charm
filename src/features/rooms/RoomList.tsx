@@ -1,12 +1,14 @@
 import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
-import { SearchIcon, SettingsIcon } from "lucide-react";
+import { MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useFlag } from "@/featureFlags";
+import { useFocusMode } from "@/features/focus/useFocusMode";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { useOwnProfile } from "@/features/profile/useOwnProfile";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
@@ -129,6 +131,13 @@ export function RoomList({
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
+  // Spec 30: small chrome indicator while Do Not Disturb is active — flag-
+  // gated the same as the Settings entry point (FocusPanel) and the tray
+  // menu, so this can't appear for a build where DND can't be toggled at
+  // all. Does not affect unread badge computation above, which is untouched
+  // by DND (see `shell::compute_badge_state`'s own doc comment).
+  const focusModeFlagEnabled = useFlag("focus_mode");
+  const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   currentScopeRef.current = { mode, selectedSpaceId };
 
@@ -394,6 +403,20 @@ export function RoomList({
             <span className="text-base font-bold text-foreground">Charm</span>
           )}
           <div className="flex shrink-0 items-center gap-2">
+            {focusModeFlagEnabled && dndEnabled && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    data-testid="dnd-chrome-indicator"
+                    aria-label="Do Not Disturb is on"
+                    className="flex h-[18px] w-[18px] items-center justify-center rounded-full bg-muted text-muted-foreground"
+                  >
+                    <MoonIcon className="size-3" aria-hidden="true" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Do Not Disturb is on</TooltipContent>
+              </Tooltip>
+            )}
             {badge && badge.total_unread > 0 && (
               <Tooltip>
                 <TooltipTrigger asChild>

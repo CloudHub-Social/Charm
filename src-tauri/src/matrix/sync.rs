@@ -284,6 +284,16 @@ async fn notify_new_room_invites(
 ) {
     use tauri_plugin_notification::NotificationExt;
 
+    // Review fix: this dispatch path posts notifications directly and never
+    // ran through `shell::maybe_send_notification`'s DND guard, so a user
+    // with `room_invites` and `focus_mode` both enabled would still get
+    // native room-invite notifications while Do Not Disturb was on. Same
+    // guard, same rationale as `maybe_send_notification`'s own — never
+    // touches unread/badge state, only suppresses the OS-level popup.
+    if super::dnd::is_dnd_active(app) {
+        return;
+    }
+
     for room_id in response.rooms.invited.keys() {
         let Some(room) = client.get_room(room_id) else {
             continue;
@@ -310,6 +320,13 @@ async fn notify_new_room_invites(
         };
         let (title, body) =
             build_invite_notification(room_name.as_deref(), inviter_display_name, inviter_user_id);
+        // Invite mode/details/display-name lookups above may span a Focus
+        // toggle. Check again for every invite immediately before posting so
+        // the remainder of a multi-invite response is suppressed as soon as
+        // DND is enabled.
+        if super::dnd::is_dnd_active(app) {
+            continue;
+        }
         if let Err(error) = app.notification().builder().title(title).body(body).show() {
             tracing::warn!(%error, room_id = %room_id, "failed to show room-invite notification");
         }

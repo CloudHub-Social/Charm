@@ -762,8 +762,75 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Manager;
 
     let show_item = MenuItem::with_id(app, "show", "Show Charm", true, None::<&str>)?;
+    // Spec 30: preset Do Not Disturb durations, plus an indefinite option and
+    // a way to turn it back off — mirrors the Settings panel's Focus toggle
+    // (`matrix::dnd::set_dnd_state`), sharing the same underlying state via
+    // `matrix::dnd::apply` so whichever surface is used, the other reflects
+    // it (the panel listens for the `dnd:changed` event this emits).
+    let dnd_30m = MenuItem::with_id(
+        app,
+        "dnd_30m",
+        "Do Not Disturb for 30 minutes",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_1h = MenuItem::with_id(
+        app,
+        "dnd_1h",
+        "Do Not Disturb for 1 hour",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_8h = MenuItem::with_id(
+        app,
+        "dnd_8h",
+        "Do Not Disturb for 8 hours",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_indefinite = MenuItem::with_id(
+        app,
+        "dnd_indefinite",
+        "Do Not Disturb until I turn it off",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_off = MenuItem::with_id(
+        app,
+        "dnd_off",
+        "Turn Off Do Not Disturb",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_submenu = Submenu::with_items(
+        app,
+        "Focus",
+        true,
+        &[
+            &dnd_30m,
+            &dnd_1h,
+            &dnd_8h,
+            &dnd_indefinite,
+            &PredefinedMenuItem::separator(app)?,
+            &dnd_off,
+        ],
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    // The native tray is built once at startup, so only expose the Focus
+    // submenu when the off-by-default feature is enabled at that point. A
+    // later Labs/remote activation is still usable from Settings immediately
+    // and appears in the tray after restart. The click handler re-checks the
+    // flag as well so a rollout killed while the app is open cannot leave a
+    // stale native control capable of enabling DND.
+    let focus_mode_enabled = app
+        .path()
+        .app_data_dir()
+        .is_ok_and(|dir| feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode));
+    let tray_menu = if focus_mode_enabled {
+        Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?
+    } else {
+        Menu::with_items(app, &[&show_item, &quit_item])?
+    };
 
     TrayIconBuilder::new()
         .icon(
@@ -773,15 +840,65 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         )
         .menu(&tray_menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+        .on_menu_event(|app, event| {
+            const MINUTE_MS: i64 = 60_000;
+            let now = matrix::dnd::now_ms();
+            // Re-check the flag fresh here, right before an "enable DND"
+            // action actually applies. A still-visible-but-stale menu item
+            // can no longer turn DND back on once the flag is off.
+            // "dnd_off" is deliberately exempt: it's the off-ramp itself
+            // (same reasoning as `SettingsScreen`'s Focus-tab off-ramp), and
+            // must keep working regardless of the flag so a user with DND
+            // already on from before the flag was disabled can still turn it
+            // off from the tray.
+            let focus_mode_still_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+                feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode)
+            });
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
+                "dnd_30m" if focus_mode_still_enabled => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 30 * MINUTE_MS),
+                    },
+                ),
+                "dnd_1h" if focus_mode_still_enabled => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 60 * MINUTE_MS),
+                    },
+                ),
+                "dnd_8h" if focus_mode_still_enabled => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 8 * 60 * MINUTE_MS),
+                    },
+                ),
+                "dnd_indefinite" if focus_mode_still_enabled => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: None,
+                    },
+                ),
+                "dnd_off" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: false,
+                        until: None,
+                    },
+                ),
+                "quit" => app.exit(0),
+                _ => {}
             }
-            "quit" => app.exit(0),
-            _ => {}
         })
         .build(app)?;
 
@@ -951,6 +1068,7 @@ pub fn run() {
             if let Err(e) = sweep_result {
                 eprintln!("orphan temp-store sweep failed: {e}");
             }
+            matrix::dnd::init(&handle);
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
             // Spec 13: WebKitGTK's `permission-request` signal has no default
@@ -1096,6 +1214,8 @@ pub fn run() {
             matrix::account_data::set_account_data,
             matrix::account_data::get_local_onboarding_flag,
             matrix::account_data::set_local_onboarding_flag,
+            matrix::dnd::get_dnd_state,
+            matrix::dnd::set_dnd_state,
             matrix::link_preview::get_url_preview,
             push::register_push,
             push::unregister_push,

@@ -4,8 +4,10 @@ import { createStore, Provider as JotaiProvider } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
+import type * as PlatformModule from "@/lib/platform";
 
 const getAutostart = vi.fn().mockResolvedValue(false);
+const getDndState = vi.fn().mockReturnValue(new Promise(() => {}));
 
 vi.mock("@/lib/matrix", () => ({
   isDesktopPlatform: vi.fn().mockResolvedValue(false),
@@ -51,11 +53,32 @@ vi.mock("@/lib/matrix", () => ({
   unignoreUser: vi.fn(),
   getAutostart: (...args: unknown[]) => getAutostart(...args),
   setAutostart: vi.fn(),
+  getDndState: (...args: unknown[]) => getDndState(...args),
+  setDndState: vi.fn().mockResolvedValue({ enabled: false, until: null }),
+  onDndChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 vi.mock("@tauri-apps/plugin-notification", () => ({
   requestPermission: vi.fn().mockResolvedValue("granted"),
 }));
+
+let focusModeFlagEnabled = false;
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) => (key === "focus_mode" ? focusModeFlagEnabled : false),
+}));
+
+// `useFocusMode` gates its `getDndState` query on `isTauri()` (whether
+// `window.__TAURI_INTERNALS__` exists) rather than `isWebBuild()` — jsdom has
+// neither, so without this override the query would stay disabled and every
+// Focus/DND assertion below would see stale `enabled: false` regardless of
+// what `getDndState` is mocked to return. `isWebBuild()` itself is left as
+// the real implementation (still driven by `VITE_CHARM_BUILD_TARGET`) since
+// `SettingsScreen`'s own web-build gating is what several tests below are
+// exercising.
+vi.mock("@/lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof PlatformModule>();
+  return { ...actual, isTauri: () => true };
+});
 
 function renderScreen(section: SettingsSection | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -73,6 +96,7 @@ function renderScreen(section: SettingsSection | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  focusModeFlagEnabled = false;
 });
 
 afterEach(() => {
@@ -135,5 +159,61 @@ describe("SettingsScreen", () => {
     expect(await screen.findByRole("heading", { name: "Profile" })).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "General" })).not.toBeInTheDocument();
     expect(screen.queryByText("Desktop notifications")).not.toBeInTheDocument();
+  });
+
+  it("shows Focus even flag-enabled, so long as it's not a web build", async () => {
+    focusModeFlagEnabled = true;
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.getByRole("tab", { name: "Focus" })).toBeInTheDocument();
+  });
+
+  // Review fix: Focus (Do Not Disturb) is a Tauri/native concept —
+  // `invokeWeb` has no case for `get_dnd_state`/`set_dnd_state`, so it must
+  // stay hidden on web builds the same way General/Notifications already
+  // are, regardless of the `focus_mode` flag.
+  it("hides Focus in web builds even when focus_mode is flag-enabled", async () => {
+    focusModeFlagEnabled = true;
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Focus" })).not.toBeInTheDocument();
+  });
+
+  it("hides Focus when the flag is off and DND is not active", async () => {
+    getDndState.mockResolvedValue({ enabled: false, until: null });
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Focus" })).not.toBeInTheDocument();
+  });
+
+  // Review fix: if `focus_mode` is disabled after a user already has DND
+  // active (rollout killed, local override cleared), Rust enforcement keeps
+  // suppressing notifications regardless of the flag — so the Focus section
+  // must stay reachable as an off-ramp even with the flag off.
+  it("keeps Focus reachable as an off-ramp when DND is active but the flag is off", async () => {
+    focusModeFlagEnabled = false;
+    getDndState.mockResolvedValue({ enabled: true, until: null });
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    const tab = await screen.findByRole("tab", { name: "Focus" });
+    expect(tab).toBeInTheDocument();
+
+    // Review fix: the tab being reachable isn't enough — its panel must
+    // actually render content (the DND toggle) rather than blank out, or
+    // the off-ramp is unusable. Regression coverage for the bug where
+    // `SettingsScreen`'s `TabsContent` and `FocusPanel`'s own early return
+    // stayed gated on `focusModeEnabled` alone.
+    tab.focus();
+    fireEvent.click(tab);
+    expect(await screen.findByRole("checkbox", { name: /do not disturb/i })).toBeInTheDocument();
   });
 });

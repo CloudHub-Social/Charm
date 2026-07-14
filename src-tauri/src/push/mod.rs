@@ -723,6 +723,14 @@ fn message_preview(
 /// remains the fallback for the actual "app was killed" case this spec
 /// exists for, where nothing is running yet.
 pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), PushError> {
+    // Spec 30: Do Not Disturb suppresses push-decrypted notifications the
+    // same way `shell::maybe_send_notification` suppresses local ones —
+    // checked once, here, so neither dispatch path re-derives DND logic
+    // independently. Checked before any client restore/decrypt work so a
+    // DND'd push doesn't burn a dedupe reservation either.
+    if crate::matrix::dnd::is_dnd_active(app) {
+        return Ok(());
+    }
     let running_client = app.state::<MatrixState>().client.lock().await.clone();
     // Held for the rest of this function whenever `restore_any_client` had
     // to build a fresh headless client: that client's use below (fetching
@@ -775,6 +783,18 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
         return Ok(());
     };
 
+    // Fetch/decrypt/display-name work above can take long enough for the user
+    // to enable Focus after the early fast-path guard. Re-check at the final
+    // dispatch point so an in-flight push cannot escape newly enabled DND.
+    // `build_push_notification` reserved the event in memory, so release that
+    // reservation when suppression wins; a later push after DND ends may then
+    // notify normally.
+    if crate::matrix::dnd::is_dnd_active(app) {
+        app.state::<MatrixState>()
+            .forget_notified(&notification.event_id);
+        return Ok(());
+    }
+
     use tauri_plugin_notification::NotificationExt;
     let show_result = app
         .notification()
@@ -805,6 +825,13 @@ pub(crate) async fn handle_headless_push(
     store_root: &std::path::Path,
     message: PushMessage,
 ) -> Result<Option<PushNotification>, PushError> {
+    // Spec 30: same DND suppression as `handle_push`, but there's no live
+    // `AppHandle`/`MatrixState` in the headless (Android) path, so this
+    // reads `focus.json` directly off disk instead — see
+    // `dnd::is_active_at`'s doc comment.
+    if crate::matrix::dnd::is_active_at(store_root) {
+        return Ok(None);
+    }
     persistence::sweep_orphan_temp_stores_at(store_root)?;
     let client = restore_any_client_at(store_root)
         .await?
@@ -1269,6 +1296,102 @@ mod tests {
         assert!(has_headless_notified_at(&root, "$event:example.org").unwrap());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Spec 30: `handle_headless_push` checks `dnd::is_active_at` before
+    /// anything else that touches `store_root` — including
+    /// `persistence::sweep_orphan_temp_stores_at`, which errors when
+    /// `store_root` doesn't exist yet. Deliberately using a store root that
+    /// was never created lets DND-active short-circuit (`Ok(None)`, no
+    /// filesystem touch beyond reading `focus.json`) and DND-inactive
+    /// falling through to the sweep's `Err` be told apart without needing a
+    /// full restorable client.
+    ///
+    /// `focus.json` is written under `app_data_dir` (the `store_root`'s
+    /// *parent*), matching the real on-disk layout: Android's
+    /// `spawn_headless_push` passes `matrix_store_root_at(app_data_dir)` —
+    /// i.e. `<app_data_dir>/matrix_store` — as `store_root`, while
+    /// `dnd::apply`/`init` persist `focus.json` directly under
+    /// `app_data_dir` itself, not under `matrix_store`.
+    #[tokio::test]
+    async fn headless_push_is_suppressed_while_dnd_is_active() {
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "charm-headless-push-dnd-active-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        std::fs::create_dir_all(&store_root).unwrap();
+        std::fs::write(
+            app_data_dir.join("focus.json"),
+            r#"{"focus":{"state":{"enabled":true,"until":null}}}"#,
+        )
+        .unwrap();
+        // Enforcement also requires the `focus_mode` flag (a review fix so a
+        // killed rollout stops suppressing immediately) — see
+        // `dnd::is_active_at`'s doc comment.
+        std::fs::write(
+            app_data_dir.join("feature-flags.json"),
+            r#"{"featureFlags":{"state":{"overrides":{"focus_mode":true}}}}"#,
+        )
+        .unwrap();
+
+        let result = handle_headless_push(
+            &store_root,
+            PushMessage {
+                room_id: "!room:example.org".to_string(),
+                event_id: "$event:example.org".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), None);
+
+        let _ = std::fs::remove_dir_all(app_data_dir);
+    }
+
+    /// Counterpart to `headless_push_is_suppressed_while_dnd_is_active`: an
+    /// expired timed DND period must not suppress dispatch — the function
+    /// falls through past the DND check to
+    /// `persistence::sweep_orphan_temp_stores_at`, which errors on this
+    /// nonexistent `store_root`, proving the DND check did not short-circuit.
+    #[tokio::test]
+    async fn headless_push_proceeds_once_dnd_has_expired() {
+        let app_data_dir = std::env::temp_dir().join(format!(
+            "charm-headless-push-dnd-expired-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::write(
+            app_data_dir.join("focus.json"),
+            r#"{"focus":{"state":{"enabled":true,"until":1}}}"#,
+        )
+        .unwrap();
+        // `store_root` itself is never created, so the downstream
+        // `sweep_orphan_temp_stores_at` call — which the DND check must NOT
+        // have short-circuited past — hits a real `read_dir` error instead
+        // of silently succeeding on an empty directory.
+
+        let result = handle_headless_push(
+            &store_root,
+            PushMessage {
+                room_id: "!room:example.org".to_string(),
+                event_id: "$event:example.org".to_string(),
+            },
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "expired DND must not suppress dispatch: expected the sweep step past the DND check \
+             to run and fail on a missing store_root, got {result:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
     #[test]

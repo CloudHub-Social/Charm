@@ -54,6 +54,14 @@ const knockRoom = vi.fn().mockResolvedValue(undefined);
 // (see useOwnProfile.test.tsx for that), just that rendering it doesn't blow up.
 const getOwnProfile = vi.fn().mockReturnValue(new Promise(() => {}));
 const onSelfProfileUpdate = vi.fn().mockResolvedValue(() => {});
+// Spec 30: RoomList's header renders a Do Not Disturb indicator via
+// `useFocusMode`, which calls these — never resolving here is fine, the
+// indicator only cares whether `focus_mode` is flagged on (mocked off by
+// default below via no `@/featureFlags` mock, so real `useFlag` reads the
+// off-by-default catalog and the indicator never renders in these tests).
+const getDndState = vi.fn().mockReturnValue(new Promise(() => {}));
+const setDndState = vi.fn().mockResolvedValue({ enabled: false, until: null });
+const onDndChanged = vi.fn().mockResolvedValue(() => {});
 
 vi.mock("@/lib/matrix", () => ({
   setRoomFavourite: (...args: unknown[]) => setRoomFavourite(...args),
@@ -67,6 +75,9 @@ vi.mock("@/lib/matrix", () => ({
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
   onSelfProfileUpdate: (...args: unknown[]) => onSelfProfileUpdate(...args),
+  getDndState: () => getDndState(),
+  setDndState: (...args: unknown[]) => setDndState(...args),
+  onDndChanged: (...args: unknown[]) => onDndChanged(...args),
 }));
 
 // @use-gesture/react's useDrag attaches real pointer-event listeners; none of
