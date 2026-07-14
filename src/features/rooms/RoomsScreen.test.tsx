@@ -583,6 +583,33 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(resolveRoomAlias).toHaveBeenCalledWith("#b:example.org"));
   });
 
+  it("uses the latest room list when an alias finishes resolving", async () => {
+    let finishAliasResolution: ((roomId: string) => void) | undefined;
+    resolveRoomAlias.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finishAliasResolution = resolve;
+      }),
+    );
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!a:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "alias-room-pill" }));
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([room({ room_id: "!a:example.org" }), room({ room_id: "!b:example.org" })]);
+    });
+    await act(async () => finishAliasResolution?.("!b:example.org"));
+
+    await screen.findByText("chat-content:!b:example.org");
+  });
+
   it("closes the members drawer when the layout narrows to mobile", async () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     const store = createStore();

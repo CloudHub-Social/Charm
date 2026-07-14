@@ -67,6 +67,8 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
   const [roomsLoading, setRoomsLoading] = useState(true);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
@@ -91,14 +93,14 @@ export function RoomsScreen({
 
   function navigateToRoomPill(roomIdentifier: string) {
     if (roomIdentifier.startsWith("!")) {
-      const joinedRoom = rooms.find((candidate) => candidate.room_id === roomIdentifier);
+      const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomIdentifier);
       if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
       return;
     }
     if (!roomIdentifier.startsWith("#")) return;
     resolveRoomAlias(roomIdentifier)
       .then((roomId) => {
-        const joinedRoom = rooms.find((candidate) => candidate.room_id === roomId);
+        const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomId);
         if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
       })
       .catch(logAndIgnore);
@@ -146,7 +148,7 @@ export function RoomsScreen({
     } else if (room.parent_space_ids.length > 0) {
       const joinedParentSpaceIds = room.parent_space_ids
         .filter((spaceId) =>
-          rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+          roomsRef.current.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
         )
         .toSorted();
       const parentSpaceId = joinedParentSpaceIds[0];
