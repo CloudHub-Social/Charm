@@ -5,6 +5,7 @@
 // macos-latest runner but not locally. Raising the limit avoids the overflow.
 #![recursion_limit = "512"]
 
+pub mod feature_flags;
 pub mod matrix;
 pub mod observability_scrub;
 pub mod observability_trace;
@@ -479,6 +480,35 @@ fn update_observability_log_consent<R: tauri::Runtime>(
     update_runtime_observability_logs_enabled(logs_enabled);
 }
 
+/// Returns every catalog flag resolved to a boolean for this install
+/// (local override over static default). The frontend seeds its own resolver
+/// cache from this so JS and the Rust core agree on flag state for the same
+/// install. Read-only — the frontend owns override *writes* (Spec 34's Labs
+/// panel persists them into `feature-flags.json`, which this reads).
+#[tauri::command]
+fn get_feature_flags<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<std::collections::BTreeMap<String, bool>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let overrides = feature_flags::read_overrides(&app_data_dir);
+    Ok(feature_flags::FeatureFlagKey::ALL
+        .iter()
+        .map(|&key| {
+            (
+                key.as_wire_key().to_string(),
+                feature_flags::resolve(key, &overrides),
+            )
+        })
+        .collect())
+}
+
+/// Returns the flag catalog metadata (key, default, description, owner) for the
+/// Labs panel to render. Authoritative list lives in `feature_flags.rs`.
+#[tauri::command]
+fn get_feature_flag_catalog() -> Vec<feature_flags::FeatureFlagCatalogEntry> {
+    feature_flags::catalog()
+}
+
 fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
         return false;
@@ -909,6 +939,8 @@ pub fn run() {
             greet,
             get_platform,
             update_observability_log_consent,
+            get_feature_flags,
+            get_feature_flag_catalog,
             had_unclean_previous_session,
             forward_sentry_envelope,
             matrix::auth::login,

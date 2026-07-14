@@ -23,15 +23,25 @@ Fixes #
 - [ ] My changes generate no new warnings
 - [ ] `pnpm lint`, `pnpm fmt:check`, `pnpm typecheck`, `pnpm test:coverage`, `pnpm knip`, and `pnpm build` all pass locally
 
-### Observability & e2e coverage:
+### Merge gate checklist:
 
 <!--
-These two items are enforced by the "PR checklist gate" CI check, which reads
-this section of the PR body. Each line must either be checked `[x]` or contain
-an `N/A:` explanation after it on the same line — an unchecked box with no
-explanation fails the check. See SENTRY.md and CLAUDE.md's e2e section.
+These items are enforced by the "PR checklist gate" CI check, which reads this
+section of the PR body. Each line must either be checked `[x]` or contain an
+`N/A: <reason>` explanation after it on the same line — an unchecked box with
+no explanation fails the check.
+
+By type of change:
+- New feature → the feature-flag line applies; gate new user-facing behavior
+  behind a flag (see docs/FEATURE_FLAGS.md) that defaults off.
+- Bug fix / refactor → usually `N/A: <reason>` for the feature-flag line.
+- Docs / internal / chore → apply the `internal` label to the PR and the whole
+  gate is skipped; you don't need to fill these in.
+
+See SENTRY.md, docs/FEATURE_FLAGS.md, and CLAUDE.md's e2e section.
 -->
 
+- [ ] New user-facing features in this change are gated behind a feature flag (`docs/FEATURE_FLAGS.md`) that defaults off.
 - [ ] I added or updated Playwright e2e coverage (`e2e/*.spec.ts`) for this change.
 - [ ] I added Sentry breadcrumbs/logging/metrics for new error paths, IPC calls, or user actions in this change.
 

@@ -1,0 +1,8 @@
+[
+  {
+    "key": "canary",
+    "default": false,
+    "description": "Internal no-op flag used to exercise the feature-flag system. Not connected to any feature.",
+    "owner": "Spec 35 (feature-flag plumbing)"
+  }
+]
