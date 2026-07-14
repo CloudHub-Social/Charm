@@ -22,6 +22,9 @@ on:
       - "pnpm-lock.yaml"
       - "docs-site/src/data/feature-gallery.json"
       - "docs-site/public/features/**"
+      - "src-tauri/src/feature_flags.rs"
+      - "src-tauri/src/bindings/featureFlagCatalog.json"
+      - "src/featureFlags/catalog.ts"
       - "scripts/sync-feature-docs.mjs"
       - ".github/workflows/sentry-snapshots.yml"
   push:
@@ -241,6 +244,10 @@ jobs:
           retention-days: 14
 
       - name: Verify committed feature screenshots
+        # PRs must bring their gallery along with visible UI changes. On main,
+        # drift is expected input for feature-docs-refresh, so preserve a
+        # successful workflow_run while still recording the failed step.
+        continue-on-error: ${{ github.event_name == 'push' }}
         env:
           FEATURE_DOC_E2E_DIR: .artifacts/sentry-e2e-snapshots
         run: pnpm docs:features:check

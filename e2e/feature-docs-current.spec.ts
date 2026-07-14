@@ -25,9 +25,10 @@ test.describe("committed feature documentation", () => {
     test(`${feature.slug} matches its E2E journey`, async () => {
       const actual = await readFile(path.join(snapshotRoot, `${feature.snapshot.name}.png`));
 
-      // Lucide SVG edges can vary by a few antialiased pixels between otherwise
-      // identical Chromium captures. One hundred pixels is 0.011% of a 1280x720
-      // snapshot: enough for that raster noise, but far below a visible UI change.
+      // The .png name selects Playwright's image comparator for this Buffer, so
+      // maxDiffPixels is applied rather than a byte-for-byte buffer comparison.
+      // One hundred pixels is 0.011% of a 1280x720 snapshot: enough for occasional
+      // SVG-edge antialiasing noise, but far below a visible UI change.
       expect(actual).toMatchSnapshot({
         name: `${feature.slug}.png`,
         maxDiffPixels: 100,
