@@ -113,35 +113,41 @@ pub async fn get_url_preview_impl(client: &Client, url: String) -> Option<UrlPre
 /// Tries the modern authenticated-media endpoint first, then the deprecated
 /// legacy one. Any failure at either step (timeout, transport error, 404,
 /// malformed JSON body) is swallowed and treated as "no data" rather than
-/// propagated — see the module doc comment. `timeout` is a parameter (rather
-/// than always reading [`PREVIEW_TIMEOUT`]) purely so the test suite can
-/// exercise the timeout path without waiting out the real production budget.
+/// propagated — see the module doc comment.
+///
+/// Both attempts share **one** outer `timeout` budget (wrapping the whole
+/// sequential try-auth-then-try-legacy attempt in a single
+/// `tokio::time::timeout`), not one independent timeout per attempt — a
+/// homeserver that's slow/unresponsive on both endpoints previously could
+/// block for up to `2 * timeout` (each of `fetch_auth`/`fetch_legacy` timing
+/// out on its own), well past the documented ceiling. `timeout` stays a
+/// parameter (rather than always reading [`PREVIEW_TIMEOUT`]) purely so the
+/// test suite can exercise the timeout path without waiting out the real
+/// production budget.
 async fn fetch_preview_data(client: &Client, url: String, timeout: Duration) -> Option<Value> {
-    if let Some(data) = fetch_auth(client, url.clone(), timeout).await {
-        return Some(data);
-    }
-
-    fetch_legacy(client, url, timeout).await
+    tokio::time::timeout(timeout, async {
+        if let Some(data) = fetch_auth(client, url.clone()).await {
+            return Some(data);
+        }
+        fetch_legacy(client, url).await
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
-async fn fetch_auth(client: &Client, url: String, timeout: Duration) -> Option<Value> {
+async fn fetch_auth(client: &Client, url: String) -> Option<Value> {
     let request = auth_preview::v1::Request::new(url);
-    let response = tokio::time::timeout(timeout, client.send(request))
-        .await
-        .ok()? // timed out
-        .ok()?; // transport/HTTP-status error (404 included)
+    let response = client.send(request).await.ok()?;
 
     let raw = response.data?;
     serde_json::from_str(raw.get()).ok()
 }
 
 #[allow(deprecated)]
-async fn fetch_legacy(client: &Client, url: String, timeout: Duration) -> Option<Value> {
+async fn fetch_legacy(client: &Client, url: String) -> Option<Value> {
     let request = legacy_preview::v3::Request::new(url);
-    let response = tokio::time::timeout(timeout, client.send(request))
-        .await
-        .ok()? // timed out
-        .ok()?; // transport/HTTP-status error (404 included)
+    let response = client.send(request).await.ok()?;
 
     let raw = response.data?;
     serde_json::from_str(raw.get()).ok()
@@ -317,5 +323,53 @@ mod tests {
         )
         .await;
         assert!(data.is_none());
+    }
+
+    /// Regression test: both attempts (auth then legacy) must share **one**
+    /// timeout budget, not one independent timeout each. Both endpoints are
+    /// mocked to hang far past `budget`; under the pre-fix behavior (each
+    /// attempt getting its own `budget`-length timeout) this would take
+    /// ~`2 * budget` wall-clock time to resolve. Asserts total elapsed stays
+    /// well under `2 * budget`, proving the second attempt doesn't get a
+    /// fresh timeout after the first one expires.
+    #[tokio::test]
+    async fn total_wait_across_both_attempts_stays_within_one_timeout_budget() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let hangs_forever = Duration::from_secs(3600);
+        let budget = Duration::from_millis(100);
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v1/media/preview_url"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "og:title": "Too slow" }))
+                    .set_delay(hangs_forever),
+            )
+            .mount(server.server())
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/_matrix/media/(r0|v3)/preview_url$"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "og:title": "Too slow" }))
+                    .set_delay(hangs_forever),
+            )
+            .mount(server.server())
+            .await;
+
+        let started = std::time::Instant::now();
+        let data = fetch_preview_data(&client, "https://example.com".to_string(), budget).await;
+        let elapsed = started.elapsed();
+
+        assert!(data.is_none());
+        // Well under 2 * budget (200ms) — if the auth attempt's own timeout
+        // fired and a *second* fresh `budget` timeout then applied to the
+        // legacy attempt, this would take roughly 200ms+.
+        assert!(
+            elapsed < Duration::from_millis(180),
+            "expected total wait to stay within one timeout budget (~100ms), took {elapsed:?}",
+        );
     }
 }

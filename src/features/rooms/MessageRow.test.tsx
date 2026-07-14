@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import type { MessageLayout } from "@/features/appearance/atoms";
 import type * as FeatureFlagsModule from "@/featureFlags";
@@ -10,10 +10,15 @@ import { MessageRow } from "./MessageRow";
 import { makeMessageSummary } from "./testFixtures";
 
 const getUrlPreview = vi.fn();
+const getRoomDetails = vi.fn();
 
 vi.mock("@/lib/matrix", async () => {
   const actual = await vi.importActual<typeof MatrixModule>("@/lib/matrix");
-  return { ...actual, getUrlPreview: (...args: unknown[]) => getUrlPreview(...args) };
+  return {
+    ...actual,
+    getUrlPreview: (...args: unknown[]) => getUrlPreview(...args),
+    getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
+  };
 });
 
 // Force the link_previews flag on so the "no URL -> no fetch" test below
@@ -22,6 +27,11 @@ vi.mock("@/lib/matrix", async () => {
 vi.mock("@/featureFlags", async () => {
   const actual = await vi.importActual<typeof FeatureFlagsModule>("@/featureFlags");
   return { ...actual, useFlag: () => true };
+});
+
+beforeEach(() => {
+  getUrlPreview.mockReset();
+  getRoomDetails.mockReset();
 });
 
 function renderRow(messageLayout: MessageLayout, body = "hello") {
@@ -85,14 +95,35 @@ describe("MessageRow link previews (Spec 29)", () => {
     // Give any would-be effect a tick to fire before asserting it didn't.
     await waitFor(() => expect(screen.getByText(/just a plain message/)).toBeInTheDocument());
     expect(getUrlPreview).not.toHaveBeenCalled();
+    expect(getRoomDetails).not.toHaveBeenCalled();
   });
 
-  it("fetches a preview when the body does contain a URL and the flag is on", async () => {
+  it("fetches a preview when the body has a URL, the flag is on, and the room is unencrypted", async () => {
+    getRoomDetails.mockResolvedValue({ room_id: "!room:localhost", is_encrypted: false });
     getUrlPreview.mockResolvedValueOnce(null);
     renderRow("bubble", "check this out https://example.com");
 
     await waitFor(() =>
       expect(getUrlPreview).toHaveBeenCalledWith("!room:localhost", "https://example.com"),
     );
+  });
+
+  it("never fetches a preview in an encrypted room, even with a URL and the flag on", async () => {
+    getRoomDetails.mockResolvedValue({ room_id: "!room:localhost", is_encrypted: true });
+    renderRow("bubble", "check this out https://example.com");
+
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalled());
+    expect(getUrlPreview).not.toHaveBeenCalled();
+  });
+
+  it("never fetches a preview while the room's encryption status is still unknown", async () => {
+    // getRoomDetails deliberately never resolves — simulates the query still
+    // being in flight. The default must be "treat as encrypted", not "assume
+    // unencrypted and fetch anyway".
+    getRoomDetails.mockReturnValue(new Promise(() => {}));
+    renderRow("bubble", "check this out https://example.com");
+
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalled());
+    expect(getUrlPreview).not.toHaveBeenCalled();
   });
 });

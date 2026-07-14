@@ -1,10 +1,28 @@
-import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { IrcMessageRow } from "./IrcMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
 
 vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
+// LinkPreviewForMessage (Spec 29) reads the room-details query cache via
+// `useQuery`, which needs a QueryClientProvider ancestor even when its own
+// query is disabled — wrap every render the same way the real app does.
+function render(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  // RTL's `rerender` replaces the entire previously-mounted tree, including
+  // the QueryClientProvider wrapper above — re-wrap so a bare
+  // `rerender(<IrcMessageRow ... />)` call site keeps working.
+  return {
+    ...view,
+    rerender: (nextUi: ReactElement) =>
+      view.rerender(<QueryClientProvider client={client}>{nextUi}</QueryClientProvider>),
+  };
+}
 
 function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLayoutProps {
   return {
