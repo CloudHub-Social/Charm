@@ -125,9 +125,15 @@ jobs:
               );
             }
 
-            // Release PRs consume the pending changesets; they do not add a
-            // new one of their own. Internal PRs returned at the bypass above.
-            if (context.payload.pull_request.head.ref !== "release") {
+            // The generated in-repository release PR consumes pending
+            // changesets; it does not add a new one of its own. A fork can
+            // also name its branch `release`, so the branch name alone is not
+            // sufficient for this exemption. Internal PRs returned above.
+            const head = context.payload.pull_request.head;
+            const isRepositoryRelease =
+              head.ref === "release" &&
+              head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            if (!isRepositoryRelease) {
               const files = await github.paginate(
                 github.rest.pulls.listFiles,
                 {
