@@ -50,6 +50,7 @@ import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
+import type { UrlPreview } from "@bindings/UrlPreview";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
@@ -171,6 +172,7 @@ export type {
   TimelinePage,
   TypingUpdate,
   UploadProgress,
+  UrlPreview,
   VerificationRequestSummary,
 };
 
@@ -444,6 +446,23 @@ export function sendAttachment(
  */
 export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean): Promise<string> {
   return invoke("resolve_media", { roomId, eventId, thumbnail });
+}
+
+/**
+ * Fetches an unfurled preview (title, description, thumbnail) for `url` via
+ * the homeserver's `/preview_url` endpoint (Spec 29). `roomId` is accepted
+ * for parity with the Rust command's signature (room-scoped preview policy
+ * is a possible future extension) but isn't otherwise used by the frontend.
+ * Resolves to `null` on any failure — 404, timeout, malformed response, or
+ * a page with no usable OpenGraph data — never rejects for those cases; the
+ * caller doesn't need a try/catch to render "no preview".
+ */
+export function getUrlPreview(
+  roomId: string,
+  url: string,
+  eventTsMs?: number | null,
+): Promise<UrlPreview | null> {
+  return invoke("get_url_preview", { roomId, url, eventTsMs: eventTsMs ?? null });
 }
 
 export function onUploadProgress(
