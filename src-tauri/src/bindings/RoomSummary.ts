@@ -12,8 +12,9 @@ import type { RoomNotificationModeKind } from "./RoomNotificationModeKind";
  * unread indicator reads this field rather than re-deriving it from
  * `unread_count`/`unread_messages`/`is_marked_unread` itself.
  *
- * `list_rooms`/`room_list:update` pre-sort by (section, `manual_order`,
- * name) in [`snapshot_rooms`] — the frontend performs no sorting.
+ * `list_rooms`/`room_list:update` pre-sort pending invites first, followed by
+ * joined rooms ordered by (section, `manual_order`, name) in
+ * [`snapshot_rooms`] — the frontend performs no sorting.
  */
 export type RoomSummary = { room_id: string, name: string | null, unread_count: number, 
 /**

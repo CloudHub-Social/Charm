@@ -32,8 +32,9 @@ pub enum RoomMembershipKind {
 /// unread indicator reads this field rather than re-deriving it from
 /// `unread_count`/`unread_messages`/`is_marked_unread` itself.
 ///
-/// `list_rooms`/`room_list:update` pre-sort by (section, `manual_order`,
-/// name) in [`snapshot_rooms`] — the frontend performs no sorting.
+/// `list_rooms`/`room_list:update` pre-sort pending invites first, followed by
+/// joined rooms ordered by (section, `manual_order`, name) in
+/// [`snapshot_rooms`] — the frontend performs no sorting.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct RoomSummary {
@@ -171,6 +172,16 @@ fn section_rank(is_favourite: bool, is_low_priority: bool) -> u8 {
         2
     } else {
         1
+    }
+}
+
+/// Pending invites form their own room-list section ahead of joined rooms.
+/// Keep that grouping in the backend sort contract even though today's
+/// `RoomList` filters memberships before rendering each section.
+fn membership_rank(membership: RoomMembershipKind) -> u8 {
+    match membership {
+        RoomMembershipKind::Invite => 0,
+        RoomMembershipKind::Join => 1,
     }
 }
 
@@ -318,6 +329,7 @@ pub async fn snapshot_rooms(
         };
 
         summaries.push((
+            membership_rank(membership),
             section_rank(is_favourite, is_low_priority),
             manual_order,
             identity.name.clone().unwrap_or_default(),
@@ -348,18 +360,19 @@ pub async fn snapshot_rooms(
 
     summaries.sort_by(|a, b| {
         a.0.cmp(&b.0)
-            .then_with(|| match (a.1, b.1) {
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| match (a.2, b.2) {
                 (Some(a_order), Some(b_order)) => a_order.total_cmp(&b_order),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
             })
-            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
     });
 
     summaries
         .into_iter()
-        .map(|(_, _, _, summary)| summary)
+        .map(|(_, _, _, _, summary)| summary)
         .collect()
 }
 
@@ -776,6 +789,13 @@ mod tests {
         assert_eq!(
             order_tag_name(false, false),
             TagName::User(UserTagName::from_str("u.order").unwrap())
+        );
+    }
+
+    #[test]
+    fn pending_invites_sort_before_joined_rooms() {
+        assert!(
+            membership_rank(RoomMembershipKind::Invite) < membership_rank(RoomMembershipKind::Join)
         );
     }
 }

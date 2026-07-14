@@ -237,13 +237,42 @@ fn build_invite_notification(
     (title, format!("{inviter} invited you"))
 }
 
-fn should_notify_invite(
-    mode: Option<matrix_sdk::notification_settings::RoomNotificationMode>,
-) -> bool {
+fn should_notify_invite(mode: matrix_sdk::notification_settings::RoomNotificationMode) -> bool {
     !matches!(
         mode,
-        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+        matrix_sdk::notification_settings::RoomNotificationMode::Mute
     )
+}
+
+/// `Room::notification_mode()` intentionally returns `None` for invited
+/// rooms in matrix-sdk 0.18, so resolve the same push-rule precedence here:
+/// an explicit room rule first, then the default for the invite's room kind.
+async fn invite_notification_mode(
+    client: &Client,
+    room: &matrix_sdk::Room,
+) -> matrix_sdk::notification_settings::RoomNotificationMode {
+    use matrix_sdk::notification_settings::{IsEncrypted, IsOneToOne};
+
+    let settings = client.notification_settings().await;
+    if let Some(mode) = settings
+        .get_user_defined_room_notification_mode(room.room_id())
+        .await
+    {
+        return mode;
+    }
+
+    let is_encrypted = room
+        .latest_encryption_state()
+        .await
+        .map(|state| state.is_encrypted())
+        .unwrap_or(false);
+    let is_one_to_one = room.active_members_count() == 2;
+    settings
+        .get_default_room_notification_mode(
+            IsEncrypted::from(is_encrypted),
+            IsOneToOne::from(is_one_to_one),
+        )
+        .await
 }
 
 /// Notifies only for invites in a steady-state sync response. The initial
@@ -259,7 +288,7 @@ async fn notify_new_room_invites(
         let Some(room) = client.get_room(room_id) else {
             continue;
         };
-        if !should_notify_invite(room.notification_mode().await) {
+        if !should_notify_invite(invite_notification_mode(client, &room).await) {
             continue;
         }
         let details = room.invite_details().await.ok();
@@ -509,13 +538,10 @@ mod invite_notification_tests {
 
     #[test]
     fn suppresses_invites_only_when_notifications_are_muted() {
-        assert!(!should_notify_invite(Some(RoomNotificationMode::Mute)));
-        assert!(should_notify_invite(Some(
+        assert!(!should_notify_invite(RoomNotificationMode::Mute));
+        assert!(should_notify_invite(
             RoomNotificationMode::MentionsAndKeywordsOnly,
-        )));
-        assert!(should_notify_invite(Some(
-            RoomNotificationMode::AllMessages
-        )));
-        assert!(should_notify_invite(None));
+        ));
+        assert!(should_notify_invite(RoomNotificationMode::AllMessages));
     }
 }
