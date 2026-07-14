@@ -10,6 +10,7 @@ export interface AutocompleteItem {
 export interface AutocompletePosition {
   top: number;
   left: number;
+  maxHeight?: number;
 }
 
 interface AutocompletePopoverProps {
@@ -40,7 +41,7 @@ export function AutocompletePopover({
       role="listbox"
       aria-label="Suggestions"
       className="fixed z-50 max-h-60 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      style={{ top: position.top, left: position.left }}
+      style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
     >
       {items.map((item, index) => (
         <button

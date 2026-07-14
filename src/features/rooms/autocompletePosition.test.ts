@@ -12,7 +12,7 @@ describe("rectToAutocompletePosition", () => {
         width: 800,
         height: 800,
       }),
-    ).toEqual({ top: 124, left: 100 });
+    ).toEqual({ top: 124, left: 100, maxHeight: 240 });
   });
 
   it("clamps the menu inside the right edge on a phone viewport", () => {
@@ -21,7 +21,7 @@ describe("rectToAutocompletePosition", () => {
         width: 375,
         height: 812,
       }),
-    ).toEqual({ top: 124, left: 111 });
+    ).toEqual({ top: 124, left: 111, maxHeight: 240 });
   });
 
   it("flips above the caret when there is not enough room below", () => {
@@ -30,7 +30,7 @@ describe("rectToAutocompletePosition", () => {
         width: 375,
         height: 812,
       }),
-    ).toEqual({ top: 456, left: 100 });
+    ).toEqual({ top: 456, left: 100, maxHeight: 240 });
   });
 
   it("keeps a flipped menu within the top margin on a short viewport", () => {
@@ -39,6 +39,23 @@ describe("rectToAutocompletePosition", () => {
         width: 320,
         height: 200,
       }),
-    ).toEqual({ top: 8, left: 10 });
+    ).toEqual({ top: 8, left: 10, maxHeight: 68 });
+  });
+
+  it("uses the visual viewport when the software keyboard reduces visible height", () => {
+    const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { width: 375, height: 400 },
+    });
+
+    try {
+      expect(
+        rectToAutocompletePosition(rect({ top: 340, right: 120, bottom: 360, left: 100 })),
+      ).toEqual({ top: 96, left: 100, maxHeight: 240 });
+    } finally {
+      if (original) Object.defineProperty(window, "visualViewport", original);
+      else Reflect.deleteProperty(window, "visualViewport");
+    }
   });
 });

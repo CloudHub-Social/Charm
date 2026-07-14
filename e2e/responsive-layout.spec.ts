@@ -18,8 +18,6 @@ test.beforeEach(async ({ page }) => {
 test("keeps the mobile shell, navigation, composer, and header controls in the viewport", async ({
   page,
 }) => {
-  await page.getByRole("button", { name: LONG_ROOM_NAME }).click();
-
   const composer = page.getByPlaceholder(`Message ${LONG_ROOM_NAME}`);
   const navigation = page.getByRole("navigation", { name: "Primary" });
   const infoButton = page.getByRole("button", { name: "Show members" });
@@ -34,8 +32,8 @@ test("keeps the mobile shell, navigation, composer, and header controls in the v
     composer.boundingBox(),
     navigation.boundingBox(),
     page.evaluate(() => ({
-      height: window.innerHeight,
-      width: window.innerWidth,
+      height: window.visualViewport?.height ?? window.innerHeight,
+      width: window.visualViewport?.width ?? window.innerWidth,
       scrollWidth: document.documentElement.scrollWidth,
     })),
   ]);

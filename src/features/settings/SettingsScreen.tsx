@@ -167,7 +167,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
 
   if (layout === "mobile") {
     return (
-      <div className="fixed inset-0 z-40 flex flex-col bg-background">
+      <div className="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
         <div className="flex shrink-0 items-center justify-between border-b border-border p-4">
           <span className="text-base font-bold text-foreground">Settings</span>
           <Button
