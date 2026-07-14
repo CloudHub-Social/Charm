@@ -179,6 +179,47 @@ describe("RoomList", () => {
     expect(onSelectRoom).toHaveBeenCalledWith(room.room_id);
   });
 
+  it("renders pending invites separately and wires accept and decline", async () => {
+    const onAcceptInvite = vi.fn().mockResolvedValue(undefined);
+    const onDeclineInvite = vi.fn().mockResolvedValue(undefined);
+    const invite = makeRoomSummary({
+      room_id: "!invite:localhost",
+      name: "Project room",
+      membership: "invite",
+      inviter_user_id: "@alice:localhost",
+      inviter_display_name: "Alice",
+    });
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [invite] })}
+        onAcceptInvite={onAcceptInvite}
+        onDeclineInvite={onDeclineInvite}
+      />,
+    );
+
+    expect(screen.getByText("Invites")).toBeInTheDocument();
+    expect(screen.getByText("Alice invited you")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+    await waitFor(() => expect(onAcceptInvite).toHaveBeenCalledWith(invite.room_id));
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }));
+    await waitFor(() => expect(onDeclineInvite).toHaveBeenCalledWith(invite.room_id));
+  });
+
+  it("does not include pending invites in room search results", () => {
+    const invite = makeRoomSummary({
+      room_id: "!invite:localhost",
+      name: "Secret invited room",
+      membership: "invite",
+    });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [invite] })} />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "Secret" },
+    });
+
+    expect(screen.getByText("No matching rooms")).toBeInTheDocument();
+  });
+
   it("wires the context menu's favourite/mute/mark actions to their IPC calls", async () => {
     const room = makeRoomSummary({ name: "general" });
     renderRoomList(<RoomList {...roomListProps({ rooms: [room] })} />);

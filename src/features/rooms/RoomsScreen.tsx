@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
@@ -17,6 +17,8 @@ import { AppShell, type MobileView } from "@/features/shell/AppShell";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
+  acceptInvite,
+  declineInvite,
   listRooms,
   onRoomListUpdate,
   resolveRoomAlias,
@@ -130,7 +132,7 @@ export function RoomsScreen({
     } else if (room.parent_space_ids.length > 0) {
       const joinedParentSpaceIds = room.parent_space_ids
         .filter((spaceId) =>
-          rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+          joinedRooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
         )
         .toSorted();
       const parentSpaceId = joinedParentSpaceIds[0];
@@ -154,6 +156,8 @@ export function RoomsScreen({
   useBadgeListener();
   useSettingsHashSync();
 
+  const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
+
   useEffect(() => {
     listRooms().then(setRooms).catch(logAndIgnore);
     const unlisten = onRoomListUpdate(setRooms);
@@ -161,6 +165,26 @@ export function RoomsScreen({
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
+
+  async function refreshRooms() {
+    const nextRooms = await listRooms();
+    setRooms(nextRooms);
+    return nextRooms;
+  }
+
+  async function handleAcceptInvite(roomId: string) {
+    await acceptInvite(roomId);
+    const nextRooms = await refreshRooms();
+    const joinedRoom = nextRooms.find(
+      (room) => room.room_id === roomId && room.membership === "join",
+    );
+    if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+  }
+
+  async function handleDeclineInvite(roomId: string) {
+    await declineInvite(roomId);
+    await refreshRooms();
+  }
 
   // Tells the Rust side which room has focus so it can suppress a local
   // notification for whatever the user is already looking at (Spec 10). Not
@@ -226,7 +250,7 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (!resolvedDeepLinkTarget) return;
-    const match = rooms.find((room) => room.room_id === resolvedDeepLinkTarget);
+    const match = joinedRooms.find((room) => room.room_id === resolvedDeepLinkTarget);
     if (match) {
       // `selectRoom`, not a plain `setActiveRoomId`: a deep link targeting
       // the room that's already active (e.g. re-tapping the same
@@ -241,22 +265,22 @@ export function RoomsScreen({
       onDeepLinkConsumed();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedDeepLinkTarget, rooms, onDeepLinkConsumed]);
+  }, [resolvedDeepLinkTarget, joinedRooms, onDeepLinkConsumed]);
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
-    const firstSelectableRoom = getInitialSelectableRoom(rooms);
+    const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
       if (spaceDeepLinkSelectedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rooms, activeRoomId, deepLinkRoomId]);
+  }, [joinedRooms, activeRoomId, deepLinkRoomId]);
 
-  const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;
   const selectedSpace =
     roomListMode === "space"
-      ? (rooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
+      ? (joinedRooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
       : null;
   // Keeps `useRoomDetails`' `room_details:update` listener alive for the
   // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
@@ -293,7 +317,7 @@ export function RoomsScreen({
       <AppShell
         spaceRail={
           <SpaceRail
-            rooms={rooms}
+            rooms={joinedRooms}
             activeMode={roomListMode}
             activeSpaceId={selectedSpaceId}
             showAllRooms={showAllRooms}
@@ -320,6 +344,8 @@ export function RoomsScreen({
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
             showAllRooms={showAllRooms}
             onShowAllRoomsChange={setShowAllRooms}
+            onAcceptInvite={handleAcceptInvite}
+            onDeclineInvite={handleDeclineInvite}
           />
         }
         content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}

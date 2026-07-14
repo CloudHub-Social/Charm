@@ -14,8 +14,12 @@ const listRooms = vi.fn();
 const onRoomListUpdate = vi.fn();
 const resolveRoomAlias = vi.fn();
 const setFocusedRoom = vi.fn();
+const acceptInvite = vi.fn();
+const declineInvite = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
+  acceptInvite: (...args: unknown[]) => acceptInvite(...args),
+  declineInvite: (...args: unknown[]) => declineInvite(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   onRoomListUpdate: (...args: unknown[]) => onRoomListUpdate(...args),
   resolveRoomAlias: (...args: unknown[]) => resolveRoomAlias(...args),
@@ -106,15 +110,31 @@ vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
     onSelectRoom,
+    onAcceptInvite,
+    onDeclineInvite,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
+    onAcceptInvite: (id: string) => Promise<void>;
+    onDeclineInvite: (id: string) => Promise<void>;
   }) => (
     <div>
       {rooms.map((r) => (
-        <button key={r.room_id} type="button" onClick={() => onSelectRoom(r.room_id)}>
-          {r.room_id}
-        </button>
+        <div key={r.room_id}>
+          <button type="button" onClick={() => onSelectRoom(r.room_id)}>
+            {r.room_id}
+          </button>
+          {r.membership === "invite" && (
+            <>
+              <button type="button" onClick={() => onAcceptInvite(r.room_id)}>
+                accept:{r.room_id}
+              </button>
+              <button type="button" onClick={() => onDeclineInvite(r.room_id)}>
+                decline:{r.room_id}
+              </button>
+            </>
+          )}
+        </div>
       ))}
     </div>
   ),
@@ -139,6 +159,9 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
     ...overrides,
   };
 }
@@ -149,7 +172,20 @@ beforeEach(() => {
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
   setFocusedRoom.mockReset().mockResolvedValue(undefined);
+  acceptInvite.mockReset().mockResolvedValue(undefined);
+  declineInvite.mockReset().mockResolvedValue(undefined);
 });
+
+function renderRoomsScreen() {
+  return render(
+    <RoomsScreen
+      currentUserId="@me:example.org"
+      deepLinkRoomId={null}
+      onDeepLinkConsumed={() => {}}
+      onLoggedOut={() => {}}
+    />,
+  );
+}
 
 describe("RoomsScreen", () => {
   it("auto-selects the first room and tells Rust it has focus", async () => {
@@ -544,6 +580,41 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("accepts an invite, refreshes the snapshot, and opens the joined room", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: invite.room_id, membership: "join" });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([joined]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+  });
+
+  it("declines an invite and removes it after refreshing the snapshot", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `decline:${invite.room_id}` }));
+
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: `decline:${invite.room_id}` }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("closes the members drawer when the layout narrows to mobile", async () => {

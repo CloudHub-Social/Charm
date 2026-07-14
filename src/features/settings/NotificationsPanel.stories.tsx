@@ -22,6 +22,9 @@ const ROOMS: RoomSummary[] = [
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
   },
   {
     room_id: "!announcements:localhost",
@@ -41,6 +44,9 @@ const ROOMS: RoomSummary[] = [
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
   },
   {
     room_id: "!watercooler:localhost",
@@ -60,6 +66,9 @@ const ROOMS: RoomSummary[] = [
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
   },
 ];
 

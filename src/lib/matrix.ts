@@ -33,6 +33,7 @@ import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
 import type { RoomMemberSummary } from "@bindings/RoomMemberSummary";
 import type { RoomMessageSummary } from "@bindings/RoomMessageSummary";
+import type { RoomMembershipKind } from "@bindings/RoomMembershipKind";
 import type { RoomNotificationModeKind } from "@bindings/RoomNotificationModeKind";
 import type { RoomPermissions } from "@bindings/RoomPermissions";
 import type { RoomSummary } from "@bindings/RoomSummary";
@@ -153,6 +154,7 @@ export type {
   RoomDetails,
   RoomMemberSummary,
   RoomMessageSummary,
+  RoomMembershipKind,
   RoomNotificationModeKind,
   RoomPermissions,
   RoomSummary,
@@ -236,6 +238,14 @@ export function tryRestoreSession(): Promise<LoginResponse | null> {
 
 export function listRooms(): Promise<RoomSummary[]> {
   return invoke("list_rooms");
+}
+
+export function acceptInvite(roomId: string): Promise<void> {
+  return invoke("accept_invite", { roomId });
+}
+
+export function declineInvite(roomId: string): Promise<void> {
+  return invoke("decline_invite", { roomId });
 }
 
 export function resolveRoomAlias(alias: string): Promise<string> {

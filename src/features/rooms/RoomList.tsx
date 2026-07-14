@@ -28,6 +28,7 @@ import {
 import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
+import { RoomInviteItem } from "./RoomInviteItem";
 import { RoomListSection } from "./SpaceSection";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
@@ -63,11 +64,14 @@ interface RoomListProps {
   intendedSpaceId?: string | null;
   showAllRooms: boolean;
   onShowAllRoomsChange: (showAll: boolean) => void;
+  onAcceptInvite?: (roomId: string) => Promise<void>;
+  onDeclineInvite?: (roomId: string) => Promise<void>;
 }
 
 // Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
 // spacing — used to translate a drag's pixel delta into a target index.
 const ROW_HEIGHT_PX = 46;
+const noopInviteAction = (): Promise<void> => Promise.resolve();
 
 function unreadBadgeLabel(totalUnread: number, totalHighlight: number): string {
   const rooms = `${totalUnread} unread room${totalUnread === 1 ? "" : "s"}`;
@@ -94,6 +98,8 @@ export function RoomList({
   intendedSpaceId = null,
   showAllRooms,
   onShowAllRoomsChange,
+  onAcceptInvite = noopInviteAction,
+  onDeclineInvite = noopInviteAction,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -114,6 +120,8 @@ export function RoomList({
   // itself loaded fine.
   const [joinError, setJoinError] = useState<string | null>(null);
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
+  const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
   const { data: ownProfile } = useOwnProfile();
@@ -122,14 +130,26 @@ export function RoomList({
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   currentScopeRef.current = { mode, selectedSpaceId };
 
-  const roomById = useMemo(() => new Map(rooms.map((room) => [room.room_id, room])), [rooms]);
+  const invitedRooms = useMemo(() => rooms.filter((room) => room.membership === "invite"), [rooms]);
+  const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
+  const roomById = useMemo(
+    () => new Map(joinedRooms.map((room) => [room.room_id, room])),
+    [joinedRooms],
+  );
   const visibleHierarchyCount = useMemo(
     () => countVisibleHierarchyNodes(spaceHierarchy, roomById),
     [spaceHierarchy, roomById],
   );
   const scopedRooms = useMemo(
-    () => getScopedRooms({ rooms, mode, selectedSpace, showAllRooms, hierarchy: spaceHierarchy }),
-    [rooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
+    () =>
+      getScopedRooms({
+        rooms: joinedRooms,
+        mode,
+        selectedSpace,
+        showAllRooms,
+        hierarchy: spaceHierarchy,
+      }),
+    [joinedRooms, mode, selectedSpace, showAllRooms, spaceHierarchy],
   );
   // Used to decide whether a search result is already visible in the current
   // scope (just select it) or requires switching context first (mode,
@@ -140,7 +160,7 @@ export function RoomList({
     [scopedRooms],
   );
   const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
-  const fullSections = useMemo(() => groupRoomsIntoSections(rooms), [rooms]);
+  const fullSections = useMemo(() => groupRoomsIntoSections(joinedRooms), [joinedRooms]);
   const fullFavouriteSectionRooms = getFullSectionRooms(
     sections.favourites,
     fullSections.favourites,
@@ -159,9 +179,9 @@ export function RoomList({
     // Spaces aren't a destination search should surface — selecting one
     // isn't a single unambiguous action the way a room/DM row is (see
     // HierarchyRow's separate "Open" affordance for that).
-    const pool = (searchEverywhere ? rooms : scopedRooms).filter((room) => !room.is_space);
+    const pool = (searchEverywhere ? joinedRooms : scopedRooms).filter((room) => !room.is_space);
     return filterRoomsByQuery(pool, searchQuery);
-  }, [isSearching, searchEverywhere, rooms, scopedRooms, searchQuery]);
+  }, [isSearching, searchEverywhere, joinedRooms, scopedRooms, searchQuery]);
   // Unjoined children of the currently selected space's hierarchy: `rooms`
   // (and therefore `scopedRooms`) only ever contains rooms the account has
   // joined, so a public/knock child the user can see in the unsearched
@@ -291,10 +311,24 @@ export function RoomList({
   }
 
   const allEmpty =
+    invitedRooms.length === 0 &&
     sections.favourites.length === 0 &&
     sections.spaceGroups.length === 0 &&
     roomSectionRooms.length === 0 &&
     sections.lowPriority.length === 0;
+
+  async function handleInviteAction(roomId: string, action: (roomId: string) => Promise<void>) {
+    if (pendingInviteRoomId) return;
+    setPendingInviteRoomId(roomId);
+    setInviteError(null);
+    try {
+      await action(roomId);
+    } catch (error) {
+      setInviteError(String(error));
+    } finally {
+      setPendingInviteRoomId(null);
+    }
+  }
 
   async function handleJoin(child: SpaceChild) {
     if (pendingJoinRoomIdRef.current) return;
@@ -483,9 +517,26 @@ export function RoomList({
             </p>
           ) : (
             <div className="flex flex-col gap-2">
+              {inviteError && <p className="px-3 py-2 text-sm text-destructive">{inviteError}</p>}
               {(spaceError || joinError) && (
                 <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
               )}
+              <RoomListSection
+                title="Invites"
+                count={invitedRooms.length}
+                expanded={isExpanded("invites")}
+                onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, invites: v }))}
+              >
+                {invitedRooms.map((room) => (
+                  <RoomInviteItem
+                    key={room.room_id}
+                    room={room}
+                    pending={pendingInviteRoomId === room.room_id}
+                    onAccept={() => handleInviteAction(room.room_id, onAcceptInvite)}
+                    onDecline={() => handleInviteAction(room.room_id, onDeclineInvite)}
+                  />
+                ))}
+              </RoomListSection>
               <RoomListSection
                 title="Favourites"
                 count={sections.favourites.length}
