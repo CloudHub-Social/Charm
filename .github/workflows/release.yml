@@ -9,7 +9,13 @@ permissions: {}
 
 jobs:
   release:
-    if: github.head_ref == 'release' && github.event.pull_request.merged == true
+    # Only the generated release branch in this repository may publish. A
+    # fork can also name its source branch `release`; head.ref alone would
+    # grant that unrelated merged PR the release job's write credentials.
+    if: >-
+      github.event.pull_request.merged == true
+      && github.event.pull_request.head.ref == 'release'
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
