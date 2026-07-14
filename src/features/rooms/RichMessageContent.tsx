@@ -91,6 +91,7 @@ function Spoiler({ reason, children }: { reason?: string; children: ReactNode })
     <span className="relative inline-block rounded">
       <span
         aria-hidden={!revealed}
+        inert={!revealed ? true : undefined}
         className={cn(
           "rounded px-1",
           revealed
@@ -298,9 +299,19 @@ export function RichMessageContent({
   onRoomPillClick,
 }: RichMessageContentProps) {
   const jumboEmojiSize = useAtomValue(jumboEmojiSizeAtom);
-  const jumbo = jumboEmojiSize !== "off" && isOnlyEmoji(body);
+  const sanitizedFormattedBody = useMemo(
+    () => (formattedBody ? sanitizeMatrixHtml(formattedBody) : null),
+    [formattedBody],
+  );
+  const renderedText = useMemo(() => {
+    if (!sanitizedFormattedBody) return body;
+    return (
+      new DOMParser().parseFromString(sanitizedFormattedBody, "text/html").body.textContent ?? ""
+    );
+  }, [body, sanitizedFormattedBody]);
+  const jumbo = jumboEmojiSize !== "off" && isOnlyEmoji(renderedText);
   const content = useMemo(() => {
-    if (!formattedBody) {
+    if (!sanitizedFormattedBody) {
       return (
         <Linkify
           options={{
@@ -417,13 +428,14 @@ export function RichMessageContent({
               </a>
             );
           }
+          return <span>{domToReact(children, options)}</span>;
         }
         return undefined;
       },
     };
 
-    return parse(sanitizeMatrixHtml(formattedBody), options);
-  }, [body, currentUserId, formattedBody, onRoomPillClick, onUserPillClick]);
+    return parse(sanitizedFormattedBody, options);
+  }, [body, currentUserId, onRoomPillClick, onUserPillClick, sanitizedFormattedBody]);
 
   return (
     <div

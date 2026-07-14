@@ -40,9 +40,11 @@ describe("RichMessageContent", () => {
 
     const spoiler = screen.getByRole("button", { name: "Reveal spoiler" });
     expect(spoiler.previousElementSibling).toHaveClass("[&_*]:!text-transparent");
+    expect(spoiler.previousElementSibling).toHaveAttribute("inert");
     expect(screen.queryByRole("button", { name: "Alice" })).toBeNull();
     expect(screen.getByText("@room")).toBeInTheDocument();
     fireEvent.click(spoiler);
+    expect(screen.getByText("@room").closest("[inert]")).toBeNull();
     expect(screen.getByRole("button", { name: "Alice" })).toBeInTheDocument();
   });
 
@@ -150,6 +152,30 @@ describe("RichMessageContent", () => {
     expect(container.firstChild).toHaveAttribute("data-jumbo-emoji", "true");
     rerender(<RichMessageContent body="great 🎉" currentUserId="@me:localhost" />);
     expect(container.firstChild).not.toHaveAttribute("data-jumbo-emoji");
+  });
+
+  it("uses the rendered formatted text when deciding whether to scale emoji", () => {
+    const { container } = render(
+      <RichMessageContent
+        body="🎉"
+        formattedBody="<strong>not actually emoji-only</strong>"
+        currentUserId="@me:localhost"
+      />,
+    );
+    expect(container.firstChild).not.toHaveAttribute("data-jumbo-emoji");
+  });
+
+  it("renders relative and fragment links as non-interactive text", () => {
+    const { container } = render(
+      <RichMessageContent
+        body="Relative Fragment"
+        formattedBody='<a href="/settings">Relative</a> <a href="#section">Fragment</a>'
+        currentUserId="@me:localhost"
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
+    expect(screen.getByText("Relative").tagName).toBe("SPAN");
+    expect(screen.getByText("Fragment").tagName).toBe("SPAN");
   });
 
   it("sanitizes remote markup before parsing it into React", () => {

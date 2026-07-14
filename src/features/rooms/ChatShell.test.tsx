@@ -3197,18 +3197,19 @@ describe("ChatShell", () => {
     });
     renderChatShell();
 
-    const link = await screen.findByRole("link", { name: "click here" });
-    fireEvent.click(link);
+    const text = await screen.findByText("click here");
 
+    expect(text.tagName).toBe("SPAN");
+    expect(screen.queryByRole("link", { name: "click here" })).toBeNull();
     expect(openUrl).not.toHaveBeenCalled();
   });
 
-  it("leaves a relative or fragment link alone instead of resolving it against the app's own origin", async () => {
+  it("renders a relative or fragment link as non-interactive text", async () => {
     // Regression test: an earlier version resolved `href` against
     // `window.location.href` before checking its scheme, which turned a
     // relative path into an absolute `http(s)` URL and opened it via
-    // `openUrl` — contradicting the intent that relative/fragment hrefs
-    // (both valid per the sanitizer's allowlist) are left untouched.
+    // `openUrl`. Relative and fragment hrefs are now rendered as plain text
+    // so the webview cannot navigate away from the chat.
     getTimelinePage.mockResolvedValue({
       messages: [
         summary({
@@ -3223,9 +3224,10 @@ describe("ChatShell", () => {
     });
     renderChatShell();
 
-    const link = await screen.findByRole("link", { name: "click here" });
-    fireEvent.click(link);
+    const text = await screen.findByText("click here");
 
+    expect(text.tagName).toBe("SPAN");
+    expect(screen.queryByRole("link", { name: "click here" })).toBeNull();
     expect(openUrl).not.toHaveBeenCalled();
   });
 
