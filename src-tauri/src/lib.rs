@@ -1041,6 +1041,7 @@ pub fn run() {
             matrix::account_data::set_account_data,
             matrix::account_data::get_local_onboarding_flag,
             matrix::account_data::set_local_onboarding_flag,
+            matrix::link_preview::get_url_preview,
             push::register_push,
             push::unregister_push,
             push::get_push_status

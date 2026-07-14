@@ -8,4 +8,4 @@
  * Exported to the frontend as a union type; a JS catalog missing or misspelling
  * a key fails `tsc`.
  */
-export type FeatureFlagKey = "canary" | "room_invites" | "rich_message_rendering" | "mobile_chat_redesign";
+export type FeatureFlagKey = "canary" | "room_invites" | "rich_message_rendering" | "mobile_chat_redesign" | "link_previews";

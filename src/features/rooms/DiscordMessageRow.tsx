@@ -1,6 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
@@ -138,6 +139,9 @@ export function DiscordMessageRow({
             />
           )}
         </div>
+        {!message.redacted && !message.media && !isUndecrypted && (
+          <LinkPreviewForMessage body={message.body} roomId={roomId} />
+        )}
         {!message.redacted && (
           <ReactionBar
             reactions={message.reactions}

@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { nickColor } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
@@ -100,6 +101,9 @@ export function IrcMessageRow({
                   isError && "rounded border border-destructive px-1",
                 )}
               />
+            )}
+            {!message.media && !isUndecrypted && (
+              <LinkPreviewForMessage body={message.body} roomId={roomId} />
             )}
             {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
             {isError && <span className="ml-1 text-destructive">(failed to send)</span>}

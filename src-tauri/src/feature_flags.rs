@@ -91,6 +91,10 @@ define_feature_flag_keys!(
         /// Spec 52 mobile chat redesign: compact room header and composer,
         /// in-header back navigation, and detail-view bottom-nav suppression.
         MobileChatRedesign,
+        /// Spec 29 link previews: unfurled title/description/thumbnail card
+        /// under a message containing a URL, fetched via the homeserver's
+        /// `/preview_url` endpoint.
+        LinkPreviews,
     }
 );
 
@@ -103,6 +107,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => false,
             FeatureFlagKey::RichMessageRendering => false,
             FeatureFlagKey::MobileChatRedesign => false,
+            FeatureFlagKey::LinkPreviews => false,
         }
     }
 
@@ -122,6 +127,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MobileChatRedesign => {
                 "Use the compact mobile-first room header, composer, and chat navigation."
             }
+            FeatureFlagKey::LinkPreviews => {
+                "Show an unfurled title/description/thumbnail card under messages containing a URL."
+            }
         }
     }
 
@@ -133,6 +141,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
             FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
+            FeatureFlagKey::LinkPreviews => "Spec 29 (link previews)",
         }
     }
 
@@ -144,6 +153,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "room_invites",
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
             FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
+            FeatureFlagKey::LinkPreviews => "link_previews",
         }
     }
 }

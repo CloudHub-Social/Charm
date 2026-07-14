@@ -22,5 +22,11 @@
     "default": false,
     "description": "Use the compact mobile-first room header, composer, and chat navigation.",
     "owner": "Spec 52 (mobile chat UX)"
+  },
+  {
+    "key": "link_previews",
+    "default": false,
+    "description": "Show an unfurled title/description/thumbnail card under messages containing a URL.",
+    "owner": "Spec 29 (link previews)"
   }
 ]
