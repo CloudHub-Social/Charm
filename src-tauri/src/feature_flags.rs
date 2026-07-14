@@ -91,6 +91,10 @@ define_feature_flag_keys!(
         /// Spec 52 mobile chat redesign: compact room header and composer,
         /// in-header back navigation, and detail-view bottom-nav suppression.
         MobileChatRedesign,
+        /// Spec 32 room alias management: publish/unpublish an alias, set
+        /// the canonical alias, and add alternative aliases from room
+        /// settings.
+        RoomAliasManagement,
     }
 );
 
@@ -103,6 +107,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => false,
             FeatureFlagKey::RichMessageRendering => false,
             FeatureFlagKey::MobileChatRedesign => false,
+            FeatureFlagKey::RoomAliasManagement => false,
         }
     }
 
@@ -122,6 +127,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MobileChatRedesign => {
                 "Use the compact mobile-first room header, composer, and chat navigation."
             }
+            FeatureFlagKey::RoomAliasManagement => {
+                "Manage room aliases and the canonical alias from room settings."
+            }
         }
     }
 
@@ -133,6 +141,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
             FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
+            FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
         }
     }
 
@@ -144,6 +153,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "room_invites",
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
             FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
+            FeatureFlagKey::RoomAliasManagement => "room_alias_management",
         }
     }
 }

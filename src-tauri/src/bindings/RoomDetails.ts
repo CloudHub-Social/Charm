@@ -4,4 +4,18 @@ import type { JoinRuleKind } from "./JoinRuleKind";
 import type { PowerLevelThresholds } from "./PowerLevelThresholds";
 import type { RoomPermissions } from "./RoomPermissions";
 
-export type RoomDetails = { room_id: string, name: string | null, topic: string | null, avatar_url: string | null, is_encrypted: boolean, join_rule: JoinRuleKind, history_visibility: HistoryVisibilityKind, member_count: number, my_power_level: number, power_levels: PowerLevelThresholds, can: RoomPermissions, };
+export type RoomDetails = { room_id: string, name: string | null, topic: string | null, avatar_url: string | null, is_encrypted: boolean, join_rule: JoinRuleKind, history_visibility: HistoryVisibilityKind, member_count: number, my_power_level: number, power_levels: PowerLevelThresholds, can: RoomPermissions, 
+/**
+ * The room's current `m.room.canonical_alias` (`alias`), if any — see
+ * [`build_room_details`] for how this is read off live room state.
+ */
+canonical_alias: string | null, 
+/**
+ * `m.room.canonical_alias`'s `alt_aliases` — aliases the room
+ * acknowledges but doesn't treat as primary. Distinct from the
+ * server-published-alias list returned by [`get_room_local_aliases`]:
+ * an alias can be published on the directory without being listed here
+ * (or vice versa, if the state event lists a stale/foreign alias) —
+ * see Spec 32's non-goals about directory vs. canonical-alias state.
+ */
+alt_aliases: Array<string>, };
