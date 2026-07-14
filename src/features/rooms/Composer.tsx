@@ -206,6 +206,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // extra guard in case that invariant ever changes.
   const currentRoomIdRef = useRef(roomId);
   currentRoomIdRef.current = roomId;
+  // TipTap extensions must keep a stable identity, but the responsive shell
+  // changes this value while the editor remains mounted. Let the placeholder
+  // extension read the latest prop without rebuilding the editor (which would
+  // discard unsaved edit-mode text).
+  const placeholderRef = useRef(placeholder);
+  placeholderRef.current = placeholder;
 
   // Called on every keystroke and room switch (acceptance criterion 8) —
   // the `useEffect` below covers "room switch" by reading the seam's
@@ -318,7 +324,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           leading: raw.emoji,
         })),
       }),
-      Placeholder.configure({ placeholder }),
+      Placeholder.configure({ placeholder: () => placeholderRef.current }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally created once: tiptap extensions need a stable identity (recreating resets editor state); live data is read via membersRef/roomsRef/the menu bridge inside each suggestion's items/render, not captured in this closure
     [],
@@ -394,6 +400,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     },
     onBlur: () => onBlur?.(),
   });
+
+  useEffect(() => {
+    if (!editor) return;
+    const editorProps = editor.options.editorProps ?? {};
+    const attributes =
+      typeof editorProps.attributes === "function"
+        ? editorProps.attributes(editor.state)
+        : editorProps.attributes;
+    editor.setOptions({
+      editorProps: {
+        ...editorProps,
+        attributes: {
+          ...attributes,
+          "aria-label": placeholder,
+          placeholder,
+        },
+      },
+    });
+    // Recomputes the Placeholder extension's decorations so its
+    // `data-placeholder` switches immediately even though the document did
+    // not change during the responsive-layout transition.
+    editor.view.dispatch(editor.state.tr);
+  }, [editor, placeholder]);
 
   // Reports the editor's initial content emptiness once it's created
   // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
