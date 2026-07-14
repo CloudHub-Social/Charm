@@ -281,6 +281,16 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       return requestJson<T>("POST", "/api/auth/logout");
     case "list_rooms":
       return requestJson<T>("GET", "/api/rooms");
+    case "accept_invite":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/invite/accept`,
+      );
+    case "decline_invite":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/invite/decline`,
+      );
     case "resolve_room_alias":
       return requestJson<T>("POST", "/api/rooms/resolve-alias", args.alias);
     case "get_room_details":

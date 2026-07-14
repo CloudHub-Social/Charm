@@ -6,6 +6,12 @@
     "owner": "Spec 35 (feature-flag plumbing)"
   },
   {
+    "key": "room_invites",
+    "default": false,
+    "description": "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications.",
+    "owner": "Spec 56 (room invites surface)"
+  },
+  {
     "key": "rich_message_rendering",
     "default": false,
     "description": "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji.",

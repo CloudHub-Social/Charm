@@ -84,7 +84,7 @@ describe("useOnboardingGate", () => {
   });
 
   it("is done immediately for an account with joined rooms, without waiting on either flag", async () => {
-    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost", membership: "join" }]);
     getLocalOnboardingFlag.mockResolvedValue(false);
     getAccountData.mockResolvedValue(null);
 
@@ -96,15 +96,27 @@ describe("useOnboardingGate", () => {
     await waitFor(() => expect(setLocalOnboardingFlag).toHaveBeenCalled());
   });
 
+  it("keeps onboarding pending when the account only has a room invite", async () => {
+    listRooms.mockResolvedValue([{ room_id: "!invite:localhost", membership: "invite" }]);
+    getLocalOnboardingFlag.mockResolvedValue(false);
+    getAccountData.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useOnboardingGate("@invited:localhost"));
+
+    await waitFor(() => expect(result.current.status).toBe("pending"));
+    expect(setAccountData).not.toHaveBeenCalled();
+    expect(setLocalOnboardingFlag).not.toHaveBeenCalled();
+  });
+
   it("guards the opportunistic room-based write-back against a since-switched-away account", async () => {
     // Each call to `listRooms` gets its own controllable deferred — resolving
     // the *first* one (@user-a's) only after switching accounts models a
     // slow `listRooms` reply landing after the user has already logged out
     // and back in as someone else.
-    const deferredResolvers: ((rooms: { room_id: string }[]) => void)[] = [];
+    const deferredResolvers: ((rooms: { room_id: string; membership: string }[]) => void)[] = [];
     listRooms.mockImplementation(
       () =>
-        new Promise<{ room_id: string }[]>((resolve) => {
+        new Promise<{ room_id: string; membership: string }[]>((resolve) => {
           deferredResolvers.push(resolve);
         }),
     );
@@ -121,7 +133,7 @@ describe("useOnboardingGate", () => {
     // Resolve @user-a's (now-stale) `listRooms` call with a non-empty room
     // list — this is exactly the path that fires the unguarded opportunistic
     // write before the fix.
-    deferredResolvers[0]([{ room_id: "!existing:localhost" }]);
+    deferredResolvers[0]([{ room_id: "!existing:localhost", membership: "join" }]);
 
     // Give the fire-and-forget write a tick to run, if it were going to.
     await act(async () => {
@@ -133,7 +145,7 @@ describe("useOnboardingGate", () => {
   });
 
   it("skips the opportunistic write-back for a returning user whose local flag is already set", async () => {
-    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost", membership: "join" }]);
     getLocalOnboardingFlag.mockResolvedValue(true);
     getAccountData.mockResolvedValue(null);
 

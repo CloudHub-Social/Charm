@@ -77,8 +77,9 @@ export function useOnboardingGate(userId: string | null) {
           getLocalOnboardingFlag(evaluatedUserId).catch(() => true),
         ]);
         if (cancelled) return;
+        const joinedRoomCount = rooms.filter((room) => room.membership === "join").length;
 
-        if (rooms.length > 0) {
+        if (joinedRoomCount > 0) {
           setStatus("done");
           // Opportunistic write so a later launch (e.g. after this account's
           // rooms are later left) short-circuits on the flag alone, without
@@ -142,7 +143,7 @@ export function useOnboardingGate(userId: string | null) {
 
         setStatus(
           deriveOnboardingStatus({
-            roomCount: rooms.length,
+            roomCount: joinedRoomCount,
             localFlag,
             accountDataPresent,
           }),

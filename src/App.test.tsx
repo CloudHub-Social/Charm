@@ -53,7 +53,7 @@ beforeEach(() => {
   // "done" — the default for tests that only care about the
   // restore/login/logout branches and never want `OnboardingScreen` to
   // mount; overridden per-test below for the onboarding-routing cases.
-  listRooms.mockReset().mockResolvedValue([{ room_id: "!seeded:localhost" }]);
+  listRooms.mockReset().mockResolvedValue([{ room_id: "!seeded:localhost", membership: "join" }]);
   getAccountData.mockReset().mockResolvedValue(null);
   getLocalOnboardingFlag.mockReset().mockResolvedValue(false);
 });
@@ -106,11 +106,21 @@ describe("App", () => {
 
   it("routes an account with at least one joined room straight to RoomsScreen, never mounting OnboardingScreen", async () => {
     tryRestoreSession.mockResolvedValue({ user_id: "@returning:localhost", device_id: "DEVICE1" });
-    listRooms.mockResolvedValue([{ room_id: "!existing:localhost" }]);
+    listRooms.mockResolvedValue([{ room_id: "!existing:localhost", membership: "join" }]);
 
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "trigger logout" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "onboarding screen" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an invite-only account in onboarding", async () => {
+    tryRestoreSession.mockResolvedValue({ user_id: "@invited:localhost", device_id: "DEVICE1" });
+    listRooms.mockResolvedValue([{ room_id: "!invite:localhost", membership: "invite" }]);
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "onboarding screen" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "trigger logout" })).not.toBeInTheDocument();
   });
 });

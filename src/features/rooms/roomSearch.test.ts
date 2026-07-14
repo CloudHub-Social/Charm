@@ -20,6 +20,9 @@ function room(overrides: Partial<RoomSummary> & { room_id: string }): RoomSummar
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
     ...overrides,
   };
 }

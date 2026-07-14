@@ -225,6 +225,97 @@ async fn notify_unopened_room_messages(
     }
 }
 
+fn build_invite_notification(
+    room_name: Option<&str>,
+    inviter_display_name: Option<&str>,
+    inviter_user_id: Option<&str>,
+) -> (String, String) {
+    let title = room_name.unwrap_or("Room invitation").to_owned();
+    let inviter = inviter_display_name
+        .or(inviter_user_id)
+        .unwrap_or("Someone");
+    (title, format!("{inviter} invited you"))
+}
+
+fn should_notify_invite(mode: matrix_sdk::notification_settings::RoomNotificationMode) -> bool {
+    !matches!(
+        mode,
+        matrix_sdk::notification_settings::RoomNotificationMode::Mute
+    )
+}
+
+/// `Room::notification_mode()` intentionally returns `None` for invited
+/// rooms in matrix-sdk 0.18, so resolve the same push-rule precedence here:
+/// an explicit room rule first, then the default for the invite's room kind.
+async fn invite_notification_mode(
+    client: &Client,
+    room: &matrix_sdk::Room,
+) -> matrix_sdk::notification_settings::RoomNotificationMode {
+    use matrix_sdk::notification_settings::{IsEncrypted, IsOneToOne};
+
+    let settings = client.notification_settings().await;
+    if let Some(mode) = settings
+        .get_user_defined_room_notification_mode(room.room_id())
+        .await
+    {
+        return mode;
+    }
+
+    let is_encrypted = room
+        .latest_encryption_state()
+        .await
+        .map(|state| state.is_encrypted())
+        .unwrap_or(false);
+    let is_one_to_one = room.active_members_count() == 2;
+    settings
+        .get_default_room_notification_mode(
+            IsEncrypted::from(is_encrypted),
+            IsOneToOne::from(is_one_to_one),
+        )
+        .await
+}
+
+/// Notifies only for invites in a steady-state sync response. The initial
+/// sync's invited rooms are existing inbox state, not new activity.
+async fn notify_new_room_invites(
+    app: &AppHandle,
+    client: &Client,
+    response: &matrix_sdk::sync::SyncResponse,
+) {
+    use tauri_plugin_notification::NotificationExt;
+
+    for room_id in response.rooms.invited.keys() {
+        let Some(room) = client.get_room(room_id) else {
+            continue;
+        };
+        if !should_notify_invite(invite_notification_mode(client, &room).await) {
+            continue;
+        }
+        let details = room.invite_details().await.ok();
+        let inviter_user_id = details.as_ref().map(|details| details.inviter_id.as_str());
+        let inviter_display_name = details
+            .as_ref()
+            .and_then(|details| details.inviter.as_ref())
+            .and_then(|member| member.display_name());
+        let display_name = match room.cached_display_name() {
+            Some(name) => name,
+            None => room
+                .display_name()
+                .await
+                .unwrap_or(matrix_sdk::RoomDisplayName::Empty),
+        };
+        let room_name = match display_name {
+            matrix_sdk::RoomDisplayName::Empty => None,
+            other => Some(other.to_string()),
+        };
+        let (title, body) =
+            build_invite_notification(room_name.as_deref(), inviter_display_name, inviter_user_id);
+        if let Err(error) = app.notification().builder().title(title).body(body).show() {
+            tracing::warn!(%error, room_id = %room_id, "failed to show room-invite notification");
+        }
+    }
+}
+
 /// Stops the currently-running sync loop, every live per-room timeline
 /// listener, and drops the active `Client` (if any) without starting
 /// replacements — call this and *await* it just before a login flow is
@@ -369,6 +460,14 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                     emit_room_list_and_badge(&app, &client).await;
                     emit_room_updates(&app, &client, &response).await;
                     notify_unopened_room_messages(&app, &client, &response).await;
+                    if app.path().app_data_dir().is_ok_and(|dir| {
+                        crate::feature_flags::flag(
+                            &dir,
+                            crate::feature_flags::FeatureFlagKey::RoomInvites,
+                        )
+                    }) {
+                        notify_new_room_invites(&app, &client, &response).await;
+                    }
                 }
                 Err(e) => {
                     consecutive_failures += 1;
@@ -412,5 +511,44 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         .replace(handle);
     if let Some(previous) = previous {
         previous.abort();
+    }
+}
+
+#[cfg(test)]
+mod invite_notification_tests {
+    use matrix_sdk::notification_settings::RoomNotificationMode;
+
+    use super::{build_invite_notification, should_notify_invite};
+
+    #[test]
+    fn uses_room_and_inviter_display_names() {
+        assert_eq!(
+            build_invite_notification(
+                Some("Project room"),
+                Some("Alice"),
+                Some("@alice:example.org"),
+            ),
+            ("Project room".to_owned(), "Alice invited you".to_owned()),
+        );
+    }
+
+    #[test]
+    fn falls_back_to_inviter_id_and_generic_room_title() {
+        assert_eq!(
+            build_invite_notification(None, None, Some("@alice:example.org")),
+            (
+                "Room invitation".to_owned(),
+                "@alice:example.org invited you".to_owned(),
+            ),
+        );
+    }
+
+    #[test]
+    fn suppresses_invites_only_when_notifications_are_muted() {
+        assert!(!should_notify_invite(RoomNotificationMode::Mute));
+        assert!(should_notify_invite(
+            RoomNotificationMode::MentionsAndKeywordsOnly,
+        ));
+        assert!(should_notify_invite(RoomNotificationMode::AllMessages));
     }
 }

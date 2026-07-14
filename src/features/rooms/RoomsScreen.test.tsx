@@ -6,16 +6,25 @@ import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-i
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
+const mockUseFlag = vi.fn(() => true);
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => mockUseFlag(),
 }));
 
 const listRooms = vi.fn();
 const onRoomListUpdate = vi.fn();
 const resolveRoomAlias = vi.fn();
 const setFocusedRoom = vi.fn();
+const acceptInvite = vi.fn();
+const declineInvite = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
+  acceptInvite: (...args: unknown[]) => acceptInvite(...args),
+  declineInvite: (...args: unknown[]) => declineInvite(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   onRoomListUpdate: (...args: unknown[]) => onRoomListUpdate(...args),
   resolveRoomAlias: (...args: unknown[]) => resolveRoomAlias(...args),
@@ -125,15 +134,31 @@ vi.mock("./RoomList", () => ({
   RoomList: ({
     rooms,
     onSelectRoom,
+    onAcceptInvite,
+    onDeclineInvite,
   }: {
     rooms: RoomSummary[];
     onSelectRoom: (id: string) => void;
+    onAcceptInvite: (id: string) => Promise<void>;
+    onDeclineInvite: (id: string) => Promise<void>;
   }) => (
     <div>
       {rooms.map((r) => (
-        <button key={r.room_id} type="button" onClick={() => onSelectRoom(r.room_id)}>
-          {r.room_id}
-        </button>
+        <div key={r.room_id}>
+          <button type="button" onClick={() => onSelectRoom(r.room_id)}>
+            {r.room_id}
+          </button>
+          {r.membership === "invite" && (
+            <>
+              <button type="button" onClick={() => onAcceptInvite(r.room_id)}>
+                accept:{r.room_id}
+              </button>
+              <button type="button" onClick={() => onDeclineInvite(r.room_id)}>
+                decline:{r.room_id}
+              </button>
+            </>
+          )}
+        </div>
       ))}
     </div>
   ),
@@ -158,19 +183,49 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
     ...overrides,
   };
 }
 
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
+  mockUseFlag.mockReset().mockReturnValue(true);
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
   setFocusedRoom.mockReset().mockResolvedValue(undefined);
+  acceptInvite.mockReset().mockResolvedValue(undefined);
+  declineInvite.mockReset().mockResolvedValue(undefined);
 });
 
+function renderRoomsScreen() {
+  return render(
+    <RoomsScreen
+      currentUserId="@me:example.org"
+      deepLinkRoomId={null}
+      onDeepLinkConsumed={() => {}}
+      onLoggedOut={() => {}}
+    />,
+  );
+}
+
 describe("RoomsScreen", () => {
+  it("hides pending invites while the room-invites flag is disabled", async () => {
+    mockUseFlag.mockReturnValue(false);
+    const invite = room({ room_id: "!invite:example.org", membership: "invite" });
+    listRooms.mockResolvedValue([invite, room({ room_id: "!joined:example.org" })]);
+
+    renderRoomsScreen();
+
+    expect(await screen.findByText("chat-content:!joined:example.org")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `accept:${invite.room_id}` }),
+    ).not.toBeInTheDocument();
+  });
+
   it("auto-selects the first room and tells Rust it has focus", async () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     render(
@@ -306,6 +361,237 @@ describe("RoomsScreen", () => {
     await waitFor(() =>
       expect(screen.getByText("space-rail:space:!space:example.org")).toBeInTheDocument(),
     );
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
+  it("consumes a deep link to an invite without selecting its timeline", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    listRooms.mockResolvedValue([invite, room({ room_id: "!joined:example.org" })]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("chat-content:none")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
+  });
+
+  it("auto-selects a joined room after declining a deep-linked invite", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms.mockReset().mockResolvedValueOnce([invite, joined]).mockResolvedValueOnce([joined]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: `decline:${invite.room_id}` }));
+
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
+  });
+
+  it("keeps post-accept navigation ahead of the initial room fallback", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const fallback = room({ room_id: "!fallback:example.org" });
+    const joinedInvite = room({ room_id: invite.room_id, membership: "join" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([invite, fallback])
+      .mockResolvedValueOnce([fallback, joinedInvite]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `accept:${invite.room_id}` }));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${fallback.room_id}`)).not.toBeInTheDocument();
+  });
+
+  it("keeps a deep-linked space selected when declining an unrelated invite", async () => {
+    const space = room({ room_id: "!space:example.org", is_space: true });
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([space, invite, joined])
+      .mockResolvedValueOnce([space, joined]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={space.room_id}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText(`space-rail:space:${space.room_id}`);
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `decline:${invite.room_id}` }));
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(screen.getByText(`space-rail:space:${space.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
+  it("auto-selects a joined room when a deep-linked invite is revoked", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms.mockResolvedValue([invite, joined]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByRole("button", { name: `decline:${invite.room_id}` });
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([joined]));
+
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
+  });
+
+  it("keeps a deep link pending until the first sync-driven room list includes it", async () => {
+    const onDeepLinkConsumed = vi.fn();
+    const target = room({ room_id: "!late:example.org" });
+    listRooms.mockResolvedValue([]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={target.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:none");
+    expect(onDeepLinkConsumed).not.toHaveBeenCalled();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([target]));
+
+    expect(await screen.findByText(`chat-content:${target.room_id}`)).toBeInTheDocument();
+    expect(onDeepLinkConsumed).toHaveBeenCalledOnce();
+  });
+
+  it("consumes a stale deep link after a sync-driven room list omits it", async () => {
+    const onDeepLinkConsumed = vi.fn();
+    listRooms.mockResolvedValue([]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!missing:example.org"
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:none");
+    expect(onDeepLinkConsumed).not.toHaveBeenCalled();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([]));
+
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
@@ -619,6 +905,86 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("accepts an invite, refreshes the snapshot, and opens the joined room", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: invite.room_id, membership: "join" });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([joined]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+  });
+
+  it("waits for a room-list update when the post-accept snapshot is still invited", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: invite.room_id, membership: "join" });
+    listRooms.mockReset().mockResolvedValue([invite]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    expect(roomListListener).toBeTypeOf("function");
+    act(() => roomListListener?.([joined]));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+  });
+
+  it("uses the refreshed snapshot when an accepted room belongs to a space", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const space = room({ room_id: "!space:example.org", is_space: true });
+    const joined = room({
+      room_id: invite.room_id,
+      membership: "join",
+      parent_space_ids: [space.room_id],
+    });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([space, joined]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText(`space-rail:space:${space.room_id}`)).toBeInTheDocument();
+  });
+
+  it("declines an invite and removes it after refreshing the snapshot", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `decline:${invite.room_id}` }));
+
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: `decline:${invite.room_id}` }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("navigates joined room-id and alias pills through the visible room context", async () => {

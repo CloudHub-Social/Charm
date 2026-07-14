@@ -82,6 +82,9 @@ define_feature_flag_keys!(
         /// Day-2 feature key exists. Not wired to any behavior. Delete this variant
         /// (and its catalog/override/remote entries) once the first real flag lands.
         Canary,
+        /// Spec 56 room-invite inbox, actions, deep-link handling, and native
+        /// invite notifications.
+        RoomInvites,
         /// Spec 58 rich-message enhancements: linkification, syntax highlighting,
         /// tables, Matrix pills, room mentions, math, and jumbo emoji.
         RichMessageRendering,
@@ -97,6 +100,7 @@ impl FeatureFlagKey {
     pub const fn default_value(self) -> bool {
         match self {
             FeatureFlagKey::Canary => false,
+            FeatureFlagKey::RoomInvites => false,
             FeatureFlagKey::RichMessageRendering => false,
             FeatureFlagKey::MobileChatRedesign => false,
         }
@@ -108,6 +112,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::Canary => {
                 "Internal no-op flag used to exercise the feature-flag system. \
                  Not connected to any feature."
+            }
+            FeatureFlagKey::RoomInvites => {
+                "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications."
             }
             FeatureFlagKey::RichMessageRendering => {
                 "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji."
@@ -123,6 +130,7 @@ impl FeatureFlagKey {
     pub const fn owner(self) -> &'static str {
         match self {
             FeatureFlagKey::Canary => "Spec 35 (feature-flag plumbing)",
+            FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
             FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
         }
@@ -133,6 +141,7 @@ impl FeatureFlagKey {
     pub const fn as_wire_key(self) -> &'static str {
         match self {
             FeatureFlagKey::Canary => "canary",
+            FeatureFlagKey::RoomInvites => "room_invites",
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
             FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
         }

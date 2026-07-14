@@ -68,6 +68,14 @@ beforeEach(() => {
 });
 
 describe("NotificationsPanel", () => {
+  it("does not show the empty-room state while rooms are still loading", () => {
+    listRooms.mockReturnValue(new Promise(() => {}));
+
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(screen.queryByText("No rooms yet.")).not.toBeInTheDocument();
+  });
+
   it("adds a keyword", async () => {
     renderWithProviders(<NotificationsPanel />);
 
@@ -164,6 +172,22 @@ describe("NotificationsPanel", () => {
     // this room's row, which would mean the override got folded away.
     expect(await screen.findByRole("button", { name: "Mentions & keywords only" })).toBeVisible();
     expect(screen.getAllByRole("button", { name: "All messages" })).toHaveLength(1);
+  });
+
+  it("does not expose pending invites as per-room notification overrides", async () => {
+    listRooms.mockResolvedValue([
+      makeRoomSummary({ room_id: "!joined:localhost", name: "Joined room" }),
+      makeRoomSummary({
+        room_id: "!invite:localhost",
+        name: "Pending invite",
+        membership: "invite",
+      }),
+    ]);
+
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(await screen.findByText("Joined room")).toBeVisible();
+    expect(screen.queryByText("Pending invite")).not.toBeInTheDocument();
   });
 
   it("shows 'not available' when the platform has no push transport at all", async () => {

@@ -39,8 +39,9 @@ use charm_lib::matrix::room_admin::{
     HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
 };
 use charm_lib::matrix::rooms::{
-    resolve_alias, set_room_favourite_impl, set_room_low_priority_impl, set_room_manual_order_impl,
-    set_room_marked_unread_impl, snapshot_rooms,
+    accept_invite_impl, decline_invite_impl, resolve_alias, set_room_favourite_impl,
+    set_room_low_priority_impl, set_room_manual_order_impl, set_room_marked_unread_impl,
+    snapshot_rooms,
 };
 use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
@@ -106,6 +107,8 @@ pub fn router(state: AppState) -> Router {
             get(get_room_member_list),
         )
         .route("/api/rooms/{room_id}/timeline", get(get_timeline_page))
+        .route("/api/rooms/{room_id}/invite/accept", post(accept_invite))
+        .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
@@ -825,6 +828,30 @@ async fn list_rooms(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     Ok(Json(snapshot_rooms(&session.client, None).await))
+}
+
+async fn accept_invite(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    accept_invite_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn decline_invite(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    decline_invite_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn resolve_room_alias(

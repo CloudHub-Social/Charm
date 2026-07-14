@@ -244,11 +244,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     listRooms()
       .then((rooms) => {
         if (currentRoomIdRef.current !== requestedRoomId) return;
-        roomsRef.current = rooms.map((r) => ({
-          roomId: r.room_id,
-          name: r.name,
-          alias: null,
-        }));
+        roomsRef.current = rooms
+          .filter((room) => room.membership === "join")
+          .map((room) => ({
+            roomId: room.room_id,
+            name: room.name,
+            alias: null,
+          }));
       })
       .catch(logAndIgnore);
   }, [roomId]);

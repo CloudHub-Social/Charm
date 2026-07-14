@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
@@ -17,6 +17,8 @@ import { AppShell, type MobileView } from "@/features/shell/AppShell";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useBadgeListener } from "@/features/shell/useBadgeListener";
 import {
+  acceptInvite,
+  declineInvite,
   listRooms,
   onRoomListUpdate,
   resolveRoomAlias,
@@ -32,6 +34,7 @@ import {
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 const noopDismissCrashRecoveryPrompt = () => {};
 
@@ -66,17 +69,25 @@ export function RoomsScreen({
   onDismissCrashRecoveryPrompt = noopDismissCrashRecoveryPrompt,
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
+  const roomInvitesEnabled = useFlag("room_invites");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
-  const [roomsLoading, setRoomsLoading] = useState(true);
+  const [roomsLoaded, setRoomsLoaded] = useState(false);
+  const [syncedRoomListReceived, setSyncedRoomListReceived] = useState(false);
+  const syncedRoomListReceivedRef = useRef(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
-  const spaceDeepLinkSelectedRef = useRef(false);
+  const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
+    null,
+  );
+  const autoSelectSuppressedRef = useRef<
+    { kind: "space" } | { kind: "invite"; roomId: string } | null
+  >(null);
 
   // Bumped on every room selection — via the room list, a deep link, or the
   // initial auto-select — even when it re-selects the already-active room.
@@ -85,43 +96,45 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
-  const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
-  const focusedRoomId = activeRoom?.room_id ?? null;
   function selectRoom(roomId: string) {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
   }
 
   function navigateToRoomPill(roomIdentifier: string) {
     if (roomIdentifier.startsWith("!")) {
-      const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomIdentifier);
+      const joinedRoom = roomsRef.current.find(
+        (candidate) => candidate.room_id === roomIdentifier && candidate.membership === "join",
+      );
       if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
       return;
     }
     if (!roomIdentifier.startsWith("#")) return;
     resolveRoomAlias(roomIdentifier)
       .then((roomId) => {
-        const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomId);
+        const joinedRoom = roomsRef.current.find(
+          (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+        );
         if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
       })
       .catch(logAndIgnore);
   }
 
   function selectHome() {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
     setSelectedSpaceId(null);
   }
 
   function selectDms() {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
   }
 
   function selectSpace(spaceId: string) {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
   }
@@ -131,14 +144,14 @@ export function RoomsScreen({
   // no chat was active, such as right after a space deep link). `selectSpace`
   // alone would leave that window open for the auto-select effect below to
   // fire on the next sync-driven room-list update and switch back to the
-  // first non-space room — reusing `spaceDeepLinkSelectedRef` (the same
-  // guard the deep-link flow sets) suppresses that fallback the same way.
+  // first non-space room — reusing `autoSelectSuppressedRef` (the same guard
+  // the deep-link flow sets) suppresses that fallback the same way.
   function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
     selectSpace(spaceId);
-    spaceDeepLinkSelectedRef.current = true;
+    autoSelectSuppressedRef.current = { kind: "space" };
   }
 
-  function selectRoomInVisibleMode(room: RoomSummary) {
+  function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
     if (room.is_space) {
       selectSpace(room.room_id);
       setActiveRoomId(null);
@@ -150,7 +163,7 @@ export function RoomsScreen({
     } else if (room.parent_space_ids.length > 0) {
       const joinedParentSpaceIds = room.parent_space_ids
         .filter((spaceId) =>
-          roomsRef.current.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+          visibleRooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
         )
         .toSorted();
       const parentSpaceId = joinedParentSpaceIds[0];
@@ -174,26 +187,75 @@ export function RoomsScreen({
   useBadgeListener();
   useSettingsHashSync();
 
+  const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
+  const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const focusedRoomId = activeRoom?.room_id ?? null;
+
   useEffect(() => {
     let cancelled = false;
     listRooms()
       .then((nextRooms) => {
-        if (!cancelled) setRooms(nextRooms);
+        if (cancelled || syncedRoomListReceivedRef.current) return;
+        setRooms(nextRooms);
       })
       .catch(logAndIgnore)
       .finally(() => {
-        if (!cancelled) setRoomsLoading(false);
+        if (!cancelled) setRoomsLoaded(true);
       });
     const unlisten = onRoomListUpdate((nextRooms) => {
       if (cancelled) return;
+      syncedRoomListReceivedRef.current = true;
+      setSyncedRoomListReceived(true);
       setRooms(nextRooms);
-      setRoomsLoading(false);
+      setRoomsLoaded(true);
     });
     return () => {
       cancelled = true;
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
+
+  async function refreshRooms() {
+    const nextRooms = await listRooms();
+    setRooms(nextRooms);
+    return nextRooms;
+  }
+
+  async function handleAcceptInvite(roomId: string) {
+    await acceptInvite(roomId);
+    // Joining completes on the homeserver before matrix-sdk's local room
+    // state necessarily advances to `Joined`. Remember the navigation intent
+    // across that gap; the effect below handles either this fast-path refresh
+    // or the next background `room_list:update` snapshot.
+    setAcceptedRoomPendingSelection(roomId);
+    await refreshRooms();
+  }
+
+  useEffect(() => {
+    if (!acceptedRoomPendingSelection) return;
+    const joinedRoom = rooms.find(
+      (room) => room.room_id === acceptedRoomPendingSelection && room.membership === "join",
+    );
+    if (!joinedRoom) return;
+    selectRoomInVisibleMode(joinedRoom, joinedRooms);
+    setAcceptedRoomPendingSelection(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [acceptedRoomPendingSelection, rooms, joinedRooms]);
+
+  async function handleDeclineInvite(roomId: string) {
+    await declineInvite(roomId);
+    // A deep link to an invite deliberately suppresses the normal initial
+    // room selection while that invite is actionable. Once it is declined,
+    // release the guard before publishing the refreshed snapshot so the
+    // first joined room can fill the otherwise-empty detail pane.
+    if (
+      autoSelectSuppressedRef.current?.kind === "invite" &&
+      autoSelectSuppressedRef.current.roomId === roomId
+    ) {
+      autoSelectSuppressedRef.current = null;
+    }
+    await refreshRooms();
+  }
 
   // Tells the Rust side which room has focus so it can suppress a local
   // notification for whatever the user is already looking at (Spec 10). Not
@@ -258,9 +320,9 @@ export function RoomsScreen({
   }, [deepLinkRoomId]);
 
   useEffect(() => {
-    if (!resolvedDeepLinkTarget) return;
+    if (!resolvedDeepLinkTarget || !roomsLoaded) return;
     const match = rooms.find((room) => room.room_id === resolvedDeepLinkTarget);
-    if (match) {
+    if (match?.membership === "join") {
       // `selectRoom`, not a plain `setActiveRoomId`: a deep link targeting
       // the room that's already active (e.g. re-tapping the same
       // `charm://room/<id>` link while mobile is showing a list tab) must
@@ -268,27 +330,66 @@ export function RoomsScreen({
       // opens, not just silently consume the link.
       selectRoomInVisibleMode(match);
       if (match.is_space) {
-        spaceDeepLinkSelectedRef.current = true;
+        autoSelectSuppressedRef.current = { kind: "space" };
       }
-      setResolvedDeepLinkTarget(null);
-      onDeepLinkConsumed();
+    } else if (match?.membership === "invite" && roomInvitesEnabled) {
+      // Invites are actionable from the room-list inbox, not selectable as
+      // timelines. Bring that inbox into view and consume the deep link so
+      // it cannot block normal room selection indefinitely.
+      setRoomListMode("home");
+      setSelectedSpaceId(null);
+      setMobileView("list");
+      autoSelectSuppressedRef.current = { kind: "invite", roomId: match.room_id };
+    } else if (!syncedRoomListReceived) {
+      // `listRooms()` can return the SDK's restored local snapshot before the
+      // first network sync has populated a room referenced by a launch-time
+      // deep link. Keep the target pending until a sync-driven room list has
+      // had a chance to include it.
+      return;
     }
+    // A resolved target absent from a sync-driven snapshot is stale or not
+    // visible to this account. Consume it rather than letting it suppress
+    // initial room selection forever.
+    setResolvedDeepLinkTarget(null);
+    onDeepLinkConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedDeepLinkTarget, rooms, onDeepLinkConsumed]);
+  }, [
+    resolvedDeepLinkTarget,
+    rooms,
+    roomsLoaded,
+    syncedRoomListReceived,
+    onDeepLinkConsumed,
+    roomInvitesEnabled,
+  ]);
+
+  useEffect(() => {
+    const suppression = autoSelectSuppressedRef.current;
+    if (suppression?.kind !== "invite" || !roomsLoaded) return;
+    const inviteStillPending = rooms.some(
+      (room) => room.room_id === suppression.roomId && room.membership === "invite",
+    );
+    if (!inviteStillPending) {
+      // The invite may have been declined locally, accepted, or revoked by
+      // the inviter. Only release invite-owned suppression here; a deliberate
+      // no-room space selection must remain stable across unrelated updates.
+      autoSelectSuppressedRef.current = null;
+    }
+  }, [rooms, roomsLoaded]);
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
-    const firstSelectableRoom = getInitialSelectableRoom(rooms);
+    if (acceptedRoomPendingSelection) return; // let explicit post-accept navigation win
+    const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
-      if (spaceDeepLinkSelectedRef.current) return;
+      if (autoSelectSuppressedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rooms, activeRoomId, deepLinkRoomId]);
+  }, [joinedRooms, activeRoomId, deepLinkRoomId, acceptedRoomPendingSelection]);
 
   const selectedSpace =
     roomListMode === "space"
-      ? (rooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
+      ? (joinedRooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
       : null;
   // Keeps `useRoomDetails`' `room_details:update` listener alive for the
   // active room regardless of whether `RoomSettingsModal`/`MembersDrawer`
@@ -325,7 +426,7 @@ export function RoomsScreen({
       <AppShell
         spaceRail={
           <SpaceRail
-            rooms={rooms}
+            rooms={joinedRooms}
             activeMode={roomListMode}
             activeSpaceId={selectedSpaceId}
             showAllRooms={showAllRooms}
@@ -342,8 +443,8 @@ export function RoomsScreen({
         isSettingsActive={settingsSection !== null}
         roomList={
           <RoomList
-            rooms={rooms}
-            loading={roomsLoading}
+            rooms={roomInvitesEnabled ? rooms : joinedRooms}
+            loading={!roomsLoaded}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
@@ -353,6 +454,8 @@ export function RoomsScreen({
             intendedSpaceId={roomListMode === "space" ? selectedSpaceId : null}
             showAllRooms={showAllRooms}
             onShowAllRoomsChange={setShowAllRooms}
+            onAcceptInvite={handleAcceptInvite}
+            onDeclineInvite={handleDeclineInvite}
           />
         }
         content={
