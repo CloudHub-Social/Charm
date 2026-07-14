@@ -143,6 +143,19 @@ describe("feature-flag client", () => {
     expect(localStorage.getItem("charm:featureFlags")).toBeNull();
   });
 
+  it("rolls back a browser override when localStorage fails", async () => {
+    const setItem = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new DOMException("quota exceeded", "QuotaExceededError");
+    });
+    const mod = await import("./index");
+
+    await expect(mod.setFeatureFlagOverride("canary", true)).rejects.toThrow("quota exceeded");
+    expect(mod.getFeatureFlagOverrides()).toEqual({});
+    expect(mod.getFlag("canary")).toBe(false);
+
+    setItem.mockRestore();
+  });
+
   it("serializes durable writes so a superseded persist can't clobber a newer one", async () => {
     // Durable Tauri path: a fake store records what actually gets written. Even
     // with the first save artificially slow, the older (superseded) write must

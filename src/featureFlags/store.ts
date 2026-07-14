@@ -67,11 +67,7 @@ function readLocalEnvelope(): PersistedEnvelope | null {
 }
 
 function writeLocalEnvelope(envelope: PersistedEnvelope): void {
-  try {
-    localStorage.setItem(FEATURE_FLAGS_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
-  } catch {
-    // Best-effort mirror; the Tauri store remains the durable location.
-  }
+  localStorage.setItem(FEATURE_FLAGS_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
 }
 
 let storePromise: Promise<Store> | undefined;
@@ -150,5 +146,12 @@ export async function persistOverrides(
     () => undefined,
   );
   const persisted = await durablePersist;
-  if (persisted) writeLocalEnvelope(envelope);
+  if (persisted) {
+    try {
+      writeLocalEnvelope(envelope);
+    } catch {
+      // Best-effort mirror in Tauri; the durable store already committed and
+      // remains the source Rust reads.
+    }
+  }
 }
