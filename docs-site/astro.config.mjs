@@ -164,8 +164,10 @@ function injectVaultSidebarLabels() {
 
 // https://astro.build/config
 export default defineConfig({
-	site: 'https://cloudhub-social.github.io',
-	base: '/Charm',
+	// GitHub Pages serves this repository at the custom domain's root. Keeping
+	// the project-site `/Charm` base makes every generated CSS/JS URL point at a
+	// non-existent path once the request reaches that custom-domain origin.
+	site: 'https://charm-docs.cloudhub.social',
 	integrations: [
 		// Uses D2.js (pure JS) rather than the D2 binary so CI doesn't need a
 		// separate D2 install step.
