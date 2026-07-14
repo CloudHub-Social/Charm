@@ -30,7 +30,7 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "docs:features:validate": "node scripts/sync-feature-docs.mjs",
-    "docs:features:check": "node scripts/sync-feature-docs.mjs --check",
+    "docs:features:check": "node scripts/sync-feature-docs.mjs --check && FEATURE_DOCS_COMPARE=1 playwright test e2e/feature-docs-current.spec.ts --project=chromium",
     "docs:features:sync": "node scripts/sync-feature-docs.mjs --write",
     "knip": "knip",
     "tokens:pull": "node scripts/tokens-pull.mjs",

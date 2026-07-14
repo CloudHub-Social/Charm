@@ -32,6 +32,10 @@ gallery entry, even while it defaults off.
 4. Review the changed PNGs, then commit them with the feature change.
 5. Run `pnpm docs:features:check` and `pnpm --dir docs-site build`.
 
+The check uses a 100-pixel visual tolerance (about 0.011% of a 1280×720
+capture). That absorbs Chromium's occasional SVG-edge antialiasing noise while
+still failing any visible layout or content drift.
+
 CI also uploads a `feature-docs-candidate-*` artifact containing only the
 curated images, so contributors do not need to sort through the complete
 snapshot set.
