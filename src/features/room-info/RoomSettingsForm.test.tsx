@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomSettingsForm } from "./RoomSettingsForm";
 import { makeRoomDetails, openDropdownMenu } from "./testUtils";
 import { renderWithProviders } from "@/test/renderWithProviders";
@@ -22,8 +22,15 @@ const setRoomJoinRule = vi.fn().mockResolvedValue(undefined);
 const setRoomHistoryVisibility = vi.fn().mockResolvedValue(undefined);
 const enableRoomEncryption = vi.fn().mockResolvedValue(undefined);
 
+const featureFlagMocks = vi.hoisted(() => ({ roomAliasManagement: false }));
+
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: unknown[]) => openFileDialog(...args),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) =>
+    key === "room_alias_management" ? featureFlagMocks.roomAliasManagement : false,
 }));
 
 // `useRoomAdminActions` calls `useMutation` for every action unconditionally,
@@ -44,7 +51,22 @@ vi.mock("@/lib/matrix", () => ({
   kickMember: vi.fn().mockResolvedValue(undefined),
   banMember: vi.fn().mockResolvedValue(undefined),
   unbanMember: vi.fn().mockResolvedValue(undefined),
+  getRoomLocalAliases: vi.fn().mockResolvedValue([]),
+  checkRoomAliasAvailable: vi.fn().mockResolvedValue(true),
+  addRoomAlias: vi.fn().mockResolvedValue(undefined),
+  removeRoomAlias: vi.fn().mockResolvedValue(undefined),
+  setCanonicalAlias: vi.fn().mockResolvedValue(undefined),
+  removeAltAlias: vi.fn().mockResolvedValue(undefined),
+  getProfile: vi.fn().mockResolvedValue({
+    user_id: "@me:example.org",
+    display_name: null,
+    avatar_url: null,
+  }),
 }));
+
+beforeEach(() => {
+  featureFlagMocks.roomAliasManagement = false;
+});
 
 describe("RoomSettingsForm", () => {
   it("disables the name field and save button when can.set_name is false", () => {
@@ -125,5 +147,30 @@ describe("RoomSettingsForm", () => {
     await waitFor(() => {
       expect(setRoomHistoryVisibility).toHaveBeenCalledWith(details.room_id, "joined");
     });
+  });
+
+  it("hides the Addresses section when room_alias_management is off", () => {
+    featureFlagMocks.roomAliasManagement = false;
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    expect(screen.queryByText("Addresses")).not.toBeInTheDocument();
+  });
+
+  it("shows the Addresses section when room_alias_management is on", () => {
+    featureFlagMocks.roomAliasManagement = true;
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    expect(screen.getByText("Addresses")).toBeInTheDocument();
+  });
+
+  it("hides the Addresses section on web builds even when the flag is on", () => {
+    featureFlagMocks.roomAliasManagement = true;
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    expect(screen.queryByText("Addresses")).not.toBeInTheDocument();
+
+    vi.unstubAllEnvs();
   });
 });

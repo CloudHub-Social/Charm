@@ -16,6 +16,7 @@ const ADMIN_PERMISSIONS: RoomPermissions = {
   invite: true,
   kick: true,
   ban: true,
+  set_canonical_alias: true,
 };
 
 const READ_ONLY_PERMISSIONS: RoomPermissions = {
@@ -29,6 +30,7 @@ const READ_ONLY_PERMISSIONS: RoomPermissions = {
   invite: false,
   kick: false,
   ban: false,
+  set_canonical_alias: false,
 };
 
 const MEMBER: RoomMemberSummary = {
