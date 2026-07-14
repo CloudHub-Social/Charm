@@ -38,7 +38,13 @@ function summarizeErrorForCapture(error: unknown): unknown {
       message: summarizeErrorText(error.message),
     };
   }
-  if (typeof error === "string") return summarizeErrorText(error);
+  // Wrapped in an object (rather than returned as a bare string) so the
+  // captured exception's JSON.stringify'd message has the same shape
+  // (`{"...":"..."}`) regardless of whether the rejection was a plain
+  // string (most Rust commands, which return `Result<T, String>`) or an
+  // `Error` instance — a bare-string vs. object format split here would
+  // otherwise fragment Sentry grouping/readability for the same command.
+  if (typeof error === "string") return { message: summarizeErrorText(error) };
   return summarizeValue(error);
 }
 

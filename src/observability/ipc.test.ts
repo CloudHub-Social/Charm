@@ -344,6 +344,15 @@ describe("IPC observability", () => {
     });
   });
 
+  it("captures a consistent object-shaped message for plain-string errors (Rust Result<T, String> rejections)", () => {
+    expect(
+      ipcObservabilityTestHooks.createCapturedIpcError("sync", "connection refused"),
+    ).toMatchObject({
+      message: 'IPC sync failed: {"message":"connection refused"}',
+      name: "IpcError",
+    });
+  });
+
   it("truncates captured IPC error text past the length cap", () => {
     const error = new Error("x".repeat(400));
 
@@ -355,7 +364,7 @@ describe("IPC observability", () => {
   it("keeps scrubbed diagnostic text for plain string errors (Rust Result<T, String> rejections)", () => {
     expect(
       ipcObservabilityTestHooks.summarizeErrorForCapture("connection refused (os error 61)"),
-    ).toBe("connection refused (os error 61)");
+    ).toEqual({ message: "connection refused (os error 61)" });
   });
 
   it("does not record breadcrumbs while the current Sentry client is disabled", async () => {
