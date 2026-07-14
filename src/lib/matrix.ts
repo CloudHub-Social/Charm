@@ -51,6 +51,7 @@ import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
+import type { UrlPreview } from "@bindings/UrlPreview";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
@@ -172,6 +173,7 @@ export type {
   TimelinePage,
   TypingUpdate,
   UploadProgress,
+  UrlPreview,
   VerificationRequestSummary,
 };
 
@@ -462,6 +464,23 @@ export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean
   return invoke("resolve_media", { roomId, eventId, thumbnail });
 }
 
+/**
+ * Fetches an unfurled preview (title, description, thumbnail) for `url` via
+ * the homeserver's `/preview_url` endpoint (Spec 29). `roomId` is accepted
+ * for parity with the Rust command's signature (room-scoped preview policy
+ * is a possible future extension) but isn't otherwise used by the frontend.
+ * Resolves to `null` on any failure — 404, timeout, malformed response, or
+ * a page with no usable OpenGraph data — never rejects for those cases; the
+ * caller doesn't need a try/catch to render "no preview".
+ */
+export function getUrlPreview(
+  roomId: string,
+  url: string,
+  eventTsMs?: number | null,
+): Promise<UrlPreview | null> {
+  return invoke("get_url_preview", { roomId, url, eventTsMs: eventTsMs ?? null });
+}
+
 export function onUploadProgress(
   callback: (progress: UploadProgress) => void,
 ): Promise<UnlistenFn> {
@@ -684,7 +703,13 @@ export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
  * Starts an outgoing SAS verification of another of this account's own
  * devices and returns the new flow id. Drives the same
  * `verification:request`/`verification:sas_update:*` events as an incoming
- * request — see `VerificationOverlay`.
+ * request — see `VerificationOverlay`. Captured on failure like most
+ * commands (unlike the neighboring device-management wrappers): the Rust
+ * command's "device not found" case doesn't interpolate the device ID into
+ * its error text (see `devices.rs`), so it's safe to keep default capture —
+ * and a genuine SDK/store/network failure from `get_device`/
+ * `request_verification` here is exactly the kind of regression Sentry
+ * should surface.
  */
 export function requestDeviceVerification(deviceId: string): Promise<string> {
   return invoke("request_device_verification", { deviceId });
@@ -799,6 +824,36 @@ export function banMember(roomId: string, userId: string, reason?: string): Prom
 
 export function unbanMember(roomId: string, userId: string, reason?: string): Promise<void> {
   return invoke("unban_member", { roomId, userId, reason });
+}
+
+/** Server-published (room-directory) aliases for `roomId` — distinct from `RoomDetails.canonical_alias`/`alt_aliases`. */
+export function getRoomLocalAliases(roomId: string): Promise<string[]> {
+  return invoke("get_room_local_aliases", { roomId });
+}
+
+/** Advisory pre-check before `addRoomAlias` — a `false` here should surface as "already in use"; a `true` doesn't guarantee the following create will still succeed (TOCTOU). */
+export function checkRoomAliasAvailable(alias: string): Promise<boolean> {
+  return invoke("check_room_alias_available", { alias });
+}
+
+/** Publishes `alias` in the homeserver's room directory. Does not set it as canonical — call `setCanonicalAlias` separately. */
+export function addRoomAlias(roomId: string, alias: string): Promise<void> {
+  return invoke("add_room_alias", { roomId, alias });
+}
+
+/** Unpublishes `alias` from the homeserver's room directory. Does not touch `m.room.canonical_alias`. */
+export function removeRoomAlias(alias: string): Promise<void> {
+  return invoke("remove_room_alias", { alias });
+}
+
+/** Sets or clears `m.room.canonical_alias`'s `alias` field. Pass `null` to clear. */
+export function setCanonicalAlias(roomId: string, alias: string | null): Promise<void> {
+  return invoke("set_canonical_alias", { roomId, alias });
+}
+
+/** Removes `alias` from `m.room.canonical_alias`'s `alt_aliases` list without touching the canonical `alias` field. */
+export function removeAltAlias(roomId: string, alias: string): Promise<void> {
+  return invoke("remove_alt_alias", { roomId, alias });
 }
 
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */

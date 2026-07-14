@@ -34,15 +34,13 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-14, after Spec 30's focus-mode/DND coverage: lines 85.58 /
-        // statements 83.62 / functions 76.16 / branches 82.87), so any
-        // regression fails CI. When you add tests and coverage rises, raise
-        // these to the new floor in the same PR — never
-        // lower them just to make CI pass.
-        lines: 85,
-        statements: 83,
+        // 2026-07-14, after merging Spec 30's focus-mode coverage with Spec 32's
+        // room-alias-management and Spec 29's link-preview coverage. When tests
+        // raise coverage, raise these floors in the same PR.
+        lines: 85.4,
+        statements: 83.5,
         functions: 76,
-        branches: 82,
+        branches: 83.1,
       },
     },
   },

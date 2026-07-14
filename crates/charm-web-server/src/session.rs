@@ -803,6 +803,19 @@ impl SessionStore {
         self.inner.write().await.remove(token)
     }
 
+    /// Stable snapshot of the currently-live sessions for graceful process
+    /// shutdown. Cloning the `Arc`s releases the map lock before any crypto
+    /// snapshot I/O begins, so shutdown cannot hold up request handlers on a
+    /// long object-store write.
+    pub async fn entries(&self) -> Vec<(String, Arc<Session>)> {
+        self.inner
+            .read()
+            .await
+            .iter()
+            .map(|(token, session)| (token.clone(), Arc::clone(session)))
+            .collect()
+    }
+
     /// Removes and returns every session idle longer than `idle_timeout`
     /// with no WebSocket currently connected (see `Session::idle_for` /
     /// `Session::has_open_connection`) — the caller (a periodic background

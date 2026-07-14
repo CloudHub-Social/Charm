@@ -1,8 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render as rtlRender, screen } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { BubbleMessageRow } from "./BubbleMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
+
+// LinkPreviewForMessage (Spec 29) reads the room-details query cache via
+// `useQuery`, which needs a QueryClientProvider ancestor even when its own
+// query is disabled — wrap every render the same way the real app does.
+function render(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+}
 
 function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLayoutProps {
   return {

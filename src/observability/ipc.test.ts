@@ -151,7 +151,8 @@ describe("IPC observability", () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.objectContaining({
-        message: 'IPC invoke failed: {"name":"Error","message":"[redacted-string:50]"}',
+        message:
+          'IPC change_password failed: {"name":"Error","message":"failed for @[redacted]:[redacted] with password=[redacted]"}',
         name: "IpcError",
       }),
       expect.objectContaining({
@@ -323,13 +324,56 @@ describe("IPC observability", () => {
     });
   });
 
-  it("builds captured IPC errors from summarized data only", () => {
-    const error = new Error("https://homeserver.example login failed");
+  it("builds captured IPC errors that keep scrubbed diagnostic text", () => {
+    const error = new Error("connection reset while awaiting response");
 
-    expect(ipcObservabilityTestHooks.createCapturedIpcError(error)).toMatchObject({
-      message: 'IPC invoke failed: {"name":"Error","message":"[string:39]"}',
+    expect(ipcObservabilityTestHooks.createCapturedIpcError("login", error)).toMatchObject({
+      message:
+        'IPC login failed: {"name":"Error","message":"connection reset while awaiting response"}',
       name: "IpcError",
     });
+  });
+
+  it("redacts a homeserver URL in captured IPC error text instead of leaking it", () => {
+    const error = new Error("https://homeserver.example login failed");
+
+    expect(ipcObservabilityTestHooks.createCapturedIpcError("login", error)).toMatchObject({
+      message: 'IPC login failed: {"name":"Error","message":"https://[redacted] login failed"}',
+      name: "IpcError",
+    });
+  });
+
+  it("redacts Matrix IDs and secrets in captured IPC error text but otherwise keeps it", () => {
+    const error = new Error("failed for @alice:example.org with password=hunter2");
+
+    expect(ipcObservabilityTestHooks.createCapturedIpcError("send_message", error)).toMatchObject({
+      message:
+        'IPC send_message failed: {"name":"Error","message":"failed for @[redacted]:[redacted] with password=[redacted]"}',
+      name: "IpcError",
+    });
+  });
+
+  it("captures a consistent object-shaped message for plain-string errors (Rust Result<T, String> rejections)", () => {
+    expect(
+      ipcObservabilityTestHooks.createCapturedIpcError("sync", "connection refused"),
+    ).toMatchObject({
+      message: 'IPC sync failed: {"message":"connection refused"}',
+      name: "IpcError",
+    });
+  });
+
+  it("truncates captured IPC error text past the length cap", () => {
+    const error = new Error("x".repeat(400));
+
+    const captured = ipcObservabilityTestHooks.createCapturedIpcError("sync", error);
+    expect(captured.message).toContain("…[truncated, full length 400]");
+    expect(captured.message.length).toBeLessThan(400);
+  });
+
+  it("keeps scrubbed diagnostic text for plain string errors (Rust Result<T, String> rejections)", () => {
+    expect(
+      ipcObservabilityTestHooks.summarizeErrorForCapture("connection refused (os error 61)"),
+    ).toEqual({ message: "connection refused (os error 61)" });
   });
 
   it("does not record breadcrumbs while the current Sentry client is disabled", async () => {

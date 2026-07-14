@@ -41,6 +41,11 @@ use crate::persistence::PersistenceStore;
 /// `src-tauri/src/matrix/sync.rs::spawn_sync_loop` for the full rationale.
 const MAX_CONSECUTIVE_SYNC_FAILURES: u32 = 10;
 
+/// Bounds crypto-state loss if the process disappears without a graceful
+/// shutdown. SQLite's online-backup API makes each snapshot consistent while
+/// normal sync and request traffic continue using the live store.
+const CRYPTO_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
 /// What the sync loop needs to keep this session's persisted
 /// `MatrixSession` current as the SDK silently rotates its access/refresh
 /// token pair in the background (e.g. token refresh on a homeserver that
@@ -90,7 +95,7 @@ pub struct PersistHandle {
 /// Re-saves the session if (and only if) its access token has changed since
 /// `last_saved_access_token`, returning the new value to track — cheap to
 /// call after every sync iteration without rewriting
-/// `sessions.enc.json` on every single poll when nothing actually rotated.
+/// the encrypted session object on every poll when nothing actually rotated.
 async fn repersist_if_token_changed(
     client: &Client,
     persist: &PersistHandle,
@@ -114,6 +119,24 @@ async fn repersist_if_token_changed(
         return last_saved_access_token;
     }
     Some(access_token)
+}
+
+async fn snapshot_crypto_store(client: &Client, persist: &PersistHandle) {
+    let (Some(session), Some(crypto)) = (client.matrix_auth().session(), persist.crypto.as_ref())
+    else {
+        return;
+    };
+    if let Err(error) = persist
+        .store
+        .snapshot_crypto_store(
+            &persist.token,
+            &session,
+            Some((crypto.store_key.as_str(), crypto.passphrase.as_str())),
+        )
+        .await
+    {
+        tracing::warn!("failed to refresh durable crypto snapshot: {error}");
+    }
 }
 
 /// Registers this session's live event handlers — presence, self-profile,
@@ -308,7 +331,7 @@ pub fn spawn(
         // now. The loop's first `sync_once` can long-poll for tens of
         // seconds, exhaust its retry budget, or the process can restart
         // before that first iteration ever completes — any of which would
-        // otherwise leave `sessions.enc.json` holding the stale,
+        // otherwise leave the encrypted session object holding the stale,
         // already-invalidated token for that whole window.
         if let Some(persist) = &persist {
             last_saved_access_token =
@@ -316,6 +339,7 @@ pub fn spawn(
         }
 
         let mut consecutive_failures: u32 = 0;
+        let mut last_crypto_snapshot = tokio::time::Instant::now();
         loop {
             // Read fresh every iteration, not baked into one long-lived
             // `SyncSettings` — see `Session::sync_presence`'s doc comment
@@ -332,6 +356,10 @@ pub fn spawn(
                         last_saved_access_token =
                             repersist_if_token_changed(&client, persist, last_saved_access_token)
                                 .await;
+                        if last_crypto_snapshot.elapsed() >= CRYPTO_SNAPSHOT_INTERVAL {
+                            snapshot_crypto_store(&client, persist).await;
+                            last_crypto_snapshot = tokio::time::Instant::now();
+                        }
                     }
                 }
                 Err(e) => {

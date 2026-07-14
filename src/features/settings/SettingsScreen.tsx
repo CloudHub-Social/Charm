@@ -27,6 +27,14 @@ const GeneralPanel = lazy(() =>
 const NotificationsPanel = lazy(() =>
   import("./NotificationsPanel").then((mod) => ({ default: mod.NotificationsPanel })),
 );
+const LabsPanel = lazy(() => import("./LabsPanel").then((mod) => ({ default: mod.LabsPanel })));
+
+// Labs (feature-flag overrides) is a dev/preview/internal affordance — hidden
+// in the production environment so shipped users don't see experimental
+// toggles. Mirrors the environment axis Sentry uses (VITE_SENTRY_ENVIRONMENT,
+// falling back to Vite's build MODE).
+const isProductionEnv =
+  (import.meta.env.VITE_SENTRY_ENVIRONMENT || import.meta.env.MODE) === "production";
 
 interface SettingsScreenProps {
   onLoggedOut: () => void;
@@ -38,6 +46,7 @@ const SECTIONS: {
   desktopOnly?: boolean;
   webUnsupported?: boolean;
   flagGated?: boolean;
+  productionHidden?: boolean;
 }[] = [
   { value: "account", label: "Account" },
   { value: "general", label: "General", webUnsupported: true },
@@ -54,6 +63,7 @@ const SECTIONS: {
   { value: "focus", label: "Focus", flagGated: true, webUnsupported: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
+  { value: "labs", label: "Labs", productionHidden: true },
 ];
 
 function SettingsBody({
@@ -83,7 +93,8 @@ function SettingsBody({
     (s) =>
       (!s.desktopOnly || showDesktopSection) &&
       (!s.webUnsupported || !webBuild) &&
-      (!s.flagGated || focusModeEnabled || dndActive),
+      (!s.flagGated || focusModeEnabled || dndActive) &&
+      (!s.productionHidden || !isProductionEnv),
   );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from
@@ -172,6 +183,13 @@ function SettingsBody({
         <TabsContent value="keyboard-shortcuts">
           <KeyboardShortcutsPanel />
         </TabsContent>
+        {!isProductionEnv && (
+          <TabsContent value="labs">
+            <Suspense fallback={null}>
+              <LabsPanel />
+            </Suspense>
+          </TabsContent>
+        )}
       </div>
     </Tabs>
   );

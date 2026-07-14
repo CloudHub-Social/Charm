@@ -490,13 +490,13 @@ fn get_feature_flags<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<std::collections::BTreeMap<String, bool>, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let overrides = feature_flags::read_overrides(&app_data_dir);
+    let (overrides, remote) = feature_flags::read_state(&app_data_dir);
     Ok(feature_flags::FeatureFlagKey::ALL
         .iter()
         .map(|&key| {
             (
                 key.as_wire_key().to_string(),
-                feature_flags::resolve(key, &overrides),
+                feature_flags::resolve(key, &overrides, &remote),
             )
         })
         .collect())
@@ -1125,6 +1125,12 @@ pub fn run() {
             matrix::room_admin::enable_room_encryption,
             matrix::room_admin::set_member_power_level,
             matrix::room_admin::set_room_power_level_thresholds,
+            matrix::room_admin::get_room_local_aliases,
+            matrix::room_admin::check_room_alias_available,
+            matrix::room_admin::add_room_alias,
+            matrix::room_admin::remove_room_alias,
+            matrix::room_admin::set_canonical_alias,
+            matrix::room_admin::remove_alt_alias,
             matrix::room_admin::invite_member,
             matrix::room_admin::kick_member,
             matrix::room_admin::ban_member,
@@ -1165,6 +1171,7 @@ pub fn run() {
             matrix::account_data::set_local_onboarding_flag,
             matrix::dnd::get_dnd_state,
             matrix::dnd::set_dnd_state,
+            matrix::link_preview::get_url_preview,
             push::register_push,
             push::unregister_push,
             push::get_push_status

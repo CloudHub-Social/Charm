@@ -10,7 +10,8 @@ export type SettingsSection =
   | "desktop"
   | "focus"
   | "about"
-  | "keyboard-shortcuts";
+  | "keyboard-shortcuts"
+  | "labs";
 
 /** `null` when the settings shell is closed. Set by `openSettings`/`closeSettings`; never set directly outside this module. */
 export const settingsOpenAtom = atom<SettingsSection | null>(null);
@@ -26,6 +27,7 @@ const VALID_SECTIONS: readonly SettingsSection[] = [
   "focus",
   "about",
   "keyboard-shortcuts",
+  "labs",
 ];
 
 export function isSettingsSection(value: string): value is SettingsSection {

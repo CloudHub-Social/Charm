@@ -52,9 +52,10 @@ tokio-util = { version = "0.7", features = ["io"] }
 # where the deploy target has no persistent volume to write a plain file to.
 object_store = { version = "0.11", features = ["aws"] }
 sentry-tower = { version = "0.48.4", features = ["axum", "axum-matched-path", "http"] }
+reqwest = { version = "0.13", features = ["json", "cookies"] }
+rusqlite = { version = "0.37", features = ["backup"] }
 
 [dev-dependencies]
-reqwest = { version = "0.13", features = ["json", "cookies"] }
 # Pinned to match the version axum/tungstenite already pull in transitively
 # (see Cargo.lock) so the dev-only WebSocket test client doesn't drag in a
 # second, differently-versioned copy of tokio-tungstenite.

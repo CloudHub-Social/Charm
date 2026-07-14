@@ -38,6 +38,7 @@ const ALL_ALLOWED: RoomPermissions = {
   invite: true,
   kick: true,
   ban: true,
+  set_canonical_alias: true,
 };
 
 describe("MemberRow", () => {

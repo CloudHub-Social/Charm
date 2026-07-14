@@ -40,7 +40,10 @@ const ADMIN_DETAILS: RoomDetails = {
     invite: true,
     kick: true,
     ban: true,
+    set_canonical_alias: true,
   },
+  canonical_alias: null,
+  alt_aliases: [],
 };
 
 const READ_ONLY_DETAILS: RoomDetails = {
@@ -57,7 +60,10 @@ const READ_ONLY_DETAILS: RoomDetails = {
     invite: false,
     kick: false,
     ban: false,
+    set_canonical_alias: false,
   },
+  canonical_alias: null,
+  alt_aliases: [],
 };
 
 const MEMBERS: RoomMemberSummary[] = [

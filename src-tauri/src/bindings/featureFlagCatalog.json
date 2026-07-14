@@ -28,5 +28,17 @@
     "default": false,
     "description": "Focus mode / Do Not Disturb: suppress notifications for a preset duration or indefinitely, from Settings or the tray menu.",
     "owner": "Spec 30 (focus mode / do-not-disturb)"
+  },
+  {
+    "key": "link_previews",
+    "default": false,
+    "description": "Show an unfurled title/description/thumbnail card under messages containing a URL.",
+    "owner": "Spec 29 (link previews)"
+  },
+  {
+    "key": "room_alias_management",
+    "default": false,
+    "description": "Manage room aliases and the canonical alias from room settings.",
+    "owner": "Spec 32 (room alias management)"
   }
 ]

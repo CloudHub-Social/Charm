@@ -46,15 +46,16 @@
 //! unreadable/corrupt entry) or when persistence was configured without ever
 //! successfully opening a store.
 //!
-//! **The crypto store itself lives on local disk only** — see
-//! [`crate::crypto_store`]'s module doc comment for why it isn't synced
-//! through the `object_store`/DO Spaces backend this file's session-token
-//! blob uses, and what that means for the DO App Platform deploy target.
+//! When [`crate::crypto_backup::CryptoBackupStore`] is configured, the
+//! irreplaceable crypto database is also snapshotted to its own private
+//! object store under an independently managed encryption key. The local
+//! directory remains the live SDK store; snapshots are restored before the
+//! SDK opens it after an App Platform redeploy.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -94,6 +95,8 @@ const SESSIONS_PREFIX: &str = "sessions";
 /// never responds can't tie up a request — and the connection handling
 /// it — indefinitely).
 const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const SNAPSHOT_READY_ATTEMPTS: usize = 5;
+const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
@@ -114,6 +117,12 @@ struct PersistedSession {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedBlob {
+    /// Version 0 is the legacy format without associated data. Version 1
+    /// binds the ciphertext to its token-derived object path, preventing a
+    /// bucket writer from relocating one valid session object onto another
+    /// session's path without knowing the encryption key.
+    #[serde(default)]
+    version: u8,
     /// base64-encoded 12-byte AES-GCM nonce, fresh per encryption (see
     /// [`PersistenceStore::encrypt`]) — never reused across saves, even for
     /// the same session, which is why the whole blob (not just changed
@@ -131,6 +140,10 @@ fn object_path_for_token(token: &str) -> ObjectPath {
     let digest = Sha256::digest(token.as_bytes());
     let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
     ObjectPath::from(format!("{SESSIONS_PREFIX}/{hash}.json"))
+}
+
+fn session_aad(path: &ObjectPath) -> Vec<u8> {
+    format!("charm-web-session:v1:{}", path.as_ref()).into_bytes()
 }
 
 /// Builds the DO Spaces (S3-compatible) backend once [`SPACES_BUCKET_ENV`] is
@@ -177,6 +190,7 @@ fn virtual_hosted_endpoint(bucket: &str, region_endpoint: &str) -> String {
 pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
+    crypto_backup: Option<Arc<crate::crypto_backup::CryptoBackupStore>>,
 }
 
 impl PersistenceStore {
@@ -233,7 +247,11 @@ impl PersistenceStore {
             Arc::new(LocalFileSystem::new_with_prefix(&dir).map_err(|e| e.to_string())?)
         };
 
-        Ok(Some(Self { key, store }))
+        Ok(Some(Self {
+            key,
+            store,
+            crypto_backup: None,
+        }))
     }
 
     #[cfg(test)]
@@ -244,7 +262,69 @@ impl PersistenceStore {
         Self {
             key,
             store: Arc::new(store),
+            crypto_backup: None,
         }
+    }
+
+    pub fn with_crypto_backup(
+        mut self,
+        crypto_backup: Option<Arc<crate::crypto_backup::CryptoBackupStore>>,
+    ) -> Self {
+        self.crypto_backup = crypto_backup;
+        self
+    }
+
+    pub async fn snapshot_crypto_store(
+        &self,
+        token: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        self.snapshot_crypto_store_with_mode(token, session, crypto, false)
+            .await
+    }
+
+    pub async fn snapshot_final_crypto_store(
+        &self,
+        token: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        self.snapshot_crypto_store_with_mode(token, session, crypto, true)
+            .await
+    }
+
+    async fn snapshot_crypto_store_with_mode(
+        &self,
+        token: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+        final_snapshot: bool,
+    ) -> Result<(), String> {
+        let (Some(backup), Some((store_key, _passphrase))) = (&self.crypto_backup, crypto) else {
+            return Ok(());
+        };
+        let binding = crate::crypto_backup::CryptoSnapshotBinding::new(token, session, store_key);
+        for attempt in 0..SNAPSHOT_READY_ATTEMPTS {
+            let result = match crate::crypto_store::existing_store_dir(store_key)? {
+                Some(source_dir) if final_snapshot => {
+                    backup.snapshot_final(&binding, &source_dir).await
+                }
+                Some(source_dir) => backup.snapshot(&binding, &source_dir).await,
+                None => Err("cannot snapshot a missing crypto store directory".to_string()),
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if snapshot_source_is_not_ready(&error)
+                        && attempt + 1 < SNAPSHOT_READY_ATTEMPTS =>
+                {
+                    tokio::time::sleep(SNAPSHOT_READY_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("snapshot retry loop always returns on its final attempt")
     }
 
     /// Decrypts every persisted session object, for the startup-only restore
@@ -288,8 +368,14 @@ impl PersistenceStore {
                     return None;
                 }
             };
-            match self.decrypt(&blob) {
-                Ok(session) => Some(session),
+            match self.decrypt(&blob, &path) {
+                Ok(session) if object_path_for_token(&session.token) == path => Some(session),
+                Ok(_) => {
+                    tracing::warn!(
+                        "dropping persisted session object {path}: decrypted token does not match object path"
+                    );
+                    None
+                }
                 Err(e) => {
                     tracing::warn!("dropping unreadable persisted session object {path}: {e}");
                     None
@@ -334,8 +420,18 @@ impl PersistenceStore {
                 return None;
             }
         };
-        match self.decrypt(&blob) {
-            Ok(session) => Some(session),
+        match self.decrypt(&blob, &path) {
+            Ok(session)
+                if session.token == token && object_path_for_token(&session.token) == path =>
+            {
+                Some(session)
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    "dropping persisted session object {path}: decrypted token does not match lookup token"
+                );
+                None
+            }
             Err(e) => {
                 tracing::warn!("dropping unreadable persisted session object {path}: {e}");
                 None
@@ -390,7 +486,7 @@ impl PersistenceStore {
             let entry = self.read_one(token).await?;
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             let user_id = entry.session.meta.user_id.clone();
-            match restore_one(&entry, initial_presence).await {
+            match restore_one(&entry, initial_presence, self.crypto_backup.as_deref()).await {
                 Ok((session, initial_response)) => Some(Ok((
                     entry.homeserver_url,
                     session,
@@ -474,7 +570,11 @@ impl PersistenceStore {
         }
     }
 
-    fn decrypt(&self, blob: &EncryptedBlob) -> Result<PersistedSession, String> {
+    fn decrypt(
+        &self,
+        blob: &EncryptedBlob,
+        expected_path: &ObjectPath,
+    ) -> Result<PersistedSession, String> {
         let nonce_bytes = BASE64.decode(&blob.nonce).map_err(|e| e.to_string())?;
         // `Nonce::from_slice` panics (doesn't error) on a slice that isn't
         // exactly 12 bytes — a corrupt/truncated on-disk entry must not be
@@ -488,21 +588,42 @@ impl PersistenceStore {
             ));
         }
         let ciphertext = BASE64.decode(&blob.ciphertext).map_err(|e| e.to_string())?;
-        let plaintext = self
-            .key
-            .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref())
-            .map_err(|e| e.to_string())?;
+        let plaintext = match blob.version {
+            0 => self
+                .key
+                .decrypt(Nonce::from_slice(&nonce_bytes), ciphertext.as_ref()),
+            1 => self.key.decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: ciphertext.as_ref(),
+                    aad: &session_aad(expected_path),
+                },
+            ),
+            version => return Err(format!("unsupported encrypted session version {version}")),
+        }
+        .map_err(|e| e.to_string())?;
         serde_json::from_slice(&plaintext).map_err(|e| e.to_string())
     }
 
-    fn encrypt(&self, session: &PersistedSession) -> Result<EncryptedBlob, String> {
+    fn encrypt(
+        &self,
+        session: &PersistedSession,
+        path: &ObjectPath,
+    ) -> Result<EncryptedBlob, String> {
         let plaintext = serde_json::to_vec(session).map_err(|e| e.to_string())?;
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ciphertext = self
             .key
-            .encrypt(&nonce, plaintext.as_ref())
+            .encrypt(
+                &nonce,
+                Payload {
+                    msg: plaintext.as_ref(),
+                    aad: &session_aad(path),
+                },
+            )
             .map_err(|e| e.to_string())?;
         Ok(EncryptedBlob {
+            version: 1,
             nonce: BASE64.encode(nonce),
             ciphertext: BASE64.encode(ciphertext),
         })
@@ -530,10 +651,10 @@ impl PersistenceStore {
     /// `crypto`, when given, is `(store_key, passphrase)` for the session's
     /// on-disk crypto store — see `session::CryptoStoreHandle`. Callers pass
     /// the *same* pair on every re-save of a given token (a token refresh,
-    /// an idle-eviction re-save): the crypto store itself is only ever
-    /// created once, at login, so persisting a different key/passphrase pair
-    /// later would just orphan that original store and make a subsequent
-    /// restore point at a store that was never actually used.
+    /// an idle-eviction re-save): the live crypto store itself is only ever
+    /// created once, at login, and its durable snapshots must keep pointing
+    /// at that same identity. Persisting a different pair later would orphan
+    /// both the original local store and its remote snapshots.
     pub async fn save(
         &self,
         token: &str,
@@ -545,16 +666,20 @@ impl PersistenceStore {
             Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
             None => (None, None),
         };
-        let blob = self.encrypt(&PersistedSession {
-            token: token.to_string(),
-            homeserver_url: homeserver_url.to_string(),
-            session: session.clone(),
-            crypto_store_key,
-            crypto_passphrase,
-        })?;
+        let path = object_path_for_token(token);
+        let blob = self.encrypt(
+            &PersistedSession {
+                token: token.to_string(),
+                homeserver_url: homeserver_url.to_string(),
+                session: session.clone(),
+                crypto_store_key,
+                crypto_passphrase,
+            },
+            &path,
+        )?;
         let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
         self.store
-            .put(&object_path_for_token(token), PutPayload::from(json))
+            .put(&path, PutPayload::from(json))
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
@@ -618,6 +743,11 @@ impl PersistenceStore {
             .and_then(|entry| entry.crypto_store_key)
             .or_else(|| live_crypto.map(|(store_key, _)| store_key.to_string()));
         if let Some(store_key) = store_key {
+            if let Some(backup) = &self.crypto_backup {
+                if let Err(error) = backup.remove(&store_key).await {
+                    tracing::warn!("failed to remove durable crypto snapshot on logout: {error}");
+                }
+            }
             match crate::crypto_store::existing_store_dir(&store_key) {
                 Ok(Some(dir)) => {
                     if let Err(e) = std::fs::remove_dir_all(&dir) {
@@ -677,7 +807,11 @@ impl PersistenceStore {
             // gap), so this always passes `None`: `Online`, `SyncSettings`'s
             // own default, is exactly what a restart already implied before
             // presence-carrying existed.
-            let outcome = tokio::time::timeout(RESTORE_TIMEOUT, restore_one(&entry, None)).await;
+            let outcome = tokio::time::timeout(
+                RESTORE_TIMEOUT,
+                restore_one(&entry, None, self.crypto_backup.as_deref()),
+            )
+            .await;
             (entry, originally_persisted_access_token, outcome)
         });
         let outcomes = futures_util::future::join_all(attempts).await;
@@ -708,6 +842,11 @@ impl PersistenceStore {
         }
         restored
     }
+}
+
+fn snapshot_source_is_not_ready(error: &str) -> bool {
+    error == "cannot snapshot a missing crypto store directory"
+        || error == "crypto store contained no recognized SQLite databases"
 }
 
 /// Builds the `Client` [`restore_one`] restores its session into — backed by
@@ -745,7 +884,10 @@ impl PersistenceStore {
 /// instead of erroring, which would skip this failure path entirely and hand
 /// back a client that looks restored but has silently lost all its crypto
 /// state.
-async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk::Client, String> {
+async fn build_client_for_restore(
+    entry: &PersistedSession,
+    crypto_backup: Option<&crate::crypto_backup::CryptoBackupStore>,
+) -> Result<matrix_sdk::Client, String> {
     let Some((store_key, passphrase)) = entry
         .crypto_store_key
         .as_ref()
@@ -761,12 +903,32 @@ async fn build_client_for_restore(entry: &PersistedSession) -> Result<matrix_sdk
     let dir = match crate::crypto_store::existing_store_dir(store_key) {
         Ok(Some(dir)) => dir,
         Ok(None) => {
-            return Err(
-                "crypto store directory is missing (e.g. lost on a redeploy) — refusing to \
-                 restore this session with a fresh, empty crypto identity under its existing \
-                 device_id"
-                    .to_string(),
-            )
+            let Some(backup) = crypto_backup else {
+                return Err(
+                    "crypto store directory is missing and durable crypto backup is not configured — refusing to restore this session with an empty crypto identity"
+                        .to_string(),
+                );
+            };
+            let dir = crate::crypto_store::store_dir_path(store_key)?;
+            let binding = crate::crypto_backup::CryptoSnapshotBinding::new(
+                &entry.token,
+                &entry.session,
+                store_key,
+            );
+            match backup.restore(&binding, &dir).await {
+                Ok(true) => dir,
+                Ok(false) => {
+                    return Err(
+                        "crypto store directory is missing and no durable snapshot exists"
+                            .to_string(),
+                    );
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "failed to restore durable crypto snapshot: {error}"
+                    ));
+                }
+            }
         }
         Err(e) => return Err(format!("failed to resolve crypto store directory: {e}")),
     };
@@ -824,8 +986,9 @@ fn persisted_crypto_from_entry(
 async fn restore_one(
     entry: &PersistedSession,
     initial_presence: Option<charm_lib::matrix::presence::PresenceStateDto>,
+    crypto_backup: Option<&crate::crypto_backup::CryptoBackupStore>,
 ) -> Result<(crate::session::Session, matrix_sdk::sync::SyncResponse), String> {
-    let client = build_client_for_restore(entry).await?;
+    let client = build_client_for_restore(entry, crypto_backup).await?;
     // `build_client_for_restore` only ever returns `Ok` here when either the
     // session never had a crypto store to begin with (both fields `None`) or
     // that store was actually opened — a store that was expected but
@@ -952,6 +1115,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relocating_a_valid_ciphertext_to_another_token_path_is_rejected() {
+        let dir = scratch_dir("relocated-ciphertext");
+        let store = PersistenceStore::new_for_test(&dir, [17u8; 32]);
+        store
+            .save(
+                "tok-alice",
+                "https://example.invalid",
+                &dummy_session("@alice:example.invalid"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let ciphertext = tokio::fs::read(object_file_path(&dir, "tok-alice"))
+            .await
+            .unwrap();
+        let relocated = object_file_path(&dir, "tok-bob");
+        tokio::fs::create_dir_all(relocated.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(relocated, ciphertext).await.unwrap();
+
+        assert!(store.read_one("tok-bob").await.is_none());
+        let all = store.read_all().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].token, "tok-alice");
+    }
+
+    #[tokio::test]
     async fn reconstructed_store_restores_session_from_same_disk_file() {
         let dir = scratch_dir("restart-survival");
         let key = [8u8; 32];
@@ -980,6 +1172,52 @@ mod tests {
             "@restart:example.invalid"
         );
         assert_eq!(all[0].session.tokens.access_token, "test-access-token");
+    }
+
+    #[tokio::test]
+    async fn snapshot_crypto_store_retries_until_the_database_is_ready() {
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let data_dir = scratch_dir("snapshot-retry-data");
+        let persistence_dir = scratch_dir("snapshot-retry-persistence");
+        let restore_dir = scratch_dir("snapshot-retry-restore");
+        std::fs::remove_dir_all(&restore_dir).unwrap();
+        let _data_dir = EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap());
+
+        let backup = Arc::new(crate::crypto_backup::CryptoBackupStore::new_for_test(
+            [43u8; 32],
+        ));
+        let store = PersistenceStore::new_for_test(&persistence_dir, [44u8; 32])
+            .with_crypto_backup(Some(backup.clone()));
+        let matrix_session = dummy_session("@snapshot-retry:example.invalid");
+        let store_key = "snapshotretrystore";
+        let source_dir = data_dir.join("crypto").join(store_key);
+
+        let create_database = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            std::fs::create_dir_all(&source_dir).unwrap();
+            rusqlite::Connection::open(source_dir.join("matrix-sdk-crypto.sqlite3"))
+                .unwrap()
+                .execute_batch("CREATE TABLE example(value TEXT);")
+                .unwrap();
+        });
+
+        store
+            .snapshot_crypto_store(
+                "snapshot-retry-token",
+                &matrix_session,
+                Some((store_key, "unused-passphrase")),
+            )
+            .await
+            .unwrap();
+        create_database.await.unwrap();
+
+        let binding = crate::crypto_backup::CryptoSnapshotBinding::new(
+            "snapshot-retry-token",
+            &matrix_session,
+            store_key,
+        );
+        assert!(backup.restore(&binding, &restore_dir).await.unwrap());
+        assert!(restore_dir.join("matrix-sdk-crypto.sqlite3").is_file());
     }
 
     #[tokio::test]
@@ -1235,6 +1473,7 @@ mod tests {
             .encrypt(&nonce, legacy_plaintext.as_ref())
             .unwrap();
         let blob = EncryptedBlob {
+            version: 0,
             nonce: BASE64.encode(nonce),
             ciphertext: BASE64.encode(ciphertext),
         };

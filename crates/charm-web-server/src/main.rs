@@ -18,8 +18,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // must run before anything else in this function logs.
     let _sentry_guard = observability::init();
 
+    let crypto_backup = match charm_web_server::crypto_backup::CryptoBackupStore::from_env().await {
+        Ok(backup) => backup.map(Arc::new),
+        Err(e) => {
+            tracing::error!("invalid durable crypto backup configuration: {e}");
+            return Err(format!("invalid durable crypto backup configuration: {e}").into());
+        }
+    };
+
     let persistence = match PersistenceStore::from_env() {
-        Ok(persistence) => persistence.map(Arc::new),
+        Ok(Some(persistence)) => Some(Arc::new(
+            persistence.with_crypto_backup(crypto_backup.clone()),
+        )),
+        Ok(None) if crypto_backup.is_some() => {
+            tracing::error!(
+                "durable crypto backup requires encrypted session persistence to be configured"
+            );
+            return Err("durable crypto backup requires encrypted session persistence".into());
+        }
+        Ok(None) => None,
         Err(e) => {
             // `tracing::error!` here (not just the `?` below) matters: this
             // target (`charm_web_server`) is one `observability::init`'s
@@ -95,14 +112,85 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(e.into());
         }
     };
+    if let Some(crypto_backup) = crypto_backup.as_deref() {
+        crypto_backup.activate_writer().await.map_err(|e| {
+            tracing::error!("failed to activate durable crypto snapshot writer: {e}");
+            format!("failed to activate durable crypto snapshot writer: {e}")
+        })?;
+    }
     tracing::info!("charm-web-server listening on {addr}");
 
+    let shutdown_state = state.clone();
+    let shutdown_persistence = persistence.clone();
     let app = routes::router(state);
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            if let Some(persistence) = shutdown_persistence {
+                snapshot_active_sessions(&shutdown_state, &persistence).await;
+            }
+        })
+        .await
+    {
         tracing::error!("server exited with an error: {e}");
         return Err(e.into());
     }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to install Ctrl-C handler: {error}");
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => tracing::error!("failed to install SIGTERM handler: {error}"),
+        }
+    };
+
+    #[cfg(unix)]
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+    #[cfg(not(unix))]
+    ctrl_c.await;
+
+    tracing::info!("shutdown requested; writing final crypto snapshots");
+}
+
+async fn snapshot_active_sessions(state: &AppState, persistence: &PersistenceStore) {
+    let sessions = state.sessions.entries().await;
+    for (token, session) in sessions {
+        if let Some(handle) = session
+            .sync_handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            handle.abort();
+        }
+        let Some(matrix_session) = session.client.matrix_auth().session() else {
+            continue;
+        };
+        let crypto = session
+            .persisted_crypto
+            .as_ref()
+            .map(|value| (value.store_key.as_str(), value.passphrase.as_str()));
+        if let Err(error) = persistence
+            .snapshot_final_crypto_store(&token, &matrix_session, crypto)
+            .await
+        {
+            tracing::error!("failed to write final crypto snapshot during shutdown: {error}");
+        }
+    }
 }
 
 /// Periodically evicts idle sessions' in-memory `Client`s — see
@@ -166,6 +254,12 @@ fn spawn_idle_session_sweeper(
                     .persisted_crypto
                     .as_ref()
                     .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+                if let Err(e) = persistence
+                    .snapshot_crypto_store(&token, &matrix_session, crypto)
+                    .await
+                {
+                    tracing::warn!("failed to snapshot crypto store before idle eviction: {e}");
+                }
                 if let Err(e) = persistence
                     .save(&token, &homeserver_url, &matrix_session, crypto)
                     .await

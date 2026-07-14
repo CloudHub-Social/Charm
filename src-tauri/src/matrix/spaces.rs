@@ -153,9 +153,12 @@ fn next_hierarchy_page_token(
         return Ok(None);
     };
     if !seen_page_tokens.insert(token.clone()) {
-        return Err(format!(
-            "space hierarchy pagination repeated next_batch token {token}"
-        ));
+        // Deliberately doesn't interpolate the opaque server-provided
+        // `next_batch` token into the message — this error can reach Sentry
+        // via the frontend's IPC error capture, and the token has no
+        // syntactic marker to redact it against safely there (unlike a
+        // Matrix ID's sigil or a URL's scheme).
+        return Err("space hierarchy pagination repeated next_batch token".to_string());
     }
     Ok(Some(token))
 }
@@ -654,7 +657,8 @@ mod tests {
         let error = next_hierarchy_page_token(&mut seen_page_tokens, Some("page-1".to_string()))
             .expect_err("repeated pagination token should be rejected");
 
-        assert!(error.contains("repeated next_batch token page-1"));
+        assert!(error.contains("repeated next_batch token"));
+        assert!(!error.contains("page-1"));
     }
 
     #[test]

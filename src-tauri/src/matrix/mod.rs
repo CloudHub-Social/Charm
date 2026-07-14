@@ -6,6 +6,7 @@ pub mod commands;
 pub mod devices;
 pub mod dnd;
 pub mod ephemeral;
+pub mod link_preview;
 pub mod media;
 pub mod members;
 pub mod notifications;
