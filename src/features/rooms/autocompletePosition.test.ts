@@ -78,7 +78,7 @@ describe("rectToAutocompletePosition", () => {
     try {
       expect(
         rectToAutocompletePosition(rect({ top: 340, right: 140, bottom: 360, left: 120 })),
-      ).toEqual({ top: 64, left: 100, maxHeight: 240 });
+      ).toEqual({ top: 364, left: 120, maxHeight: 240 });
     } finally {
       if (original) Object.defineProperty(window, "visualViewport", original);
       else Reflect.deleteProperty(window, "visualViewport");

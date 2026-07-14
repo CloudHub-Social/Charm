@@ -21,10 +21,9 @@ export function rectToAutocompletePosition(
     offsetTop: window.visualViewport?.offsetTop ?? 0,
     offsetLeft: window.visualViewport?.offsetLeft ?? 0,
   },
-  // `getBoundingClientRect()` is expressed in layout-viewport coordinates,
-  // while a fixed popover is painted in the visual viewport on mobile. iOS
-  // pans that viewport above the software keyboard, so normalize the caret
-  // rect before comparing it with the visible width and height.
+  // iOS can pan the visual viewport above the software keyboard. Normalize
+  // the layout-viewport caret rect for fit calculations, then convert the
+  // chosen fixed-position coordinates back to the layout viewport below.
 ): AutocompletePosition {
   if (!rect) return { top: 0, left: 0, maxHeight: AUTOCOMPLETE_MAX_HEIGHT };
 
@@ -44,5 +43,9 @@ export function rectToAutocompletePosition(
     ? below
     : Math.max(AUTOCOMPLETE_MARGIN, rectTop - maxHeight - AUTOCOMPLETE_GAP);
 
-  return { top, left, maxHeight };
+  return {
+    top: top + (viewport.offsetTop ?? 0),
+    left: left + (viewport.offsetLeft ?? 0),
+    maxHeight,
+  };
 }
