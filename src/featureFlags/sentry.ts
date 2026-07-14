@@ -16,9 +16,9 @@ interface FeatureFlagsIntegrationLike {
 /**
  * Reports one flag evaluation to Sentry so a subsequently-captured error shows
  * which flags were active. No-op unless the `FeatureFlags` integration is
- * present — it's only registered when Sentry consent is on
- * (`initializeSentry`), so this is implicitly gated on `sentryEnabled` with no
- * extra check here.
+ * present and the client is currently enabled. The integration remains on the
+ * client after an observability opt-out, so the explicit enabled guard prevents
+ * evaluations from being buffered during the disabled window.
  *
  * When the OpenFeature SDK is adopted (next increment), this is replaced by
  * `Sentry.openFeatureIntegration()` + `OpenFeatureIntegrationHook`, which
@@ -27,6 +27,7 @@ interface FeatureFlagsIntegrationLike {
  */
 export function reportFlagEvaluation(name: string, value: boolean): void {
   const client = Sentry.getClient();
+  if (!client?.getOptions().enabled) return;
   const integration = client?.getIntegrationByName?.<FeatureFlagsIntegrationLike>("FeatureFlags");
   integration?.addFeatureFlag(name, value);
 }

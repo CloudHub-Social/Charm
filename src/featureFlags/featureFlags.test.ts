@@ -27,6 +27,7 @@ beforeEach(() => {
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   mocks.addFeatureFlag.mockReset();
   mocks.getClient.mockReset().mockReturnValue({
+    getOptions: () => ({ enabled: true }),
     getIntegrationByName: (name: string) =>
       name === "FeatureFlags" ? { addFeatureFlag: mocks.addFeatureFlag } : undefined,
   });
@@ -63,6 +64,17 @@ describe("feature-flag client", () => {
     mocks.getClient.mockReturnValue(undefined);
     const { getFlag } = await import("./index");
     expect(() => getFlag("canary")).not.toThrow();
+    expect(mocks.addFeatureFlag).not.toHaveBeenCalled();
+  });
+
+  it("does not buffer evaluations when an initialized Sentry client is disabled", async () => {
+    mocks.getClient.mockReturnValue({
+      getOptions: () => ({ enabled: false }),
+      getIntegrationByName: () => ({ addFeatureFlag: mocks.addFeatureFlag }),
+    });
+
+    const { getFlag } = await import("./index");
+    expect(getFlag("canary")).toBe(false);
     expect(mocks.addFeatureFlag).not.toHaveBeenCalled();
   });
 
