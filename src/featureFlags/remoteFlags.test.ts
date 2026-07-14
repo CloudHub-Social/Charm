@@ -12,7 +12,9 @@ vi.mock("@sentry/react", () => ({ getClient: () => mocks.getClient() }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => mocks.invoke(...args) }));
+vi.mock("@/lib/matrixTransport", () => ({
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
 
 beforeEach(async () => {
   localStorage.clear();
