@@ -113,7 +113,10 @@ jobs:
           VITE_SENTRY_DSN: ${{ secrets.VITE_SENTRY_DSN }}
           REQUIRE_VITE_SENTRY_DSN: "true"
           WRITE_FRONTEND_UPLOAD_ENV: "true"
-          ENVIRONMENT_INPUT: nightly
+          # Nightly is a release channel, not a deployment tier. Keep it in
+          # the canonical build/release id below while grouping its telemetry
+          # with the hosted development deployment in Sentry.
+          ENVIRONMENT_INPUT: development
           # The script recomputes its own release id from BUILD_ID_KIND (not
           # the BUILD_KIND the "Compute build id" step above already used)
           # and then overwrites BUILD_ID/VITE_BUILD_ID with it — see the
@@ -305,8 +308,8 @@ jobs:
           # never match.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          SENTRY_ENVIRONMENT: nightly
-          VITE_SENTRY_ENVIRONMENT: nightly
+          SENTRY_ENVIRONMENT: development
+          VITE_SENTRY_ENVIRONMENT: development
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -493,8 +496,8 @@ jobs:
           # Build step comment.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          SENTRY_ENVIRONMENT: nightly
-          VITE_SENTRY_ENVIRONMENT: nightly
+          SENTRY_ENVIRONMENT: development
+          VITE_SENTRY_ENVIRONMENT: development
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -745,8 +748,8 @@ jobs:
           # env var below instead.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
           SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          SENTRY_ENVIRONMENT: nightly
-          VITE_SENTRY_ENVIRONMENT: nightly
+          SENTRY_ENVIRONMENT: development
+          VITE_SENTRY_ENVIRONMENT: development
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1
@@ -961,8 +964,8 @@ jobs:
           # release-builds.yml's Android job (which does set it) enabled it,
           # meaning nightly never exercised the IPC tunnel on Android.
           VITE_SENTRY_DSN: ${{ env.HAS_SENTRY_CREDS == 'true' && secrets.VITE_SENTRY_DSN || '' }}
-          SENTRY_ENVIRONMENT: nightly
-          VITE_SENTRY_ENVIRONMENT: nightly
+          SENTRY_ENVIRONMENT: development
+          VITE_SENTRY_ENVIRONMENT: development
           RUSTC_WRAPPER: ${{ env.HAS_SCCACHE_CREDS == 'true' && 'sccache' || '' }}
           SCCACHE_BUCKET: charm-sccache-storage
           SCCACHE_REGION: tor1

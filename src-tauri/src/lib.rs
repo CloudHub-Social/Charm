@@ -75,7 +75,8 @@ const BAKED_SENTRY_DSN: Option<&str> = option_env!("SENTRY_DSN");
 /// `std::env::var("SENTRY_ENVIRONMENT")` read would still find nothing at
 /// runtime, filing Rust events under Sentry's default environment while the
 /// frontend (`import.meta.env.VITE_SENTRY_ENVIRONMENT`, inlined by Vite at
-/// compile time) correctly tags them `nightly`/`production`.
+/// compile time) correctly tags them `development`/`production`. Nightly is
+/// retained in the release/build id rather than used as a deployment tier.
 const BAKED_SENTRY_ENVIRONMENT: Option<&str> = option_env!("SENTRY_ENVIRONMENT");
 
 /// Shared by `resolve_sentry_dsn`/`resolve_sentry_environment`: prefers a
