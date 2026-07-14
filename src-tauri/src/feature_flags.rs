@@ -91,6 +91,9 @@ define_feature_flag_keys!(
         /// Spec 52 mobile chat redesign: compact room header and composer,
         /// in-header back navigation, and detail-view bottom-nav suppression.
         MobileChatRedesign,
+        /// Spec 30 Focus mode / Do Not Disturb: the Settings panel toggle and
+        /// tray-menu preset durations that suppress notification dispatch.
+        FocusMode,
     }
 );
 
@@ -103,6 +106,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => false,
             FeatureFlagKey::RichMessageRendering => false,
             FeatureFlagKey::MobileChatRedesign => false,
+            FeatureFlagKey::FocusMode => false,
         }
     }
 
@@ -122,6 +126,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MobileChatRedesign => {
                 "Use the compact mobile-first room header, composer, and chat navigation."
             }
+            FeatureFlagKey::FocusMode => {
+                "Focus mode / Do Not Disturb: suppress notifications for a preset duration or indefinitely, from Settings or the tray menu."
+            }
         }
     }
 
@@ -133,6 +140,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
             FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
+            FeatureFlagKey::FocusMode => "Spec 30 (focus mode / do-not-disturb)",
         }
     }
 
@@ -144,6 +152,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => "room_invites",
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
             FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
+            FeatureFlagKey::FocusMode => "focus_mode",
         }
     }
 }

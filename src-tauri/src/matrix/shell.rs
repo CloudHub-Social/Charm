@@ -344,6 +344,15 @@ pub async fn maybe_send_notification<F, Fut>(
     if own_user_id.is_some_and(|me| me.as_str() == sender) {
         return;
     }
+    // Spec 30: Do Not Disturb suppresses local notification dispatch
+    // entirely, ahead of even reserving the event id's dedupe slot — a
+    // message that arrives while DND is on and is never shown should still
+    // be eligible for a fresh notification later if DND expires before the
+    // room is otherwise deduped. This never touches unread/badge counts,
+    // which are computed independently of notification dispatch.
+    if super::dnd::is_dnd_active(app) {
+        return;
+    }
     let mode = room.notification_mode().await;
     let is_muted = matches!(
         mode,
@@ -558,6 +567,25 @@ mod tests {
         let badge = compute_badge_state(&rooms);
         assert_eq!(badge.total_unread, 2);
         assert_eq!(badge.total_highlight, 2);
+    }
+
+    /// Spec 30: `compute_badge_state` takes no DND input at all — unread/
+    /// highlight counts are computed purely from room summaries, the same
+    /// way regardless of whether Do Not Disturb is on. This pins that
+    /// invariant so a future change can't accidentally thread a DND check
+    /// into badge computation (DND only gates *notification dispatch* in
+    /// `maybe_send_notification`/`push::handle_push`, never unread counts).
+    #[test]
+    fn unread_badge_counts_are_unaffected_by_dnd() {
+        let rooms = vec![room(3, 1, false, false)];
+        let badge_while_dnd_would_be_active = compute_badge_state(&rooms);
+        let badge_while_dnd_would_be_inactive = compute_badge_state(&rooms);
+        assert_eq!(
+            badge_while_dnd_would_be_active,
+            badge_while_dnd_would_be_inactive
+        );
+        assert_eq!(badge_while_dnd_would_be_active.total_unread, 1);
+        assert_eq!(badge_while_dnd_would_be_active.total_highlight, 1);
     }
 
     #[test]

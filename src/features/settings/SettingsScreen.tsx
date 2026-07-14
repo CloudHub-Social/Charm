@@ -3,11 +3,13 @@ import { XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { AboutPanel } from "./AboutPanel";
 import { AccountPanel } from "./AccountPanel";
 import { AppearancePanel } from "./AppearancePanel";
 import { DesktopPanel } from "./DesktopPanel";
+import { FocusPanel } from "./FocusPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { ObservabilityPanel } from "./ObservabilityPanel";
 import type { SettingsSection } from "./settingsAtoms";
@@ -34,6 +36,7 @@ const SECTIONS: {
   label: string;
   desktopOnly?: boolean;
   webUnsupported?: boolean;
+  flagGated?: boolean;
 }[] = [
   { value: "account", label: "Account" },
   { value: "general", label: "General", webUnsupported: true },
@@ -42,6 +45,7 @@ const SECTIONS: {
   { value: "appearance", label: "Appearance" },
   { value: "observability", label: "Observability" },
   { value: "desktop", label: "Desktop", desktopOnly: true },
+  { value: "focus", label: "Focus", flagGated: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
 ];
@@ -59,8 +63,12 @@ function SettingsBody({
 }) {
   const showDesktopSection = useIsDesktopPlatform();
   const webBuild = isWebBuild();
+  const focusModeEnabled = useFlag("focus_mode");
   const sections = SECTIONS.filter(
-    (s) => (!s.desktopOnly || showDesktopSection) && (!s.webUnsupported || !webBuild),
+    (s) =>
+      (!s.desktopOnly || showDesktopSection) &&
+      (!s.webUnsupported || !webBuild) &&
+      (!s.flagGated || focusModeEnabled),
   );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from
@@ -136,6 +144,11 @@ function SettingsBody({
         {showDesktopSection && (
           <TabsContent value="desktop">
             <DesktopPanel />
+          </TabsContent>
+        )}
+        {focusModeEnabled && (
+          <TabsContent value="focus">
+            <FocusPanel />
           </TabsContent>
         )}
         <TabsContent value="about">

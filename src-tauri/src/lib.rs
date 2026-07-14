@@ -714,8 +714,61 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
     use tauri::Manager;
 
     let show_item = MenuItem::with_id(app, "show", "Show Charm", true, None::<&str>)?;
+    // Spec 30: preset Do Not Disturb durations, plus an indefinite option and
+    // a way to turn it back off — mirrors the Settings panel's Focus toggle
+    // (`matrix::dnd::set_dnd_state`), sharing the same underlying state via
+    // `matrix::dnd::apply` so whichever surface is used, the other reflects
+    // it (the panel listens for the `dnd:changed` event this emits).
+    let dnd_30m = MenuItem::with_id(
+        app,
+        "dnd_30m",
+        "Do Not Disturb for 30 minutes",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_1h = MenuItem::with_id(
+        app,
+        "dnd_1h",
+        "Do Not Disturb for 1 hour",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_8h = MenuItem::with_id(
+        app,
+        "dnd_8h",
+        "Do Not Disturb for 8 hours",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_indefinite = MenuItem::with_id(
+        app,
+        "dnd_indefinite",
+        "Do Not Disturb until I turn it off",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_off = MenuItem::with_id(
+        app,
+        "dnd_off",
+        "Turn Off Do Not Disturb",
+        true,
+        None::<&str>,
+    )?;
+    let dnd_submenu = Submenu::with_items(
+        app,
+        "Focus",
+        true,
+        &[
+            &dnd_30m,
+            &dnd_1h,
+            &dnd_8h,
+            &dnd_indefinite,
+            &PredefinedMenuItem::separator(app)?,
+            &dnd_off,
+        ],
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let tray_menu = Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?;
 
     TrayIconBuilder::new()
         .icon(
@@ -725,15 +778,54 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         )
         .menu(&tray_menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+        .on_menu_event(|app, event| {
+            const MINUTE_MS: i64 = 60_000;
+            let now = matrix::dnd::now_ms();
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
+                "dnd_30m" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 30 * MINUTE_MS),
+                    },
+                ),
+                "dnd_1h" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 60 * MINUTE_MS),
+                    },
+                ),
+                "dnd_8h" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: Some(now + 8 * 60 * MINUTE_MS),
+                    },
+                ),
+                "dnd_indefinite" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: true,
+                        until: None,
+                    },
+                ),
+                "dnd_off" => matrix::dnd::apply(
+                    app,
+                    matrix::dnd::DndState {
+                        enabled: false,
+                        until: None,
+                    },
+                ),
+                "quit" => app.exit(0),
+                _ => {}
             }
-            "quit" => app.exit(0),
-            _ => {}
         })
         .build(app)?;
 
@@ -903,6 +995,7 @@ pub fn run() {
             if let Err(e) = sweep_result {
                 eprintln!("orphan temp-store sweep failed: {e}");
             }
+            matrix::dnd::init(&handle);
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
             // Spec 13: WebKitGTK's `permission-request` signal has no default
@@ -1041,6 +1134,8 @@ pub fn run() {
             matrix::account_data::set_account_data,
             matrix::account_data::get_local_onboarding_flag,
             matrix::account_data::set_local_onboarding_flag,
+            matrix::dnd::get_dnd_state,
+            matrix::dnd::set_dnd_state,
             push::register_push,
             push::unregister_push,
             push::get_push_status

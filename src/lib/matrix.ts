@@ -1,5 +1,6 @@
 import type { BadgeState } from "@bindings/BadgeState";
 import type { CommandResult } from "@bindings/CommandResult";
+import type { DndState } from "@bindings/DndState";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
 import type { DeviceSummary } from "@bindings/DeviceSummary";
 import type { DiscoverHomeserverResponse } from "@bindings/DiscoverHomeserverResponse";
@@ -286,6 +287,21 @@ export function getAutostart(): Promise<boolean> {
 
 export function setAutostart(enabled: boolean): Promise<void> {
   return invoke("set_autostart", { enabled });
+}
+
+/** Spec 30: current Do Not Disturb state, auto-cleared server-side if a timed period already expired. */
+export function getDndState(): Promise<DndState> {
+  return invoke("get_dnd_state");
+}
+
+/** Spec 30: sets DND state. Rust persists it and is the single source of truth — also settable from the tray menu, which emits `dnd:changed` on any change (including ones made here) so both surfaces stay in sync. */
+export function setDndState(enabled: boolean, until: number | null): Promise<DndState> {
+  return invoke("set_dnd_state", { enabled, until });
+}
+
+/** Fires whenever DND state changes, from either the Settings panel or the tray menu. */
+export function onDndChanged(callback: (state: DndState) => void): Promise<UnlistenFn> {
+  return listen<DndState>("dnd:changed", (e) => callback(e.payload));
 }
 
 export function onRoomListUpdate(callback: (rooms: RoomSummary[]) => void): Promise<UnlistenFn> {

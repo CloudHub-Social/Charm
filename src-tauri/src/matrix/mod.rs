@@ -4,6 +4,7 @@ pub mod actions;
 pub mod auth;
 pub mod commands;
 pub mod devices;
+pub mod dnd;
 pub mod ephemeral;
 pub mod media;
 pub mod members;
@@ -167,6 +168,12 @@ pub struct MatrixState {
     /// emit — lets `push::get_push_status` answer synchronously on settings
     /// panel mount without waiting for the next event.
     pub(crate) push_status: std::sync::Mutex<crate::push::PushStatus>,
+    /// Do Not Disturb state (Spec 30) — loaded from `focus.json` at startup
+    /// by `dnd::init` and mutated by both the Settings panel (`dnd::set_dnd_state`
+    /// command) and the tray menu's DND submenu, so both surfaces read the
+    /// same single source of truth. See `dnd`'s module doc comment for why
+    /// Rust (not the frontend) owns persistence here, unlike appearance.
+    pub(crate) dnd: std::sync::Mutex<dnd::DndState>,
 }
 
 impl Default for MatrixState {
@@ -193,6 +200,7 @@ impl Default for MatrixState {
             )),
             push_transport: std::sync::Mutex::default(),
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
+            dnd: std::sync::Mutex::default(),
         }
     }
 }
