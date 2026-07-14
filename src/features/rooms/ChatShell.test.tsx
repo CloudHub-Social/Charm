@@ -18,10 +18,11 @@ import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
 const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
-vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -289,6 +290,7 @@ describe("ChatShell", () => {
 
   beforeEach(() => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
+    mockUseFlag.mockReturnValue(true);
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
@@ -371,6 +373,20 @@ describe("ChatShell", () => {
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Room settings" }));
     expect(store.get(roomSettingsAtom)).toEqual({ roomId: otherRoom.room_id, section: "general" });
+  });
+
+  it("keeps the existing mobile chat UI when the redesign flag is disabled", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockReturnValue(false);
+
+    renderChatShell();
+
+    await screen.findByText("No messages yet");
+    expect(screen.queryByText("Send the first message to start the conversation.")).toBeNull();
+    expect(screen.getByPlaceholderText("Message general")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show formatting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to chats" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Room settings" })).toBeVisible();
   });
 
   it("disables Send while the composer is empty, and enables it once text is typed", async () => {
@@ -2524,6 +2540,7 @@ describe("ChatShell", () => {
   });
 
   it("shows a following-the-conversation bar that expands to list participants", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
     getRoomMembers.mockResolvedValueOnce([
       {
         user_id: "@alice:localhost",

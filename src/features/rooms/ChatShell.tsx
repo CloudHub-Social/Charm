@@ -19,6 +19,7 @@ import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
+import { useFlag } from "@/featureFlags";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -154,7 +155,8 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 
 export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
   const layout = useAdaptiveLayout();
-  const mobile = layout === "mobile";
+  const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
@@ -746,7 +748,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
         {(loading || (messages.length === 0 && hasMore && !paginationError)) && (
           <p className="p-4 text-sm text-muted-foreground">Loading…</p>
         )}
-        {!loading && messages.length === 0 && !hasMore && (
+        {!loading && messages.length === 0 && !hasMore && mobile && (
           <div className="flex flex-1 items-center justify-center px-6 text-center">
             <div className="flex max-w-xs flex-col items-center">
               <span className="mb-3 flex size-12 items-center justify-center rounded-full bg-secondary text-muted-foreground">
@@ -758,6 +760,9 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
               </p>
             </div>
           </div>
+        )}
+        {!loading && messages.length === 0 && !hasMore && !mobile && (
+          <p className="p-4 text-sm text-muted-foreground">No messages yet</p>
         )}
         {!loading && messages.length === 0 && hasMore && paginationError && (
           <p className="p-4 text-sm text-muted-foreground">Couldn't load messages</p>
@@ -958,7 +963,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
         </div>
       )}
 
-      {participants.length > 0 && (
+      {mobile && participants.length > 0 && (
         <button
           type="button"
           aria-expanded={followingExpanded}
@@ -1070,6 +1075,31 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
           </button>
         </div>
       </div>
+      {!mobile && participants.length > 0 && (
+        <button
+          type="button"
+          aria-expanded={followingExpanded}
+          onClick={() => setFollowingExpanded((expanded) => !expanded)}
+          className="w-full border-t border-border px-4 py-2 text-left text-xs text-muted-foreground hover:bg-accent/50"
+        >
+          {followingLabel(participants.map((p) => p.display_name ?? p.user_id))}
+          {followingExpanded && (
+            <div className="mt-1.5 flex flex-col gap-1">
+              {participants.map((p) => (
+                <span key={p.user_id} className="flex items-center gap-2 text-foreground">
+                  <span
+                    className="flex size-4 shrink-0 items-center justify-center rounded-full text-[7px] font-bold text-white"
+                    style={{ background: avatarColor(p.user_id) }}
+                  >
+                    {initials(p.user_id, p.display_name)}
+                  </span>
+                  {p.display_name ?? p.user_id}
+                </span>
+              ))}
+            </div>
+          )}
+        </button>
+      )}
       <MessagePillProfileDialog profile={pillProfile} onClose={() => setPillProfile(null)} />
     </div>
   );

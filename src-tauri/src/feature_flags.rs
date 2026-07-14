@@ -85,6 +85,9 @@ define_feature_flag_keys!(
         /// Spec 58 rich-message enhancements: linkification, syntax highlighting,
         /// tables, Matrix pills, room mentions, math, and jumbo emoji.
         RichMessageRendering,
+        /// Spec 52 mobile chat redesign: compact room header and composer,
+        /// in-header back navigation, and detail-view bottom-nav suppression.
+        MobileChatRedesign,
     }
 );
 
@@ -95,6 +98,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => false,
             FeatureFlagKey::RichMessageRendering => false,
+            FeatureFlagKey::MobileChatRedesign => false,
         }
     }
 
@@ -108,6 +112,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RichMessageRendering => {
                 "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji."
             }
+            FeatureFlagKey::MobileChatRedesign => {
+                "Use the compact mobile-first room header, composer, and chat navigation."
+            }
         }
     }
 
@@ -117,6 +124,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => "Spec 35 (feature-flag plumbing)",
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
+            FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
         }
     }
 
@@ -126,6 +134,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => "canary",
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
+            FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
         }
     }
 }

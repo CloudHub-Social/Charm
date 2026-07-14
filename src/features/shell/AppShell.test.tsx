@@ -1,14 +1,16 @@
 import { createElement, useState, type PropsWithChildren, type ReactNode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell, type MobileView } from "./AppShell";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 
 const mockUseAdaptiveLayout = vi.fn();
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 vi.mock("./useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 /** Mirrors how `RoomsScreen` owns `mobileView` and passes it down controlled. */
 function Harness({
@@ -62,6 +64,10 @@ function renderShell(
 }
 
 describe("AppShell", () => {
+  beforeEach(() => {
+    mockUseFlag.mockReturnValue(true);
+  });
+
   it("renders the sidebar layout (room list, content, right panel side by side) on desktop", () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     renderShell("!room:example.org", { rightPanel: <div>right-panel</div> });
@@ -90,6 +96,15 @@ describe("AppShell", () => {
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the existing bottom navigation in room detail when the redesign flag is disabled", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockReturnValue(false);
+    renderShell("!room:example.org");
+
+    expect(screen.getByText("chat-content")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
   });
 
   it("shows the right panel instead of chat content in mobile detail view when it's open", () => {

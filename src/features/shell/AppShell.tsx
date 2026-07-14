@@ -1,6 +1,7 @@
 import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
+import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
 export type MobileView = "list" | "detail";
@@ -49,6 +50,7 @@ export function AppShell({
   isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
+  const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
@@ -83,7 +85,7 @@ export function AppShell({
           </div>
         )}
       </div>
-      {(mobileView === "list" || !activeRoomId) && (
+      {(!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
         <nav
           className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
           aria-label="Primary"
