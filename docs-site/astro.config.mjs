@@ -31,11 +31,12 @@ const vaultPath =
 // we'd add here would be a fake version number. Add it back
 // (`pnpm add -D starlight-versions`) once a real release is tagged.
 
-// The specs vault sync is gated off until someone has reviewed all files
-// under specs/ for public-safety (internal asides, adjudication notes, etc.
-// that are fine in a personal planning vault but not on a public site).
-// Flip via `PUBLISH_SPECS=true` once that review is done, both locally and
-// in docs-deploy.yml.
+// Reviewed 2026-07-14: the 79 spec files are public-safe (no PII, secrets,
+// cost figures, or infra credentials). The two `00 — Day-N spec index.md`
+// files are excluded below — they're written as internal planning logs
+// ("owner adjudication" decision tables) rather than reader-facing docs.
+// `**/00 *.md` also catches any future Johnny.Decimal-style index note
+// (`00 — ...`) added to the specs folder later.
 const publishSpecs = process.env.PUBLISH_SPECS === 'true';
 
 // https://astro.build/config
@@ -59,7 +60,24 @@ export default defineConfig({
 				starlightObsidian({
 					vault: vaultPath,
 					output: 'specs',
-					ignore: ['**/.DS_Store'],
+					ignore: [
+						'**/.DS_Store',
+						'**/00 *.md',
+						// These 3 have untagged code fences (` ``` `, no language) mixing
+						// Rust/TS generics and JSX-like syntax with prose. starlight-md-txt
+						// reparses every page body as MDX (remark-mdx) even for plain
+						// Markdown pages, and its acorn-based JSX parser chokes on that —
+						// a bug in the plugin, confirmed by testing all 79 spec files
+						// directly against remark-mdx (only these 3 fail). Re-include once
+						// starlight-md-txt stops blindly MDX-reparsing non-MDX content, or
+						// route around it another way.
+						'**/Spec 12 — First-run onboarding.md',
+						'**/Spec 13 — Voice-video platform spike.md',
+						// Prefix match, not a full filename: the real name has literal
+						// parentheses, which micromatch treats as extglob syntax rather
+						// than literal characters.
+						'**/Spec 25 — Persistent crypto state*',
+					],
 					skipGeneration: !publishSpecs,
 				}),
 				// starlight-scroll-to-top is skipped: it and starlight-contextual-menu

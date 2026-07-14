@@ -1,9 +1,15 @@
 name: Docs deploy
 
 # Builds the Astro/Starlight docs site in docs-site/ and publishes it to
-# GitHub Pages on every push to main that touches the site. This is a
-# separate pnpm project from the root app (its own package.json/lockfile),
-# so it doesn't affect the main app's dependency graph or quality gate.
+# GitHub Pages. This is a separate pnpm project from the root app (its own
+# package.json/lockfile), so it doesn't affect the main app's dependency
+# graph or quality gate.
+#
+# The Charm 2.0 specs (docs-site's "Specs" section) live in a private vault
+# repo (Knowledge-Platform), not here — so a push-based trigger scoped to
+# this repo can't pick up spec-only edits. Runs on push to main (this
+# repo's docs changes), on a daily schedule (spec-only edits), and on
+# manual dispatch.
 
 on:
   push:
@@ -11,6 +17,8 @@ on:
     paths:
       - "docs-site/**"
       - ".github/workflows/docs-deploy.yml"
+  schedule:
+    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -29,6 +37,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Specs vault sync: read-only access to just the Charm 2.0 specs/
+      # subfolder of the private Knowledge-Platform repo, via a deploy key
+      # scoped to that repo only. Skipped entirely if the key isn't
+      # configured yet, so the site still builds (without the Specs
+      # section) before that one-time setup is done.
+      - name: Check out Charm 2.0 specs vault
+        if: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: CloudHub-Social/Knowledge-Platform
+          ssh-key: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY }}
+          sparse-checkout: |
+            10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
+          sparse-checkout-cone-mode: false
+          path: knowledge-platform-vault
+
+      # starlight-obsidian requires a `.obsidian/app.json` marker to treat a
+      # directory as a vault root. The sparse checkout above only pulls the
+      # specs/ subfolder, not the real vault's .obsidian/ at its root, so
+      # synthesize a minimal one here — its content isn't read for anything
+      # we rely on (see docs-site/astro.config.mjs).
+      - name: Mark specs checkout as a vault root
+        if: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian"
+          echo '{}' > "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian/app.json"
+
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: docs-site/package.json
@@ -45,6 +80,9 @@ jobs:
 
       - name: Build
         working-directory: docs-site
+        env:
+          PUBLISH_SPECS: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' && 'true' || 'false' }}
+          OBSIDIAN_VAULT_PATH: ${{ github.workspace }}/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
         run: pnpm build
 
       - uses: actions/configure-pages@v5
