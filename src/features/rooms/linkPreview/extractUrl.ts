@@ -40,7 +40,14 @@ function collectOrderedSearchText(node: Node, out: string[]): void {
   // preview fetch either. Skip the whole subtree rather than just this
   // element, since e.g. a `<pre><code>` wrapper nests both tags.
   if (el.tagName === "CODE" || el.tagName === "PRE") return;
-  if (el.tagName === "A" && el.hasAttribute("href") && !el.hasAttribute("data-mx-pill")) {
+  if (el.tagName === "A" && el.hasAttribute("data-mx-pill")) {
+    // A pill's visible label is a display name (e.g. "@alice"), not link
+    // text — skip its href (already excluded above) *and* its children, so
+    // a URL-looking display name can't be picked up as a preview candidate
+    // either. `RichMessageContent` never renders pill content as a link.
+    return;
+  }
+  if (el.tagName === "A" && el.hasAttribute("href")) {
     out.push(el.getAttribute("href") ?? "");
   }
   el.childNodes.forEach((child) => collectOrderedSearchText(child, out));
@@ -75,8 +82,10 @@ function collectOrderedSearchText(node: Node, out: string[]): void {
  * A Matrix pill (`<a data-mx-pill href="https://matrix.to/#/...">`,
  * `RichMessageContent`'s user/room mention chip) isn't a link the sender
  * meant to share — `RichMessageContent` itself renders it as a pill, not a
- * clickable external link — so its href is excluded from the search too;
- * otherwise an ordinary @mention would trigger an unfurl of a matrix.to URL.
+ * clickable external link — so both its href and its children (a display
+ * name, which could itself look URL-shaped) are excluded from the search;
+ * otherwise an ordinary @mention would trigger an unfurl of a matrix.to URL
+ * or a coincidentally URL-looking display name.
  *
  * The search walks the DOM in document order (text and non-pill anchor
  * hrefs interleaved as encountered) rather than searching all text then all

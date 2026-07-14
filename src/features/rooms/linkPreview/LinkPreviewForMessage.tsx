@@ -11,6 +11,12 @@ interface LinkPreviewForMessageProps {
   roomId: string;
   eventTsMs?: number | null;
   edited?: boolean;
+  /** Applied to a wrapping `<div>` around the card, but only when a card is
+   * actually rendered — a caller that needs layout spacing before the
+   * preview (e.g. IRC's single-line rows, which have no `flex-col` gap of
+   * their own to rely on) can't apply that spacing externally without also
+   * adding it for every message that has no preview to show at all. */
+  wrapperClassName?: string;
 }
 
 /**
@@ -61,6 +67,7 @@ export function LinkPreviewForMessage({
   roomId,
   eventTsMs,
   edited,
+  wrapperClassName,
 }: LinkPreviewForMessageProps) {
   const linkPreviewsEnabled = useFlag("link_previews");
   const url = linkPreviewsEnabled ? firstUrlInText(body, formattedBody) : null;
@@ -74,5 +81,6 @@ export function LinkPreviewForMessage({
   const isEncrypted = roomDetails?.is_encrypted ?? true;
 
   if (!url || isEncrypted) return null;
-  return <LinkPreviewCard roomId={roomId} url={url} eventTsMs={edited ? null : eventTsMs} />;
+  const card = <LinkPreviewCard roomId={roomId} url={url} eventTsMs={edited ? null : eventTsMs} />;
+  return wrapperClassName ? <div className={wrapperClassName}>{card}</div> : card;
 }

@@ -86,6 +86,15 @@ describe("firstUrlInText", () => {
     ).toBe("https://example.com");
   });
 
+  it("excludes a Matrix pill's display-name text even when it looks URL-shaped", () => {
+    expect(
+      firstUrlInText(
+        "hey @https://not-a-real-link.example",
+        '<a data-mx-pill href="https://matrix.to/#/@alice:example.org">https://not-a-real-link.example</a>',
+      ),
+    ).toBeNull();
+  });
+
   it("preserves document order: an earlier labeled link wins over a later bare URL", () => {
     expect(
       firstUrlInText(

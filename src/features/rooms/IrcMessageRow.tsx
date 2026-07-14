@@ -104,20 +104,22 @@ export function IrcMessageRow({
             )}
             {!message.media &&
               !isUndecrypted && (
-                // Explicit block wrapper: unlike Bubble/Discord's rows, IRC's
-                // parent content div has no `flex-col` of its own (it's a
-                // single inline run of `[HH:MM] <nick> body`), so nothing else
-                // guarantees the preview card lands on its own line below the
-                // message text rather than immediately after it.
-                <div className="mt-0.5">
-                  <LinkPreviewForMessage
-                    body={message.body}
-                    formattedBody={message.formatted_body}
-                    roomId={roomId}
-                    eventTsMs={message.timestamp_ms}
-                    edited={message.edited}
-                  />
-                </div>
+                // Unlike Bubble/Discord's rows, IRC's parent content div has
+                // no `flex-col` of its own (it's a single inline run of
+                // `[HH:MM] <nick> body`), so nothing else guarantees a
+                // rendered preview card lands on its own line below the
+                // message text. `wrapperClassName` applies that spacing only
+                // when a card actually renders — an unconditional wrapper div
+                // here would add the gap for every message, even ones with no
+                // preview to show (flag off, no URL, encrypted room, etc.).
+                <LinkPreviewForMessage
+                  body={message.body}
+                  formattedBody={message.formatted_body}
+                  roomId={roomId}
+                  eventTsMs={message.timestamp_ms}
+                  edited={message.edited}
+                  wrapperClassName="mt-0.5"
+                />
               )}
             {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
             {isError && <span className="ml-1 text-destructive">(failed to send)</span>}

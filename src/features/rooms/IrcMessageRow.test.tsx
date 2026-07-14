@@ -222,4 +222,20 @@ describe("IrcMessageRow", () => {
     const { container } = render(<IrcMessageRow {...baseProps({ isNew: false })} />);
     expect(container.firstChild).not.toHaveClass("animate-in");
   });
+
+  it("adds no extra spacing wrapper for a message with no URL to preview", () => {
+    const { container } = render(
+      <IrcMessageRow
+        {...baseProps({
+          message: makeMessageSummary({
+            event_id: "$1",
+            sender: "@bob:localhost",
+            sender_display_name: "Bob",
+            body: "no link here",
+          }),
+        })}
+      />,
+    );
+    expect(container.querySelector(".mt-0\\.5")).not.toBeInTheDocument();
+  });
 });
