@@ -332,13 +332,14 @@ export function RoomsScreen({
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
+    if (acceptedRoomPendingSelection) return; // let explicit post-accept navigation win
     const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
       if (autoSelectSuppressedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinedRooms, activeRoomId, deepLinkRoomId]);
+  }, [joinedRooms, activeRoomId, deepLinkRoomId, acceptedRoomPendingSelection]);
 
   const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;
   const selectedSpace =

@@ -415,6 +415,44 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
   });
 
+  it("keeps post-accept navigation ahead of the initial room fallback", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const fallback = room({ room_id: "!fallback:example.org" });
+    const joinedInvite = room({ room_id: invite.room_id, membership: "join" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([invite, fallback])
+      .mockResolvedValueOnce([fallback, joinedInvite]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `accept:${invite.room_id}` }));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+    expect(screen.queryByText(`chat-content:${fallback.room_id}`)).not.toBeInTheDocument();
+  });
+
   it("keeps a deep-linked space selected when declining an unrelated invite", async () => {
     const space = room({ room_id: "!space:example.org", is_space: true });
     const invite = room({
