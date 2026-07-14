@@ -17,6 +17,7 @@ on:
     paths:
       - "docs-site/**"
       - ".github/workflows/docs-deploy.yml"
+      - "CHANGELOG.md"
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:

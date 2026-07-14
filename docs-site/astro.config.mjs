@@ -76,8 +76,13 @@ function injectVaultSidebarLabels() {
 				const labelByStem = new Map();
 				for (const file of await walk(vaultPath)) {
 					const raw = await fs.readFile(file, 'utf8');
-					const match = raw.match(/^sidebar:\s*\n\s*label:\s*"([^"]+)"/m);
-					if (match) labelByStem.set(path.basename(file, '.md'), match[1]);
+					// Accepts double-quoted, single-quoted, or bare YAML scalars for
+					// the label value (our own generator script always double-quotes,
+					// but this shouldn't silently no-op if someone hand-edits a
+					// vault note's frontmatter with a different quoting style).
+					const match = raw.match(/^sidebar:\s*\n\s*label:\s*(?:"([^"]+)"|'([^']+)'|(\S.*))\s*$/m);
+					const label = match?.[1] ?? match?.[2] ?? match?.[3]?.trim();
+					if (label) labelByStem.set(path.basename(file, '.md'), label);
 				}
 				if (labelByStem.size === 0) return;
 
