@@ -1,7 +1,7 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
 import type { Store } from "@tauri-apps/plugin-store";
 import { FEATURE_FLAG_CATALOG } from "./catalog";
-import type { FeatureFlagOverrides } from "./resolve";
+import type { FeatureFlagOverrides, FeatureFlagRemote } from "./resolve";
 import { isTauri } from "@/lib/platform";
 
 /**
@@ -16,6 +16,10 @@ import { isTauri } from "@/lib/platform";
 export const FEATURE_FLAGS_STORE_FILENAME = "feature-flags.json";
 export const FEATURE_FLAGS_STORE_KEY = "featureFlags";
 export const FEATURE_FLAGS_LOCAL_STORAGE_KEY = "charm:featureFlags";
+// Remote (OFREP) last-known-good cache — a separate key so remote refreshes and
+// override writes never clobber each other in the shared file. Rust reads both.
+export const FEATURE_FLAGS_REMOTE_STORE_KEY = "featureFlagsRemote";
+export const FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY = "charm:featureFlagsRemote";
 
 interface OverridesState {
   overrides: FeatureFlagOverrides;
@@ -117,21 +121,27 @@ export async function readOverrides(): Promise<FeatureFlagOverrides> {
 let persistMutationId = 0;
 let durablePersistTail: Promise<void> = Promise.resolve();
 
-async function restoreUnsavedStoreValue(store: Store, previous: unknown): Promise<void> {
+async function restoreUnsavedStoreValue(
+  store: Store,
+  key: string,
+  previous: unknown,
+): Promise<void> {
   try {
-    // Prefer the file as the authority: save() may fail after partially
-    // updating the plugin's in-memory map, while reload() restores exactly
-    // what Rust and the next launch will read.
+    // Revert already-saved keys to their on-disk values.
     await store.reload();
-    return;
   } catch {
-    // If reload itself is unavailable, at least restore this key in memory.
+    // reload unavailable — the explicit per-key restore below still applies.
   }
+  // `reload()` MERGES the on-disk data into the in-memory map in Tauri; it does
+  // NOT drop a key that was `set()` in memory but never saved. So explicitly
+  // restore *this* key to its pre-write value (deleting it if it had none on
+  // disk), or a later successful `save()` would flush the unsaved change we're
+  // rolling back.
   try {
     if (previous === undefined) {
-      await store.delete(FEATURE_FLAGS_STORE_KEY);
+      await store.delete(key);
     } else {
-      await store.set(FEATURE_FLAGS_STORE_KEY, previous);
+      await store.set(key, previous);
     }
   } catch {
     // Preserve the original persistence error for the caller.
@@ -158,13 +168,13 @@ export async function persistOverrides(
     const previous = await store.get<unknown>(FEATURE_FLAGS_STORE_KEY);
     await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
     if (mutationId !== persistMutationId) {
-      await restoreUnsavedStoreValue(store, previous);
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_STORE_KEY, previous);
       return false;
     }
     try {
       await store.save();
     } catch (error) {
-      await restoreUnsavedStoreValue(store, previous);
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_STORE_KEY, previous);
       throw error;
     }
     // Once save starts, this envelope may have reached disk even if a newer
@@ -187,5 +197,142 @@ export async function persistOverrides(
       // remains the source Rust reads.
     }
   }
+  return persisted;
+}
+
+// --- Remote (OFREP) last-known-good cache -----------------------------------
+
+interface RemoteEnvelope {
+  state: { remote: FeatureFlagRemote };
+  updatedAt: number;
+  /** The install id (OFREP targeting key) these evaluations were computed for.
+   * A cache whose id doesn't match the current install is a different cohort. */
+  installId?: string;
+}
+
+function normalizeRemote(value: unknown): FeatureFlagRemote {
+  if (typeof value !== "object" || value === null) return {};
+  const source = (value as { remote?: unknown }).remote ?? value;
+  if (typeof source !== "object" || source === null) return {};
+  const result: FeatureFlagRemote = {};
+  for (const [key, raw] of Object.entries(source as Record<string, unknown>)) {
+    if (typeof raw === "boolean" && isKnownFlagKey(key)) {
+      result[key] = raw;
+    }
+  }
+  return result;
+}
+
+function remoteEnvelopeFromUnknown(value: unknown): RemoteEnvelope | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as { state?: unknown; updatedAt?: unknown; installId?: unknown };
+  const installId = typeof record.installId === "string" ? record.installId : undefined;
+  if (record.state !== undefined) {
+    return {
+      state: { remote: normalizeRemote(record.state) },
+      updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+      installId,
+    };
+  }
+  return { state: { remote: normalizeRemote(value) }, updatedAt: 0, installId };
+}
+
+function readLocalRemoteEnvelope(): RemoteEnvelope | null {
+  try {
+    const raw = localStorage.getItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY);
+    return raw ? remoteEnvelopeFromUnknown(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readStoreRemoteEnvelope(): Promise<RemoteEnvelope | null> {
+  try {
+    const store = await getStore();
+    if (!store) return null;
+    return remoteEnvelopeFromUnknown(await store.get<unknown>(FEATURE_FLAGS_REMOTE_STORE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+export interface CachedRemoteFlags {
+  remote: FeatureFlagRemote;
+  /** The install id the cached values were computed for (undefined for a
+   * legacy cache written before the id was recorded). */
+  installId?: string;
+}
+
+/** Reads the cached last-known-good remote evaluations (fail-open source). */
+export async function readRemoteFlags(): Promise<CachedRemoteFlags> {
+  const [store, local] = await Promise.all([
+    readStoreRemoteEnvelope(),
+    Promise.resolve(readLocalRemoteEnvelope()),
+  ]);
+  const envelope =
+    store && local ? (store.updatedAt >= local.updatedAt ? store : local) : (store ?? local);
+  return { remote: envelope?.state.remote ?? {}, installId: envelope?.installId };
+}
+
+/**
+ * Persists a fresh remote snapshot. Returns whether the durable write reached
+ * disk (always `true` on the web path, where `localStorage` is the store the
+ * caller reads back). Routed through the **same** `durablePersistTail` queue as
+ * `persistOverrides` so a remote refresh's `set`+`save` can never interleave
+ * with an override's — the plugin store flushes the whole file on `save()`, so
+ * an unserialized remote save could prematurely persist an in-flight override
+ * and break its rollback. On failure the previous durable cache stands
+ * (fail-open); the caller only applies the new values to the UI once this
+ * returns `true`, keeping the frontend consistent with what Rust reads.
+ */
+export async function persistRemoteFlags(
+  remote: FeatureFlagRemote,
+  installId?: string,
+  updatedAt: number = Date.now(),
+): Promise<boolean> {
+  const envelope: RemoteEnvelope = { state: { remote }, updatedAt, installId };
+  const writeMirror = () => {
+    try {
+      localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
+    } catch {
+      // Best-effort mirror.
+    }
+  };
+  if (!isTauri()) {
+    // No native store here — localStorage is the durable location.
+    writeMirror();
+    return true;
+  }
+
+  const task = durablePersistTail.then(async () => {
+    const store = await getStore();
+    if (!store) return false;
+    // Roll back on save failure so a stale remote value left in the shared
+    // in-memory map isn't flushed to disk by a later persistOverrides save().
+    const previous = await store.get<unknown>(FEATURE_FLAGS_REMOTE_STORE_KEY);
+    await store.set(FEATURE_FLAGS_REMOTE_STORE_KEY, envelope);
+    try {
+      await store.save();
+    } catch (error) {
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_REMOTE_STORE_KEY, previous);
+      throw error;
+    }
+    return true;
+  });
+  durablePersistTail = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  let persisted = false;
+  try {
+    persisted = await task;
+  } catch {
+    // Keep the previous durable cache; Rust and the next launch fall back to it.
+    persisted = false;
+  }
+  // Mirror only after the durable write lands — otherwise a failed save would
+  // leave a newer-timestamped localStorage entry that `readRemoteFlags` prefers
+  // on the next launch, diverging from the file the Rust core reads.
+  if (persisted) writeMirror();
   return persisted;
 }

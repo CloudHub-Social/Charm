@@ -172,7 +172,9 @@ describe("feature-flag client", () => {
     await mod.initializeFeatureFlags();
     await expect(mod.setFeatureFlagOverride("canary", false)).rejects.toThrow("offline");
 
-    expect(get).toHaveBeenCalledTimes(2);
+    // init reads overrides + the remote cache (2), then the failed persist reads
+    // the previous value before its rollback (1).
+    expect(get).toHaveBeenCalledTimes(3);
     expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
     expect(mod.getFlag("canary")).toBe(true);
   });
