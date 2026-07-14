@@ -124,10 +124,10 @@ if (process.env.GITHUB_ACTIONS && process.env.CI) {
 const target = TARGETS[`${process.platform}-${process.arch}`];
 if (!target) {
   const supported = Object.keys(TARGETS).join(", ");
-  logger.error(
-    `${dim("Unsupported platform: ")}${red(`${process.platform}-${process.arch}`)}${dim(". Supported targets: ")}${supported}`,
+  logger.info(
+    `${dim("Unsupported platform: ")}${red(`${process.platform}-${process.arch}`)}${dim(". Supported targets: ")}${supported}${dim(". Skipping knope install — everything else will still work; `pnpm run document-change`/`knope` won't be available locally.")}`,
   );
-  process.exit(1);
+  process.exit(0);
 }
 
 const bin = join(
