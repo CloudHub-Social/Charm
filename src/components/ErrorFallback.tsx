@@ -37,7 +37,7 @@ export function ErrorFallback({
   };
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-center">
+    <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 bg-background p-6 text-center">
       <h1 className="text-lg font-semibold text-foreground">Something went wrong</h1>
       <p className="max-w-sm text-sm text-muted-foreground">
         Charm hit an unexpected error and couldn&apos;t continue. Your conversations are safe on the

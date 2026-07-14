@@ -45,7 +45,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
     <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
       <DialogContent
         showCloseButton={false}
-        className="flex h-full max-h-full w-full max-w-full flex-col gap-0 rounded-none p-0 sm:h-[600px] sm:max-h-[85vh] sm:max-w-3xl sm:rounded-lg"
+        className="flex h-full max-h-full w-full max-w-full flex-col gap-0 rounded-none p-0 sm:h-[600px] sm:max-h-[85dvh] sm:max-w-3xl sm:rounded-lg"
       >
         <DialogTitle className="sr-only">Room settings</DialogTitle>
 

@@ -19,7 +19,7 @@ export function MembersDrawer({ roomId, currentUserId, onClose }: MembersDrawerP
   const { data: details, isLoading, isError } = useRoomDetails(roomId);
 
   return (
-    <div className="flex w-80 shrink-0 flex-col border-l border-border bg-card">
+    <div className="flex w-full shrink-0 flex-col border-l border-border bg-card md:w-80">
       <div className="flex items-center justify-between border-b border-border p-4">
         <h2 className="text-[15px] font-bold text-foreground">Members</h2>
         <button

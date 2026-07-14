@@ -194,7 +194,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
   return (
     <Dialog open onOpenChange={(open) => !open && closeSettings()}>
       <DialogContent
-        className="flex h-[36rem] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className="flex h-[36rem] max-h-[85dvh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>

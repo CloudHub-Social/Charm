@@ -50,7 +50,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
   }, []);
 
   if (restoring) {
-    return <div className="flex min-h-screen items-center justify-center bg-background" />;
+    return <div className="flex min-h-[100dvh] items-center justify-center bg-background" />;
   }
 
   if (!session) {
@@ -62,7 +62,7 @@ function App({ onLoggedOut, showCrashRecoveryPrompt = false }: AppProps) {
     // `listRooms()`/mount its listeners only to immediately unmount once the
     // gate resolves to "pending" — a flicker plus wasted IPC calls on every
     // login, not just new accounts.
-    return <div className="flex min-h-screen items-center justify-center bg-background" />;
+    return <div className="flex min-h-[100dvh] items-center justify-center bg-background" />;
   }
 
   if (onboarding.status === "pending") {
