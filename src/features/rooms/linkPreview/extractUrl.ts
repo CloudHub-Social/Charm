@@ -18,6 +18,28 @@ function firstHttpUrl(text: string): string | null {
 }
 
 /**
+ * Walks `node`'s subtree in document order, pushing plain text as
+ * encountered and, for a non-pill anchor, its `href` right at the anchor's
+ * own position (before descending into the anchor's link-text children) —
+ * so a later `push` call always corresponds to later content, keeping
+ * "first URL" meaningful once search candidates come from more than one
+ * kind of node (plain text and hrefs interleaved).
+ */
+function collectOrderedSearchText(node: Node, out: string[]): void {
+  if (node.nodeType === Node.TEXT_NODE) {
+    out.push(node.textContent ?? "");
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+  const el = node as Element;
+  if (el.tagName === "A" && el.hasAttribute("href") && !el.hasAttribute("data-mx-pill")) {
+    out.push(el.getAttribute("href") ?? "");
+  }
+  el.childNodes.forEach((child) => collectOrderedSearchText(child, out));
+}
+
+/**
  * Returns the first http(s) URL found in a message, preferring
  * `formattedBody` over the plain-text `body` fallback when both are
  * available, or `null` if none. Charm 1.0 parity: only the first URL in a
@@ -40,20 +62,26 @@ function firstHttpUrl(text: string): string | null {
  * that would unfurl (and thus reveal, via the resulting title/thumbnail)
  * spoilered content the sender explicitly hid pending the reader's
  * deliberate reveal click. So when `formattedBody` is present, the URL
- * search runs against its sanitized text content with spoiler nodes
- * stripped first, rather than against `body`.
+ * search runs against its sanitized content with spoiler nodes stripped
+ * first, rather than against `body`.
+ *
+ * A Matrix pill (`<a data-mx-pill href="https://matrix.to/#/...">`,
+ * `RichMessageContent`'s user/room mention chip) isn't a link the sender
+ * meant to share — `RichMessageContent` itself renders it as a pill, not a
+ * clickable external link — so its href is excluded from the search too;
+ * otherwise an ordinary @mention would trigger an unfurl of a matrix.to URL.
+ *
+ * The search walks the DOM in document order (text and non-pill anchor
+ * hrefs interleaved as encountered) rather than searching all text then all
+ * hrefs, so a bare URL that appears later in the message can't jump ahead
+ * of an earlier labeled link.
  */
 export function firstUrlInText(body: string, formattedBody?: string | null): string | null {
   if (!formattedBody) return firstHttpUrl(body);
 
   const doc = new DOMParser().parseFromString(sanitizeMatrixHtml(formattedBody), "text/html");
   doc.querySelectorAll("[data-mx-spoiler]").forEach((node) => node.remove());
-  // Search both the remaining visible text and any surviving `<a href>`
-  // targets — a link's href doesn't have to equal its link text (e.g. a
-  // pill-styled permalink, or `[label](url)`-style markdown rendering), so
-  // textContent alone would miss it.
-  const hrefs = Array.from(doc.querySelectorAll("a[href]"))
-    .map((a) => a.getAttribute("href"))
-    .filter((href): href is string => href !== null);
-  return firstHttpUrl([doc.body.textContent ?? "", ...hrefs].join(" "));
+  const parts: string[] = [];
+  collectOrderedSearchText(doc.body, parts);
+  return firstHttpUrl(parts.join(" "));
 }

@@ -67,4 +67,31 @@ describe("firstUrlInText", () => {
     expect(firstUrlInText("https://example.com", null)).toBe("https://example.com");
     expect(firstUrlInText("https://example.com", undefined)).toBe("https://example.com");
   });
+
+  it("excludes a Matrix pill's matrix.to href from preview candidates", () => {
+    expect(
+      firstUrlInText(
+        "hey @alice",
+        '<a data-mx-pill href="https://matrix.to/#/@alice:example.org">Alice</a>',
+      ),
+    ).toBeNull();
+  });
+
+  it("still finds a real link alongside an unrelated Matrix pill mention", () => {
+    expect(
+      firstUrlInText(
+        "hey @alice check https://example.com",
+        '<a data-mx-pill href="https://matrix.to/#/@alice:example.org">Alice</a> check <a href="https://example.com">this</a>',
+      ),
+    ).toBe("https://example.com");
+  });
+
+  it("preserves document order: an earlier labeled link wins over a later bare URL", () => {
+    expect(
+      firstUrlInText(
+        "https://second.example and https://first.example",
+        '<a href="https://first.example">label</a> ... https://second.example',
+      ),
+    ).toBe("https://first.example");
+  });
 });
