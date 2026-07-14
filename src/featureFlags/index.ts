@@ -52,15 +52,26 @@ export async function initializeFeatureFlags(): Promise<void> {
   // cache was computed for the *current* install id. A removed endpoint makes
   // the layer inert; a mismatched id means a different percentage-rollout cohort
   // (e.g. localStorage cleared → new install id while feature-flags.json
-  // survived). In either case clear the durable cache too, so the Rust core
-  // (which reads the file regardless of JS config or id) also ignores it until a
-  // fresh refresh lands.
-  const currentInstallId = getInstallId();
-  if (isRemoteConfigured() && cachedRemote.installId === currentInstallId) {
-    remoteCache = cachedRemote.remote;
+  // survived). In either case clear the durable cache — and `await` it — so the
+  // Rust core (which reads the file regardless of JS config or id) is reconciled
+  // before app boot reaches native-gated code, rather than racing a
+  // fire-and-forget clear. (If that durable write itself fails, both sides
+  // fall open to the last-known cache, as documented.)
+  const hasCachedRemote = Object.keys(cachedRemote.remote).length > 0;
+  if (isRemoteConfigured()) {
+    // Only mint/read the install id when a remote endpoint exists — otherwise a
+    // build that never makes an OFREP request would still get a durable
+    // per-install identifier (see PRIVACY.md).
+    const currentInstallId = getInstallId();
+    if (cachedRemote.installId === currentInstallId) {
+      remoteCache = cachedRemote.remote;
+    } else {
+      remoteCache = {};
+      if (hasCachedRemote) await persistRemoteFlags({}, currentInstallId);
+    }
   } else {
     remoteCache = {};
-    if (Object.keys(cachedRemote.remote).length > 0) void persistRemoteFlags({}, currentInstallId);
+    if (hasCachedRemote) await persistRemoteFlags({});
   }
   if (mutationId === cacheMutationId) {
     overridesCache = persistedOverrides;

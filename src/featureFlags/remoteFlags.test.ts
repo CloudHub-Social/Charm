@@ -127,6 +127,14 @@ describe("remote cache when no endpoint is configured", () => {
       JSON.parse(localStorage.getItem("charm:featureFlagsRemote") ?? "{}").state.remote,
     ).toEqual({});
   });
+
+  it("does not mint a durable install id when no endpoint is configured", async () => {
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "");
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    // No OFREP request can happen, so no per-install identifier should exist.
+    expect(localStorage.getItem("charm:featureFlagsInstallId")).toBeNull();
+  });
 });
 
 describe("remote cache install-id binding", () => {

@@ -287,7 +287,7 @@ export async function readRemoteFlags(): Promise<CachedRemoteFlags> {
  */
 export async function persistRemoteFlags(
   remote: FeatureFlagRemote,
-  installId: string,
+  installId?: string,
   updatedAt: number = Date.now(),
 ): Promise<boolean> {
   const envelope: RemoteEnvelope = { state: { remote }, updatedAt, installId };
