@@ -125,6 +125,34 @@ describe("remote cache when no endpoint is configured", () => {
   });
 });
 
+describe("remote cache install-id binding", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("ignores a cached cohort computed for a different install id", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    // Cache says canary on, but was computed for a different install id (e.g.
+    // localStorage install id was cleared/rotated while the file survived).
+    localStorage.setItem(
+      "charm:featureFlagsRemote",
+      JSON.stringify({
+        state: { remote: { canary: true } },
+        updatedAt: 5,
+        installId: "old-install",
+      }),
+    );
+    localStorage.setItem("charm:featureFlagsInstallId", "new-install");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    // Mismatched cohort must not apply — falls through to the catalog default.
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+});
+
 describe("initializeFeatureFlags", () => {
   afterEach(() => {
     vi.useRealTimers();

@@ -44,18 +44,23 @@ function subscribe(listener: () => void): () => void {
  */
 export async function initializeFeatureFlags(): Promise<void> {
   const mutationId = cacheMutationId;
-  const [persistedOverrides, remote] = await Promise.all([readOverrides(), readRemoteFlags()]);
-  // Remote is an independent cache — apply it regardless of an override change
-  // that raced this load. But only when an endpoint is configured: if the
-  // endpoint was removed, the remote layer must be inert, so drop any stale
-  // cache and clear it from the durable file too (the Rust core reads that file
-  // regardless of JS config, so leaving stale values there would keep a
-  // rolled-out flag on indefinitely).
-  if (isRemoteConfigured()) {
-    remoteCache = remote;
+  const [persistedOverrides, cachedRemote] = await Promise.all([
+    readOverrides(),
+    readRemoteFlags(),
+  ]);
+  // Apply the cached remote only when (a) an endpoint is configured and (b) the
+  // cache was computed for the *current* install id. A removed endpoint makes
+  // the layer inert; a mismatched id means a different percentage-rollout cohort
+  // (e.g. localStorage cleared → new install id while feature-flags.json
+  // survived). In either case clear the durable cache too, so the Rust core
+  // (which reads the file regardless of JS config or id) also ignores it until a
+  // fresh refresh lands.
+  const currentInstallId = getInstallId();
+  if (isRemoteConfigured() && cachedRemote.installId === currentInstallId) {
+    remoteCache = cachedRemote.remote;
   } else {
     remoteCache = {};
-    if (Object.keys(remote).length > 0) void persistRemoteFlags({});
+    if (Object.keys(cachedRemote.remote).length > 0) void persistRemoteFlags({}, currentInstallId);
   }
   if (mutationId === cacheMutationId) {
     overridesCache = persistedOverrides;
@@ -149,9 +154,9 @@ let refreshInFlight = false;
 /**
  * Fetches the latest remote evaluations and applies them. Fail-open: on any
  * failure the previous cache stands, so a kill-switch/rollout only ever moves
- * forward from the last successful fetch. Single-writer (guarded so overlapping
- * ticks don't race), which is why {@link persistRemoteFlags} can skip the
- * override path's rollback machinery.
+ * forward from the last successful fetch. Guarded so overlapping ticks don't
+ * race; the durable write is serialized (and rolled back on failure) with
+ * override writes inside {@link persistRemoteFlags}.
  */
 export async function refreshRemoteFlags(): Promise<void> {
   if (!isRemoteConfigured() || refreshInFlight) return;
@@ -163,7 +168,7 @@ export async function refreshRemoteFlags(): Promise<void> {
       // frontend never enables a rolled-out feature that the Rust core (which
       // reads only that file) hasn't seen yet. If the durable write fails, keep
       // the previous cache; the next tick retries.
-      if (await persistRemoteFlags(result)) {
+      if (await persistRemoteFlags(result, getInstallId())) {
         remoteCache = result;
         emit();
       }

@@ -203,6 +203,9 @@ export async function persistOverrides(
 interface RemoteEnvelope {
   state: { remote: FeatureFlagRemote };
   updatedAt: number;
+  /** The install id (OFREP targeting key) these evaluations were computed for.
+   * A cache whose id doesn't match the current install is a different cohort. */
+  installId?: string;
 }
 
 function normalizeRemote(value: unknown): FeatureFlagRemote {
@@ -220,14 +223,16 @@ function normalizeRemote(value: unknown): FeatureFlagRemote {
 
 function remoteEnvelopeFromUnknown(value: unknown): RemoteEnvelope | null {
   if (typeof value !== "object" || value === null) return null;
-  const record = value as { state?: unknown; updatedAt?: unknown };
+  const record = value as { state?: unknown; updatedAt?: unknown; installId?: unknown };
+  const installId = typeof record.installId === "string" ? record.installId : undefined;
   if (record.state !== undefined) {
     return {
       state: { remote: normalizeRemote(record.state) },
       updatedAt: typeof record.updatedAt === "number" ? record.updatedAt : 0,
+      installId,
     };
   }
-  return { state: { remote: normalizeRemote(value) }, updatedAt: 0 };
+  return { state: { remote: normalizeRemote(value) }, updatedAt: 0, installId };
 }
 
 function readLocalRemoteEnvelope(): RemoteEnvelope | null {
@@ -249,15 +254,22 @@ async function readStoreRemoteEnvelope(): Promise<RemoteEnvelope | null> {
   }
 }
 
+export interface CachedRemoteFlags {
+  remote: FeatureFlagRemote;
+  /** The install id the cached values were computed for (undefined for a
+   * legacy cache written before the id was recorded). */
+  installId?: string;
+}
+
 /** Reads the cached last-known-good remote evaluations (fail-open source). */
-export async function readRemoteFlags(): Promise<FeatureFlagRemote> {
+export async function readRemoteFlags(): Promise<CachedRemoteFlags> {
   const [store, local] = await Promise.all([
     readStoreRemoteEnvelope(),
     Promise.resolve(readLocalRemoteEnvelope()),
   ]);
   const envelope =
     store && local ? (store.updatedAt >= local.updatedAt ? store : local) : (store ?? local);
-  return envelope?.state.remote ?? {};
+  return { remote: envelope?.state.remote ?? {}, installId: envelope?.installId };
 }
 
 /**
@@ -273,9 +285,10 @@ export async function readRemoteFlags(): Promise<FeatureFlagRemote> {
  */
 export async function persistRemoteFlags(
   remote: FeatureFlagRemote,
+  installId: string,
   updatedAt: number = Date.now(),
 ): Promise<boolean> {
-  const envelope: RemoteEnvelope = { state: { remote }, updatedAt };
+  const envelope: RemoteEnvelope = { state: { remote }, updatedAt, installId };
   const writeMirror = () => {
     try {
       localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
