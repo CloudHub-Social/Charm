@@ -34,6 +34,13 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    # Step-level `if:` conditions can't reference the `secrets` context
+    # directly (GitHub Actions rejects the workflow at parse time — a
+    # `secrets.X != ''` in an `if:` fails with "Unrecognized named-value:
+    # 'secrets'"). Route it through a job-level env var instead, which
+    # secrets *can* populate, and check that in the `if:` conditions below.
+    env:
+      HAS_SPECS_KEY: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,7 +50,7 @@ jobs:
       # configured yet, so the site still builds (without the Specs
       # section) before that one-time setup is done.
       - name: Check out Charm 2.0 specs vault
-        if: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
+        if: ${{ env.HAS_SPECS_KEY == 'true' }}
         uses: actions/checkout@v4
         with:
           repository: CloudHub-Social/Knowledge-Platform
@@ -59,7 +66,7 @@ jobs:
       # synthesize a minimal one here — its content isn't read for anything
       # we rely on (see docs-site/astro.config.mjs).
       - name: Mark specs checkout as a vault root
-        if: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
+        if: ${{ env.HAS_SPECS_KEY == 'true' }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian"
           echo '{}' > "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian/app.json"
@@ -81,7 +88,7 @@ jobs:
       - name: Build
         working-directory: docs-site
         env:
-          PUBLISH_SPECS: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' && 'true' || 'false' }}
+          PUBLISH_SPECS: ${{ env.HAS_SPECS_KEY }}
           OBSIDIAN_VAULT_PATH: ${{ github.workspace }}/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
         run: pnpm build
 
