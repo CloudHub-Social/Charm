@@ -52,6 +52,7 @@ export function useFocusMode() {
   // A tray event must supersede any Settings IPC confirmation still in
   // flight, just as a newer Settings request supersedes an older one.
   const latestRequestId = useRef(0);
+  const latestObservedRevision = useRef(0);
   // The next Rust revision a queued Settings action expects. Tray events
   // advance this immediately; an older queued IPC then fails its compare in
   // Rust instead of overwriting the newer tray transition.
@@ -64,8 +65,10 @@ export function useFocusMode() {
   useEffect(() => {
     if (!inTauri) return undefined;
     const unlistenPromise = onDndChanged((state) => {
+      if (state.revision < latestObservedRevision.current) return;
+      latestObservedRevision.current = state.revision;
       latestRequestId.current += 1;
-      nextExpectedRevision.current = state.revision;
+      nextExpectedRevision.current = Math.max(nextExpectedRevision.current, state.revision);
       queryClient.setQueryData(DND_QUERY_KEY, state);
     });
     return () => {
@@ -78,6 +81,7 @@ export function useFocusMode() {
 
   useEffect(() => {
     if (data?.revision != null) {
+      latestObservedRevision.current = Math.max(latestObservedRevision.current, data.revision);
       nextExpectedRevision.current = Math.max(nextExpectedRevision.current, data.revision);
     }
   }, [data?.revision]);

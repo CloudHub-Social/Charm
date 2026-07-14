@@ -91,6 +91,20 @@ describe("useFocusMode", () => {
     await waitFor(() => expect(result.current.enabled).toBe(true));
   });
 
+  it("ignores an out-of-order event and keeps the next expected revision monotonic", async () => {
+    const { result } = renderHook(() => useFocusMode(), { wrapper });
+    await waitFor(() => expect(dndChangedListener).not.toBeNull());
+
+    act(() => dndChangedListener?.({ enabled: true, until: null, revision: 2 }));
+    await waitFor(() => expect(result.current.enabled).toBe(true));
+
+    act(() => dndChangedListener?.({ enabled: false, until: null, revision: 1 }));
+    expect(result.current.enabled).toBe(true);
+
+    act(() => result.current.disable());
+    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(false, null, 2));
+  });
+
   it("re-queries state once a timed DND's `until` passes, without waiting for an unrelated refetch", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

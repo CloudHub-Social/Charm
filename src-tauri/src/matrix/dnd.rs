@@ -191,11 +191,15 @@ pub fn apply(app: &AppHandle, next: DndState) {
     let changed = {
         let matrix_state = app.state::<MatrixState>();
         let mut current = matrix_state.dnd.lock().unwrap_or_else(|e| e.into_inner());
-        transition(&mut current, next, None).expect("unconditional DND transition")
+        let changed = transition(&mut current, next, None).expect("unconditional DND transition");
+        // Keep persistence in the same critical section as the revision/state
+        // transition. Otherwise rev1 could unlock, rev2 could persist, and
+        // then rev1 could write last even though rev2 is the live state.
+        if let Ok(dir) = app.path().app_data_dir() {
+            write_persisted_at(&dir, next);
+        }
+        changed
     };
-    if let Ok(dir) = app.path().app_data_dir() {
-        write_persisted_at(&dir, next);
-    }
     let _ = app.emit("dnd:changed", changed);
 }
 
@@ -254,14 +258,17 @@ pub fn set_dnd_state(
     let changed = {
         let matrix_state = app.state::<MatrixState>();
         let mut current = matrix_state.dnd.lock().unwrap_or_else(|e| e.into_inner());
-        match transition(&mut current, next, Some(expected_revision)) {
+        let changed = match transition(&mut current, next, Some(expected_revision)) {
             Some(changed) => changed,
             None => return snapshot(*current),
+        };
+        // Serialize the disk write with the accepted revision for the same
+        // reason as the tray path in `apply` above.
+        if let Ok(dir) = app.path().app_data_dir() {
+            write_persisted_at(&dir, next);
         }
+        changed
     };
-    if let Ok(dir) = app.path().app_data_dir() {
-        write_persisted_at(&dir, next);
-    }
     let _ = app.emit("dnd:changed", changed);
     changed
 }
