@@ -41,7 +41,21 @@ jobs:
           ref: main
           token: ${{ secrets.FEATURE_DOCS_TOKEN || github.token }}
 
+      - name: Ensure snapshot run matches current main
+        id: alignment
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$(git rev-parse HEAD)" = "$RUN_HEAD_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping stale snapshot run ${SNAPSHOT_RUN_ID}; main has advanced past ${RUN_HEAD_SHA}."
+          fi
+
       - name: Download E2E snapshots
+        if: steps.alignment.outputs.current == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
@@ -51,9 +65,11 @@ jobs:
           merge-multiple: true
 
       - name: Refresh curated screenshots
+        if: steps.alignment.outputs.current == 'true'
         run: node scripts/sync-feature-docs.mjs --write
 
       - name: Detect drift
+        if: steps.alignment.outputs.current == 'true'
         id: drift
         run: |
           if git diff --quiet -- docs-site/public/features; then
@@ -96,6 +112,7 @@ jobs:
             echo "### Feature docs refresh"
             echo
             echo "- Snapshot run: ${SNAPSHOT_RUN_ID}"
+            echo "- Matches current main: ${{ steps.alignment.outputs.current }}"
             echo "- Screenshot drift: ${{ steps.drift.outputs.changed || 'unknown' }}"
             if [ "${{ steps.drift.outputs.changed }}" = "true" ] && [ -z "${FEATURE_DOCS_TOKEN:-}" ]; then
               echo "- A candidate artifact was uploaded, but no PR was opened because FEATURE_DOCS_TOKEN is not configured."

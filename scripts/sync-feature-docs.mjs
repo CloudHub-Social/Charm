@@ -8,7 +8,12 @@ const mode = args.includes("--write") ? "write" : args.includes("--check") ? "ch
 
 function option(name, fallback) {
   const index = args.indexOf(name);
-  return index === -1 ? fallback : path.resolve(repoRoot, args[index + 1]);
+  if (index === -1) return fallback;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${name} requires a path value`);
+  }
+  return path.resolve(repoRoot, value);
 }
 
 const manifestPath = option(
