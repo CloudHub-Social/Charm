@@ -97,6 +97,9 @@ export function installMockTauri(seed: {
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
     ...seed.room,
   };
   const defaultRoomShape = {
@@ -115,6 +118,9 @@ export function installMockTauri(seed: {
     avatar_url: null,
     avatar_path: null,
     dm_peer_user_id: null,
+    membership: "join",
+    inviter_user_id: null,
+    inviter_display_name: null,
   };
   const extraRooms: Record<string, unknown>[] = (seed.extraRooms ?? []).map((extra) => {
     const merged = { ...defaultRoomShape, ...extra };
@@ -486,6 +492,24 @@ export function installMockTauri(seed: {
       messagesByRoom.set(roomId, []);
       pushRoomListUpdate();
       return { room_id: roomId, is_space: true };
+    },
+    accept_invite: (args) => {
+      const target = findRoom(args.roomId as string);
+      if (!target || target.membership !== "invite") throw new Error("invite not found");
+      target.membership = "join";
+      target.inviter_user_id = null;
+      target.inviter_display_name = null;
+      pushRoomListUpdate();
+      return undefined;
+    },
+    decline_invite: (args) => {
+      const index = allRooms.findIndex((candidate) => candidate.room_id === args.roomId);
+      if (index === -1 || allRooms[index]?.membership !== "invite") {
+        throw new Error("invite not found");
+      }
+      allRooms.splice(index, 1);
+      pushRoomListUpdate();
+      return undefined;
     },
     knock_room: () => undefined,
 

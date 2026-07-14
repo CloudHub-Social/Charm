@@ -233,6 +233,7 @@ export function NotificationsPanel() {
     queryKey: ["rooms", "notifications-panel"],
     queryFn: listRooms,
   });
+  const joinedRooms = (rooms ?? []).filter((room) => room.membership === "join");
 
   return (
     <div className="max-w-lg space-y-6">
@@ -292,7 +293,7 @@ export function NotificationsPanel() {
       </SettingsCard>
 
       <SettingsCard heading="Per-room overrides">
-        {(rooms ?? []).map((room) => (
+        {joinedRooms.map((room) => (
           <RoomModeRow
             key={room.room_id}
             room={room}
@@ -300,7 +301,7 @@ export function NotificationsPanel() {
             disabled={setRoomMode.isPending}
           />
         ))}
-        {rooms?.length === 0 && (
+        {rooms !== undefined && joinedRooms.length === 0 && (
           <SettingTile title={<span className="text-muted-foreground">No rooms yet.</span>} />
         )}
       </SettingsCard>

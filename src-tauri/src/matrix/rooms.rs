@@ -6,7 +6,7 @@
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::Room;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName, UserTagName};
-use matrix_sdk::Client;
+use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use tauri::{AppHandle, State};
@@ -14,6 +14,14 @@ use ts_rs::TS;
 
 use super::notifications::set_room_notification_mode;
 use super::{media, profiles, MatrixState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../src/bindings/")]
+pub enum RoomMembershipKind {
+    Join,
+    Invite,
+}
 
 /// Flat room summary for the room list. No message preview yet — that needs
 /// the timeline/event-cache API, which is Phase 1 timeline-rendering scope,
@@ -24,8 +32,9 @@ use super::{media, profiles, MatrixState};
 /// unread indicator reads this field rather than re-deriving it from
 /// `unread_count`/`unread_messages`/`is_marked_unread` itself.
 ///
-/// `list_rooms`/`room_list:update` pre-sort by (section, `manual_order`,
-/// name) in [`snapshot_rooms`] — the frontend performs no sorting.
+/// `list_rooms`/`room_list:update` pre-sort pending invites first, followed by
+/// joined rooms ordered by (section, `manual_order`, name) in
+/// [`snapshot_rooms`] — the frontend performs no sorting.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
 pub struct RoomSummary {
@@ -87,6 +96,13 @@ pub struct RoomSummary {
     /// rooms matrix-rust-sdk can't resolve a single hero for (e.g. the peer
     /// hasn't been synced yet).
     pub dm_peer_user_id: Option<String>,
+    /// Whether this is a normal joined room or a pending invitation. Left,
+    /// knocked, and banned rooms are deliberately excluded from snapshots.
+    pub membership: RoomMembershipKind,
+    /// The user who sent a pending invitation. `None` for joined rooms or
+    /// when a malformed/incomplete invite omitted its membership event.
+    pub inviter_user_id: Option<String>,
+    pub inviter_display_name: Option<String>,
 }
 
 /// The tag a room's manual order lives on: whichever section tag is
@@ -121,7 +137,7 @@ async fn parent_space_ids(client: &Client) -> std::collections::HashMap<String, 
 
     let mut parents: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
-    for room in client.rooms() {
+    for room in client.joined_space_rooms() {
         if !room.is_space() {
             continue;
         }
@@ -156,6 +172,16 @@ fn section_rank(is_favourite: bool, is_low_priority: bool) -> u8 {
         2
     } else {
         1
+    }
+}
+
+/// Pending invites form their own room-list section ahead of joined rooms.
+/// Keep that grouping in the backend sort contract even though today's
+/// `RoomList` filters memberships before rendering each section.
+fn membership_rank(membership: RoomMembershipKind) -> u8 {
+    match membership {
+        RoomMembershipKind::Invite => 0,
+        RoomMembershipKind::Join => 1,
     }
 }
 
@@ -259,7 +285,16 @@ pub async fn snapshot_rooms(
     let parents = parent_space_ids(client).await;
 
     let mut summaries = Vec::new();
-    for room in client.rooms() {
+    let rooms = client
+        .joined_rooms()
+        .into_iter()
+        .chain(client.invited_rooms());
+    for room in rooms {
+        let membership = match room.state() {
+            RoomState::Joined => RoomMembershipKind::Join,
+            RoomState::Invited => RoomMembershipKind::Invite,
+            _ => continue,
+        };
         let room_id = room.room_id().to_string();
         let unread_count = room.unread_notification_counts().notification_count;
         let unread_messages = room.num_unread_messages();
@@ -279,8 +314,22 @@ pub async fn snapshot_rooms(
         let is_direct = room.is_direct().await.unwrap_or(false);
         let has_unread_flag = has_unread(is_marked_unread, is_muted, unread_messages, unread_count);
         let identity = resolve_room_identity(client, media_cache, &room, is_direct).await;
+        let (inviter_user_id, inviter_display_name) = if membership == RoomMembershipKind::Invite {
+            match room.invite_details().await {
+                Ok(details) => (
+                    Some(details.inviter_id.to_string()),
+                    details
+                        .inviter
+                        .and_then(|member| member.display_name().map(ToOwned::to_owned)),
+                ),
+                Err(_) => (None, None),
+            }
+        } else {
+            (None, None)
+        };
 
         summaries.push((
+            membership_rank(membership),
             section_rank(is_favourite, is_low_priority),
             manual_order,
             identity.name.clone().unwrap_or_default(),
@@ -302,25 +351,57 @@ pub async fn snapshot_rooms(
                 avatar_url: identity.avatar_url,
                 avatar_path: identity.avatar_path,
                 dm_peer_user_id: identity.dm_peer_user_id,
+                membership,
+                inviter_user_id,
+                inviter_display_name,
             },
         ));
     }
 
     summaries.sort_by(|a, b| {
         a.0.cmp(&b.0)
-            .then_with(|| match (a.1, b.1) {
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| match (a.2, b.2) {
                 (Some(a_order), Some(b_order)) => a_order.total_cmp(&b_order),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
             })
-            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
     });
 
     summaries
         .into_iter()
-        .map(|(_, _, _, summary)| summary)
+        .map(|(_, _, _, _, summary)| summary)
         .collect()
+}
+
+pub async fn accept_invite_impl(client: &Client, room_id: &str) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
+    if room.state() != RoomState::Invited {
+        return Err(format!("room {room_id} is not a pending invite"));
+    }
+    room.join().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn accept_invite(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    accept_invite_impl(&client, &room_id).await
+}
+
+pub async fn decline_invite_impl(client: &Client, room_id: &str) -> Result<(), String> {
+    let room = parse_room(client, room_id)?;
+    if room.state() != RoomState::Invited {
+        return Err(format!("room {room_id} is not a pending invite"));
+    }
+    room.leave().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn decline_invite(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    decline_invite_impl(&client, &room_id).await
 }
 
 /// Reads the current room list out of the client's in-memory store —
@@ -708,6 +789,13 @@ mod tests {
         assert_eq!(
             order_tag_name(false, false),
             TagName::User(UserTagName::from_str("u.order").unwrap())
+        );
+    }
+
+    #[test]
+    fn pending_invites_sort_before_joined_rooms() {
+        assert!(
+            membership_rank(RoomMembershipKind::Invite) < membership_rank(RoomMembershipKind::Join)
         );
     }
 }

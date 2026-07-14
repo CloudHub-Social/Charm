@@ -951,6 +951,8 @@ pub fn run() {
             matrix::auth::cancel_sso_login,
             matrix::auth::try_restore_session,
             matrix::rooms::list_rooms,
+            matrix::rooms::accept_invite,
+            matrix::rooms::decline_invite,
             matrix::rooms::resolve_room_alias,
             matrix::timeline::get_timeline_page,
             matrix::send::send_message,

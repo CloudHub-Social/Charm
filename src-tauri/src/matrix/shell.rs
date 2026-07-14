@@ -517,6 +517,9 @@ mod tests {
             avatar_url: None,
             avatar_path: None,
             dm_peer_user_id: None,
+            membership: super::super::rooms::RoomMembershipKind::Join,
+            inviter_user_id: None,
+            inviter_display_name: None,
         }
     }
 
