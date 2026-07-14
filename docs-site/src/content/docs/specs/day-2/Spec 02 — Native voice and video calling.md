@@ -127,3 +127,13 @@ peer-connection commands are needed — that was the superseded option.
 - Interop testing matrix against Element/other Matrix clients if cross-client
   calling turns out to matter to real users (likely does, given Matrix's federated
   nature).
+
+## Related documentation
+
+- [Spec 13: voice/video platform spike](/specs/day-1/spec-13--voice-video-platform-spike/)
+  and its [recorded findings](/specs/day-1/spec-13-findings--voice-video-platform-spike/)
+  explain why embedded Sable Call is the selected foundation.
+- [Spec 49: widget support](/specs/day-1/spec-49--widget-support/) defines the
+  reusable widget lifecycle and trust boundary.
+- [Spec 10: native platform shell](/specs/day-1/spec-10--native-platform-shell/)
+  owns the desktop integration points around a call.

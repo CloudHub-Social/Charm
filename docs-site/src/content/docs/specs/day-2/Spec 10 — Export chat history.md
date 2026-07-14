@@ -85,3 +85,12 @@ command.
 - Scheduled/automatic periodic export (e.g. for legal-hold-style continuous
   archival) — meaningfully different feature (background job, not one-shot user
   action), scope separately if it comes up.
+
+## Related documentation
+
+- [Spec 28: cross-room search](/specs/day-1/spec-28--cross-room-message-search/)
+  is the adjacent history-query surface.
+- [Jump to date](../spec-11--jump-to-date/) defines server-assisted access to
+  history that may not be locally loaded.
+- [Spec 58: rich message rendering](/specs/day-1/spec-58--rich-message-content-rendering/)
+  defines the formatted content an export must safely represent.

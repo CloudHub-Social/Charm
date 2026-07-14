@@ -25,7 +25,7 @@ break-glass path for emergency kills). See [Remote layer](#remote-layer) and
 ## Problem & why now
 
 Charm 2.0 has **no feature-flag mechanism of any kind** — confirmed by the same
-`grep` sweep [Spec 21 — Sentry observability (error monitoring, tracing, replay, logs)](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/)
+`grep` sweep [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/)
 did (`src/`, `src-tauri/` turn up nothing for "feature flag" or any provider
 name), and re-confirmed by the Day-1 sub-feature audit that produced
 [Spec 34 — Labs and experimental settings panel](/specs/day-1/spec-34--labs-and-experimental-settings-panel/) ("Charm 2.0 has no labs/flag

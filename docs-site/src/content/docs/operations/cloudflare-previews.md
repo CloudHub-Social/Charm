@@ -98,3 +98,14 @@ while the two deployment policies live in
 [`web-preview.yml`](https://github.com/CloudHub-Social/Charm/blob/main/.github/workflows/web-preview.yml)
 and
 [`web-deploy-dev.yml`](https://github.com/CloudHub-Social/Charm/blob/main/.github/workflows/web-deploy-dev.yml).
+
+## Related documentation
+
+- [Spec 16: web client architecture](/specs/day-1/spec-16--web-client-via-companion-matrix-server/)
+  defines the browser-to-companion-server topology.
+- [Spec 24: build identification](/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/)
+  defines the PR-aware release identifier shown in previews and Sentry.
+- [Rust companion API](../web-server/) documents the proxied origin, cookie,
+  and allowlist contracts.
+- [CI / release tiers](/contributing/ci-tiers/) places preview deployment in
+  the larger pull-request gate.

@@ -172,7 +172,7 @@ is a flat top-down array."
   `RoomMessageSummary.media` already carry width/height? **Yes** — confirmed present on
   `MediaContent`'s `Image`/`Video` variants before Phase 1 even started; Phase 1 (#194)
   read it as-is, no backend change was needed. See
-  [Spec 26 Phase 2 — Bottom-up timeline rendering (follow-up)](/specs/day-1/spec-26-phase-2--bottom-up-timeline-rendering-follow-up/)'s Question 1 research.
+  [Spec 26 Phase 2 — Bottom-up timeline rendering](/specs/day-1/spec-26-phase-2--bottom-up-timeline-rendering-follow-up/)'s Question 1 research.
 - **[Engineering, non-blocking]** Is a fallback aspect ratio for unknown-dimension media
   visually acceptable, or does it need per-msgtype tuning (image vs. video vs. generic
   file/embed)? Still open — not revisited by the Phase 2 spec.

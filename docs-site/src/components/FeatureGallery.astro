@@ -20,7 +20,14 @@ const statusLabel = { stable: 'Stable', preview: 'Preview' } as const;
 						<span class:list={['feature-status', `feature-status--${feature.status}`]}>
 							{statusLabel[feature.status]}
 						</span>
-						<span>{feature.spec}</span>
+						<span>
+							{feature.specLinks.map((spec, index) => (
+								<>
+									{index > 0 && ', '}
+									<a href={spec.href}>{spec.label}</a>
+								</>
+							))}
+						</span>
 						{feature.flag && <code>{feature.flag}</code>}
 					</div>
 					<h2>{feature.title}</h2>

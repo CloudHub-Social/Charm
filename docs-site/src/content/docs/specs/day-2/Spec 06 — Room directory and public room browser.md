@@ -79,3 +79,12 @@ commands.
 - Cross-homeserver directory search/aggregation if users request browsing rooms on
   servers other than their own by default.
 - Directory-listing toggle if not bundled with the alias-management spec.
+
+## Related documentation
+
+- [Spec 32: room alias management](/specs/day-1/spec-32--room-alias-management/)
+  governs public addresses and directory publication.
+- [Spec 31: room upgrades](/specs/day-1/spec-31--room-upgrades/) defines how
+  discovery should treat replacement rooms.
+- [Spec 55: command palette](/specs/day-1/spec-55--command-palette-and-quick-switcher/)
+  is the complementary fast path for known rooms.

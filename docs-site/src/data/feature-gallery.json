@@ -8,6 +8,12 @@
       "summary": "A short first-run tour introduces rooms, the composer, and account settings without blocking sign-in.",
       "status": "stable",
       "spec": "Spec 12",
+      "specLinks": [
+        {
+          "label": "Spec 12",
+          "href": "/specs/day-1/spec-12--first-run-onboarding/"
+        }
+      ],
       "snapshot": {
         "suite": "e2e",
         "name": "onboarding-welcome-screen",
@@ -21,6 +27,12 @@
       "summary": "Review pending invitations, see who invited you, and accept or decline without leaving the room list.",
       "status": "preview",
       "spec": "Spec 56",
+      "specLinks": [
+        {
+          "label": "Spec 56",
+          "href": "/specs/day-1/spec-56--room-invites-surface/"
+        }
+      ],
       "flag": "room_invites",
       "snapshot": {
         "suite": "e2e",
@@ -35,6 +47,12 @@
       "summary": "Render formatted Matrix content including code, tables, pills, mentions, math, and jumbo emoji.",
       "status": "preview",
       "spec": "Spec 58",
+      "specLinks": [
+        {
+          "label": "Spec 58",
+          "href": "/specs/day-1/spec-58--rich-message-content-rendering/"
+        }
+      ],
       "flag": "rich_message_rendering",
       "snapshot": {
         "suite": "e2e",
@@ -49,6 +67,12 @@
       "summary": "A compact header, touch-sized room actions, and a bottom-anchored composer adapt the conversation to narrow screens.",
       "status": "preview",
       "spec": "Spec 52",
+      "specLinks": [
+        {
+          "label": "Spec 52",
+          "href": "/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/"
+        }
+      ],
       "flag": "mobile_chat_redesign",
       "snapshot": {
         "suite": "e2e",
@@ -63,6 +87,12 @@
       "summary": "Temporarily silence notification delivery from Settings or the tray while keeping the chosen duration visible.",
       "status": "preview",
       "spec": "Spec 30",
+      "specLinks": [
+        {
+          "label": "Spec 30",
+          "href": "/specs/day-1/spec-30--focus-mode-and-do-not-disturb/"
+        }
+      ],
       "flag": "focus_mode",
       "snapshot": {
         "suite": "e2e",
@@ -77,6 +107,12 @@
       "summary": "Show homeserver-fetched titles and descriptions under shared links without contacting third-party image hosts directly.",
       "status": "preview",
       "spec": "Spec 29",
+      "specLinks": [
+        {
+          "label": "Spec 29",
+          "href": "/specs/day-1/spec-29--link-previews/"
+        }
+      ],
       "flag": "link_previews",
       "snapshot": {
         "suite": "e2e",
@@ -91,6 +127,12 @@
       "summary": "Publish local room addresses, remove obsolete aliases, and choose the canonical Matrix address from room settings.",
       "status": "preview",
       "spec": "Spec 32",
+      "specLinks": [
+        {
+          "label": "Spec 32",
+          "href": "/specs/day-1/spec-32--room-alias-management/"
+        }
+      ],
       "flag": "room_alias_management",
       "snapshot": {
         "suite": "e2e",
@@ -104,7 +146,17 @@
       "title": "Message actions",
       "summary": "React, reply, edit, redact, and inspect messages through contextual actions that respect ownership and power levels.",
       "status": "stable",
-      "spec": "Spec 18",
+      "spec": "Specs 03 and 37",
+      "specLinks": [
+        {
+          "label": "Spec 03",
+          "href": "/specs/day-1/spec-03--message-actions-edit-redact-reply-react/"
+        },
+        {
+          "label": "Spec 37",
+          "href": "/specs/day-1/spec-37--message-action-parity/"
+        }
+      ],
       "snapshot": {
         "suite": "e2e",
         "name": "message-actions-reacted",
@@ -117,7 +169,17 @@
       "title": "Media and attachments",
       "summary": "Preview images, open a lightbox, track uploads, and download Matrix attachments from the timeline.",
       "status": "stable",
-      "spec": "Spec 20",
+      "spec": "Specs 02 and 42",
+      "specLinks": [
+        {
+          "label": "Spec 02",
+          "href": "/specs/day-1/spec-02--media-and-attachments/"
+        },
+        {
+          "label": "Spec 42",
+          "href": "/specs/day-1/spec-42--media-send-polish/"
+        }
+      ],
       "snapshot": {
         "suite": "e2e",
         "name": "media-attachments-download-chip",
@@ -130,7 +192,17 @@
       "title": "Spaces and room organization",
       "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages from one adaptable rail.",
       "status": "stable",
-      "spec": "Specs 15 and 46",
+      "spec": "Specs 19 and 54",
+      "specLinks": [
+        {
+          "label": "Spec 19",
+          "href": "/specs/day-1/spec-19--space-hierarchy-and-room-list-rebuild-match-charm-10-structure/"
+        },
+        {
+          "label": "Spec 54",
+          "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
+        }
+      ],
       "snapshot": {
         "suite": "e2e",
         "name": "space-hierarchy-foundation",
@@ -144,6 +216,12 @@
       "summary": "Manage room profile, members, permissions, history visibility, join rules, avatars, and encryption from one modal.",
       "status": "stable",
       "spec": "Spec 17",
+      "specLinks": [
+        {
+          "label": "Spec 17",
+          "href": "/specs/day-1/spec-17--room-settings-ia-rework-match-charm-10-structure/"
+        }
+      ],
       "snapshot": {
         "suite": "e2e",
         "name": "room-settings-modal-open",

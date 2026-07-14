@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const contentRoot = path.join(siteRoot, 'src/content/docs');
 const specsRoot = path.join(contentRoot, 'specs');
+const featureGalleryPath = path.join(siteRoot, 'src/data/feature-gallery.json');
 const errors = [];
 
 function markdownFiles(directory) {
@@ -50,6 +51,22 @@ const routes = new Set(
 	}),
 );
 routes.add('/changelog/');
+
+const featureGallery = JSON.parse(fs.readFileSync(featureGalleryPath, 'utf8'));
+for (const feature of featureGallery.features ?? []) {
+	if (!Array.isArray(feature.specLinks) || feature.specLinks.length === 0) {
+		errors.push(`feature ${feature.slug ?? '<unknown>'} has no governing spec links`);
+		continue;
+	}
+
+	for (const specLink of feature.specLinks) {
+		if (!specLink.label || !specLink.href) {
+			errors.push(`feature ${feature.slug} has an incomplete governing spec link`);
+		} else if (!routes.has(specLink.href)) {
+			errors.push(`feature ${feature.slug} links to unknown spec route ${specLink.href}`);
+		}
+	}
+}
 
 for (const file of docs) {
 	const source = fs.readFileSync(file, 'utf8');

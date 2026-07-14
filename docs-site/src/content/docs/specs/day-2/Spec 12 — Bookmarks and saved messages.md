@@ -86,3 +86,12 @@ protocol/event changes.
   last-write-wins per bookmark, since bookmark add/remove are simple enough that
   real conflicts should be rare).
 - Folders/tags if the flat list becomes unwieldy for heavy users.
+
+## Related documentation
+
+- [Message pinning](../spec-04--message-pinning/) is the room-visible,
+  permissioned counterpart to private bookmarks.
+- [Spec 37: message action parity](/specs/day-1/spec-37--message-action-parity/)
+  owns the save and unsave entry points.
+- [Spec 50: cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/)
+  provides the account-data and conflict-resolution precedent.

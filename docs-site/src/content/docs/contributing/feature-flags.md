@@ -44,3 +44,14 @@ the cached remote value and then the catalog default.
 For the full how-to, see
 [`docs/FEATURE_FLAGS.md`](https://github.com/CloudHub-Social/Charm/blob/main/docs/FEATURE_FLAGS.md)
 in the repository.
+
+## Related documentation
+
+- [Spec 35: feature-flag platform](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/)
+  records the resolver, rollout, and evaluation-tracking design.
+- [Spec 34: Labs settings](/specs/day-1/spec-34--labs-and-experimental-settings-panel/)
+  defines the user-facing local override surface.
+- [Feature gallery](/features/) shows which stable and preview behaviors have
+  complete, CI-verified user journeys.
+- [Sentry observability](/operations/sentry/) documents the telemetry and
+  privacy boundary for flag evaluations.

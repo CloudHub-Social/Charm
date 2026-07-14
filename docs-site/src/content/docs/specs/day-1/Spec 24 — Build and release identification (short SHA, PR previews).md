@@ -8,7 +8,7 @@ sidebar:
   label: "Build and release identification"
 ---
 
-**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability (error monitoring, tracing, replay, logs)](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
+**Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
 
 ## Problem & why now
 
@@ -78,7 +78,7 @@ Partial infrastructure already exists, scattered and inconsistent:
   "extend the existing script to (a) shorten the SHA, (b) add PR/nightly
   suffixes, (c) call it from the 2 workflows that don't yet, (d) surface the
   result in-app," not a from-scratch build. Scope down accordingly when this
-  gets picked up — item 1 in [Scope (in) — summary](#scope-in--summary) should read "extend"
+  gets picked up — item 1 in [Scope summary](#scope-in--summary) should read "extend"
   rather than "create."
 
 ## Non-goals

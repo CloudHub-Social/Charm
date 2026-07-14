@@ -99,3 +99,12 @@ decision today.
 - Unified cross-account notification badge in the OS tray/dock (sum across all
   accounts, not just the active one) if per-account switcher badges prove
   insufficient for users who genuinely monitor multiple accounts simultaneously.
+
+## Related documentation
+
+- [Spec 15: per-account store isolation](/specs/day-1/spec-15--per-account-store-isolation/)
+  is the storage and security foundation for switching.
+- [Spec 50: cross-device settings sync](/specs/day-1/spec-50--cross-device-settings-sync/)
+  defines which preferences may follow an account.
+- [Spec 48: desktop shell controls](/specs/day-1/spec-48--desktop-shell-and-settings-controls/)
+  owns tray, dock, and window-level account affordances.

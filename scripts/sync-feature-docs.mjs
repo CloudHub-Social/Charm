@@ -63,6 +63,20 @@ for (const feature of manifest.features ?? []) {
       noteError(`${feature.slug}: ${field} must be a non-empty string`);
     }
   }
+  if (!Array.isArray(feature.specLinks) || feature.specLinks.length === 0) {
+    noteError(`${feature.slug}: at least one governing spec link is required`);
+  } else {
+    for (const specLink of feature.specLinks) {
+      if (
+        typeof specLink.label !== "string" ||
+        specLink.label.trim() === "" ||
+        typeof specLink.href !== "string" ||
+        !/^\/specs\/(?:day-1|day-2)\/[a-z0-9-]+\/$/.test(specLink.href)
+      ) {
+        noteError(`${feature.slug}: invalid governing spec link ${JSON.stringify(specLink)}`);
+      }
+    }
+  }
   if (!new Set(["stable", "preview"]).has(feature.status)) {
     noteError(`${feature.slug}: status must be stable or preview`);
   }

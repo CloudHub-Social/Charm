@@ -81,3 +81,12 @@ per platform (mirrors the permission-plumbing work pattern from Spec 13).
 - Live/beacon location sharing if requested — meaningfully more complex (ongoing
   event stream, explicit stop action, staleness handling) so scope as its own spec
   rather than folding into this one later.
+
+## Related documentation
+
+- [Spec 02: media and attachments](/specs/day-1/spec-02--media-and-attachments/)
+  owns shared attachment transport and timeline affordances.
+- [Spec 43: composer parity](/specs/day-1/spec-43--composer-parity/) owns the
+  composition entry point.
+- [Spec 58: rich message rendering](/specs/day-1/spec-58--rich-message-content-rendering/)
+  is the presentation precedent for structured Matrix content.
