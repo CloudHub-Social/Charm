@@ -9,23 +9,30 @@ interface LinkPreviewCardProps {
   url: string;
 }
 
-/** Resolves a preview's `imageUrl` (a bare `mxc://` URI per the Matrix C-S
- * API, or occasionally a direct URL depending on server behavior) to a
- * webview-loadable source, reusing the same `resolve_avatar` mxc-resolution
- * command profile avatars use — it already resolves an arbitrary `mxc://`
- * URI to a cached local thumbnail with no owning room/event required, so no
- * new resolver command is needed. `undefined` on any resolution failure,
- * so the card renders without an image rather than a broken-image icon. */
+/** Resolves a preview's `imageUrl` to a webview-loadable source, reusing the
+ * same `resolve_avatar` mxc-resolution command profile avatars use — it
+ * already resolves an arbitrary `mxc://` URI to a cached local thumbnail
+ * with no owning room/event required, so no new resolver command is needed.
+ * `undefined` on any resolution failure, so the card renders without an
+ * image rather than a broken-image icon.
+ *
+ * Per the Matrix C-S API `og:image` should always be an `mxc://` URI (the
+ * homeserver re-hosts the remote image), but a misbehaving homeserver could
+ * hand back a direct `http(s://` URL instead. Loading that straight into
+ * `<img src>` would make the user's device contact the third-party image
+ * host directly on render, leaking network metadata for a "preview" that's
+ * supposed to be fetched/proxied server-side — so a non-mxc URL is treated
+ * as "no image" rather than passed through. */
 function useResolvedPreviewImageSrc(imageUrl: string | null | undefined) {
+  const isMxc = Boolean(imageUrl?.startsWith("mxc://"));
   const { data } = useQuery({
     queryKey: ["link-preview-image", imageUrl],
     queryFn: async () => {
-      if (!imageUrl) return null;
-      if (!imageUrl.startsWith("mxc://")) return imageUrl;
+      if (!imageUrl || !isMxc) return null;
       const path = await resolveAvatar(imageUrl);
       return path ? (toLoadableMediaUrl(path) ?? null) : null;
     },
-    enabled: Boolean(imageUrl),
+    enabled: isMxc,
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
   });

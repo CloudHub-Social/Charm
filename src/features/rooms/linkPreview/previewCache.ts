@@ -1,45 +1,16 @@
 import { getUrlPreview } from "@/lib/matrix";
 import type { UrlPreview } from "@bindings/UrlPreview";
 
-/** Default TTL for a cached preview result (including a cached "no preview"
- * `null`), used when the homeserver's response didn't include its own
- * `expires_ts` extension. One hour keeps the composer feeling responsive
- * (repeatedly rendering the same URL, e.g. scrolling a timeline back and
- * forth, doesn't re-fetch) without pinning a stale/removed preview forever. */
-const DEFAULT_TTL_MS = 60 * 60 * 1000;
-
-interface CacheEntry {
-  preview: UrlPreview | null;
-  fetchedAt: number;
-  expiresAt: number;
-}
-
-const cache = new Map<string, CacheEntry>();
-
-function cacheKey(roomId: string, url: string): string {
-  return `${roomId}::${url}`;
-}
-
 /**
- * Returns a cached preview (or cached "no preview" `null`) for `url` if it
- * hasn't expired, fetching and caching it otherwise. `null` results are
- * cached too, so a URL confirmed to have no preview isn't re-fetched on
- * every render.
+ * Fetches a preview for `url` in `roomId`. Caching (including a cached "no
+ * preview" `null`, and per-account invalidation on logout via
+ * `queryClient.clear()` in `App.tsx`) is owned entirely by the TanStack
+ * Query cache in `LinkPreviewCard` — this used to also keep its own
+ * module-level `Map`, but two uncoordinated caches could serve stale/
+ * cross-account data when one was invalidated and the other wasn't. Query
+ * already dedupes by the `["link-preview", roomId, url]` key, so a second
+ * cache here bought nothing.
  */
 export async function fetchUrlPreview(roomId: string, url: string): Promise<UrlPreview | null> {
-  const key = cacheKey(roomId, url);
-  const cached = cache.get(key);
-  const now = Date.now();
-  if (cached && cached.expiresAt > now) {
-    return cached.preview;
-  }
-
-  const preview = await getUrlPreview(roomId, url);
-  cache.set(key, { preview, fetchedAt: now, expiresAt: now + DEFAULT_TTL_MS });
-  return preview;
-}
-
-/** Test-only: clears the module-level cache between test cases. */
-export function clearUrlPreviewCache(): void {
-  cache.clear();
+  return getUrlPreview(roomId, url);
 }

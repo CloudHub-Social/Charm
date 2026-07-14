@@ -3,7 +3,6 @@ import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LinkPreviewCard } from "./LinkPreviewCard";
-import { clearUrlPreviewCache } from "./previewCache";
 
 const getUrlPreview = vi.fn();
 const resolveAvatar = vi.fn();
@@ -20,7 +19,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 beforeEach(() => {
   getUrlPreview.mockReset();
   resolveAvatar.mockReset();
-  clearUrlPreviewCache();
 });
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -68,6 +66,25 @@ describe("LinkPreviewCard", () => {
     });
 
     await waitFor(() => expect(screen.getByText("Title Only")).toBeInTheDocument());
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(resolveAvatar).not.toHaveBeenCalled();
+  });
+
+  it("ignores a non-mxc image URL rather than loading it directly", async () => {
+    getUrlPreview.mockResolvedValueOnce({
+      title: "Direct Image Host",
+      description: null,
+      imageUrl: "https://evil.example/tracker.png",
+      imageWidth: null,
+      imageHeight: null,
+      siteName: null,
+    });
+
+    render(<LinkPreviewCard roomId="!room:localhost" url="https://example.com/direct-image" />, {
+      wrapper,
+    });
+
+    await waitFor(() => expect(screen.getByText("Direct Image Host")).toBeInTheDocument());
     expect(screen.queryByRole("img")).toBeNull();
     expect(resolveAvatar).not.toHaveBeenCalled();
   });
