@@ -684,6 +684,30 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
   });
 
+  it("waits for a room-list update when the post-accept snapshot is still invited", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: invite.room_id, membership: "join" });
+    listRooms.mockReset().mockResolvedValue([invite]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    expect(roomListListener).toBeTypeOf("function");
+    act(() => roomListListener?.([joined]));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+  });
+
   it("uses the refreshed snapshot when an accepted room belongs to a space", async () => {
     const invite = room({
       room_id: "!invite:example.org",

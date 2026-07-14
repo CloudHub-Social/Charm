@@ -76,6 +76,9 @@ export function RoomsScreen({
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
+  const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
+    null,
+  );
   const autoSelectSuppressedRef = useRef(false);
 
   // Bumped on every room selection — via the room list, a deep link, or the
@@ -183,15 +186,24 @@ export function RoomsScreen({
 
   async function handleAcceptInvite(roomId: string) {
     await acceptInvite(roomId);
-    const nextRooms = await refreshRooms();
-    const joinedRoom = nextRooms.find(
-      (room) => room.room_id === roomId && room.membership === "join",
-    );
-    if (joinedRoom) {
-      const nextJoinedRooms = nextRooms.filter((room) => room.membership === "join");
-      selectRoomInVisibleMode(joinedRoom, nextJoinedRooms);
-    }
+    // Joining completes on the homeserver before matrix-sdk's local room
+    // state necessarily advances to `Joined`. Remember the navigation intent
+    // across that gap; the effect below handles either this fast-path refresh
+    // or the next background `room_list:update` snapshot.
+    setAcceptedRoomPendingSelection(roomId);
+    await refreshRooms();
   }
+
+  useEffect(() => {
+    if (!acceptedRoomPendingSelection) return;
+    const joinedRoom = rooms.find(
+      (room) => room.room_id === acceptedRoomPendingSelection && room.membership === "join",
+    );
+    if (!joinedRoom) return;
+    selectRoomInVisibleMode(joinedRoom, joinedRooms);
+    setAcceptedRoomPendingSelection(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [acceptedRoomPendingSelection, rooms, joinedRooms]);
 
   async function handleDeclineInvite(roomId: string) {
     await declineInvite(roomId);
