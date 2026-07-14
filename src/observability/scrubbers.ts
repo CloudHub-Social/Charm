@@ -20,26 +20,34 @@ const COLONLESS_EVENT_ID_PATTERN = /\$[A-Za-z0-9_-]{10,}/g;
 // while a false negative leaks a self-hosted homeserver's address.
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // The value branch matches, in order:
-//  1. a fully-quoted string — allowing a backslash-escaped quote inside
-//     (`(?:[^"\\]|\\.)*`) so a JSON-ish escaped quote in the middle of a
-//     secret (`password="abc\"tail"`) doesn't get treated as the closing
-//     quote, leaking the rest (`tail"`);
-//  2. a fully bracket/brace-wrapped value (`access_token=[abc]`,
+//  1/2. a fully double- or single-quoted string — allowing a
+//     backslash-escaped quote inside (`(?:[^"\\]|\\.)*`) so a JSON-ish
+//     escaped quote in the middle of a secret (`password="abc\"tail"`)
+//     doesn't get treated as the closing quote, leaking the rest (`tail"`);
+//  3/4. a fully bracket- or brace-wrapped value (`access_token=[abc]`,
 //     `password={abc}` — some Debug/serde formatters render a value this
-//     way), matched and replaced as a balanced pair so it doesn't fall
-//     through to the unquoted branch below (which excludes `[`/`{` and so
-//     wouldn't even start matching at the opening bracket);
-//  3. an unquoted run of non-delimiter characters — excluding `[`/`{` (in
-//     addition to `]`/`}`) so this branch never *starts* inside something
-//     that should have been matched as a bracket-wrapped value by branch 2,
-//     nor partially consumes into one;
-//  4/5. falling back when none of the above matched: an *unterminated*
-//     quoted or bracket-wrapped value (an opening delimiter with no closing
-//     one, e.g. a diagnostic string truncated mid-value like
-//     `access_token="abc123` or `access_token=[abc`). Without that
-//     fallback, an unterminated value matches neither its balanced branch
-//     (no closing delimiter) nor the unquoted branch (the leading quote/
-//     bracket isn't a valid unquoted char), and slips through unredacted.
+//     way), matched as a balanced pair so multi-word content inside stays
+//     redacted rather than only the first word;
+//  5. a maximally permissive fallback for everything else — any run of
+//     non-whitespace/non-comma characters, deliberately NOT excluding
+//     quote/bracket/brace characters the way an earlier version of this
+//     pattern did. That exclusion was meant to stop this branch from
+//     partially re-matching into an already-redacted `[redacted]`
+//     placeholder (see `summarizeErrorText`'s doc comment on scrub
+//     ordering, which fixes that differently and correctly now), but it had
+//     a worse side effect: any value starting with an unmatched delimiter —
+//     no corresponding opener, e.g. a value that happens to start with a
+//     stray `]`/`}` — matched *nothing at all* (neither the balanced
+//     branches above, which require a matching close, nor this one, which
+//     excluded the leading char), leaking it unredacted. Also handles
+//     unterminated quotes/brackets (an opener with no closer, e.g.
+//     `access_token="abc123`) the same way, since the balanced branches
+//     above only match when a real closing delimiter is present. This
+//     branch is deliberately last so the balanced ones above get first
+//     shot at preserving multi-word content and the original delimiter
+//     style; this one is the catch-all guaranteeing nothing slips through
+//     un-redacted, at the cost of not preserving multi-word content or
+//     delimiter style for the malformed cases it alone handles.
 // The field-name alternation ends with `[A-Za-z0-9]*secret` — a generic
 // catch-all for any field whose name simply *ends* in "secret"
 // (`client_secret`, `sharedSecret`, `shared_secret`, ...), mirroring
@@ -58,7 +66,7 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // (`access[_-]?token` matches "accessToken" via a zero-length separator
 // before "Token", case-insensitively).
 const SECRET_FIELD_PATTERN =
-  /((?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*)|\[((?:[^\]\\]|\\.)*)|\{((?:[^}\\]|\\.)*))/gi;
+  /((?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^\s,]+))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
@@ -100,26 +108,14 @@ export function scrubUrls(text: string): string {
 export function scrubSecrets(text: string): string {
   return text.replace(
     SECRET_FIELD_PATTERN,
-    (
-      _match,
-      prefix: string,
-      doubleQuoted?: string,
-      singleQuoted?: string,
-      _bracketed?: string,
-      _braced?: string,
-      _unquoted?: string,
-      unterminatedDoubleQuoted?: string,
-      unterminatedSingleQuoted?: string,
-    ) => {
+    (_match, prefix: string, doubleQuoted?: string, singleQuoted?: string) => {
       if (doubleQuoted !== undefined) return `${prefix}"[redacted]"`;
       if (singleQuoted !== undefined) return `${prefix}'[redacted]'`;
-      if (unterminatedDoubleQuoted !== undefined) return `${prefix}"[redacted]`;
-      if (unterminatedSingleQuoted !== undefined) return `${prefix}'[redacted]`;
-      // Bracket/brace-wrapped values (both balanced and unterminated) fall
-      // through to the same bare `[redacted]` placeholder as an unquoted
-      // value — not wrapped in an extra outer `[`/`{` the way quoted values
-      // keep their quote marks, since e.g. `[[redacted]]` reads like a
-      // formatting bug rather than a clean redaction.
+      // Bracket/brace-wrapped values and the catch-all fallback (including
+      // unterminated quotes/brackets) all fall through to the same bare
+      // `[redacted]` placeholder — not wrapped in an extra outer `[`/`{` the
+      // way quoted values keep their quote marks, since e.g. `[[redacted]]`
+      // reads like a formatting bug rather than a clean redaction.
       return `${prefix}[redacted]`;
     },
   );

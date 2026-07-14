@@ -87,8 +87,11 @@ describe("observability scrubbers", () => {
   });
 
   it("redacts a secret value with an unterminated quote (no closing quote)", () => {
-    expect(scrubSensitiveText('access_token="abc123')).toBe('access_token="[redacted]');
-    expect(scrubSensitiveText("session_key='abc123")).toBe("session_key='[redacted]");
+    // No closing quote means the balanced-quote branch can't match, so this
+    // falls through to the catch-all fallback (bare `[redacted]`, no
+    // preserved leading quote mark) rather than the quote-preserving one.
+    expect(scrubSensitiveText('access_token="abc123')).toBe("access_token=[redacted]");
+    expect(scrubSensitiveText("session_key='abc123")).toBe("session_key=[redacted]");
   });
 
   it("redacts a quoted secret containing an escaped quote instead of stopping early", () => {
@@ -105,6 +108,14 @@ describe("observability scrubbers", () => {
   it("redacts a bracket/brace-wrapped secret value with no closing delimiter", () => {
     expect(scrubSensitiveText("access_token=[abc123")).toBe("access_token=[redacted]");
     expect(scrubSensitiveText("password={abc123")).toBe("password=[redacted]");
+  });
+
+  it("redacts a secret value that starts with a stray, unmatched closing delimiter", () => {
+    // No corresponding opener, so this can't match a balanced branch either
+    // — must fall through to the catch-all fallback rather than being left
+    // unredacted entirely.
+    expect(scrubSensitiveText("password=]hunter2")).toBe("password=[redacted]");
+    expect(scrubSensitiveText("access_token=}abc")).toBe("access_token=[redacted]");
   });
 
   it("cleanly redacts a secret field whose value is itself a URL, without a doubled placeholder", () => {
