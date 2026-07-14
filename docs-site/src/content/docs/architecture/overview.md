@@ -44,7 +44,7 @@ React frontend: {
   formatting.
 - **New user-facing features ship behind a feature flag**, defaulting off,
   so they can be dark-launched and staged. See
-  [Feature flags](/contributing/feature-flags/).
+  [Feature flags](../../contributing/feature-flags/).
 - **IPC types are generated, not hand-written.** A Rust struct change is the
   only way to change a binding; CI fails if committed bindings drift from
   the Rust source.

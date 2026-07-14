@@ -41,6 +41,6 @@ pnpm knip
 pnpm build
 ```
 
-See [CI / release tiers](/contributing/ci-tiers/) for how these fit into the
+See [CI / release tiers](../../contributing/ci-tiers/) for how these fit into the
 overall pipeline, and the repository's `CLAUDE.md` for the full contributor
 guide (branching, worktrees, code-signing, etc.).
