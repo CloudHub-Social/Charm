@@ -33,7 +33,8 @@ Browser -> Cloudflare Worker: "HTML / CSS / JS"
 Cloudflare Worker -> Companion API: "/api/*"
 Companion API -> Homeserver: "matrix-rust-sdk"
 Browser -> GitHub Pages: "developer docs"
-Cloudflare Worker -> Sentry: "consented browser events"
+Browser -> Sentry: "consented browser events"
+Cloudflare Worker -> Sentry: "operator-configured logs + traces"
 Companion API -> Sentry: "operator-enabled backend events"
 ```
 
@@ -58,8 +59,9 @@ Companion API -> Sentry: "operator-enabled backend events"
   instances are replaceable. Encrypted session records and crypto snapshots
   live in private Spaces buckets; the local data directory is ephemeral.
 - **Sentry is an evidence plane, not an application dependency.** Client
-  telemetry remains default-off and user-consent-gated. Backend telemetry is
-  enabled only when the operator supplies a server DSN.
+  telemetry remains default-off and user-consent-gated. Worker logs and traces
+  use separately configured Cloudflare observability destinations, while
+  backend telemetry is enabled only when the operator supplies a server DSN.
 - **GitHub Actions is the deployment control plane.** Checked-in workflows and
   app specs describe deployment behavior; secrets remain in GitHub,
   DigitalOcean, Cloudflare, Spaces, or Doppler rather than the repository.
