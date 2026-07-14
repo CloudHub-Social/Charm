@@ -10,6 +10,7 @@
     "@tauri-apps/plugin-process",
     "@tauri-apps/plugin-updater"
   ],
+  "ignoreBinaries": ["knope"],
   "rules": {
     "exports": "off",
     "types": "off",

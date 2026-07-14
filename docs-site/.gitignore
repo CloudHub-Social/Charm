@@ -1,0 +1,26 @@
+# build output
+dist/
+# generated types
+.astro/
+# astro-d2 generated diagram SVGs
+public/d2/
+# starlight-obsidian writes generated spec pages here at build/dev time —
+# regenerated from the private Knowledge-Platform vault, never committed
+src/content/docs/specs/
+
+# dependencies
+node_modules/
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# environment variables
+.env
+.env.production
+
+# macOS-specific files
+.DS_Store

@@ -56,6 +56,65 @@ re-exported through `src/lib/matrix.ts`. Don't hand-edit a binding file —
 change the Rust struct and regenerate. CI fails if committed bindings drift
 from the Rust source.
 
+## Release notes and versioning (Knope)
+
+Change documentation and releases are managed with [Knope](https://knope.tech/).
+The workflow configuration lives in [`knope.toml`](./knope.toml).
+
+If you've used [Changesets](https://github.com/changesets/changesets) before,
+Knope should feel familiar — the main difference is scope: Changesets is
+JS-specific (keyed off `package.json`), while Knope is multi-language. This
+repo installs Knope for you via `postinstall`, so `pnpm i` is enough; the CLI
+is also exposed as `pnpm run knope -- <subcommand>`.
+
+### Documenting a change
+
+A changeset is a Markdown file in `.changeset/` capturing intent to change:
+the semver bump (`major`, `minor`, `patch`, `docs`, or `note`) and the
+user-facing release note text. Knope combines pending changesets to decide
+version bumps and generate changelog entries.
+
+Add one before requesting review on a user-facing PR — `pr-checklist-gate.yml`
+enforces this alongside the other merge checklist requirements. A maintainer
+can add the `internal` label to skip the gate for maintenance/internal PRs with
+no user-facing impact.
+
+CLI paths:
+
+- `pnpm run document-change`
+- `pnpm run knope -- document-change`
+
+Both open an interactive prompt (package, change type, summary) and write the
+change file for you to commit. To do it manually instead, create
+`.changeset/<descriptive-name>.md`:
+
+```md
+---
+default: patch
+---
+
+Short user-facing summary of the change.
+```
+
+### Release flow
+
+Unlike Charm 1.0's hosted Knope Bot, releases here run through this repo's
+own CI workflows, authenticated as a GitHub App (not a personal token) so
+release commits and PRs are bot-authored:
+
+- `prepare-release.yml` runs on every push to `main`. If there are
+  releasable changesets, it opens/updates a `release` branch and PR via
+  `knope prepare-release`, with `.github/scripts/enrich-changelog.mjs`
+  replacing commit-hash markers with PR links and crediting authors.
+- `release.yml` runs `knope release` when that `release` PR is merged,
+  publishing the version bump, `CHANGELOG.md` update, and GitHub Release.
+
+### Local validation and dry-run (optional)
+
+- `pnpm run knope -- --validate` — check `knope.toml` is well-formed.
+- `pnpm run knope -- prepare-release --dry-run` — preview what a release PR
+  would contain without touching anything.
+
 ## Reporting bugs / requesting features
 
 Use the issue templates. For security vulnerabilities, see
