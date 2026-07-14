@@ -20,6 +20,17 @@ export default defineConfig({
 	// the project-site `/Charm` base makes every generated CSS/JS URL point at a
 	// non-existent path once the request reaches that custom-domain origin.
 	site: 'https://charm-docs.cloudhub.social',
+	// starlight-site-graph uses micromatch in its client-side preprocessing.
+	// Picomatch (one of micromatch's dependencies) reads these Node globals even
+	// in its browser bundle, which otherwise crashes graph hydration with
+	// `ReferenceError: process is not defined`. Replace only the two values it
+	// reads instead of shipping a general-purpose process polyfill.
+	vite: {
+		define: {
+			'process.platform': JSON.stringify('browser'),
+			'process.version': JSON.stringify('v20.0.0'),
+		},
+	},
 	integrations: [
 		// Uses D2.js (pure JS) rather than the D2 binary so CI doesn't need a
 		// separate D2 install step.
