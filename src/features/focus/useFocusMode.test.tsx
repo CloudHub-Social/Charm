@@ -109,6 +109,46 @@ describe("useFocusMode", () => {
     }
   });
 
+  it("ignores a stale setDndState confirmation that resolves after a newer request", async () => {
+    const { result } = renderHook(() => useFocusMode(), { wrapper });
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+
+    let resolveFirst!: (value: { enabled: boolean; until: number | null }) => void;
+    let resolveSecond!: (value: { enabled: boolean; until: number | null }) => void;
+    setDndState
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+
+    // Enable a preset, then immediately disable it — two overlapping calls.
+    act(() => result.current.enable(30 * 60_000));
+    act(() => result.current.disable());
+
+    await waitFor(() => expect(setDndState).toHaveBeenCalledTimes(2));
+
+    // The *later* request (disable) resolves first, then the *earlier*
+    // request (enable) resolves after it — its stale confirmation must not
+    // clobber the newer disable's confirmed state.
+    act(() => resolveSecond({ enabled: false, until: null }));
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+
+    act(() => resolveFirst({ enabled: true, until: Date.now() + 30 * 60_000 }));
+
+    // Give the stale resolution a tick to (incorrectly) apply if the bug
+    // were still present, then assert it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result.current.enabled).toBe(false);
+  });
+
   // Review fix: `invokeWeb` has no case for `get_dnd_state`/`set_dnd_state`
   // (falls to `unsupported(command)`, a rejected promise), so a caller that
   // renders on every platform — like `RoomList`'s chrome indicator, unlike

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { getDndState, onDndChanged, setDndState } from "@/lib/matrix";
 import { isTauri } from "@/lib/platform";
 
@@ -82,11 +82,22 @@ export function useFocusMode() {
     return () => clearTimeout(timer);
   }, [enabled, until, queryClient]);
 
+  // Review fix: rapid double-toggles (e.g. enable a preset then immediately
+  // disable) fire two overlapping setDndState calls; if the earlier one
+  // resolves after the later one, its `confirmed` response would overwrite
+  // the newer selection in the cache. `latestRequestId` tags each apply()
+  // call so a response only gets written back if it's still the most
+  // recent one in flight — a superseded response is silently dropped
+  // rather than fighting the newer optimistic/confirmed state.
+  const latestRequestId = useRef(0);
+
   const apply = (nextEnabled: boolean, nextUntil: number | null) => {
+    const requestId = ++latestRequestId.current;
     // Optimistic: the tray-menu path already feels instant, so the panel
     // toggle should too rather than waiting a round trip.
     queryClient.setQueryData(DND_QUERY_KEY, { enabled: nextEnabled, until: nextUntil });
     void setDndState(nextEnabled, nextUntil).then((confirmed) => {
+      if (requestId !== latestRequestId.current) return;
       queryClient.setQueryData(DND_QUERY_KEY, confirmed);
     });
   };
