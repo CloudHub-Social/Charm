@@ -88,7 +88,7 @@ jobs:
         shell: bash
         run: |
           if [[ "$(git rev-parse --abbrev-ref HEAD)" != "release" ]]; then
-            echo "Not on release branch — skipping amend."
+            echo "ERROR: expected to be on the release branch after 'knope prepare-release', but I'm not. Failing rather than amending or force-pushing from an unexpected branch."
             exit 1
           fi
 
