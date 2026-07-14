@@ -49,7 +49,9 @@ jobs:
     # 'secrets'"). Route it through a job-level env var instead, which
     # secrets *can* populate, and check that in the `if:` conditions below.
     env:
-      HAS_SPECS_KEY: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
+      # PR validation never needs the private specs and must not receive its
+      # deploy key. Trusted deploy events opt in when the key is configured.
+      HAS_SPECS_KEY: ${{ github.event_name != 'pull_request' && secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -62,7 +64,7 @@ jobs:
         if: ${{ env.HAS_SPECS_KEY == 'true' }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: CloudHub-Social/Knowledge-Platform
+          repository: Just-Insane/Knowledge-Platform
           ssh-key: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY }}
           sparse-checkout: |
             10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
