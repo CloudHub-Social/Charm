@@ -143,6 +143,28 @@ describe("feature-flag client", () => {
     expect(localStorage.getItem("charm:featureFlags")).toBeNull();
   });
 
+  it("restores the last confirmed overrides when the Tauri store becomes unreadable", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    const persisted = {
+      state: { overrides: { canary: true } },
+      updatedAt: 1,
+    };
+    const get = vi.fn().mockResolvedValueOnce(persisted).mockRejectedValue(new Error("offline"));
+    mocks.load.mockResolvedValue({
+      get,
+      set: vi.fn().mockRejectedValue(new Error("offline")),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    await expect(mod.setFeatureFlagOverride("canary", false)).rejects.toThrow("offline");
+
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
+    expect(mod.getFlag("canary")).toBe(true);
+  });
+
   it("reloads the durable store before rolling back a failed Tauri save", async () => {
     mocks.isTauri.mockReturnValue(true);
     let inMemory: unknown;
@@ -229,13 +251,14 @@ describe("feature-flag client", () => {
     mocks.load.mockResolvedValue(store);
 
     const { persistOverrides } = await import("./store");
-    await Promise.all([
+    const results = await Promise.all([
       persistOverrides({ canary: false }, 1),
       persistOverrides({ canary: true }, 2),
     ]);
 
     // Only the newest write reaches disk; the superseded one short-circuited.
     expect(saved).toEqual([{ canary: true }]);
+    expect(results).toEqual([false, true]);
   });
 
   it("useFlag returns the default then re-renders when an override is set", async () => {

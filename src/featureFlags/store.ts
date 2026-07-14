@@ -142,12 +142,12 @@ async function restoreUnsavedStoreValue(store: Store, previous: unknown): Promis
 export async function persistOverrides(
   overrides: FeatureFlagOverrides,
   updatedAt: number = Date.now(),
-): Promise<void> {
+): Promise<boolean> {
   const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = { state: { overrides }, updatedAt };
   if (!isTauri()) {
     writeLocalEnvelope(envelope);
-    return;
+    return true;
   }
 
   const durablePersist = durablePersistTail.then(async () => {
@@ -187,4 +187,5 @@ export async function persistOverrides(
       // remains the source Rust reads.
     }
   }
+  return persisted;
 }

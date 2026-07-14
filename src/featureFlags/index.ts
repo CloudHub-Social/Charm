@@ -16,6 +16,10 @@ export type { FeatureFlagDefinition } from "./catalog";
  * (the no-flag-flicker contract).
  */
 let overridesCache: FeatureFlagOverrides = {};
+// Only updated after initialization or a persistence call confirms that its
+// envelope reached durable state. Unlike the optimistic UI cache, this is safe
+// to restore after a later overlapping mutation fails.
+let persistedOverridesCache: FeatureFlagOverrides = {};
 let cacheMutationId = 0;
 const listeners = new Set<() => void>();
 
@@ -36,6 +40,7 @@ export async function initializeFeatureFlags(): Promise<void> {
   const persistedOverrides = await readOverrides();
   if (mutationId !== cacheMutationId) return;
   overridesCache = persistedOverrides;
+  persistedOverridesCache = persistedOverrides;
   emit();
 }
 
@@ -68,14 +73,13 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
   overridesCache = next;
   emit();
   try {
-    await persistOverrides(next);
+    if (await persistOverrides(next)) {
+      persistedOverridesCache = next;
+    }
   } catch (error) {
     if (mutationId === cacheMutationId) {
-      const persistedOverrides = await readOverrides();
-      if (mutationId === cacheMutationId) {
-        overridesCache = persistedOverrides;
-        emit();
-      }
+      overridesCache = persistedOverridesCache;
+      emit();
     }
     throw error;
   }
@@ -89,14 +93,13 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
   overridesCache = next;
   emit();
   try {
-    await persistOverrides(next);
+    if (await persistOverrides(next)) {
+      persistedOverridesCache = next;
+    }
   } catch (error) {
     if (mutationId === cacheMutationId) {
-      const persistedOverrides = await readOverrides();
-      if (mutationId === cacheMutationId) {
-        overridesCache = persistedOverrides;
-        emit();
-      }
+      overridesCache = persistedOverridesCache;
+      emit();
     }
     throw error;
   }
@@ -110,12 +113,14 @@ export function getFeatureFlagOverrides(): FeatureFlagOverrides {
 export const featureFlagTestHooks = {
   reset() {
     overridesCache = {};
+    persistedOverridesCache = {};
     cacheMutationId = 0;
     listeners.clear();
   },
   setCache(overrides: FeatureFlagOverrides) {
     cacheMutationId += 1;
     overridesCache = overrides;
+    persistedOverridesCache = overrides;
     emit();
   },
 };
