@@ -43,16 +43,35 @@ export function scrubSentryValue<T>(value: T, seen = new WeakSet<object>()): T {
   return output as T;
 }
 
+// Free-form value fields (message bodies, captions, file paths) are summarized
+// to a bare length below — see `summarizeString`'s doc comment for why. Error
+// text is different: it's diagnostic, not user content, so we keep the
+// scrubbed text itself (Matrix IDs/secrets already stripped) rather than
+// discarding it to a length tag, capped so a pathological error can't blow up
+// payload size.
+const MAX_SUMMARIZED_ERROR_LENGTH = 300;
+
+export function summarizeErrorText(value: string): string {
+  const scrubbed = scrubSensitiveText(value);
+  if (scrubbed.length <= MAX_SUMMARIZED_ERROR_LENGTH) return scrubbed;
+  return `${scrubbed.slice(0, MAX_SUMMARIZED_ERROR_LENGTH)}…[truncated, full length ${value.length}]`;
+}
+
 /**
- * Summarizes a string for breadcrumb/exception data instead of copying it
- * verbatim: `scrubSensitiveText` only recognizes specific shapes (a Matrix ID
- * with a `:server` suffix, a `key=value`/`key: value` secret pattern), so any
- * string that doesn't happen to match one of those — an ordinary message
- * body, a caption, a local file path, a colonless `$eventId` — would
- * otherwise be stored as-is. Returning a length-only (or
- * scrubbed-and-then-length-tagged) placeholder means no free-text or
- * PII-shaped value is ever recorded raw, regardless of whether we've
- * anticipated its field name or shape.
+ * Summarizes a string for breadcrumb/exception *value* fields (message
+ * bodies, captions, file paths, etc.) instead of copying it verbatim:
+ * `scrubSensitiveText` only recognizes specific shapes (a Matrix ID with a
+ * `:server` suffix, a `key=value`/`key: value` secret pattern), so any string
+ * that doesn't happen to match one of those — an ordinary message body, a
+ * caption, a local file path, a colonless `$eventId` — would otherwise be
+ * stored as-is. Returning a length-only (or scrubbed-and-then-length-tagged)
+ * placeholder means no free-text or PII-shaped value is ever recorded raw,
+ * regardless of whether we've anticipated its field name or shape.
+ *
+ * Error text goes through `summarizeErrorText` instead, which keeps the
+ * scrubbed content — diagnostic error strings are what actually make a
+ * captured exception useful, and they're far less likely to carry the kind of
+ * free-form user content this function is guarding against.
  */
 export function summarizeString(value: string): string {
   const scrubbed = scrubSensitiveText(value);
