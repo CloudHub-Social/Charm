@@ -188,6 +188,8 @@ export function RoomsScreen({
   useSettingsHashSync();
 
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
+  const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const focusedRoomId = activeRoom?.room_id ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -281,7 +283,7 @@ export function RoomsScreen({
         !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
-      setFocusedRoom(isShowingChat ? activeRoomId : null).catch(logAndIgnore);
+      setFocusedRoom(isShowingChat ? focusedRoomId : null).catch(logAndIgnore);
     }
     syncFocusedRoom();
     window.addEventListener("focus", syncFocusedRoom);
@@ -290,7 +292,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [activeRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
+  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -385,7 +387,6 @@ export function RoomsScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [joinedRooms, activeRoomId, deepLinkRoomId, acceptedRoomPendingSelection]);
 
-  const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;
   const selectedSpace =
     roomListMode === "space"
       ? (joinedRooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
@@ -435,7 +436,7 @@ export function RoomsScreen({
             onCreateJoin={() => setCreateJoinDialogOpen(true)}
           />
         }
-        activeRoomId={activeRoomId}
+        activeRoomId={activeRoom?.room_id ?? null}
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}
@@ -461,6 +462,7 @@ export function RoomsScreen({
           <ChatShell
             room={activeRoom}
             currentUserId={currentUserId}
+            onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
           />
         }

@@ -1,6 +1,7 @@
 import { MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { useEffect, type ReactNode } from "react";
 import { useSettingsNavigation } from "@/features/settings/useSettingsNavigation";
+import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "./useAdaptiveLayout";
 
 export type MobileView = "list" | "detail";
@@ -49,10 +50,11 @@ export function AppShell({
   isSettingsActive = false,
 }: AppShellProps) {
   const layout = useAdaptiveLayout();
+  const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
-    if (activeRoomId) onMobileViewChange("detail");
+    onMobileViewChange(activeRoomId ? "detail" : "list");
     // Depends on `selectionRequestId` too, not just `activeRoomId`:
     // re-selecting the already-active room from the list bumps the request
     // id without changing `activeRoomId`, and that reselection must still
@@ -73,7 +75,7 @@ export function AppShell({
 
   return (
     <div className="flex h-[100dvh] flex-col">
-      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:w-full [&>div]:border-l-0">
+      <div className="min-h-0 flex-1 overflow-hidden pt-[env(safe-area-inset-top)] [&>div]:h-full [&>div]:w-full [&>div]:border-l-0">
         {mobileView === "detail" && activeRoomId ? (
           (rightPanel ?? content)
         ) : (
@@ -83,29 +85,31 @@ export function AppShell({
           </div>
         )}
       </div>
-      <nav
-        className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
-        aria-label="Primary"
-      >
-        <button
-          type="button"
-          aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => onMobileViewChange("list")}
+      {(!mobileChatRedesignEnabled || mobileView === "list" || !activeRoomId) && (
+        <nav
+          className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
+          aria-label="Primary"
         >
-          <MessageSquare className="size-5" aria-hidden="true" />
-          Chats
-        </button>
-        <button
-          type="button"
-          aria-current={isSettingsActive ? "page" : undefined}
-          className="flex flex-1 flex-col items-center gap-1 py-2 text-xs"
-          onClick={() => openSettings("account")}
-        >
-          <SettingsIcon className="size-5" aria-hidden="true" />
-          Settings
-        </button>
-      </nav>
+          <button
+            type="button"
+            aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
+            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+            onClick={() => onMobileViewChange("list")}
+          >
+            <MessageSquare className="size-5" aria-hidden="true" />
+            Chats
+          </button>
+          <button
+            type="button"
+            aria-current={isSettingsActive ? "page" : undefined}
+            className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
+            onClick={() => openSettings("account")}
+          >
+            <SettingsIcon className="size-5" aria-hidden="true" />
+            Settings
+          </button>
+        </nav>
+      )}
     </div>
   );
 }
