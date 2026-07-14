@@ -130,7 +130,12 @@ describe("invokeMatrix", () => {
       newBody: "edited text",
       caption: "a caption nobody anticipated redacting by name",
       filePath: "/Users/alice/Documents/private-notes.txt",
-      eventId: "$colonless_event_id_without_a_server_suffix",
+      // Deliberately not shaped like anything the scrubber recognizes (not a
+      // `:server`-suffixed or long-enough colonless Matrix ID, not a
+      // key=value secret) — this field's whole point is to prove even an
+      // unrecognized shape is still summarized to a length tag, never copied
+      // verbatim.
+      eventId: "not-a-recognized-id-shape",
     });
 
     expect(mocks.addBreadcrumb).toHaveBeenCalledWith(
@@ -141,12 +146,28 @@ describe("invokeMatrix", () => {
             newBody: "[string:11]",
             caption: "[string:46]",
             filePath: "[string:40]",
-            eventId: "[string:43]",
+            eventId: "[string:25]",
           },
           // Nested objects beyond the top level collapse to their key list
           // rather than being summarized further, so a nested content field
           // like `preview` never gets to the point of being a string at all.
           result: { in_reply_to: { type: "object", keys: ["preview"] } },
+        }),
+      }),
+    );
+  });
+
+  it("summarizes a colonless Matrix event ID (opaque-hash format, no :server suffix) as redacted", async () => {
+    mocks.invoke.mockResolvedValueOnce({});
+
+    await invokeMatrix("get_timeline_page", {
+      eventId: "$colonless_event_id_without_a_server_suffix",
+    });
+
+    expect(mocks.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          args: { eventId: "[redacted-string:43]" },
         }),
       }),
     );

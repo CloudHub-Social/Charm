@@ -668,7 +668,13 @@ export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
  * Starts an outgoing SAS verification of another of this account's own
  * devices and returns the new flow id. Drives the same
  * `verification:request`/`verification:sas_update:*` events as an incoming
- * request — see `VerificationOverlay`.
+ * request — see `VerificationOverlay`. Captured on failure like most
+ * commands (unlike the neighboring device-management wrappers): the Rust
+ * command's "device not found" case doesn't interpolate the device ID into
+ * its error text (see `devices.rs`), so it's safe to keep default capture —
+ * and a genuine SDK/store/network failure from `get_device`/
+ * `request_verification` here is exactly the kind of regression Sentry
+ * should surface.
  */
 export function requestDeviceVerification(deviceId: string): Promise<string> {
   return invoke("request_device_verification", { deviceId });
