@@ -32,13 +32,23 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // Without that fallback, an unterminated value matches neither the quoted
 // branch (no closing quote) nor the unquoted branch (the leading quote isn't
 // a valid unquoted char), and slips through unredacted.
+// The field-name alternation ends with `[A-Za-z0-9]*secret` — a generic
+// catch-all for any field whose name simply *ends* in "secret"
+// (`client_secret`, `sharedSecret`, `shared_secret`, ...), mirroring
+// SECRET_FIELD_NAME_PATTERN below's `|secret)$` suffix. Without it, a
+// generic `*secret` field wasn't in the explicit list here (only the more
+// specific access_token/password/etc. names were), so a plain-text IPC
+// error like `client_secret=abc123` would reach summarizeErrorText's
+// scrubbed-but-kept captured-exception text unredacted, even though the
+// exact same field name on an object would already be redacted via
+// SECRET_FIELD_NAME_PATTERN.
 const SECRET_FIELD_PATTERN =
-  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*))/gi;
+  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
-// snake_case equivalents — see observability/ipc.ts's SENSITIVE_KEY_PATTERN,
-// which this mirrors.
+// snake_case equivalents. SECRET_FIELD_PATTERN above mirrors this list (plus
+// a generic `*secret` catch-all) for the free-text `key=value` case.
 const SECRET_FIELD_NAME_PATTERN =
   /(?:access[_-]?token|refresh[_-]?token|password|passphrase|recovery[_-]?key|secret[_-]?storage[_-]?key|session[_-]?key|secret)$/i;
 

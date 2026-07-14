@@ -11,6 +11,17 @@ describe("observability scrubbers", () => {
     );
   });
 
+  it("redacts generic *secret-suffixed fields, not just the explicitly named ones", () => {
+    expect(scrubSensitiveText("client_secret=abc123")).toBe("client_secret=[redacted]");
+    expect(scrubSensitiveText("sharedSecret=abc123")).toBe("sharedSecret=[redacted]");
+    expect(scrubSensitiveText('oidc_client_secret="abc 123"')).toBe(
+      'oidc_client_secret="[redacted]"',
+    );
+    // Sanity check the boundary: a field that merely contains "secret" as a
+    // substring but doesn't *end* with it shouldn't be swept up.
+    expect(scrubSensitiveText("not_a_secret_container=fine")).toBe("not_a_secret_container=fine");
+  });
+
   it("redacts a colonless Matrix event ID (newer opaque-hash format with no :server suffix)", () => {
     const text = "event $AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABC is not an m.room.message";
     expect(scrubSensitiveText(text)).toBe("event $[redacted] is not an m.room.message");
