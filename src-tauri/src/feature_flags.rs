@@ -95,6 +95,10 @@ define_feature_flag_keys!(
         /// under a message containing a URL, fetched via the homeserver's
         /// `/preview_url` endpoint.
         LinkPreviews,
+        /// Spec 32 room alias management: publish/unpublish an alias, set
+        /// the canonical alias, and add alternative aliases from room
+        /// settings.
+        RoomAliasManagement,
     }
 );
 
@@ -108,6 +112,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RichMessageRendering => false,
             FeatureFlagKey::MobileChatRedesign => false,
             FeatureFlagKey::LinkPreviews => false,
+            FeatureFlagKey::RoomAliasManagement => false,
         }
     }
 
@@ -130,6 +135,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::LinkPreviews => {
                 "Show an unfurled title/description/thumbnail card under messages containing a URL."
             }
+            FeatureFlagKey::RoomAliasManagement => {
+                "Manage room aliases and the canonical alias from room settings."
+            }
         }
     }
 
@@ -142,6 +150,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
             FeatureFlagKey::MobileChatRedesign => "Spec 52 (mobile chat UX)",
             FeatureFlagKey::LinkPreviews => "Spec 29 (link previews)",
+            FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
         }
     }
 
@@ -154,6 +163,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
             FeatureFlagKey::MobileChatRedesign => "mobile_chat_redesign",
             FeatureFlagKey::LinkPreviews => "link_previews",
+            FeatureFlagKey::RoomAliasManagement => "room_alias_management",
         }
     }
 }

@@ -800,6 +800,36 @@ export function unbanMember(roomId: string, userId: string, reason?: string): Pr
   return invoke("unban_member", { roomId, userId, reason });
 }
 
+/** Server-published (room-directory) aliases for `roomId` — distinct from `RoomDetails.canonical_alias`/`alt_aliases`. */
+export function getRoomLocalAliases(roomId: string): Promise<string[]> {
+  return invoke("get_room_local_aliases", { roomId });
+}
+
+/** Advisory pre-check before `addRoomAlias` — a `false` here should surface as "already in use"; a `true` doesn't guarantee the following create will still succeed (TOCTOU). */
+export function checkRoomAliasAvailable(alias: string): Promise<boolean> {
+  return invoke("check_room_alias_available", { alias });
+}
+
+/** Publishes `alias` in the homeserver's room directory. Does not set it as canonical — call `setCanonicalAlias` separately. */
+export function addRoomAlias(roomId: string, alias: string): Promise<void> {
+  return invoke("add_room_alias", { roomId, alias });
+}
+
+/** Unpublishes `alias` from the homeserver's room directory. Does not touch `m.room.canonical_alias`. */
+export function removeRoomAlias(alias: string): Promise<void> {
+  return invoke("remove_room_alias", { alias });
+}
+
+/** Sets or clears `m.room.canonical_alias`'s `alias` field. Pass `null` to clear. */
+export function setCanonicalAlias(roomId: string, alias: string | null): Promise<void> {
+  return invoke("set_canonical_alias", { roomId, alias });
+}
+
+/** Removes `alias` from `m.room.canonical_alias`'s `alt_aliases` list without touching the canonical `alias` field. */
+export function removeAltAlias(roomId: string, alias: string): Promise<void> {
+  return invoke("remove_alt_alias", { roomId, alias });
+}
+
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
 export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));

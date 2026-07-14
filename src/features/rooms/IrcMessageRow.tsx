@@ -102,9 +102,17 @@ export function IrcMessageRow({
                 )}
               />
             )}
-            {!message.media && !isUndecrypted && (
-              <LinkPreviewForMessage body={message.body} roomId={roomId} />
-            )}
+            {!message.media &&
+              !isUndecrypted && (
+                // Explicit block wrapper: unlike Bubble/Discord's rows, IRC's
+                // parent content div has no `flex-col` of its own (it's a
+                // single inline run of `[HH:MM] <nick> body`), so nothing else
+                // guarantees the preview card lands on its own line below the
+                // message text rather than immediately after it.
+                <div className="mt-0.5">
+                  <LinkPreviewForMessage body={message.body} roomId={roomId} />
+                </div>
+              )}
             {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
             {isError && <span className="ml-1 text-destructive">(failed to send)</span>}
             {message.edited && <span className="ml-1 text-muted-foreground">(edited)</span>}

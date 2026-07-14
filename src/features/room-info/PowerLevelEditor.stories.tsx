@@ -34,7 +34,10 @@ const BASE_DETAILS: RoomDetails = {
     invite: true,
     kick: true,
     ban: true,
+    set_canonical_alias: true,
   },
+  canonical_alias: null,
+  alt_aliases: [],
 };
 
 const meta = {

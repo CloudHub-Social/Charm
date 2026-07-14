@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomSettingsModal } from "./RoomSettingsModal";
 import { roomSettingsAtom } from "./roomInfoAtoms";
 import { makeRoomDetails } from "./testUtils";
@@ -11,6 +11,12 @@ import { QueryClient } from "@tanstack/react-query";
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
+
+const featureFlagMocks = vi.hoisted(() => ({ roomAliasManagement: false }));
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) =>
+    key === "room_alias_management" ? featureFlagMocks.roomAliasManagement : false,
 }));
 
 const getRoomDetails = vi.fn();
@@ -32,6 +38,21 @@ vi.mock("@/lib/matrix", () => ({
   inviteMember: vi.fn().mockResolvedValue(undefined),
   kickMember: vi.fn().mockResolvedValue(undefined),
   banMember: vi.fn().mockResolvedValue(undefined),
+  // Needed once `room_alias_management` is on and `RoomSettingsForm` mounts
+  // `RoomAliasManagement`, which calls these directly (not just via
+  // `useRoomAdminActions`) — see that component's `useProfile`/alias-list
+  // queries.
+  getRoomLocalAliases: vi.fn().mockResolvedValue([]),
+  checkRoomAliasAvailable: vi.fn().mockResolvedValue(true),
+  addRoomAlias: vi.fn().mockResolvedValue(undefined),
+  removeRoomAlias: vi.fn().mockResolvedValue(undefined),
+  setCanonicalAlias: vi.fn().mockResolvedValue(undefined),
+  removeAltAlias: vi.fn().mockResolvedValue(undefined),
+  getProfile: vi.fn().mockResolvedValue({
+    user_id: "@me:example.org",
+    display_name: null,
+    avatar_url: null,
+  }),
   unbanMember: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -54,6 +75,43 @@ function renderModal(
 }
 
 describe("RoomSettingsModal", () => {
+  beforeEach(() => {
+    featureFlagMocks.roomAliasManagement = false;
+  });
+
+  it("falls back to the room id (not the canonical alias) for an unnamed room when room_alias_management is off", async () => {
+    const details = makeRoomDetails({
+      name: null,
+      canonical_alias: "#design:example.org",
+      room_id: "!design-team:example.org",
+    });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+
+    expect(await screen.findByText("!design-team:example.org")).toBeInTheDocument();
+    expect(screen.queryByText("#design:example.org")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the canonical alias for an unnamed room once room_alias_management is on", async () => {
+    featureFlagMocks.roomAliasManagement = true;
+    const details = makeRoomDetails({
+      name: null,
+      canonical_alias: "#design:example.org",
+      room_id: "!design-team:example.org",
+    });
+    getRoomDetails.mockResolvedValue(details);
+
+    renderModal({ roomId: details.room_id, section: "general" });
+
+    // With the flag on, `RoomAliasManagement` also renders and its own
+    // canonical-alias trigger button shows the same alias text, so scope
+    // this assertion to the modal's title specifically.
+    expect(
+      await screen.findByText("#design:example.org", { selector: "span.truncate" }),
+    ).toBeInTheDocument();
+  });
+
   it("is closed when no room settings target is set", () => {
     renderModal(null);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
