@@ -105,6 +105,7 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
   });
 
   it("shows the right panel instead of chat content in mobile detail view when it's open", () => {

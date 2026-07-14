@@ -92,7 +92,7 @@ export function AppShell({
         >
           <button
             type="button"
-            aria-current={!isSettingsActive ? "page" : undefined}
+            aria-current={mobileView === "list" && !isSettingsActive ? "page" : undefined}
             className="flex min-h-12 flex-1 flex-col items-center justify-center gap-0.5 py-1 text-xs"
             onClick={() => onMobileViewChange("list")}
           >

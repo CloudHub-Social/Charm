@@ -15,6 +15,15 @@ const ROOM = { room_id: "!e2e:localhost", name: "E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { mobile_chat_redesign: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",

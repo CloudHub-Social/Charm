@@ -7,6 +7,15 @@ const LONG_ROOM_NAME =
 
 test.beforeEach(async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { mobile_chat_redesign: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: "@mobile:localhost",
     deviceId: "MOBILE_E2E",
