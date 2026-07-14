@@ -183,17 +183,17 @@ describe("LoginScreen default homeserver URL", () => {
     expect(screen.getByLabelText("Homeserver")).toHaveValue("https://matrix.example.org");
   });
 
-  it("falls back to the localhost default when the env var is unset", () => {
+  it("falls back to the cloudhub.social default when the env var is unset", () => {
     render(<LoginScreen onSignedIn={vi.fn()} />);
 
-    expect(screen.getByLabelText("Homeserver")).toHaveValue("http://localhost:8008");
+    expect(screen.getByLabelText("Homeserver")).toHaveValue("https://cloudhub.social");
   });
 
-  it("falls back to the localhost default when the env var is an empty string", () => {
+  it("falls back to the cloudhub.social default when the env var is an empty string", () => {
     vi.stubEnv("VITE_CHARM_DEFAULT_HOMESERVER_URL", "");
 
     render(<LoginScreen onSignedIn={vi.fn()} />);
 
-    expect(screen.getByLabelText("Homeserver")).toHaveValue("http://localhost:8008");
+    expect(screen.getByLabelText("Homeserver")).toHaveValue("https://cloudhub.social");
   });
 });
