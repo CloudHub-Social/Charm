@@ -97,6 +97,9 @@ describe("refreshRemoteFlags", () => {
     // Durable write failed → the frontend must stay consistent with the file
     // Rust reads (default), not the not-yet-persisted remote value.
     expect(mod.getFlag("canary")).toBe(false);
+    // And the localStorage mirror must not be written either, or it would win
+    // (newer timestamp) on the next launch and diverge from the durable file.
+    expect(localStorage.getItem("charm:featureFlagsRemote")).toBeNull();
   });
 });
 

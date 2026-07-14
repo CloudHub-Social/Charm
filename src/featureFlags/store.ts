@@ -272,12 +272,18 @@ export async function persistRemoteFlags(
   updatedAt: number = Date.now(),
 ): Promise<boolean> {
   const envelope: RemoteEnvelope = { state: { remote }, updatedAt };
-  try {
-    localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
-  } catch {
-    // Best-effort mirror.
+  const writeMirror = () => {
+    try {
+      localStorage.setItem(FEATURE_FLAGS_REMOTE_LOCAL_STORAGE_KEY, JSON.stringify(envelope));
+    } catch {
+      // Best-effort mirror.
+    }
+  };
+  if (!isTauri()) {
+    // No native store here — localStorage is the durable location.
+    writeMirror();
+    return true;
   }
-  if (!isTauri()) return true;
 
   const task = durablePersistTail.then(async () => {
     const store = await getStore();
@@ -290,10 +296,16 @@ export async function persistRemoteFlags(
     () => undefined,
     () => undefined,
   );
+  let persisted = false;
   try {
-    return await task;
+    persisted = await task;
   } catch {
     // Keep the previous durable cache; Rust and the next launch fall back to it.
-    return false;
+    persisted = false;
   }
+  // Mirror only after the durable write lands — otherwise a failed save would
+  // leave a newer-timestamped localStorage entry that `readRemoteFlags` prefers
+  // on the next launch, diverging from the file the Rust core reads.
+  if (persisted) writeMirror();
+  return persisted;
 }
