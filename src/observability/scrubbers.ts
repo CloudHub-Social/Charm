@@ -8,18 +8,21 @@ const MXC_URI_PATTERN = /mxc:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~-]+/g;
 // broad (any http(s) URL) since a false positive just redacts a harmless URL,
 // while a false negative leaks a self-hosted homeserver's address.
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
-// The value branch matches, in order: a fully-quoted string (including
-// embedded spaces — a multi-word passphrase like
-// `password="correct horse battery"` must not leak everything after the
-// first space), an unquoted run of non-delimiter characters, or — falling
-// back when neither matched — an *unterminated* quoted value (an opening
-// quote with no closing quote, e.g. a diagnostic string truncated
-// mid-value like `access_token="abc123`). Without that fallback, an
-// unterminated value matches neither the quoted branch (no closing quote)
-// nor the unquoted branch (the leading quote isn't a valid unquoted char),
-// and slips through unredacted.
+// The value branch matches, in order: a fully-quoted string — allowing a
+// backslash-escaped quote inside (`(?:[^"\\]|\\.)*`) so a JSON-ish escaped
+// quote in the middle of a secret (`password="abc\"tail"`) doesn't get
+// treated as the closing quote, leaking the rest (`tail"`); an unquoted run
+// of non-delimiter characters, which also excludes `[`/`{` (in addition to
+// `]`/`}`) so a value that already contains an already-redacted URL
+// placeholder like `https://[redacted]` doesn't get partially re-matched and
+// leave a stray bracket behind; or — falling back when neither matched — an
+// *unterminated* quoted value (an opening quote with no closing quote, e.g.
+// a diagnostic string truncated mid-value like `access_token="abc123`).
+// Without that fallback, an unterminated value matches neither the quoted
+// branch (no closing quote) nor the unquoted branch (the leading quote isn't
+// a valid unquoted char), and slips through unredacted.
 const SECRET_FIELD_PATTERN =
-  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey)["']?\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'\s,}\]]+)|"([^"\s,}\]]*)|'([^'\s,}\]]*))/gi;
+  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their

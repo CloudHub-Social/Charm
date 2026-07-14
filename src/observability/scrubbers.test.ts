@@ -37,6 +37,24 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText("session_key='abc123")).toBe("session_key='[redacted]");
   });
 
+  it("redacts a quoted secret containing an escaped quote instead of stopping early", () => {
+    expect(scrubSensitiveText('password="abc\\"tail"')).toBe('password="[redacted]"');
+  });
+
+  it("doesn't re-match an already-redacted URL placeholder and leave a stray bracket or leak the host", () => {
+    // scrubUrls runs first and replaces the URL with the literal text
+    // `https://[redacted]`. Before excluding `[`/`{` from the unquoted
+    // value's character class, scrubSecrets would then partially re-match
+    // into that placeholder (stopping at the `]` inside it) and leave a
+    // stray, mangled `[redacted]]` behind. The important property is no
+    // leaked host and no malformed trailing bracket — not a specific
+    // cosmetic string, since the two independent passes both use literal
+    // `[`/`]` text.
+    const result = scrubSensitiveText("access_token=https://example.com");
+    expect(result).not.toContain("example.com");
+    expect(result).not.toMatch(/]]/);
+  });
+
   it("reports the scrubbed (not original) length when truncating error text", () => {
     const value = `password="${"x".repeat(400)}"`;
     const result = summarizeErrorText(value);
