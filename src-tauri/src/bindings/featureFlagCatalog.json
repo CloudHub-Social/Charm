@@ -22,5 +22,11 @@
     "default": false,
     "description": "Use the compact mobile-first room header, composer, and chat navigation.",
     "owner": "Spec 52 (mobile chat UX)"
+  },
+  {
+    "key": "room_alias_management",
+    "default": false,
+    "description": "Manage room aliases and the canonical alias from room settings.",
+    "owner": "Spec 32 (room alias management)"
   }
 ]
