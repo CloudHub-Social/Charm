@@ -8,8 +8,9 @@ name: Docs deploy
 # The Charm 2.0 specs (docs-site's "Specs" section) live in a private vault
 # repo (Knowledge-Platform), not here — so a push-based trigger scoped to
 # this repo can't pick up spec-only edits. Runs on push to main (this
-# repo's docs changes), on a daily schedule (spec-only edits), and on
-# manual dispatch.
+# repo's docs changes), after the Release workflow publishes a GitHub Release,
+# on docs pull requests (build-only), on a daily schedule (spec-only edits),
+# and on manual dispatch.
 
 on:
   push:
@@ -18,22 +19,29 @@ on:
       - "docs-site/**"
       - ".github/workflows/docs-deploy.yml"
       - "CHANGELOG.md"
+  pull_request:
+    paths:
+      - "docs-site/**"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  # PR verification must not block or cancel a production Pages deployment.
+  group: pages-${{ github.event.pull_request.number || 'deploy' }}
   cancel-in-progress: false
 
 jobs:
   build:
     name: Build
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     # Step-level `if:` conditions can't reference the `secrets` context
     # directly (GitHub Actions rejects the workflow at parse time — a
@@ -98,15 +106,21 @@ jobs:
         run: pnpm build
 
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: docs-site/dist
 
   deploy:
     name: Deploy
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

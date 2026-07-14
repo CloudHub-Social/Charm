@@ -33,9 +33,13 @@ A `New feature` PR must check the feature-flag box in the PR template; a bug
 fix/refactor marks it `N/A: <reason>`; a docs/internal/chore PR applies the
 `internal` label to skip the gate.
 
-The remote rollout layer (GO Feature Flag / OFREP for kill-switch and staged
-rollout) is a follow-up increment — until it lands, flags are controlled by
-catalog defaults plus local overrides.
+The remote rollout layer is live through GO Feature Flag's OFREP protocol.
+Desktop and mobile builds proxy evaluations through the Rust core because the
+webview CSP blocks direct external requests; web builds call the public proxy
+directly. Evaluations are cached as last-known-good state in
+`feature-flags.json`, while local Labs overrides remain the highest-precedence
+layer. If the proxy is unavailable or returns invalid data, Charm fails open to
+the cached remote value and then the catalog default.
 
 For the full how-to, see
 [`docs/FEATURE_FLAGS.md`](https://github.com/CloudHub-Social/Charm/blob/main/docs/FEATURE_FLAGS.md)
