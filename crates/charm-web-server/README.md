@@ -53,11 +53,21 @@ server.md`.
 - **Encrypted-at-rest session persistence** (`persistence.rs`) — sessions
   are now the spec's recommended option 2: AES-256-GCM-encrypted, keyed by
   `CHARM_WEB_SERVER_MASTER_KEY` (a deployer-provided base64 32-byte key; see
-  the module doc comment), persisted to
-  `<CHARM_WEB_SERVER_DATA_DIR>/sessions.enc.json`, and restored at startup
-  under their original session-cookie token so a restart doesn't force a
-  re-login. Opt-in: with no master key set, sessions fall back to sub-PR A's
+  the module doc comment), persisted as one object per opaque session token,
+  and restored at startup under their original cookie so a restart doesn't
+  force a re-login. AES-GCM associated data binds every ciphertext to its
+  token-derived object path; the decrypted token is checked again on read,
+  so a bucket writer cannot relocate one valid session onto another token.
+  Opt-in: with no master key set, sessions fall back to sub-PR A's
   in-memory-only behavior rather than refusing to start.
+- **Durable web crypto snapshots** (`crypto_backup.rs`) — the irreplaceable
+  `matrix-sdk-crypto.sqlite3` database is copied with SQLite's online-backup
+  API, independently AES-256-GCM encrypted, and committed to a separate
+  private Spaces bucket. Snapshot authentication binds the cookie-token
+  hash, Matrix user/device, random crypto-store id, generation, and filename.
+  Recovery-key import creates an immediate snapshot; active sessions refresh
+  every five minutes and again during graceful shutdown. Room/state/media
+  caches are intentionally excluded because the homeserver can rebuild them.
 - **Media resolution, attachment upload, avatar upload** — bytes-based web
   equivalents of desktop's file-path-based commands (`resolve_message_media`,
   `send_attachment`, `set_avatar`/`remove_avatar` in `routes.rs`), reusing
@@ -94,14 +104,6 @@ server.md`.
   (`sync_loop::start_sas_verification`).
 
 ## Still deferred
-
-- **The Olm/Megolm crypto store isn't persisted, only the `MatrixSession`
-  token.** See `persistence.rs`'s module doc comment ("Known gap") for the
-  full explanation and what fixing it properly requires (a per-account
-  encrypted `matrix-sdk-sqlite` store, same shape as desktop's
-  `matrix_store/`). A restart currently keeps a browser's cookie/login
-  working but loses that session's previously-learned room keys and
-  verification/trust state.
 - **No idle/abandoned-session expiry.** A session's sync loop (and the
   presence-online it sets) runs indefinitely until an explicit logout — a
   closed browser tab, or a restored-at-startup session nobody ever
@@ -133,8 +135,6 @@ server.md`.
   design, not just a route wrapper around the existing `_impl` functions the
   rest of this crate reuses. Left out rather than shipped half-adapted;
   pick up as its own slice.
-- **Deployment to `matrix-vps`** — see the Deployment section below; not
-  attempted as part of either sub-PR.
 - **Media download size isn't capped during download, only after.**
   `resolve_message_media` checks the resolved file's actual on-disk size
   against `MAX_ATTACHMENT_UPLOAD_BYTES` only once `resolve_media_impl` has
@@ -174,9 +174,43 @@ this in a production deployment that's actually behind TLS.
   (`openssl rand -base64 32`), enabling encrypted-at-rest session
   persistence (see `persistence.rs`'s module doc comment). Unset by default
   — sessions are in-memory only (sub-PR A behavior) until this is set.
-- `CHARM_WEB_SERVER_DATA_DIR` — where `sessions.enc.json` and the media
-  cache live (default `./data`). Only relevant when `CHARM_WEB_SERVER_MASTER_KEY`
-  is set.
+- `CHARM_WEB_SERVER_DATA_DIR` — local backing data, media cache, and live
+  Matrix SDK stores (default `./data`). App Platform's copy is ephemeral;
+  sessions and durable crypto snapshots use their respective Spaces buckets.
+
+### Durable crypto snapshot env vars
+
+- `CHARM_WEB_SERVER_CRYPTO_SPACES_BUCKET`, `_REGION`, `_ENDPOINT`,
+  `_ACCESS_KEY_ID`, and `_SECRET_ACCESS_KEY` — a separate private,
+  bucket-scoped Spaces destination. Configuring the bucket makes all sibling
+  values and encrypted session persistence mandatory; startup fails closed
+  if any are absent.
+- `CHARM_WEB_SERVER_DOPPLER_TOKEN` — read-only service token restricted to
+  the single Doppler config containing `CHARM_WEB_SERVER_CRYPTO_BACKUP_KEY`.
+  The server fetches only that named secret over HTTPS at startup and keeps
+  it in process memory. Do not use Doppler's App Platform sync for this key.
+- `CHARM_WEB_SERVER_CRYPTO_BACKUP_KEY` — direct base64 32-byte key override
+  for local development/tests. Production should leave it unset and use the
+  Doppler token so the backup key is never stored in App Platform config.
+
+The Spaces credential authorizes object access; it is not an encryption key.
+A bucket-only compromise exposes ciphertext and permits deletion/replay, not
+decryption or cross-session relocation. A compromised running process can
+still access plaintext by design, because it must restore Matrix state.
+
+#### Rotation and retention
+
+Rotate the Spaces credential independently by adding the replacement to App
+Platform, redeploying, verifying a snapshot, then revoking the old key. To
+rotate the crypto backup key without invalidating existing snapshots, first
+deploy dual-key read support and rewrite every manifest/database generation;
+never replace the Doppler value in place before that migration exists.
+The server retains the three newest committed generations and deletes older
+committed generations after each successful snapshot. Each generation's
+encrypted `manifest.json` is its commit marker, and restore chooses the newest
+complete generation. Logout deletes all generations best-effort. An optional
+bucket lifecycle expiry can clean up objects left by interrupted uploads, but
+its age also becomes the maximum lifetime of a dormant session's last backup.
 
 ### Observability (Sentry) env vars
 
@@ -225,18 +259,14 @@ headless backend process with a single operator-controlled opt-in gate.
   port, or a separately-hosted production frontend) — otherwise the browser
   blocks every response for lacking `Access-Control-Allow-Origin`.
 
-## Deployment (not done as part of this PR — flagged as a manual follow-up)
+## Deployment
 
-Per the spec's Deployment topology: this runs as another persistent process
-on the existing `matrix-vps` (`matrix-cloudhub-1.cloudhub.social`), alongside
-Synapse/Dex/MAS — either another `docker-compose` service or a systemd unit,
-matching how that stack already runs. No Cloudflare Containers spike (that's
-explicitly shelved in the spec). This PR does not deploy anything live —
-confirm VPS capacity and add the compose service/systemd unit as a separate,
-deliberate change. This repository currently does not include that production
-compose/systemd configuration, so this README is the checked-in deployment
-contract: every real deployment must set `CHARM_WEB_SERVER_ALLOWED_ORIGIN`
-explicitly to the trusted frontend origin(s).
+The production service runs on DigitalOcean App Platform from `.do/app.yaml`.
+GitHub Actions merges that checked-in spec with live secret values and creates
+an explicit deployment after `main` passes its checks. Session records and
+crypto snapshots use separate private Spaces buckets because App Platform's
+local filesystem is ephemeral. The one-time bucket, scoped-key, Doppler token,
+and lifecycle setup is documented at the top of `.do/app.yaml`.
 
 ## Testing
 

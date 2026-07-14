@@ -1342,6 +1342,7 @@ dependencies = [
  "object_store",
  "rand 0.10.2",
  "reqwest 0.13.4",
+ "rusqlite",
  "sentry",
  "sentry-tower",
  "serde",
