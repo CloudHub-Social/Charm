@@ -195,6 +195,11 @@ export function RoomsScreen({
 
   async function handleDeclineInvite(roomId: string) {
     await declineInvite(roomId);
+    // A deep link to an invite deliberately suppresses the normal initial
+    // room selection while that invite is actionable. Once it is declined,
+    // release the guard before publishing the refreshed snapshot so the
+    // first joined room can fill the otherwise-empty detail pane.
+    autoSelectSuppressedRef.current = false;
     await refreshRooms();
   }
 

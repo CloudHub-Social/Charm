@@ -361,6 +361,41 @@ describe("RoomsScreen", () => {
     expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
   });
 
+  it("auto-selects a joined room after declining a deep-linked invite", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms.mockReset().mockResolvedValueOnce([invite, joined]).mockResolvedValueOnce([joined]);
+    const onDeepLinkConsumed = vi.fn();
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: `decline:${invite.room_id}` }));
+
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
+  });
+
   it("consumes a deep link to a room absent from the loaded snapshot", async () => {
     const onDeepLinkConsumed = vi.fn();
 
