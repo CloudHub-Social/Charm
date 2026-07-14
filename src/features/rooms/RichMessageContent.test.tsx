@@ -70,12 +70,15 @@ describe("RichMessageContent", () => {
           '<pre><code class="language-json">{&quot;charm&quot;:true}</code></pre>',
           '<pre><code class="language-rust">let charm = true;</code></pre>',
           '<pre><code class="language-ts">const charm: boolean = true;</code></pre>',
+          '<pre><code class="language-JavaScript">const mixedCase = true;</code></pre>',
         ].join("")}
         currentUserId="@me:localhost"
       />,
     );
 
-    await waitFor(() => expect(container.querySelectorAll("code[data-language]")).toHaveLength(5));
+    await waitFor(() => expect(container.querySelectorAll("code[data-language]")).toHaveLength(6));
+    const mixedCaseCode = container.querySelector('code[data-language="javascript"]');
+    expect(mixedCaseCode).toHaveTextContent("const mixedCase = true;");
   });
 
   it("wraps tables for horizontal scrolling and styles cells", () => {

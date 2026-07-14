@@ -134,11 +134,15 @@ async function highlightCode(code: string, language: string | null): Promise<Hig
     typescript: () => import("highlight.js/lib/languages/typescript"),
     xml: () => import("highlight.js/lib/languages/xml"),
   };
-  const load = loaders[language.toLowerCase()];
+  const normalizedLanguage = language.toLowerCase();
+  const load = loaders[normalizedLanguage];
   if (!load) return { html: null, language: null };
-  core.registerLanguage(language, (await load()).default);
+  core.registerLanguage(normalizedLanguage, (await load()).default);
   await import("highlight.js/styles/github-dark.css");
-  return { html: core.highlight(code, { language }).value, language };
+  return {
+    html: core.highlight(code, { language: normalizedLanguage }).value,
+    language: normalizedLanguage,
+  };
 }
 
 function CodeBlock({ code, language }: { code: string; language: string | null }) {
@@ -158,9 +162,14 @@ function CodeBlock({ code, language }: { code: string; language: string | null }
   }, [code, language]);
 
   async function copyCode() {
-    await navigator.clipboard?.writeText(code);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch (error) {
+      logAndIgnore(error);
+    }
   }
 
   return (
