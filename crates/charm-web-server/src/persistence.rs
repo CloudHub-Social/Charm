@@ -895,6 +895,7 @@ async fn build_client_for_restore(
     else {
         return matrix_sdk::Client::builder()
             .server_name_or_homeserver_url(&entry.homeserver_url)
+            .with_encryption_settings(charm_lib::matrix::auth::client_encryption_settings())
             .build()
             .await
             .map_err(|e| e.to_string());
@@ -934,6 +935,7 @@ async fn build_client_for_restore(
     };
     matrix_sdk::Client::builder()
         .server_name_or_homeserver_url(&entry.homeserver_url)
+        .with_encryption_settings(charm_lib::matrix::auth::client_encryption_settings())
         .sqlite_store(&dir, Some(passphrase.as_str()))
         .build()
         .await

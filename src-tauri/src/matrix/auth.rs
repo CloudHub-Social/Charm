@@ -2,6 +2,7 @@
 //! and session restore. QR login is its own module (`qr_login`) — its
 //! multi-stage device-code flow doesn't fit this file's shape.
 
+use matrix_sdk::encryption::{BackupDownloadStrategy, EncryptionSettings};
 use matrix_sdk::ruma::api::client::account::register;
 use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy};
 use matrix_sdk::store::RoomLoadSettings;
@@ -424,6 +425,18 @@ pub(crate) async fn build_client(
     build_client_at(&store_root, homeserver_url, store_key).await
 }
 
+/// Encryption behavior shared by every live desktop and web client.
+///
+/// Missing Megolm sessions are fetched from server-side key backup only after
+/// decryption fails. This keeps recovery useful without the unbounded all-key
+/// download performed by [`BackupDownloadStrategy::OneShot`].
+pub fn client_encryption_settings() -> EncryptionSettings {
+    EncryptionSettings {
+        backup_download_strategy: BackupDownloadStrategy::AfterDecryptionFailure,
+        ..Default::default()
+    }
+}
+
 pub(crate) async fn build_client_at(
     store_root: &std::path::Path,
     homeserver_url: &str,
@@ -453,6 +466,7 @@ pub(crate) async fn build_client_with_store_passphrase(
 ) -> Result<Client, String> {
     Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
+        .with_encryption_settings(client_encryption_settings())
         .sqlite_store(store_path, Some(passphrase))
         .build()
         .await
@@ -466,6 +480,7 @@ pub(crate) async fn build_persisted_client_with_store_passphrase(
 ) -> Result<Client, String> {
     Client::builder()
         .homeserver_url(homeserver_url)
+        .with_encryption_settings(client_encryption_settings())
         .sqlite_store(store_path, Some(passphrase))
         .build()
         .await
@@ -731,6 +746,21 @@ mod sso_state_tests {
     #[test]
     fn returns_none_for_a_malformed_url() {
         assert_eq!(extract_sso_callback_state("not a url at all"), None);
+    }
+}
+
+#[cfg(test)]
+mod encryption_settings_tests {
+    use matrix_sdk::encryption::BackupDownloadStrategy;
+
+    use super::client_encryption_settings;
+
+    #[test]
+    fn missing_room_keys_are_downloaded_after_decryption_failure() {
+        assert_eq!(
+            client_encryption_settings().backup_download_strategy,
+            BackupDownloadStrategy::AfterDecryptionFailure
+        );
     }
 }
 
