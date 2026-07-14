@@ -17,6 +17,23 @@ const getProfile = vi.fn().mockResolvedValue({
 });
 
 vi.mock("@/lib/matrix", () => ({
+  // `useRoomAdminActions` (used by `RoomAliasManagement`) unconditionally
+  // builds mutations for the full room-admin surface, not just aliases —
+  // stub the rest as never-called functions so importing it doesn't depend
+  // on which of its wrappers this suite happens to exercise.
+  setRoomName: vi.fn(),
+  setRoomTopic: vi.fn(),
+  setRoomAvatar: vi.fn(),
+  removeRoomAvatar: vi.fn(),
+  setRoomJoinRule: vi.fn(),
+  setRoomHistoryVisibility: vi.fn(),
+  enableRoomEncryption: vi.fn(),
+  setMemberPowerLevel: vi.fn(),
+  setRoomPowerLevelThresholds: vi.fn(),
+  inviteMember: vi.fn(),
+  kickMember: vi.fn(),
+  banMember: vi.fn(),
+  unbanMember: vi.fn(),
   getRoomLocalAliases: (...args: unknown[]) => getRoomLocalAliases(...args),
   checkRoomAliasAvailable: (...args: unknown[]) => checkRoomAliasAvailable(...args),
   addRoomAlias: (...args: unknown[]) => addRoomAlias(...args),

@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useFlag } from "@/featureFlags";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { cn } from "@/lib/utils";
 import { roomSettingsAtom, type RoomSettingsSection } from "./roomInfoAtoms";
@@ -40,6 +41,7 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
   // matching `AppShell`'s existing sidebar-vs-bottom-nav breakpoint.
   const layout = useAdaptiveLayout();
   const isMobile = layout === "mobile";
+  const roomAliasManagementEnabled = useFlag("room_alias_management");
 
   return (
     <Dialog open={target !== null} onOpenChange={(open) => !open && setTarget(null)}>
@@ -99,8 +101,10 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
               >
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <span className="truncate text-base font-bold text-foreground">
-                    {/* Prefer the room name, then a canonical alias (Spec 32), over the raw room id — the id is the least human-readable fallback. */}
-                    {details.name ?? details.canonical_alias ?? details.room_id}
+                    {/* Prefer the room name, then (behind the room_alias_management flag) a canonical alias (Spec 32), over the raw room id — the id is the least human-readable fallback. */}
+                    {details.name ??
+                      (roomAliasManagementEnabled ? details.canonical_alias : null) ??
+                      details.room_id}
                   </span>
                   <button
                     type="button"

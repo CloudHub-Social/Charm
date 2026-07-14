@@ -56,6 +56,7 @@ vi.mock("@/lib/matrix", () => ({
   addRoomAlias: vi.fn().mockResolvedValue(undefined),
   removeRoomAlias: vi.fn().mockResolvedValue(undefined),
   setCanonicalAlias: vi.fn().mockResolvedValue(undefined),
+  removeAltAlias: vi.fn().mockResolvedValue(undefined),
   getProfile: vi.fn().mockResolvedValue({
     user_id: "@me:example.org",
     display_name: null,
