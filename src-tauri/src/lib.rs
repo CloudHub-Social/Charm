@@ -795,6 +795,21 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             const MINUTE_MS: i64 = 60_000;
             let now = matrix::dnd::now_ms();
+            // Review fix: the tray menu itself is only built once at startup
+            // (`tray_items`/`focus_mode_enabled` above), so a flag flip while
+            // the app is running can't rebuild/remove the Focus submenu —
+            // it'd take a restart. Re-checking the flag fresh here, right
+            // before an "enable DND" action actually applies, means a
+            // still-visible-but-stale menu item can no longer turn DND back
+            // on once the flag is off, closing the gap the review flagged.
+            // "dnd_off" is deliberately exempt: it's the off-ramp itself
+            // (same reasoning as `SettingsScreen`'s Focus-tab off-ramp), and
+            // must keep working regardless of the flag so a user with DND
+            // already on from before the flag was disabled can still turn it
+            // off from the tray.
+            let focus_mode_still_enabled = app.path().app_data_dir().is_ok_and(|dir| {
+                feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode)
+            });
             match event.id.as_ref() {
                 "show" => {
                     if let Some(window) = app.get_webview_window("main") {
@@ -802,28 +817,28 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
                         let _ = window.set_focus();
                     }
                 }
-                "dnd_30m" => matrix::dnd::apply(
+                "dnd_30m" if focus_mode_still_enabled => matrix::dnd::apply(
                     app,
                     matrix::dnd::DndState {
                         enabled: true,
                         until: Some(now + 30 * MINUTE_MS),
                     },
                 ),
-                "dnd_1h" => matrix::dnd::apply(
+                "dnd_1h" if focus_mode_still_enabled => matrix::dnd::apply(
                     app,
                     matrix::dnd::DndState {
                         enabled: true,
                         until: Some(now + 60 * MINUTE_MS),
                     },
                 ),
-                "dnd_8h" => matrix::dnd::apply(
+                "dnd_8h" if focus_mode_still_enabled => matrix::dnd::apply(
                     app,
                     matrix::dnd::DndState {
                         enabled: true,
                         until: Some(now + 8 * 60 * MINUTE_MS),
                     },
                 ),
-                "dnd_indefinite" => matrix::dnd::apply(
+                "dnd_indefinite" if focus_mode_still_enabled => matrix::dnd::apply(
                     app,
                     matrix::dnd::DndState {
                         enabled: true,
