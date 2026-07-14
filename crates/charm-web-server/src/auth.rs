@@ -5,7 +5,8 @@
 //! is configured.
 
 use charm_lib::matrix::auth::{
-    register_with_dummy_auth, LoginRequest, LoginResponse, RegisterRequest,
+    client_encryption_settings, register_with_dummy_auth, LoginRequest, LoginResponse,
+    RegisterRequest,
 };
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::Client;
@@ -27,6 +28,7 @@ async fn build_client(
     if !has_persistence {
         let client = Client::builder()
             .server_name_or_homeserver_url(homeserver_url)
+            .with_encryption_settings(client_encryption_settings())
             .build()
             .await
             .map_err(|e| e.to_string())?;
@@ -40,6 +42,7 @@ async fn build_client(
     let store_dir = crate::crypto_store::create_store_dir(&crypto.store_key)?;
     let client = match Client::builder()
         .server_name_or_homeserver_url(homeserver_url)
+        .with_encryption_settings(client_encryption_settings())
         .sqlite_store(&store_dir, Some(crypto.passphrase.as_str()))
         .build()
         .await
