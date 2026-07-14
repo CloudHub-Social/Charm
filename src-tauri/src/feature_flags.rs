@@ -11,12 +11,15 @@
 //!      Labs panel, Spec 34) into `feature-flags.json`, read here directly off
 //!      disk the same way [`crate::observability_enabled_from_store`] reads the
 //!      observability consent file;
-//!   2. **static default** — the flag's [`FeatureFlagKey::default_value`].
+//!   2. **remote** — GO Feature Flag (OFREP) rollout control (kill-switch,
+//!      staged/percentage rollout). The frontend's refresh loop is the single
+//!      fetcher; it writes the last-known-good evaluations into the same
+//!      `feature-flags.json` (under a separate key), so the Rust core reads
+//!      remote state without its own HTTP client and both sides stay consistent;
+//!   3. **static default** — the flag's [`FeatureFlagKey::default_value`], the
+//!      offline / not-yet-rolled-out backstop.
 //!
-//! A third layer — remote rollout control via a GO Feature Flag OFREP endpoint
-//! (kill-switch, staged/percentage rollout) — is the next increment and slots
-//! in *between* override and default without changing any call site: callers
-//! only ever go through [`flag`] / [`evaluate`]. See `docs/FEATURE_FLAGS.md`.
+//! Callers only ever go through [`flag`] / [`evaluate`]. See `docs/FEATURE_FLAGS.md`.
 //!
 //! Evaluations are reported to Sentry's Feature Flag Context so a captured
 //! error shows which flags were active for the user who hit it. The installed
@@ -37,6 +40,10 @@ use ts_rs::TS;
 /// matches `src/observability/persistence.ts`: `{ <KEY>: { state, updatedAt } }`.
 const FEATURE_FLAGS_STORE_FILENAME: &str = "feature-flags.json";
 const FEATURE_FLAGS_STORE_KEY: &str = "featureFlags";
+/// Remote (OFREP) last-known-good cache, written by the frontend refresh loop
+/// into the same file. A separate top-level key so remote refreshes and
+/// override writes never clobber each other.
+const FEATURE_FLAGS_REMOTE_STORE_KEY: &str = "featureFlagsRemote";
 
 /// Most recent unique evaluations retained on the Sentry scope, matching the
 /// Feature Flag Context protocol's cap.
@@ -207,49 +214,69 @@ pub fn catalog() -> Vec<FeatureFlagCatalogEntry> {
 /// `{ overrides }` shape, so a format tweak on the JS side can't hard-fail Rust
 /// evaluation.
 pub fn read_overrides(app_data_dir: &Path) -> BTreeMap<String, bool> {
-    let Ok(raw) = std::fs::read_to_string(app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME)) else {
-        return BTreeMap::new();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-        return BTreeMap::new();
-    };
-    overrides_from_value(&value)
+    read_state(app_data_dir).0
 }
 
-fn overrides_from_value(value: &Value) -> BTreeMap<String, bool> {
+/// Reads both the local overrides and the remote (OFREP) cache from the file in
+/// a single parse. Tolerant of a missing/corrupt file (returns empties) and of
+/// both the plugin-store envelope and bare `{ state }` / `{ overrides }` shapes,
+/// so a format tweak on the JS side can't hard-fail Rust evaluation.
+pub fn read_state(app_data_dir: &Path) -> (BTreeMap<String, bool>, BTreeMap<String, bool>) {
+    let Ok(raw) = std::fs::read_to_string(app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME)) else {
+        return (BTreeMap::new(), BTreeMap::new());
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return (BTreeMap::new(), BTreeMap::new());
+    };
+    (
+        flag_map_from_value(&value, FEATURE_FLAGS_STORE_KEY, "overrides"),
+        flag_map_from_value(&value, FEATURE_FLAGS_REMOTE_STORE_KEY, "remote"),
+    )
+}
+
+/// Extracts a `{ key: bool }` map from `<store_key>.state.<inner>` (or the bare
+/// `state.<inner>` / `<store_key>.<inner>` fallbacks), keeping only booleans.
+fn flag_map_from_value(value: &Value, store_key: &str, inner: &str) -> BTreeMap<String, bool> {
     let state = value
-        .get(FEATURE_FLAGS_STORE_KEY)
+        .get(store_key)
         .and_then(|envelope| envelope.get("state"))
         .or_else(|| value.get("state"))
-        .or_else(|| value.get(FEATURE_FLAGS_STORE_KEY));
+        .or_else(|| value.get(store_key));
 
-    let Some(overrides) = state
-        .and_then(|state| state.get("overrides"))
+    let Some(map) = state
+        .and_then(|state| state.get(inner))
         .and_then(Value::as_object)
     else {
         return BTreeMap::new();
     };
 
-    overrides
-        .iter()
+    map.iter()
         .filter_map(|(key, value)| value.as_bool().map(|value| (key.clone(), value)))
         .collect()
 }
 
-/// Resolves a flag: local override wins, else the static default. Reads the
-/// override file fresh each call — flags are checked at branch points, not in
-/// hot loops, and reading fresh means a Labs-panel override takes effect without
-/// a restart or a cache-invalidation dance.
+/// Resolves a flag from the file fresh each call — flags are checked at branch
+/// points, not in hot loops, and reading fresh means a Labs override or a
+/// remote refresh takes effect without a restart or cache-invalidation dance.
 pub fn evaluate(app_data_dir: &Path, key: FeatureFlagKey) -> bool {
-    resolve(key, &read_overrides(app_data_dir))
+    let (overrides, remote) = read_state(app_data_dir);
+    resolve(key, &overrides, &remote)
 }
 
-/// Pure resolution, separated from disk I/O so precedence is unit-testable.
-pub fn resolve(key: FeatureFlagKey, overrides: &BTreeMap<String, bool>) -> bool {
-    overrides
-        .get(key.as_wire_key())
-        .copied()
-        .unwrap_or_else(|| key.default_value())
+/// Pure resolution, separated from disk I/O so precedence is unit-testable:
+/// local override wins, then the remote (OFREP) value, then the static default.
+pub fn resolve(
+    key: FeatureFlagKey,
+    overrides: &BTreeMap<String, bool>,
+    remote: &BTreeMap<String, bool>,
+) -> bool {
+    if let Some(&value) = overrides.get(key.as_wire_key()) {
+        return value;
+    }
+    if let Some(&value) = remote.get(key.as_wire_key()) {
+        return value;
+    }
+    key.default_value()
 }
 
 /// Resolves a flag *and* records the evaluation to Sentry's Feature Flag
@@ -330,16 +357,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_falls_back_to_default_without_override() {
-        assert!(!resolve(FeatureFlagKey::Canary, &BTreeMap::new()));
+    fn resolve_falls_back_to_default_without_override_or_remote() {
+        assert!(!resolve(
+            FeatureFlagKey::Canary,
+            &BTreeMap::new(),
+            &BTreeMap::new()
+        ));
     }
 
     #[test]
     fn override_wins_over_default() {
         let on = overrides(&[("canary", true)]);
-        assert!(resolve(FeatureFlagKey::Canary, &on));
+        assert!(resolve(FeatureFlagKey::Canary, &on, &BTreeMap::new()));
         let off = overrides(&[("canary", false)]);
-        assert!(!resolve(FeatureFlagKey::Canary, &off));
+        assert!(!resolve(FeatureFlagKey::Canary, &off, &BTreeMap::new()));
+    }
+
+    #[test]
+    fn remote_used_when_no_override() {
+        let remote = overrides(&[("canary", true)]);
+        assert!(resolve(FeatureFlagKey::Canary, &BTreeMap::new(), &remote));
+    }
+
+    #[test]
+    fn override_beats_remote() {
+        // Override off must win even when remote says on (the tester escape hatch).
+        let override_off = overrides(&[("canary", false)]);
+        let remote_on = overrides(&[("canary", true)]);
+        assert!(!resolve(FeatureFlagKey::Canary, &override_off, &remote_on));
     }
 
     #[test]
@@ -375,23 +420,40 @@ mod tests {
         let value = serde_json::json!({
             "featureFlags": { "state": { "overrides": { "canary": true } }, "updatedAt": 1 }
         });
-        assert_eq!(overrides_from_value(&value).get("canary"), Some(&true));
+        assert_eq!(
+            flag_map_from_value(&value, FEATURE_FLAGS_STORE_KEY, "overrides").get("canary"),
+            Some(&true)
+        );
     }
 
     #[test]
     fn parses_bare_state_and_overrides_shapes() {
         let bare_state = serde_json::json!({ "state": { "overrides": { "canary": true } } });
-        assert_eq!(overrides_from_value(&bare_state).get("canary"), Some(&true));
+        assert_eq!(
+            flag_map_from_value(&bare_state, FEATURE_FLAGS_STORE_KEY, "overrides").get("canary"),
+            Some(&true)
+        );
         let bare = serde_json::json!({ "featureFlags": { "overrides": { "canary": false } } });
-        assert_eq!(overrides_from_value(&bare).get("canary"), Some(&false));
+        assert_eq!(
+            flag_map_from_value(&bare, FEATURE_FLAGS_STORE_KEY, "overrides").get("canary"),
+            Some(&false)
+        );
     }
 
     #[test]
     fn tolerates_missing_and_malformed() {
-        assert!(overrides_from_value(&serde_json::json!({})).is_empty());
-        assert!(overrides_from_value(&serde_json::json!("nonsense")).is_empty());
+        assert!(
+            flag_map_from_value(&serde_json::json!({}), FEATURE_FLAGS_STORE_KEY, "overrides")
+                .is_empty()
+        );
+        assert!(flag_map_from_value(
+            &serde_json::json!("nonsense"),
+            FEATURE_FLAGS_STORE_KEY,
+            "overrides"
+        )
+        .is_empty());
         let non_bool = serde_json::json!({ "state": { "overrides": { "canary": "yes" } } });
-        assert!(overrides_from_value(&non_bool).is_empty());
+        assert!(flag_map_from_value(&non_bool, FEATURE_FLAGS_STORE_KEY, "overrides").is_empty());
     }
 
     #[test]
@@ -412,6 +474,44 @@ mod tests {
         let dir = std::env::temp_dir().join("charm-flags-test-does-not-exist-xyz");
         std::fs::remove_dir_all(&dir).ok();
         assert!(!evaluate(&dir, FeatureFlagKey::Canary));
+    }
+
+    #[test]
+    fn read_state_parses_overrides_and_remote() {
+        let value = serde_json::json!({
+            "featureFlags": { "state": { "overrides": { "canary": false } }, "updatedAt": 2 },
+            "featureFlagsRemote": { "state": { "remote": { "canary": true } }, "updatedAt": 1 },
+        });
+        assert_eq!(
+            flag_map_from_value(&value, FEATURE_FLAGS_STORE_KEY, "overrides").get("canary"),
+            Some(&false)
+        );
+        assert_eq!(
+            flag_map_from_value(&value, FEATURE_FLAGS_REMOTE_STORE_KEY, "remote").get("canary"),
+            Some(&true)
+        );
+    }
+
+    #[test]
+    fn evaluate_uses_remote_then_override_from_file() {
+        let dir =
+            std::env::temp_dir().join(format!("charm-flags-remote-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Remote turns canary on; no override → evaluates true.
+        std::fs::write(
+            dir.join(FEATURE_FLAGS_STORE_FILENAME),
+            r#"{"featureFlagsRemote":{"state":{"remote":{"canary":true}},"updatedAt":1}}"#,
+        )
+        .unwrap();
+        assert!(evaluate(&dir, FeatureFlagKey::Canary));
+        // Override off wins over remote on.
+        std::fs::write(
+            dir.join(FEATURE_FLAGS_STORE_FILENAME),
+            r#"{"featureFlags":{"state":{"overrides":{"canary":false}}},"featureFlagsRemote":{"state":{"remote":{"canary":true}}}}"#,
+        )
+        .unwrap();
+        assert!(!evaluate(&dir, FeatureFlagKey::Canary));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
