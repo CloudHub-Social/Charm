@@ -1,5 +1,16 @@
 const MATRIX_ID_PATTERN = /([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?/g;
 const MXC_URI_PATTERN = /mxc:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~-]+/g;
+// Matrix event IDs in room versions that use the newer "opaque hash" format
+// (MSC4192 / room v11+) have no `:server` suffix, so MATRIX_ID_PATTERN above
+// (which requires one) doesn't catch them — e.g. an error like
+// `event $AbCdEf0123456789... is not an m.room.message`. Length-gated at 10+
+// chars after the sigil to avoid false-positiving on something like a `$100`
+// price appearing incidentally in unrelated text; real event IDs are much
+// longer (typically 43-char base64). Only `$` (event ID) gets a colonless
+// variant — `!`/`@`/`#` (room/user/alias) IDs are conventionally always
+// `:server`-suffixed, so widening those would mostly just add false
+// positives.
+const COLONLESS_EVENT_ID_PATTERN = /\$[A-Za-z0-9_-]{10,}/g;
 // Plain `http(s)://` URLs — homeserver URLs in particular, which matrix-sdk
 // formats into its own error types verbatim (e.g. a discovery or sync
 // failure's Display output) and which neither MATRIX_ID_PATTERN nor
@@ -34,7 +45,8 @@ const SECRET_FIELD_NAME_PATTERN =
 export function scrubMatrixIds(text: string): string {
   return text
     .replace(MXC_URI_PATTERN, "mxc://[redacted]/[redacted]")
-    .replace(MATRIX_ID_PATTERN, "$1[redacted]:[redacted]");
+    .replace(MATRIX_ID_PATTERN, "$1[redacted]:[redacted]")
+    .replace(COLONLESS_EVENT_ID_PATTERN, "$[redacted]");
 }
 
 /**
@@ -42,6 +54,17 @@ export function scrubMatrixIds(text: string): string {
  * only the scheme. Runs after `scrubMatrixIds` so an already-redacted
  * `mxc://[redacted]/[redacted]` (a different, non-`http(s)` scheme) is left
  * untouched by this pass.
+ *
+ * Deliberately NOT part of `scrubSensitiveText`/`scrubSentryValue` (the
+ * generic scrubber used on whole Sentry events, breadcrumbs, spans, and
+ * logs via `instrument.ts`'s `beforeSend*` hooks): those payloads include
+ * stack-trace frame fields (`filename`, `abs_path`) that are themselves
+ * `https://` URLs to JS asset bundles, and blanket-redacting those would
+ * strip the file context Sentry needs for source-map symbolication on every
+ * captured exception, not just IPC ones. Used only by
+ * `summarizeErrorText`, the IPC-error-specific path where a
+ * matrix-sdk error's embedded homeserver URL is the actual thing being
+ * guarded against.
  */
 export function scrubUrls(text: string): string {
   return text.replace(URL_PATTERN, (match) =>
@@ -71,7 +94,7 @@ export function scrubSecrets(text: string): string {
 }
 
 export function scrubSensitiveText(text: string): string {
-  return scrubSecrets(scrubUrls(scrubMatrixIds(text)));
+  return scrubSecrets(scrubMatrixIds(text));
 }
 
 export function scrubSentryValue<T>(value: T, seen = new WeakSet<object>()): T {
@@ -102,7 +125,10 @@ export function scrubSentryValue<T>(value: T, seen = new WeakSet<object>()): T {
 const MAX_SUMMARIZED_ERROR_LENGTH = 300;
 
 export function summarizeErrorText(value: string): string {
-  const scrubbed = scrubSensitiveText(value);
+  // Includes `scrubUrls` (unlike `scrubSensitiveText`) — see that function's
+  // doc comment for why URL redaction is scoped to this diagnostic-text path
+  // rather than the generic Sentry-event scrubber.
+  const scrubbed = scrubSecrets(scrubUrls(scrubMatrixIds(value)));
   if (scrubbed.length <= MAX_SUMMARIZED_ERROR_LENGTH) return scrubbed;
   return `${scrubbed.slice(0, MAX_SUMMARIZED_ERROR_LENGTH)}…[truncated, full length ${scrubbed.length}]`;
 }
@@ -111,10 +137,11 @@ export function summarizeErrorText(value: string): string {
  * Summarizes a string for breadcrumb/exception *value* fields (message
  * bodies, captions, file paths, etc.) instead of copying it verbatim:
  * `scrubSensitiveText` only recognizes specific shapes (a Matrix ID with a
- * `:server` suffix, a `key=value`/`key: value` secret pattern), so any string
- * that doesn't happen to match one of those — an ordinary message body, a
- * caption, a local file path, a colonless `$eventId` — would otherwise be
- * stored as-is. Returning a length-only (or scrubbed-and-then-length-tagged)
+ * `:server` suffix or a long-enough colonless event ID, a `key=value`/
+ * `key: value` secret pattern), so any string that doesn't happen to match
+ * one of those — an ordinary message body, a caption, a local file path, a
+ * room topic — would otherwise be stored as-is. Returning a length-only (or
+ * scrubbed-and-then-length-tagged)
  * placeholder means no free-text or PII-shaped value is ever recorded raw,
  * regardless of whether we've anticipated its field name or shape.
  *

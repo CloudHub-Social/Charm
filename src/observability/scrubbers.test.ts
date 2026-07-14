@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { scrubSensitiveText, scrubSentryValue, summarizeErrorText } from "./scrubbers";
+import { scrubSensitiveText, scrubSentryValue, scrubUrls, summarizeErrorText } from "./scrubbers";
 
 describe("observability scrubbers", () => {
   it("redacts Matrix identifiers and secret fields", () => {
@@ -11,18 +11,40 @@ describe("observability scrubbers", () => {
     );
   });
 
-  it("redacts homeserver/plain URLs, preserving only the scheme", () => {
-    expect(scrubSensitiveText("failed to connect to https://matrix.example.org:8448/_matrix")).toBe(
-      "failed to connect to https://[redacted]",
-    );
-    expect(scrubSensitiveText("see http://example.org/path")).toBe("see http://[redacted]");
-    expect(scrubSensitiveText("see HTTPS://example.org/path")).toBe("see https://[redacted]");
-    expect(scrubSensitiveText("see HTTP://example.org/path")).toBe("see http://[redacted]");
+  it("redacts a colonless Matrix event ID (newer opaque-hash format with no :server suffix)", () => {
+    const text = "event $AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABC is not an m.room.message";
+    expect(scrubSensitiveText(text)).toBe("event $[redacted] is not an m.room.message");
   });
 
-  it("does not touch already-redacted mxc:// URIs when scrubbing URLs", () => {
-    const alreadyScrubbed = "media at mxc://[redacted]/[redacted]";
-    expect(scrubSensitiveText(alreadyScrubbed)).toBe(alreadyScrubbed);
+  it("does not redact a short $-prefixed string that looks like a price, not an event ID", () => {
+    expect(scrubSensitiveText("that costs $100")).toBe("that costs $100");
+  });
+
+  it("scrubUrls redacts homeserver/plain URLs, preserving only the scheme", () => {
+    expect(scrubUrls("failed to connect to https://matrix.example.org:8448/_matrix")).toBe(
+      "failed to connect to https://[redacted]",
+    );
+    expect(scrubUrls("see http://example.org/path")).toBe("see http://[redacted]");
+    expect(scrubUrls("see HTTPS://example.org/path")).toBe("see https://[redacted]");
+    expect(scrubUrls("see HTTP://example.org/path")).toBe("see http://[redacted]");
+  });
+
+  it("summarizeErrorText redacts homeserver URLs in captured IPC diagnostic text", () => {
+    expect(summarizeErrorText("failed to connect to https://matrix.example.org:8448/_matrix")).toBe(
+      "failed to connect to https://[redacted]",
+    );
+  });
+
+  it("scrubSensitiveText/scrubSentryValue do NOT redact URLs — that would strip filename/abs_path from Sentry stack frames", () => {
+    // scrubSentryValue runs over the *entire* Sentry event (including
+    // exception.values[].stacktrace.frames[].filename/abs_path, which are
+    // themselves https:// URLs to JS asset bundles) via instrument.ts's
+    // beforeSend*/beforeSendLog hooks. URL redaction is scoped to
+    // summarizeErrorText (the IPC-diagnostic-text path) specifically so it
+    // doesn't break source-map symbolication for every captured exception.
+    const url = "https://tauri.localhost/assets/index-abc123.js";
+    expect(scrubSensitiveText(`at ${url}`)).toBe(`at ${url}`);
+    expect(scrubSentryValue({ filename: url })).toEqual({ filename: url });
   });
 
   it("redacts multi-word quoted secret values instead of leaking everything after the first space", () => {
@@ -42,15 +64,15 @@ describe("observability scrubbers", () => {
   });
 
   it("doesn't re-match an already-redacted URL placeholder and leave a stray bracket or leak the host", () => {
-    // scrubUrls runs first and replaces the URL with the literal text
-    // `https://[redacted]`. Before excluding `[`/`{` from the unquoted
-    // value's character class, scrubSecrets would then partially re-match
-    // into that placeholder (stopping at the `]` inside it) and leave a
-    // stray, mangled `[redacted]]` behind. The important property is no
-    // leaked host and no malformed trailing bracket — not a specific
-    // cosmetic string, since the two independent passes both use literal
-    // `[`/`]` text.
-    const result = scrubSensitiveText("access_token=https://example.com");
+    // summarizeErrorText's scrubUrls pass runs first and replaces the URL
+    // with the literal text `https://[redacted]`. Before excluding `[`/`{`
+    // from the unquoted value's character class, scrubSecrets would then
+    // partially re-match into that placeholder (stopping at the `]` inside
+    // it) and leave a stray, mangled `[redacted]]` behind. The important
+    // property is no leaked host and no malformed trailing bracket — not a
+    // specific cosmetic string, since the two independent passes both use
+    // literal `[`/`]` text.
+    const result = summarizeErrorText("access_token=https://example.com");
     expect(result).not.toContain("example.com");
     expect(result).not.toMatch(/]]/);
   });
