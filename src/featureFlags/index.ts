@@ -110,6 +110,15 @@ export function getFeatureFlagOverrides(): FeatureFlagOverrides {
   return overridesCache;
 }
 
+/**
+ * Reactive overrides for the Labs panel: re-renders when any override changes.
+ * Unlike calling {@link useFlag} per row, this reports nothing to Sentry — the
+ * panel is inspecting/editing flag state, not evaluating flags for gating.
+ */
+export function useFeatureFlagOverrides(): FeatureFlagOverrides {
+  return useSyncExternalStore(subscribe, getFeatureFlagOverrides, getFeatureFlagOverrides);
+}
+
 export const featureFlagTestHooks = {
   reset() {
     overridesCache = {};
