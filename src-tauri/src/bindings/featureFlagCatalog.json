@@ -4,5 +4,11 @@
     "default": false,
     "description": "Internal no-op flag used to exercise the feature-flag system. Not connected to any feature.",
     "owner": "Spec 35 (feature-flag plumbing)"
+  },
+  {
+    "key": "room_invites",
+    "default": false,
+    "description": "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications.",
+    "owner": "Spec 56 (room invites surface)"
   }
 ]

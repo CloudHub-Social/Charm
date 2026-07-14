@@ -6,8 +6,13 @@ import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-i
 import type { RoomSummary } from "@/lib/matrix";
 
 const mockUseAdaptiveLayout = vi.fn(() => "desktop");
+const mockUseFlag = vi.fn(() => true);
 vi.mock("@/features/shell/useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => mockUseFlag(),
 }));
 
 const listRooms = vi.fn();
@@ -168,6 +173,7 @@ function room(overrides: Partial<RoomSummary>): RoomSummary {
 
 beforeEach(() => {
   mockUseAdaptiveLayout.mockReset().mockReturnValue("desktop");
+  mockUseFlag.mockReset().mockReturnValue(true);
   listRooms.mockReset().mockResolvedValue([room({ room_id: "!a:example.org" })]);
   onRoomListUpdate.mockReset().mockResolvedValue(vi.fn());
   resolveRoomAlias.mockReset();
@@ -188,6 +194,19 @@ function renderRoomsScreen() {
 }
 
 describe("RoomsScreen", () => {
+  it("hides pending invites while the room-invites flag is disabled", async () => {
+    mockUseFlag.mockReturnValue(false);
+    const invite = room({ room_id: "!invite:example.org", membership: "invite" });
+    listRooms.mockResolvedValue([invite, room({ room_id: "!joined:example.org" })]);
+
+    renderRoomsScreen();
+
+    expect(await screen.findByText("chat-content:!joined:example.org")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `accept:${invite.room_id}` }),
+    ).not.toBeInTheDocument();
+  });
+
   it("auto-selects the first room and tells Rust it has focus", async () => {
     const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
     render(

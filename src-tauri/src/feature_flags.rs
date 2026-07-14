@@ -82,6 +82,9 @@ define_feature_flag_keys!(
         /// Day-2 feature key exists. Not wired to any behavior. Delete this variant
         /// (and its catalog/override/remote entries) once the first real flag lands.
         Canary,
+        /// Spec 56 room-invite inbox, actions, deep-link handling, and native
+        /// invite notifications.
+        RoomInvites,
     }
 );
 
@@ -91,6 +94,7 @@ impl FeatureFlagKey {
     pub const fn default_value(self) -> bool {
         match self {
             FeatureFlagKey::Canary => false,
+            FeatureFlagKey::RoomInvites => false,
         }
     }
 
@@ -101,6 +105,9 @@ impl FeatureFlagKey {
                 "Internal no-op flag used to exercise the feature-flag system. \
                  Not connected to any feature."
             }
+            FeatureFlagKey::RoomInvites => {
+                "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications."
+            }
         }
     }
 
@@ -109,6 +116,7 @@ impl FeatureFlagKey {
     pub const fn owner(self) -> &'static str {
         match self {
             FeatureFlagKey::Canary => "Spec 35 (feature-flag plumbing)",
+            FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
         }
     }
 
@@ -117,6 +125,7 @@ impl FeatureFlagKey {
     pub const fn as_wire_key(self) -> &'static str {
         match self {
             FeatureFlagKey::Canary => "canary",
+            FeatureFlagKey::RoomInvites => "room_invites",
         }
     }
 }

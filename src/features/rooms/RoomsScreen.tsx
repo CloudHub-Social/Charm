@@ -34,6 +34,7 @@ import {
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 const noopDismissCrashRecoveryPrompt = () => {};
 
@@ -68,6 +69,7 @@ export function RoomsScreen({
   onDismissCrashRecoveryPrompt = noopDismissCrashRecoveryPrompt,
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
+  const roomInvitesEnabled = useFlag("room_invites");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [roomsLoaded, setRoomsLoaded] = useState(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -297,7 +299,7 @@ export function RoomsScreen({
       if (match.is_space) {
         autoSelectSuppressedRef.current = { kind: "space" };
       }
-    } else if (match?.membership === "invite") {
+    } else if (match?.membership === "invite" && roomInvitesEnabled) {
       // Invites are actionable from the room-list inbox, not selectable as
       // timelines. Bring that inbox into view and consume the deep link so
       // it cannot block normal room selection indefinitely.
@@ -312,7 +314,7 @@ export function RoomsScreen({
     setResolvedDeepLinkTarget(null);
     onDeepLinkConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedDeepLinkTarget, rooms, roomsLoaded, onDeepLinkConsumed]);
+  }, [resolvedDeepLinkTarget, rooms, roomsLoaded, onDeepLinkConsumed, roomInvitesEnabled]);
 
   useEffect(() => {
     const suppression = autoSelectSuppressedRef.current;
@@ -395,7 +397,7 @@ export function RoomsScreen({
         isSettingsActive={settingsSection !== null}
         roomList={
           <RoomList
-            rooms={rooms}
+            rooms={roomInvitesEnabled ? rooms : joinedRooms}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}

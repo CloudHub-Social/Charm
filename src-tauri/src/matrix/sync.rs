@@ -460,7 +460,14 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
                     emit_room_list_and_badge(&app, &client).await;
                     emit_room_updates(&app, &client, &response).await;
                     notify_unopened_room_messages(&app, &client, &response).await;
-                    notify_new_room_invites(&app, &client, &response).await;
+                    if app.path().app_data_dir().is_ok_and(|dir| {
+                        crate::feature_flags::flag(
+                            &dir,
+                            crate::feature_flags::FeatureFlagKey::RoomInvites,
+                        )
+                    }) {
+                        notify_new_room_invites(&app, &client, &response).await;
+                    }
                 }
                 Err(e) => {
                     consecutive_failures += 1;
