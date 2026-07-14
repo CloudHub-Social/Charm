@@ -80,4 +80,26 @@ describe("useFocusMode", () => {
 
     await waitFor(() => expect(result.current.enabled).toBe(true));
   });
+
+  it("re-queries state once a timed DND's `until` passes, without waiting for an unrelated refetch", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const until = Date.now() + 1000;
+      getDndState.mockResolvedValueOnce({ enabled: true, until });
+      const { result } = renderHook(() => useFocusMode(), { wrapper });
+      await vi.waitFor(() => expect(result.current.enabled).toBe(true));
+
+      // Once the timer fires, Rust's `effective()` is the actual source of
+      // truth for whether the period really expired — simulate it having
+      // auto-cleared server-side by the time the re-query lands.
+      getDndState.mockResolvedValueOnce({ enabled: false, until: null });
+
+      await vi.advanceTimersByTimeAsync(1100);
+
+      await vi.waitFor(() => expect(result.current.enabled).toBe(false));
+      expect(getDndState).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

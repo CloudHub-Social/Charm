@@ -1294,23 +1294,31 @@ mod tests {
     /// filesystem touch beyond reading `focus.json`) and DND-inactive
     /// falling through to the sweep's `Err` be told apart without needing a
     /// full restorable client.
+    ///
+    /// `focus.json` is written under `app_data_dir` (the `store_root`'s
+    /// *parent*), matching the real on-disk layout: Android's
+    /// `spawn_headless_push` passes `matrix_store_root_at(app_data_dir)` —
+    /// i.e. `<app_data_dir>/matrix_store` — as `store_root`, while
+    /// `dnd::apply`/`init` persist `focus.json` directly under
+    /// `app_data_dir` itself, not under `matrix_store`.
     #[tokio::test]
     async fn headless_push_is_suppressed_while_dnd_is_active() {
-        let root = std::env::temp_dir().join(format!(
+        let app_data_dir = std::env::temp_dir().join(format!(
             "charm-headless-push-dnd-active-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        std::fs::create_dir_all(&store_root).unwrap();
         std::fs::write(
-            root.join("focus.json"),
+            app_data_dir.join("focus.json"),
             r#"{"focus":{"state":{"enabled":true,"until":null}}}"#,
         )
         .unwrap();
 
         let result = handle_headless_push(
-            &root,
+            &store_root,
             PushMessage {
                 room_id: "!room:example.org".to_string(),
                 event_id: "$event:example.org".to_string(),
@@ -1320,7 +1328,7 @@ mod tests {
 
         assert_eq!(result.unwrap(), None);
 
-        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
     /// Counterpart to `headless_push_is_suppressed_while_dnd_is_active`: an
@@ -1330,26 +1338,26 @@ mod tests {
     /// nonexistent `store_root`, proving the DND check did not short-circuit.
     #[tokio::test]
     async fn headless_push_proceeds_once_dnd_has_expired() {
-        let root = std::env::temp_dir().join(format!(
+        let app_data_dir = std::env::temp_dir().join(format!(
             "charm-headless-push-dnd-expired-{}-{}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        std::fs::create_dir_all(&app_data_dir).unwrap();
         std::fs::write(
-            root.join("focus.json"),
+            app_data_dir.join("focus.json"),
             r#"{"focus":{"state":{"enabled":true,"until":1}}}"#,
         )
         .unwrap();
-        // Remove the directory itself (not just its contents) so the
-        // downstream `sweep_orphan_temp_stores_at` call — which the DND
-        // check must NOT have short-circuited past — hits a real `read_dir`
-        // error instead of silently succeeding on an empty directory.
-        std::fs::remove_dir_all(&root).unwrap();
+        // `store_root` itself is never created, so the downstream
+        // `sweep_orphan_temp_stores_at` call — which the DND check must NOT
+        // have short-circuited past — hits a real `read_dir` error instead
+        // of silently succeeding on an empty directory.
 
         let result = handle_headless_push(
-            &root,
+            &store_root,
             PushMessage {
                 room_id: "!room:example.org".to_string(),
                 event_id: "$event:example.org".to_string(),
@@ -1363,7 +1371,7 @@ mod tests {
              to run and fail on a missing store_root, got {result:?}"
         );
 
-        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_dir_all(app_data_dir);
     }
 
     #[test]

@@ -92,11 +92,21 @@ fn write_persisted_at(dir: &Path, state: DndState) {
 }
 
 /// Whether DND is active right now, purely from an on-disk `focus.json` at
-/// `store_root` — used by the Android headless push path
-/// (`push::handle_headless_push`), which runs with no live `AppHandle`/
-/// `MatrixState` to consult.
+/// `store_root`'s *parent* directory — used by the Android headless push
+/// path (`push::handle_headless_push`), which runs with no live
+/// `AppHandle`/`MatrixState` to consult.
+///
+/// `focus.json` lives directly under the app data dir (see `init`/`apply`
+/// above), not under `store_root` itself: `store_root` is always
+/// `<app_data_dir>/matrix_store` (`persistence::matrix_store_root_at`), so
+/// this walks up one level to find it. Falls back to treating DND as
+/// inactive if `store_root` unexpectedly has no parent (would only happen
+/// for a root path, which `matrix_store_root_at` never produces).
 pub fn is_active_at(store_root: &Path) -> bool {
-    read_persisted_at(store_root).is_active(now_ms())
+    let Some(app_data_dir) = store_root.parent() else {
+        return false;
+    };
+    read_persisted_at(app_data_dir).is_active(now_ms())
 }
 
 /// Loads persisted DND state into `MatrixState::dnd` at app startup.
@@ -218,5 +228,29 @@ mod tests {
         write_persisted_at(&dir, state);
         assert_eq!(read_persisted_at(&dir), state);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `is_active_at` takes a `store_root` (e.g. `<app_data_dir>/matrix_store`)
+    /// and must read `focus.json` from its *parent* (`app_data_dir`), not
+    /// from `store_root` itself — see the doc comment above. This pins that
+    /// after a review caught the mismatch (an earlier version read
+    /// `focus.json` from `store_root` directly, so a real Android headless
+    /// push would never see DND state set from Settings/the tray).
+    #[test]
+    fn is_active_at_reads_focus_json_from_store_roots_parent() {
+        let app_data_dir = std::env::temp_dir().join(format!("charm-dnd-test-parent-{}", now_ms()));
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        write_persisted_at(
+            &app_data_dir,
+            DndState {
+                enabled: true,
+                until: None,
+            },
+        );
+
+        assert!(is_active_at(&store_root));
+
+        let _ = std::fs::remove_dir_all(&app_data_dir);
     }
 }

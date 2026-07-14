@@ -768,7 +768,21 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?;
+    // Spec 30: the Focus submenu is gated on the same `focus_mode` flag as
+    // the Settings panel's toggle (`FocusPanel`'s `useFlag("focus_mode")`)
+    // — a build/session with the flag off shouldn't offer DND from the tray
+    // either, matching "gate the new toggle UI with useFlag()" from the
+    // spec's feature-flag requirement.
+    let focus_mode_enabled = app
+        .path()
+        .app_data_dir()
+        .is_ok_and(|dir| feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode));
+    let mut tray_items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![&show_item];
+    if focus_mode_enabled {
+        tray_items.push(&dnd_submenu);
+    }
+    tray_items.push(&quit_item);
+    let tray_menu = Menu::with_items(app, &tray_items)?;
 
     TrayIconBuilder::new()
         .icon(

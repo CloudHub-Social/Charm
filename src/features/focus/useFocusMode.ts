@@ -41,6 +41,27 @@ export function useFocusMode() {
   const enabled = data?.enabled ?? false;
   const until = data?.until ?? null;
 
+  // Rust auto-clears an expired timed DND lazily, only on its next read — it
+  // never proactively pushes a `dnd:changed` event for an expiry with no
+  // triggering action. Without this timer, a Settings panel or tray icon
+  // left open past `until` would keep showing DND as active (and hide the
+  // preset-duration buttons) even though enforcement already stopped
+  // suppressing notifications, until some unrelated refetch happened to
+  // land. Re-query on expiry instead of just clearing locally so Rust's
+  // `effective()` (the actual source of truth) confirms the clear.
+  useEffect(() => {
+    if (!enabled || until == null) return undefined;
+    const msRemaining = until - Date.now();
+    if (msRemaining <= 0) {
+      void queryClient.invalidateQueries({ queryKey: DND_QUERY_KEY });
+      return undefined;
+    }
+    const timer = setTimeout(() => {
+      void queryClient.invalidateQueries({ queryKey: DND_QUERY_KEY });
+    }, msRemaining);
+    return () => clearTimeout(timer);
+  }, [enabled, until, queryClient]);
+
   const apply = (nextEnabled: boolean, nextUntil: number | null) => {
     // Optimistic: the tray-menu path already feels instant, so the panel
     // toggle should too rather than waiting a round trip.
