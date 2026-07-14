@@ -116,6 +116,10 @@ export default defineConfig({
 		starlight({
 			title: 'Charm',
 			tagline: 'A native Matrix client, rebuilt from the ground up.',
+			// The actual Charm app icon (public/favicon.png at the repo root) —
+			// no SVG source exists for it, and Starlight's favicon option
+			// accepts .png directly.
+			favicon: '/favicon.png',
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/CloudHub-Social/Charm' },
 			],
