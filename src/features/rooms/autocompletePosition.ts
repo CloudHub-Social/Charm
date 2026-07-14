@@ -21,8 +21,8 @@ export function rectToAutocompletePosition(
   );
   const below = rect.bottom + AUTOCOMPLETE_GAP;
   const availableBelow = Math.max(0, viewport.height - AUTOCOMPLETE_MARGIN - below);
-  const opensBelow = availableBelow >= AUTOCOMPLETE_MAX_HEIGHT;
   const availableAbove = Math.max(0, rect.top - AUTOCOMPLETE_GAP - AUTOCOMPLETE_MARGIN);
+  const opensBelow = availableBelow >= AUTOCOMPLETE_MAX_HEIGHT || availableBelow >= availableAbove;
   const maxHeight = Math.min(AUTOCOMPLETE_MAX_HEIGHT, opensBelow ? availableBelow : availableAbove);
   const top = opensBelow
     ? below

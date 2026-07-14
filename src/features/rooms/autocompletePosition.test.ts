@@ -33,13 +33,22 @@ describe("rectToAutocompletePosition", () => {
     ).toEqual({ top: 456, left: 100, maxHeight: 240 });
   });
 
-  it("keeps a flipped menu within the top margin on a short viewport", () => {
+  it("uses the roomier side and caps the menu on a short viewport", () => {
     expect(
       rectToAutocompletePosition(rect({ top: 80, right: 30, bottom: 100, left: 10 }), {
         width: 320,
         height: 200,
       }),
-    ).toEqual({ top: 8, left: 10, maxHeight: 68 });
+    ).toEqual({ top: 104, left: 10, maxHeight: 88 });
+  });
+
+  it("uses partial room below when neither side fits the full menu", () => {
+    expect(
+      rectToAutocompletePosition(rect({ top: 20, right: 30, bottom: 40, left: 10 }), {
+        width: 320,
+        height: 200,
+      }),
+    ).toEqual({ top: 44, left: 10, maxHeight: 148 });
   });
 
   it("uses the visual viewport when the software keyboard reduces visible height", () => {
