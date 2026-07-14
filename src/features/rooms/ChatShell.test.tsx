@@ -1,5 +1,7 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
+import type { ReactElement } from "react";
 import { forwardRef, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatShell } from "./ChatShell";
@@ -16,6 +18,24 @@ import { messageRowKey } from "./messageRowShared";
 import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
+
+// LinkPreviewForMessage (Spec 29) reads the room-details query cache via
+// `useQuery`, which needs a QueryClientProvider ancestor even when its own
+// query is disabled — wrap every render the same way the real app does.
+function render(ui: ReactElement) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
+  // RTL's `rerender` replaces the *entire* previously-mounted element tree,
+  // including the QueryClientProvider wrapper above — so a bare
+  // `rerender(<ChatShell ... />)` call site (this file has several) would
+  // otherwise unmount the provider along with the old tree. Re-wrap here
+  // once, so every existing call site keeps working unchanged.
+  return {
+    ...view,
+    rerender: (nextUi: ReactElement) =>
+      view.rerender(<QueryClientProvider client={client}>{nextUi}</QueryClientProvider>),
+  };
+}
 
 const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
 const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
@@ -178,6 +198,14 @@ vi.mock("@/lib/matrix", () => ({
     return Promise.resolve(() => {});
   }),
   onRoomDetailsUpdate: vi.fn(() => Promise.resolve(() => {})),
+  // Spec 29: LinkPreviewForMessage reads room encryption state before ever
+  // fetching a preview. None of ChatShell's own tests exercise link
+  // previews, so default to "encrypted" (the safe suppress-by-default
+  // state) — this must never resolve `is_encrypted: false`, or a stray
+  // test message containing a URL would start firing real preview fetches
+  // this test file doesn't mock.
+  getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
+  getUrlPreview: vi.fn(),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,

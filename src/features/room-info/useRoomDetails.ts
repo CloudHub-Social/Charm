@@ -9,6 +9,16 @@ export function roomDetailsQueryKey(roomId: string) {
 }
 
 /**
+ * Shared `staleTime` for every `useQuery` reading `roomDetailsQueryKey` —
+ * `useRoomDetails` below and `LinkPreviewForMessage`'s standalone query
+ * both need it, and mismatched values on the same query key cause
+ * needless background refetches (whichever observer has the shorter
+ * `staleTime` treats the shared cache entry as stale regardless of what
+ * the other observer set).
+ */
+export const ROOM_DETAILS_STALE_TIME_MS = 5 * 60 * 1000;
+
+/**
  * `RoomDetails` for the right panel's Info tab — seeded by `get_room_details`,
  * kept fresh by `room_details:update` (emitted from the sync loop whenever a
  * batch of state events lands for this room; see `mod.rs`'s
@@ -43,5 +53,6 @@ export function useRoomDetails(roomId: string | null) {
     queryKey: roomDetailsQueryKey(roomId ?? ""),
     queryFn: () => getRoomDetails(roomId as string),
     enabled: Boolean(roomId),
+    staleTime: ROOM_DETAILS_STALE_TIME_MS,
   });
 }

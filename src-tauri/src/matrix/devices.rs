@@ -170,7 +170,12 @@ pub async fn request_device_verification(
         .get_device(&own_user_id, &device_id)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("device {device_id} not found"))?;
+        // Deliberately doesn't interpolate `device_id` into the message —
+        // this error can reach Sentry via the frontend's IPC error capture,
+        // and an opaque device ID has no syntactic marker to redact it
+        // against safely there (unlike a Matrix ID's sigil or a URL's
+        // scheme).
+        .ok_or_else(|| "device not found".to_string())?;
 
     let request = device
         .request_verification()

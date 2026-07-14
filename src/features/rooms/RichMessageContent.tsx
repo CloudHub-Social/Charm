@@ -263,7 +263,7 @@ function MatrixPill({
   );
 }
 
-function externalLinkProps(href: string) {
+export function externalLinkProps(href: string) {
   return {
     href,
     onClick: (event: MouseEvent<HTMLAnchorElement>) => {

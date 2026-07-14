@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { recordCount, recordDistribution } from "./metrics";
 import { createIpcOperationId } from "./operationId";
-import { summarizeString, summarizeValue } from "./scrubbers";
+import { summarizeErrorText, summarizeString, summarizeValue } from "./scrubbers";
 
 type InvokeArgs = Record<string, unknown>;
 
@@ -25,6 +25,29 @@ function summarizeError(error: unknown): unknown {
   return summarizeValue(error);
 }
 
+// Same shape as `summarizeError`, but for the captured-exception path only:
+// keeps scrubbed error text (see `summarizeErrorText`) instead of collapsing
+// it to a length tag, since this is what actually shows up as the Sentry
+// issue title/message. Most Tauri command failures reject with a plain
+// `string` (Rust commands return `Result<T, String>`), not an `Error`
+// instance, so that case matters as much as the `instanceof Error` one.
+function summarizeErrorForCapture(error: unknown): unknown {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: summarizeErrorText(error.message),
+    };
+  }
+  // Wrapped in an object (rather than returned as a bare string) so the
+  // captured exception's JSON.stringify'd message has the same shape
+  // (`{"...":"..."}`) regardless of whether the rejection was a plain
+  // string (most Rust commands, which return `Result<T, String>`) or an
+  // `Error` instance — a bare-string vs. object format split here would
+  // otherwise fragment Sentry grouping/readability for the same command.
+  if (typeof error === "string") return { message: summarizeErrorText(error) };
+  return summarizeValue(error);
+}
+
 function isUiaChallenge(error: unknown): boolean {
   return (
     typeof error === "object" &&
@@ -43,9 +66,9 @@ function shouldCaptureIpcException(
   return !BEST_EFFORT_IPC_COMMANDS.has(command);
 }
 
-function createCapturedIpcError(error: unknown): Error {
-  const summary = summarizeError(error);
-  const capturedError = new Error(`IPC invoke failed: ${JSON.stringify(summary)}`);
+function createCapturedIpcError(command: string, error: unknown): Error {
+  const summary = summarizeErrorForCapture(error);
+  const capturedError = new Error(`IPC ${command} failed: ${JSON.stringify(summary)}`);
   capturedError.name = error instanceof Error ? `Ipc${error.name}` : "IpcError";
   return capturedError;
 }
@@ -194,7 +217,7 @@ export async function invoke<T>(
       attributes: { command, outcome: "error" },
     });
     if (shouldCaptureIpcException(command, error, captureOnError)) {
-      captureIpcException(createCapturedIpcError(error), {
+      captureIpcException(createCapturedIpcError(command, error), {
         command,
         operationId: id,
         durationMs,
@@ -207,6 +230,7 @@ export async function invoke<T>(
 
 export const ipcObservabilityTestHooks = {
   createCapturedIpcError,
+  summarizeErrorForCapture,
   shouldCaptureIpcException,
   summarizeArgs,
   summarizeError,
