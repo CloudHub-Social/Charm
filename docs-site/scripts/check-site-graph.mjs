@@ -14,6 +14,16 @@ if (!fs.existsSync(graphPath)) {
 	process.exit(1);
 }
 
+for (const [file, description] of [
+	[galleryPath, 'feature gallery data'],
+	[roadmapPath, 'roadmap data'],
+]) {
+	if (!fs.existsSync(file)) {
+		console.error(`Site graph check failed: ${description} is missing.`);
+		process.exit(1);
+	}
+}
+
 const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
 const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
 const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));

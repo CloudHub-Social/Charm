@@ -36,6 +36,7 @@ function frontmatter(source) {
 
 const docs = markdownFiles(contentRoot);
 const specs = markdownFiles(specsRoot);
+const canonicalSpecCount = specs.filter((file) => /^Spec \d{2} —/.test(path.basename(file))).length;
 const routes = new Set(
 	docs.map((file) => {
 		const parsed = path.parse(path.relative(contentRoot, file));
@@ -69,6 +70,11 @@ for (const feature of featureGallery.features ?? []) {
 	}
 }
 
+if (!fs.existsSync(roadmapPath)) {
+	console.error('Documentation content check failed: roadmap data is missing; run pnpm roadmap:generate.');
+	process.exit(1);
+}
+
 const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
 const roadmapStatuses = new Set(['shipped', 'follow-up', 'in-progress', 'planned']);
 const roadmapIds = new Set();
@@ -76,8 +82,10 @@ if (roadmap.schemaVersion !== 1) errors.push('roadmap data has an unsupported sc
 if (!Number.isFinite(Date.parse(roadmap.generatedAt))) {
 	errors.push('roadmap data has an invalid generatedAt timestamp');
 }
-if (!Array.isArray(roadmap.specs) || roadmap.specs.length !== 75) {
-	errors.push(`roadmap data must contain 75 canonical specs, found ${roadmap.specs?.length ?? 0}`);
+if (!Array.isArray(roadmap.specs) || roadmap.specs.length !== canonicalSpecCount) {
+	errors.push(
+		`roadmap data must contain all ${canonicalSpecCount} canonical specs, found ${roadmap.specs?.length ?? 0}`,
+	);
 } else {
 	for (const spec of roadmap.specs) {
 		if (roadmapIds.has(spec.id)) errors.push(`roadmap data repeats spec id ${spec.id}`);
