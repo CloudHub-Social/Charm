@@ -1,5 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { roomDetailsQueryKey } from "@/features/room-info/useRoomDetails";
+import {
+  ROOM_DETAILS_STALE_TIME_MS,
+  roomDetailsQueryKey,
+} from "@/features/room-info/useRoomDetails";
 import { useFlag } from "@/featureFlags";
 import { getRoomDetails } from "@/lib/matrix";
 import { firstUrlInText } from "./extractUrl";
@@ -76,7 +79,7 @@ export function LinkPreviewForMessage({
     queryKey: roomDetailsQueryKey(roomId),
     queryFn: () => getRoomDetails(roomId),
     enabled: Boolean(url),
-    staleTime: 5 * 60 * 1000,
+    staleTime: ROOM_DETAILS_STALE_TIME_MS,
   });
   const isEncrypted = roomDetails?.is_encrypted ?? true;
 
