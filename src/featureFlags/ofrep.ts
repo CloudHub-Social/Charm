@@ -1,6 +1,7 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
 import { FEATURE_FLAG_KEYS } from "./catalog";
 import type { FeatureFlagRemote } from "./resolve";
+import { isTauri } from "@/lib/platform";
 
 /**
  * OFREP (OpenFeature Remote Evaluation Protocol) client for Charm's GO Feature
@@ -66,20 +67,44 @@ export function parseRemoteFlags(body: OfrepBulkResponse): FeatureFlagRemote {
 export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFlagRemote | null> {
   const base = ofrepBaseUrl();
   if (!base) return null;
+  try {
+    const body = isTauri()
+      ? await evaluateViaIpc(targetingKey)
+      : await evaluateViaHttp(`${base}/ofrep/v1/evaluate/flags`, targetingKey);
+    return body ? parseRemoteFlags(body) : null;
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Desktop/mobile: the webview CSP (`connect-src 'self' ipc: http://ipc.localhost`)
+ * blocks a direct `fetch()` to the external proxy, so route through the Rust
+ * core's `fetch_remote_flags` command (reqwest, not CSP-constrained), mirroring
+ * the Sentry envelope transport. Only the targeting key is passed — the Rust
+ * command fixes the target URL itself, so this can't be abused for SSRF.
+ */
+async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
+}
+
+/** Web build: direct fetch (no restrictive CSP), with a timeout. */
+async function evaluateViaHttp(
+  url: string,
+  targetingKey: string,
+): Promise<OfrepBulkResponse | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), OFREP_TIMEOUT_MS);
   try {
-    const response = await fetch(`${base}/ofrep/v1/evaluate/flags`, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ context: { targetingKey } }),
       signal: controller.signal,
     });
     if (!response.ok) return null;
-    return parseRemoteFlags((await response.json()) as OfrepBulkResponse);
-  } catch {
-    return null;
+    return (await response.json()) as OfrepBulkResponse;
   } finally {
     clearTimeout(timer);
   }

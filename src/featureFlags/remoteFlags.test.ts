@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => false),
   getClient: vi.fn(() => undefined),
   load: vi.fn(),
+  invoke: vi.fn(),
 }));
 
 vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
@@ -11,12 +12,14 @@ vi.mock("@sentry/react", () => ({ getClient: () => mocks.getClient() }));
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: (...args: unknown[]) => mocks.load(...args),
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => mocks.invoke(...args) }));
 
 beforeEach(async () => {
   localStorage.clear();
   vi.resetModules();
   mocks.isTauri.mockReturnValue(false);
   mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
+  mocks.invoke.mockReset().mockRejectedValue(new Error("no ipc"));
   const { featureFlagTestHooks } = await import("./index");
   featureFlagTestHooks.reset();
 });
@@ -89,13 +92,8 @@ describe("refreshRemoteFlags", () => {
       reload,
       delete: del,
     });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ flags: [{ key: "canary", value: true }] }),
-      }),
-    );
+    // Tauri path fetches via the Rust IPC command.
+    mocks.invoke.mockResolvedValue({ flags: [{ key: "canary", value: true }] });
     const mod = await import("./index");
     await mod.refreshRemoteFlags();
     // Durable write failed → the frontend must stay consistent with the file

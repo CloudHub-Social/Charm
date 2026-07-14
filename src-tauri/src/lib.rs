@@ -509,6 +509,54 @@ fn get_feature_flag_catalog() -> Vec<feature_flags::FeatureFlagCatalogEntry> {
     feature_flags::catalog()
 }
 
+/// The trusted GO Feature Flag OFREP proxy origin. `fetch_remote_flags` builds
+/// its request URL from this constant and **does not** accept a URL from the
+/// webview — otherwise a compromised or XSS'd frontend could use the
+/// CSP-exempt Rust HTTP client for SSRF against `localhost`/intranet services,
+/// which is exactly what the webview `connect-src` CSP exists to prevent. Must
+/// match `VITE_CHARM_OFREP_URL` in the `.env.*` files (the JS-side gate and the
+/// web build's direct fetch).
+const OFREP_PROXY_BASE_URL: &str = "https://charm-flags-proxy-vx78g.ondigitalocean.app";
+
+/// Proxies the frontend's OFREP flag evaluation through the Rust core. The
+/// desktop/mobile webview CSP limits `connect-src` to `'self' ipc:
+/// http://ipc.localhost` (see `tauri.conf.json`), so a direct `fetch()` from
+/// `src/featureFlags/ofrep.ts` to the external GO Feature Flag proxy is blocked
+/// — the same reason Sentry envelopes are tunneled via `forward_sentry_envelope`
+/// rather than adding an external `connect-src` entry. The core's `reqwest`
+/// client isn't CSP-constrained. The target URL is fixed
+/// ([`OFREP_PROXY_BASE_URL`]); only the anonymized targeting key comes from the
+/// frontend, so this can't be turned into an SSRF primitive. Returns the raw
+/// OFREP JSON body; the frontend parses it. Fail-open is the caller's job (a
+/// returned `Err` becomes `null`).
+#[tauri::command]
+async fn fetch_remote_flags(targeting_key: String) -> Result<serde_json::Value, String> {
+    let url = format!("{OFREP_PROXY_BASE_URL}/ofrep/v1/evaluate/flags");
+    let body = serde_json::json!({ "context": { "targetingKey": targeting_key } }).to_string();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| format!("OFREP request failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "OFREP returned status {}",
+            response.status().as_u16()
+        ));
+    }
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("OFREP read failed: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("OFREP decode failed: {e}"))
+}
+
 fn observability_enabled_from_store(app_data_dir: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(app_data_dir.join("observability.json")) else {
         return false;
@@ -1063,6 +1111,7 @@ pub fn run() {
             update_observability_log_consent,
             get_feature_flags,
             get_feature_flag_catalog,
+            fetch_remote_flags,
             had_unclean_previous_session,
             forward_sentry_envelope,
             matrix::auth::login,

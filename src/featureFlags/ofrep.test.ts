@@ -1,6 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchRemoteFlags, isRemoteConfigured, parseRemoteFlags } from "./ofrep";
 
+const mocks = vi.hoisted(() => ({ isTauri: vi.fn(() => false), invoke: vi.fn() }));
+vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => mocks.invoke(...args) }));
+
+beforeEach(() => {
+  mocks.isTauri.mockReturnValue(false);
+  mocks.invoke.mockReset();
+});
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -79,5 +88,27 @@ describe("fetchRemoteFlags", () => {
     vi.stubGlobal("fetch", fetchMock);
     expect(await fetchRemoteFlags("x")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("routes through the Rust IPC command on Tauri (CSP-safe), not direct fetch", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue({ flags: [{ key: "canary", value: true }] });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await fetchRemoteFlags("install-9");
+    expect(result).toEqual({ canary: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Only the targeting key is passed — the Rust command fixes the URL itself
+    // (no attacker-controllable endpoint → no SSRF).
+    expect(mocks.invoke).toHaveBeenCalledWith("fetch_remote_flags", {
+      targetingKey: "install-9",
+    });
+  });
+
+  it("returns null (fail-open) when the IPC command errors", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.invoke.mockRejectedValue(new Error("offline"));
+    expect(await fetchRemoteFlags("x")).toBeNull();
   });
 });
