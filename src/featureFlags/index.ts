@@ -72,10 +72,12 @@ export async function initializeFeatureFlags(): Promise<void> {
     // build that never makes an OFREP request would still get a durable
     // per-install identifier (see PRIVACY.md).
     const currentInstallId = getInstallId();
-    remoteCache =
-      cachedRemote.installId === currentInstallId
-        ? cachedRemote.remote
-        : await clearStaleCache(currentInstallId);
+    // A cache with no recorded install id (e.g. written by an intermediate build
+    // before this field existed) is accepted rather than treated as a different
+    // cohort — only a *different* recorded id means a mismatched cohort.
+    const matchesCohort =
+      cachedRemote.installId === undefined || cachedRemote.installId === currentInstallId;
+    remoteCache = matchesCohort ? cachedRemote.remote : await clearStaleCache(currentInstallId);
   } else {
     remoteCache = await clearStaleCache();
   }

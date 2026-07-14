@@ -164,6 +164,22 @@ describe("remote cache install-id binding", () => {
     expect(mod.getFlag("canary")).toBe(false);
   });
 
+  it("applies a cache with no recorded install id rather than clearing it", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    // No `installId` field (e.g. an intermediate build's cache) — must not be
+    // treated as a different cohort and cleared.
+    localStorage.setItem(
+      "charm:featureFlagsRemote",
+      JSON.stringify({ state: { remote: { canary: true } }, updatedAt: 3 }),
+    );
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    expect(mod.getFlag("canary")).toBe(true);
+  });
+
   it("keeps the cached remote if the stale-clear durable save fails (JS matches the file Rust reads)", async () => {
     vi.useFakeTimers();
     vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
