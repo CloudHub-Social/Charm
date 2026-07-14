@@ -115,6 +115,7 @@ export function IrcMessageRow({
                     formattedBody={message.formatted_body}
                     roomId={roomId}
                     eventTsMs={message.timestamp_ms}
+                    edited={message.edited}
                   />
                 </div>
               )}

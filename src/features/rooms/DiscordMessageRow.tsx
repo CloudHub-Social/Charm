@@ -145,6 +145,7 @@ export function DiscordMessageRow({
             formattedBody={message.formatted_body}
             roomId={roomId}
             eventTsMs={message.timestamp_ms}
+            edited={message.edited}
           />
         )}
         {!message.redacted && (

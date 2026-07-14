@@ -10,6 +10,7 @@ interface LinkPreviewForMessageProps {
   formattedBody?: string | null;
   roomId: string;
   eventTsMs?: number | null;
+  edited?: boolean;
 }
 
 /**
@@ -44,12 +45,22 @@ interface LinkPreviewForMessageProps {
  * the active room); until it resolves — or if it's simply unknown — this
  * defaults to treating the room as encrypted, i.e. suppressing the preview,
  * rather than assuming it's safe.
+ *
+ * Historical accuracy vs. edits: `eventTsMs` is the *original* event's
+ * timestamp — an edit replaces the rendered `body`/`formatted_body` but
+ * `RoomMessageSummary` doesn't expose a separate replacement-event
+ * timestamp. Forwarding the original `ts` for an edited message's preview
+ * would ask the homeserver for the page's state near the *original* send
+ * time, which can be stale or simply wrong for a URL the edit just
+ * introduced or changed. So `ts` is omitted (falls back to "current") for
+ * `edited` messages instead of using a timestamp known to be wrong.
  */
 export function LinkPreviewForMessage({
   body,
   formattedBody,
   roomId,
   eventTsMs,
+  edited,
 }: LinkPreviewForMessageProps) {
   const linkPreviewsEnabled = useFlag("link_previews");
   const url = linkPreviewsEnabled ? firstUrlInText(body, formattedBody) : null;
@@ -63,5 +74,5 @@ export function LinkPreviewForMessage({
   const isEncrypted = roomDetails?.is_encrypted ?? true;
 
   if (!url || isEncrypted) return null;
-  return <LinkPreviewCard roomId={roomId} url={url} eventTsMs={eventTsMs} />;
+  return <LinkPreviewCard roomId={roomId} url={url} eventTsMs={edited ? null : eventTsMs} />;
 }

@@ -34,7 +34,7 @@ beforeEach(() => {
   getRoomDetails.mockReset();
 });
 
-function renderRow(messageLayout: MessageLayout, body = "hello") {
+function renderRow(messageLayout: MessageLayout, body = "hello", edited = false) {
   const store = createStore();
   store.set(messageLayoutAtom, messageLayout);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -47,6 +47,7 @@ function renderRow(messageLayout: MessageLayout, body = "hello") {
             sender: "@bob:localhost",
             sender_display_name: "Bob",
             body,
+            edited,
           })}
           roomId="!room:localhost"
           own={false}
@@ -125,5 +126,15 @@ describe("MessageRow link previews (Spec 29)", () => {
 
     await waitFor(() => expect(getRoomDetails).toHaveBeenCalled());
     expect(getUrlPreview).not.toHaveBeenCalled();
+  });
+
+  it("omits the original event timestamp for an edited message's preview", async () => {
+    getRoomDetails.mockResolvedValue({ room_id: "!room:localhost", is_encrypted: false });
+    getUrlPreview.mockResolvedValueOnce(null);
+    renderRow("bubble", "check this out https://example.com", true);
+
+    await waitFor(() =>
+      expect(getUrlPreview).toHaveBeenCalledWith("!room:localhost", "https://example.com", null),
+    );
   });
 });
