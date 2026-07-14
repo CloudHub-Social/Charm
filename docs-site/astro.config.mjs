@@ -175,6 +175,7 @@ export default defineConfig({
 		starlight({
 			title: 'Charm',
 			tagline: 'A native Matrix client, rebuilt from the ground up.',
+			customCss: ['./src/styles/docs.css'],
 			// The actual Charm app icon (public/favicon.png at the repo root) —
 			// no SVG source exists for it, and Starlight's favicon option
 			// accepts .png directly.
@@ -239,6 +240,15 @@ export default defineConfig({
 				{
 					label: 'Architecture',
 					items: [{ label: 'Overview', slug: 'architecture/overview' }],
+				},
+				{
+					label: 'Operations',
+					items: [
+						{ label: 'Platform overview', slug: 'operations/overview' },
+						{ label: 'Sentry observability', slug: 'operations/sentry' },
+						{ label: 'Rust companion API', slug: 'operations/web-server' },
+						{ label: 'Cloudflare previews', slug: 'operations/cloudflare-previews' },
+					],
 				},
 				{
 					label: 'Contributing',

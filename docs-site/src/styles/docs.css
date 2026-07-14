@@ -1,0 +1,37 @@
+@layer starlight.core {
+	/* Starlight's splash hero reserves a second column for an optional image.
+	 * Charm has no hero image, so collapse that empty column and keep the
+	 * landing page focused on navigation rather than decorative whitespace. */
+	html[data-has-hero] .hero {
+		grid-template-columns: minmax(0, 1fr);
+		padding-block: clamp(3rem, 7vw, 5.5rem) clamp(2rem, 4vw, 3rem);
+		background:
+			radial-gradient(
+				circle at 15% 10%,
+				color-mix(in srgb, var(--sl-color-accent) 13%, transparent),
+				transparent 36%
+			),
+			linear-gradient(
+				180deg,
+				color-mix(in srgb, var(--sl-color-accent-low) 35%, transparent),
+				transparent 80%
+			);
+		border-bottom: 1px solid var(--sl-color-gray-5);
+	}
+
+	html[data-has-hero] .hero .stack {
+		max-width: 52rem;
+	}
+
+	html[data-has-hero] .hero .copy > * {
+		max-width: 60ch;
+	}
+
+	html[data-has-hero] .sl-markdown-content > h2 {
+		margin-top: clamp(2.5rem, 5vw, 4rem);
+	}
+
+	html[data-has-hero] .sl-markdown-content > .card-grid {
+		margin-top: 1.25rem;
+	}
+}
