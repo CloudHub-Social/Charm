@@ -17,9 +17,9 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-use jni::JNIEnv;
+use jni::objects::{Global, JClass, JObject, JString, JValue};
 use jni::JavaVM;
+use jni::{jni_sig, jni_str, Env};
 use tokio::sync::oneshot;
 
 use super::{PushEndpoint, PushError, PusherKind, ANDROID_FCM_APP_ID, ANDROID_UNIFIED_PUSH_APP_ID};
@@ -38,7 +38,7 @@ const REGISTER_TIMEOUT: Duration = Duration::from_secs(20);
 /// so one fixed instance id is enough.
 const INSTANCE_ID: &str = "charm";
 
-static CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
+static CLASS_REF: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
 /// Whichever `register()` call is currently waiting on a callback — `None`
 /// once it's been resolved (either via a callback or the timeout), so a
@@ -93,8 +93,8 @@ impl super::NotificationTransport for UnifiedPushTransport {
             let class = push_bridge_class(env, activity)?;
             let result = env.call_static_method(
                 class,
-                "register",
-                "(Landroid/content/Context;Ljava/lang/String;)V",
+                jni_str!("register"),
+                jni_sig!("(Landroid/content/Context;Ljava/lang/String;)V"),
                 &[JValue::from(activity), JValue::from(&instance)],
             );
             jni_result(env, "PushBridge.register", result)?;
@@ -131,8 +131,8 @@ impl super::NotificationTransport for UnifiedPushTransport {
             let class = push_bridge_class(env, activity)?;
             let result = env.call_static_method(
                 class,
-                "unregister",
-                "(Landroid/content/Context;Ljava/lang/String;)V",
+                jni_str!("unregister"),
+                jni_sig!("(Landroid/content/Context;Ljava/lang/String;)V"),
                 &[JValue::from(activity), JValue::from(&instance)],
             );
             jni_result(env, "PushBridge.unregister", result)?;
@@ -159,14 +159,39 @@ impl super::NotificationTransport for UnifiedPushTransport {
 /// — including implicitly on thread detach — so leaving it set here could
 /// crash the JVM the next time this (or another) call reuses the thread.
 fn jni_result<T>(
-    env: &mut JNIEnv,
+    env: &Env,
     context: &str,
     result: Result<T, jni::errors::Error>,
 ) -> Result<T, PushError> {
     result.map_err(|e| {
-        let _ = env.exception_clear();
+        env.exception_clear();
         format!("{context}: {e}")
     })
+}
+
+/// Local wrapper so a closure passed to `JavaVM::attach_current_thread` can
+/// use `PushError` (a plain `String`) as its `Result` error type.
+///
+/// jni 0.22's `attach_current_thread` requires the closure's error type to
+/// implement `From<jni::errors::Error>` (the attachment itself can fail, and
+/// that failure needs to convert into whatever error type the closure
+/// returns) — but the orphan rules block implementing a foreign trait
+/// (`From`) for a foreign type (`String`, which is what `PushError` is)
+/// directly in this crate. This newtype is local, so both conversions below
+/// are allowed, and `with_env`/`show_headless_notification` unwrap it back
+/// to a plain `PushError` before returning.
+struct JniAttachError(PushError);
+
+impl From<jni::errors::Error> for JniAttachError {
+    fn from(error: jni::errors::Error) -> Self {
+        JniAttachError(error.to_string())
+    }
+}
+
+impl From<PushError> for JniAttachError {
+    fn from(error: PushError) -> Self {
+        JniAttachError(error)
+    }
 }
 
 /// Attaches the calling thread to the JVM and hands back the app's
@@ -174,16 +199,24 @@ fn jni_result<T>(
 /// `secret_store::android::with_env`, duplicated rather than shared because
 /// pulling it into a common module for two call sites isn't worth the extra
 /// indirection yet; revisit if a third Android JNI bridge shows up.
-fn with_env<T>(
-    f: impl FnOnce(&mut JNIEnv, &JObject) -> Result<T, PushError>,
-) -> Result<T, PushError> {
+///
+/// jni 0.22's `JavaVM::attach_current_thread` only ever hands back a
+/// borrowed `Env` inside a closure, so `f` has to run from inside that
+/// closure rather than being handed a freestanding `&mut Env`.
+fn with_env<T>(f: impl FnOnce(&mut Env, &JObject) -> Result<T, PushError>) -> Result<T, PushError> {
     let ctx = ndk_context::android_context();
     // SAFETY: see `secret_store::android::with_env` — same Tauri-managed
-    // JavaVM/Activity handle.
-    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
-    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-    f(&mut env, &activity)
+    // JavaVM/Activity handle. `JavaVM::from_raw` no longer returns a
+    // `Result` in jni 0.22 (it can't itself fail — it just wraps the
+    // pointer).
+    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| -> Result<T, JniAttachError> {
+        // SAFETY: `ctx.context()` is a valid `jobject` for the app's
+        // `Activity`/`Context` for the lifetime of this call.
+        let activity = unsafe { JObject::from_raw(&*env, ctx.context().cast()) };
+        Ok(f(env, &activity)?)
+    })
+    .map_err(|e| e.0)
 }
 
 /// Resolves the `PushBridge` class via the Activity's own classloader —
@@ -192,16 +225,17 @@ fn with_env<T>(
 /// here is, since these run on Tokio worker threads) resolves plain
 /// class-name lookups against the *system* classloader, which doesn't know
 /// app-defined classes like this one.
-fn push_bridge_class<'a>(
-    env: &mut JNIEnv<'a>,
-    activity: &JObject,
-) -> Result<JClass<'a>, PushError> {
+fn push_bridge_class<'a>(env: &mut Env<'a>, activity: &JObject) -> Result<JClass<'a>, PushError> {
     if let Some(cached) = CLASS_REF.get() {
-        let result = env.new_local_ref(cached.as_obj());
-        let local = jni_result(env, "new_local_ref(cached PushBridge class)", result)?;
-        return Ok(JClass::from(local));
+        let result = env.new_local_ref(cached);
+        return jni_result(env, "new_local_ref(cached PushBridge class)", result);
     }
-    let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
+    let result = env.call_method(
+        activity,
+        jni_str!("getClassLoader"),
+        jni_sig!("()Ljava/lang/ClassLoader;"),
+        &[],
+    );
     let class_loader = jni_result(env, "activity.getClassLoader()", result)?;
     let result = class_loader.l();
     let class_loader = jni_result(env, "getClassLoader() return value", result)?;
@@ -209,19 +243,20 @@ fn push_bridge_class<'a>(
     let class_name = jni_result(env, "new_string(class name)", result)?;
     let result = env.call_method(
         &class_loader,
-        "loadClass",
-        "(Ljava/lang/String;)Ljava/lang/Class;",
+        jni_str!("loadClass"),
+        jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
         &[JValue::from(&class_name)],
     );
     let class_obj = jni_result(env, "classLoader.loadClass(PushBridge)", result)?;
     let result = class_obj.l();
     let class_obj = jni_result(env, "loadClass() return value", result)?;
+    let result = env.cast_local::<JClass>(class_obj);
+    let class_obj = jni_result(env, "cast loadClass() return value to JClass", result)?;
     let result = env.new_global_ref(&class_obj);
     let global = jni_result(env, "new_global_ref(PushBridge class)", result)?;
     let cached = CLASS_REF.get_or_init(|| global);
-    let result = env.new_local_ref(cached.as_obj());
-    let local = jni_result(env, "new_local_ref(cached PushBridge class)", result)?;
-    Ok(JClass::from(local))
+    let result = env.new_local_ref(cached);
+    jni_result(env, "new_local_ref(cached PushBridge class)", result)
 }
 
 /// Whichever pending [`PENDING_REGISTRATION`] sender is waiting, resolved
@@ -243,71 +278,73 @@ fn resolve_pending(result: Result<PushEndpoint, PushError>) -> bool {
     }
 }
 
-fn jstring_to_string(env: &mut JNIEnv, s: &JString) -> String {
-    env.get_string(s).map(|s| s.into()).unwrap_or_default()
+fn jstring_to_string(env: &mut Env, s: &JString) -> String {
+    s.try_to_string(env).unwrap_or_default()
 }
 
 fn call_push_bridge_string_method(
-    env: &mut JNIEnv,
+    env: &mut Env,
     context: &JObject,
     method: &str,
 ) -> Result<String, PushError> {
     let class = push_bridge_class(env, context)?;
-    let result = env.call_static_method(
-        class,
-        method,
-        "(Landroid/content/Context;)Ljava/lang/String;",
-        &[JValue::from(context)],
-    );
+    let name = jni::strings::JNIString::from(method);
+    let sig = jni_sig!("(Landroid/content/Context;)Ljava/lang/String;");
+    let result = env.call_static_method(class, &name, sig, &[JValue::from(context)]);
     let return_value = jni_result(env, method, result)?;
     let result = return_value.l();
     let obj = jni_result(env, method, result)?;
     if obj.is_null() {
         return Err(format!("PushBridge.{method} returned null"));
     }
-    let value = JString::from(obj);
-    let result = env.get_string(&value);
-    let value: String = jni_result(env, method, result)?.into();
+    let result = env.cast_local::<JString>(obj);
+    let value = jni_result(env, method, result)?;
+    let result = value.try_to_string(env);
+    let value = jni_result(env, method, result)?;
     Ok(value)
 }
 
 fn show_headless_notification(
     vm: JavaVM,
-    context: GlobalRef,
+    context: Global<JObject<'static>>,
     notification: super::PushNotification,
 ) -> Result<(), PushError> {
-    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
-    let result = env.new_local_ref(context.as_obj());
-    let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
-    let class = push_bridge_class(&mut env, &context)?;
-    let result = env.new_string(notification.title);
-    let title = jni_result(&mut env, "new_string(notification title)", result)?;
-    let result = env.new_string(notification.body);
-    let body = jni_result(&mut env, "new_string(notification body)", result)?;
-    let result = env.new_string(notification.event_id);
-    let event_id = jni_result(&mut env, "new_string(notification event id)", result)?;
-    let result = env.call_static_method(
-        class,
-        "showMessageNotification",
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
-        &[
-            JValue::from(&context),
-            JValue::from(&title),
-            JValue::from(&body),
-            JValue::from(&event_id),
-        ],
-    );
-    jni_result(&mut env, "PushBridge.showMessageNotification", result)?;
-    Ok(())
+    vm.attach_current_thread(|env| -> Result<(), JniAttachError> {
+        let result = env.new_local_ref(&context);
+        let context = jni_result(env, "new_local_ref(headless Context)", result)?;
+        let class = push_bridge_class(env, &context)?;
+        let result = env.new_string(notification.title);
+        let title = jni_result(env, "new_string(notification title)", result)?;
+        let result = env.new_string(notification.body);
+        let body = jni_result(env, "new_string(notification body)", result)?;
+        let result = env.new_string(notification.event_id);
+        let event_id = jni_result(env, "new_string(notification event id)", result)?;
+        let result = env.call_static_method(
+            class,
+            jni_str!("showMessageNotification"),
+            jni_sig!(
+                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
+            ),
+            &[
+                JValue::from(&context),
+                JValue::from(&title),
+                JValue::from(&body),
+                JValue::from(&event_id),
+            ],
+        );
+        jni_result(env, "PushBridge.showMessageNotification", result)?;
+        Ok(())
+    })
+    .map_err(|e| e.0)
 }
 
 struct BroadcastPendingResult {
     vm: JavaVM,
-    pending_result: GlobalRef,
+    pending_result: Global<JObject<'static>>,
 }
 
 impl BroadcastPendingResult {
-    fn new(env: &mut JNIEnv, pending_result: &JObject) -> Result<Self, PushError> {
+    fn new(env: &mut Env, pending_result: &JObject) -> Result<Self, PushError> {
         let vm = env
             .get_java_vm()
             .map_err(|e| format!("cannot read JavaVM for pending broadcast result: {e}"))?;
@@ -318,8 +355,8 @@ impl BroadcastPendingResult {
     }
 }
 
-fn finish_pending_result(env: &mut JNIEnv, pending_result: &JObject) {
-    let result = env.call_method(pending_result, "finish", "()V", &[]);
+fn finish_pending_result(env: &mut Env, pending_result: &JObject) {
+    let result = env.call_method(pending_result, jni_str!("finish"), jni_sig!("()V"), &[]);
     if let Err(e) = jni_result(env, "BroadcastReceiver.PendingResult.finish", result) {
         eprintln!("failed to finish push broadcast: {e}");
     }
@@ -327,20 +364,23 @@ fn finish_pending_result(env: &mut JNIEnv, pending_result: &JObject) {
 
 impl Drop for BroadcastPendingResult {
     fn drop(&mut self) {
-        let Ok(mut env) = self.vm.attach_current_thread() else {
+        let pending_result = &self.pending_result;
+        let result = self.vm.attach_current_thread(|env| {
+            finish_pending_result(env, pending_result);
+            Ok::<(), jni::errors::Error>(())
+        });
+        if result.is_err() {
             eprintln!("failed to attach JVM thread to finish push broadcast");
-            return;
-        };
-        finish_pending_result(&mut env, self.pending_result.as_obj());
+        }
     }
 }
 
 fn spawn_headless_push(
     pending_result: BroadcastPendingResult,
     vm_for_secret_store: JavaVM,
-    secret_store_context: GlobalRef,
+    secret_store_context: Global<JObject<'static>>,
     vm_for_notification: JavaVM,
-    notification_context: GlobalRef,
+    notification_context: Global<JObject<'static>>,
     store_root: std::path::PathBuf,
     message: super::PushMessage,
 ) {
@@ -404,48 +444,56 @@ fn spawn_headless_push(
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnNewEndpoint<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut unowned_env: jni::EnvUnowned<'local>,
     _this: JObject<'local>,
     endpoint: JString<'local>,
     via_fcm: jni::sys::jboolean,
 ) {
-    let endpoint_str = jstring_to_string(&mut env, &endpoint);
-    let app_id = if via_fcm != 0 {
-        ANDROID_FCM_APP_ID
-    } else {
-        ANDROID_UNIFIED_PUSH_APP_ID
-    };
-    let kind = if via_fcm != 0 {
-        PusherKind::Fcm
-    } else {
-        PusherKind::UnifiedPush
-    };
-    let push_endpoint = PushEndpoint {
-        url_or_token: endpoint_str,
-        app_id: app_id.to_string(),
-        kind,
-    };
+    unowned_env
+        .with_env(|env| -> Result<(), jni::errors::Error> {
+            let endpoint_str = jstring_to_string(env, &endpoint);
+            let app_id = if via_fcm {
+                ANDROID_FCM_APP_ID
+            } else {
+                ANDROID_UNIFIED_PUSH_APP_ID
+            };
+            let kind = if via_fcm {
+                PusherKind::Fcm
+            } else {
+                PusherKind::UnifiedPush
+            };
+            let push_endpoint = PushEndpoint {
+                url_or_token: endpoint_str,
+                app_id: app_id.to_string(),
+                kind,
+            };
 
-    // Always keep this current — a rotation (the distributor issuing a
-    // replacement endpoint) can arrive with no `register()` waiting on it
-    // at all (see below), and `endpoint()` (what `unregister_push` deletes
-    // from the homeserver) must never read a stale value in that case.
-    *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = Some(push_endpoint.clone());
+            // Always keep this current — a rotation (the distributor issuing a
+            // replacement endpoint) can arrive with no `register()` waiting on it
+            // at all (see below), and `endpoint()` (what `unregister_push` deletes
+            // from the homeserver) must never read a stale value in that case.
+            *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(push_endpoint.clone());
 
-    if !resolve_pending(Ok(push_endpoint.clone())) {
-        // Nothing was waiting: this wasn't a response to a user-initiated
-        // `register()` call, so the homeserver still has the *old* pushkey
-        // on file. Re-register the new one directly — without this, a
-        // rotation silently breaks push delivery until the user happens to
-        // manually toggle it off and back on.
-        let Some(app) = super::global_app_handle() else {
-            eprintln!("endpoint rotation received before the app handle was initialized; dropping");
-            return;
-        };
-        tauri::async_runtime::spawn(async move {
-            super::reregister_endpoint(&app, push_endpoint).await;
-        });
-    }
+            if !resolve_pending(Ok(push_endpoint.clone())) {
+                // Nothing was waiting: this wasn't a response to a user-initiated
+                // `register()` call, so the homeserver still has the *old* pushkey
+                // on file. Re-register the new one directly — without this, a
+                // rotation silently breaks push delivery until the user happens to
+                // manually toggle it off and back on.
+                let Some(app) = super::global_app_handle() else {
+                    eprintln!(
+                        "endpoint rotation received before the app handle was initialized; dropping"
+                    );
+                    return Ok(());
+                };
+                tauri::async_runtime::spawn(async move {
+                    super::reregister_endpoint(&app, push_endpoint).await;
+                });
+            }
+            Ok(())
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// Called from `PushMessagingReceiver.onRegistrationFailed`. See
@@ -455,12 +503,17 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnRegistrationFailed<
     'local,
 >(
-    mut env: JNIEnv<'local>,
+    mut unowned_env: jni::EnvUnowned<'local>,
     _this: JObject<'local>,
     reason: JString<'local>,
 ) {
-    let reason = jstring_to_string(&mut env, &reason);
-    resolve_pending(Err(format!("UnifiedPush registration failed: {reason}")));
+    unowned_env
+        .with_env(|env| -> Result<(), jni::errors::Error> {
+            let reason = jstring_to_string(env, &reason);
+            resolve_pending(Err(format!("UnifiedPush registration failed: {reason}")));
+            Ok(())
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// Called from `PushMessagingReceiver.onUnregistered` — the distributor
@@ -475,7 +528,7 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnUnregistered<
     'local,
 >(
-    _env: JNIEnv<'local>,
+    _unowned_env: jni::EnvUnowned<'local>,
     _this: JObject<'local>,
 ) {
     *CURRENT_ENDPOINT.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -501,105 +554,110 @@ pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOn
 /// a platform notification directly, without Tauri's app/plugin lifecycle.
 #[no_mangle]
 pub extern "system" fn Java_social_cloudhub_charm_PushMessagingReceiver_nativeOnMessage<'local>(
-    mut env: JNIEnv<'local>,
+    mut unowned_env: jni::EnvUnowned<'local>,
     _this: JObject<'local>,
     context: JObject<'local>,
     pending_result: JObject<'local>,
     payload_json: JString<'local>,
 ) {
-    let pending_result = match BroadcastPendingResult::new(&mut env, &pending_result) {
-        Ok(pending_result) => pending_result,
-        Err(e) => {
-            eprintln!("{e}");
-            finish_pending_result(&mut env, &pending_result);
-            return;
-        }
-    };
-    let payload = jstring_to_string(&mut env, &payload_json);
-    let Some(message) = parse_event_id_only_payload(&payload) else {
-        eprintln!("push payload missing room_id/event_id; dropping");
-        tracing::warn!(
-            command = "android_push",
-            status = "missing_fields",
-            "Push payload missing room_id/event_id; dropping"
-        );
-        return;
-    };
-
-    if let Some(app) = super::global_app_handle() {
-        tauri::async_runtime::spawn(async move {
-            if let Err(e) = super::handle_push(&app, message).await {
-                eprintln!("handle_push failed: {e}");
-                tracing::error!(
+    unowned_env
+        .with_env(|env| -> Result<(), jni::errors::Error> {
+            let pending_result = match BroadcastPendingResult::new(env, &pending_result) {
+                Ok(pending_result) => pending_result,
+                Err(e) => {
+                    eprintln!("{e}");
+                    finish_pending_result(env, &pending_result);
+                    return Ok(());
+                }
+            };
+            let payload = jstring_to_string(env, &payload_json);
+            let Some(message) = parse_event_id_only_payload(&payload) else {
+                eprintln!("push payload missing room_id/event_id; dropping");
+                tracing::warn!(
                     command = "android_push",
-                    status = "failed",
-                    error = %e,
-                    "handle_push failed"
+                    status = "missing_fields",
+                    "Push payload missing room_id/event_id; dropping"
                 );
-            }
-        });
-        // The running-app path is already owned by Tauri's process lifecycle.
-        // Keep Android's async broadcast alive only for receiver-only cold starts;
-        // holding it through Matrix fetch/decrypt work risks hitting the broadcast
-        // timeout before the spawned app task can finish.
-        drop(pending_result);
-        return;
-    }
+                return Ok(());
+            };
 
-    let app_data_dir = match call_push_bridge_string_method(&mut env, &context, "appDataDir") {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("cannot resolve app data dir for headless push: {e}");
-            return;
-        }
-    };
-    let store_root =
-        match crate::matrix::persistence::matrix_store_root_at(std::path::Path::new(&app_data_dir))
-        {
-            Ok(path) => path,
-            Err(e) => {
-                eprintln!("cannot resolve matrix store root for headless push: {e}");
-                return;
+            if let Some(app) = super::global_app_handle() {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = super::handle_push(&app, message).await {
+                        eprintln!("handle_push failed: {e}");
+                        tracing::error!(
+                            command = "android_push",
+                            status = "failed",
+                            error = %e,
+                            "handle_push failed"
+                        );
+                    }
+                });
+                // The running-app path is already owned by Tauri's process lifecycle.
+                // Keep Android's async broadcast alive only for receiver-only cold starts;
+                // holding it through Matrix fetch/decrypt work risks hitting the broadcast
+                // timeout before the spawned app task can finish.
+                drop(pending_result);
+                return Ok(());
             }
-        };
-    let vm_for_secret_store = match env.get_java_vm() {
-        Ok(vm) => vm,
-        Err(e) => {
-            eprintln!("cannot read JavaVM for headless push: {e}");
-            return;
-        }
-    };
-    let vm_for_notification = match env.get_java_vm() {
-        Ok(vm) => vm,
-        Err(e) => {
-            eprintln!("cannot read JavaVM for headless push notification: {e}");
-            return;
-        }
-    };
-    let secret_store_context = match env.new_global_ref(&context) {
-        Ok(context) => context,
-        Err(e) => {
-            eprintln!("cannot retain Android context for headless push: {e}");
-            return;
-        }
-    };
-    let notification_context = match env.new_global_ref(&context) {
-        Ok(context) => context,
-        Err(e) => {
-            eprintln!("cannot retain Android notification context for headless push: {e}");
-            return;
-        }
-    };
 
-    spawn_headless_push(
-        pending_result,
-        vm_for_secret_store,
-        secret_store_context,
-        vm_for_notification,
-        notification_context,
-        store_root,
-        message,
-    );
+            let app_data_dir = match call_push_bridge_string_method(env, &context, "appDataDir") {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("cannot resolve app data dir for headless push: {e}");
+                    return Ok(());
+                }
+            };
+            let store_root = match crate::matrix::persistence::matrix_store_root_at(
+                std::path::Path::new(&app_data_dir),
+            ) {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!("cannot resolve matrix store root for headless push: {e}");
+                    return Ok(());
+                }
+            };
+            let vm_for_secret_store = match env.get_java_vm() {
+                Ok(vm) => vm,
+                Err(e) => {
+                    eprintln!("cannot read JavaVM for headless push: {e}");
+                    return Ok(());
+                }
+            };
+            let vm_for_notification = match env.get_java_vm() {
+                Ok(vm) => vm,
+                Err(e) => {
+                    eprintln!("cannot read JavaVM for headless push notification: {e}");
+                    return Ok(());
+                }
+            };
+            let secret_store_context = match env.new_global_ref(&context) {
+                Ok(context) => context,
+                Err(e) => {
+                    eprintln!("cannot retain Android context for headless push: {e}");
+                    return Ok(());
+                }
+            };
+            let notification_context = match env.new_global_ref(&context) {
+                Ok(context) => context,
+                Err(e) => {
+                    eprintln!("cannot retain Android notification context for headless push: {e}");
+                    return Ok(());
+                }
+            };
+
+            spawn_headless_push(
+                pending_result,
+                vm_for_secret_store,
+                secret_store_context,
+                vm_for_notification,
+                notification_context,
+                store_root,
+                message,
+            );
+            Ok(())
+        })
+        .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// Parses the `notification.room_id`/`notification.event_id` fields out of a

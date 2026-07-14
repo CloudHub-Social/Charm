@@ -21,7 +21,7 @@
 use std::fmt;
 
 #[cfg(target_os = "android")]
-use jni::objects::GlobalRef;
+use jni::objects::{Global, JObject};
 #[cfg(target_os = "android")]
 use jni::JavaVM;
 
@@ -44,6 +44,18 @@ impl fmt::Display for SecretStoreError {
 }
 
 impl std::error::Error for SecretStoreError {}
+
+// Required by `JavaVM::attach_current_thread`'s `E: From<jni::errors::Error>`
+// bound in jni 0.22 (the callback's `Result` error type must be convertible
+// from a raw JNI error, since the attachment itself can fail, e.g. if the
+// callback throws and the attachment's own exception-handling policy
+// surfaces that as `Error::CaughtJavaException`).
+#[cfg(target_os = "android")]
+impl From<jni::errors::Error> for SecretStoreError {
+    fn from(error: jni::errors::Error) -> Self {
+        SecretStoreError::Other(format!("JNI error: {error}"))
+    }
+}
 
 #[cfg(not(target_os = "android"))]
 fn map_keyring_error(error: keyring::Error) -> SecretStoreError {
@@ -125,8 +137,8 @@ mod android {
     //! context through every `persistence.rs` call site.
 
     use super::SecretStoreError;
-    use jni::objects::{GlobalRef, JClass, JObject, JString, JValue};
-    use jni::JavaVM;
+    use jni::objects::{Global, JClass, JObject, JString, JValue};
+    use jni::{jni_sig, jni_str, Env, JavaVM};
     use std::sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
@@ -134,19 +146,20 @@ mod android {
 
     const SECURE_STORAGE_CLASS: &str = "social/cloudhub/charm/SecureStorage";
 
-    /// Cached `GlobalRef` to the `SecureStorage` `Class` object, resolved
+    /// Cached `Global` ref to the `SecureStorage` `Class` object, resolved
     /// once via the Activity's own classloader (see [`secure_storage_class`])
     /// rather than looked up by name on every call.
-    static SECURE_STORAGE_CLASS_REF: OnceLock<GlobalRef> = OnceLock::new();
+    static SECURE_STORAGE_CLASS_REF: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 
     struct ContextOverride {
         id: u64,
-        // `jni::JavaVM` doesn't implement `Clone`, but `with_env` needs to
-        // pull a copy of it out from under `CONTEXT_OVERRIDE`'s mutex guard
-        // before attaching a thread with it — wrapping in `Arc` makes that a
-        // cheap refcount bump instead of an (impossible) value clone.
+        // Neither `jni::JavaVM` nor (as of jni 0.22) `Global` implements
+        // `Clone`, but `with_env` needs to pull a copy of each out from under
+        // `CONTEXT_OVERRIDE`'s mutex guard before attaching a thread with it
+        // — wrapping both in `Arc` makes that a cheap refcount bump instead
+        // of an (impossible) value clone.
         vm: Arc<JavaVM>,
-        context: GlobalRef,
+        context: Arc<Global<JObject<'static>>>,
         active: Arc<AtomicBool>,
     }
 
@@ -175,7 +188,10 @@ mod android {
         }
     }
 
-    pub(crate) fn install_context_override(vm: JavaVM, context: GlobalRef) -> ContextOverrideGuard {
+    pub(crate) fn install_context_override(
+        vm: JavaVM,
+        context: Global<JObject<'static>>,
+    ) -> ContextOverrideGuard {
         let id = NEXT_CONTEXT_OVERRIDE_ID.fetch_add(1, Ordering::Relaxed);
         let active = Arc::new(AtomicBool::new(true));
         let mut current = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
@@ -183,7 +199,7 @@ mod android {
         *current = Some(ContextOverride {
             id,
             vm: Arc::new(vm),
-            context,
+            context: Arc::new(context),
             active: Arc::clone(&active),
         });
         ContextOverrideGuard {
@@ -205,12 +221,12 @@ mod android {
     /// implicitly on thread detach — so leaving one set here could crash the
     /// JVM the next time this (or another) call reuses the thread.
     fn jni_result<T>(
-        env: &mut jni::JNIEnv,
+        env: &Env,
         context: &str,
         result: Result<T, jni::errors::Error>,
     ) -> Result<T, SecretStoreError> {
         result.map_err(|e| {
-            let _ = env.exception_clear();
+            env.exception_clear();
             SecretStoreError::Other(format!("{context}: {e}"))
         })
     }
@@ -218,8 +234,15 @@ mod android {
     /// Attaches the calling thread to the JVM and hands back an `env` plus
     /// the Android `Context` (the running `Activity`) `SecureStorage`'s
     /// methods need to open `EncryptedSharedPreferences`.
+    ///
+    /// jni 0.22's `JavaVM::attach_current_thread` only ever hands back a
+    /// borrowed `Env` inside a closure (never an owned value the caller
+    /// could hold past the attachment's lifetime), so the whole `f` callback
+    /// has to run from inside that closure rather than being handed a
+    /// freestanding `&mut Env` the way jni 0.21's `attach_current_thread`
+    /// allowed.
     fn with_env<T>(
-        f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> Result<T, SecretStoreError>,
+        f: impl FnOnce(&mut Env, &JObject) -> Result<T, SecretStoreError>,
     ) -> Result<T, SecretStoreError> {
         let override_context = {
             let override_guard = CONTEXT_OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
@@ -228,12 +251,11 @@ mod android {
                 .map(|context| (context.vm.clone(), context.context.clone()))
         };
         if let Some((vm, context_ref)) = override_context {
-            let mut env = vm
-                .attach_current_thread()
-                .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
-            let result = env.new_local_ref(context_ref.as_obj());
-            let context = jni_result(&mut env, "new_local_ref(headless Context)", result)?;
-            return f(&mut env, &context);
+            return vm.attach_current_thread(|env| {
+                let result = env.new_local_ref(context_ref.as_ref());
+                let context = jni_result(env, "new_local_ref(headless Context)", result)?;
+                f(env, &context)
+            });
         }
 
         let ctx = ndk_context::android_context();
@@ -245,19 +267,21 @@ mod android {
         // No `env` exists yet at this point, so there's nothing to clear a
         // pending exception on — neither of these can leave one pending
         // anyway (they attach/describe the JVM itself, not a Java call).
-        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }
-            .map_err(|e| SecretStoreError::Other(format!("attach to JVM: {e}")))?;
-        let mut env = vm
-            .attach_current_thread()
-            .map_err(|e| SecretStoreError::Other(format!("attach current thread: {e}")))?;
-        // SAFETY: `ctx.context()` is a valid `jobject` for the app's
-        // `Activity`/`Context` for the lifetime of this call.
-        let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
-        f(&mut env, &activity)
+        // SAFETY: `ctx.vm()` is a valid raw `JavaVM` pointer for the life of
+        // the process (see the SAFETY note above); `JavaVM::from_raw` no
+        // longer returns a `Result` in jni 0.22 (it can't itself fail — it
+        // just wraps the pointer).
+        let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) };
+        vm.attach_current_thread(|env| {
+            // SAFETY: `ctx.context()` is a valid `jobject` for the app's
+            // `Activity`/`Context` for the lifetime of this call.
+            let activity = unsafe { JObject::from_raw(&*env, ctx.context().cast()) };
+            f(env, &activity)
+        })
     }
 
     /// Resolves the `SecureStorage` class via the Activity's own classloader
-    /// rather than `JNIEnv::find_class`/a by-name `call_static_method`.
+    /// rather than `Env::find_class`/a by-name `call_static_method`.
     ///
     /// A thread attached to the JVM from native code (as `with_env` does for
     /// every call here, since these run on Tokio worker threads, not the
@@ -269,19 +293,23 @@ mod android {
     /// Going through `activity.getClassLoader()` instead resolves against the
     /// app's own classloader, same as a normal Kotlin/Java call site would.
     fn secure_storage_class<'a>(
-        env: &mut jni::JNIEnv<'a>,
+        env: &mut Env<'a>,
         activity: &JObject,
     ) -> Result<JClass<'a>, SecretStoreError> {
         if let Some(cached) = SECURE_STORAGE_CLASS_REF.get() {
-            // `JObject` doesn't implement `Clone` in jni 0.21 (local/global
-            // refs are tracked resources, not freely copyable values) — a
-            // new local ref onto the same underlying object is the correct
-            // way to hand out another usable reference to it.
-            let result = env.new_local_ref(cached.as_obj());
-            let local = jni_result(env, "new_local_ref(cached SecureStorage class)", result)?;
-            return Ok(JClass::from(local));
+            // `JObject` doesn't implement `Clone` (local/global refs are
+            // tracked resources, not freely copyable values) — a new local
+            // ref onto the same underlying object is the correct way to hand
+            // out another usable reference to it.
+            let result = env.new_local_ref(cached);
+            return jni_result(env, "new_local_ref(cached SecureStorage class)", result);
         }
-        let result = env.call_method(activity, "getClassLoader", "()Ljava/lang/ClassLoader;", &[]);
+        let result = env.call_method(
+            activity,
+            jni_str!("getClassLoader"),
+            jni_sig!("()Ljava/lang/ClassLoader;"),
+            &[],
+        );
         let class_loader = jni_result(env, "activity.getClassLoader()", result)?;
         let result = class_loader.l();
         let class_loader = jni_result(env, "getClassLoader() return value", result)?;
@@ -289,21 +317,22 @@ mod android {
         let class_name = jni_result(env, "new_string(class name)", result)?;
         let result = env.call_method(
             &class_loader,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;",
+            jni_str!("loadClass"),
+            jni_sig!("(Ljava/lang/String;)Ljava/lang/Class;"),
             &[JValue::from(&class_name)],
         );
         let class_obj = jni_result(env, "classLoader.loadClass(SecureStorage)", result)?;
         let result = class_obj.l();
         let class_obj = jni_result(env, "loadClass() return value", result)?;
+        let result = env.cast_local::<JClass>(class_obj);
+        let class_obj = jni_result(env, "cast loadClass() return value to JClass", result)?;
         let result = env.new_global_ref(&class_obj);
         let global = jni_result(env, "new_global_ref(SecureStorage class)", result)?;
         // Another thread may have raced us here; either ref works, so keep
         // whichever `OnceLock::set` actually won and use that one.
         let cached = SECURE_STORAGE_CLASS_REF.get_or_init(|| global);
-        let result = env.new_local_ref(cached.as_obj());
-        let local = jni_result(env, "new_local_ref(cached SecureStorage class)", result)?;
-        Ok(JClass::from(local))
+        let result = env.new_local_ref(cached);
+        jni_result(env, "new_local_ref(cached SecureStorage class)", result)
     }
 
     pub(super) fn get(service: &str, account: &str) -> Result<String, SecretStoreError> {
@@ -315,8 +344,10 @@ mod android {
             let account_j = jni_result(env, "new_string(account)", result)?;
             let result = env.call_static_method(
                 class,
-                "get",
-                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                jni_str!("get"),
+                jni_sig!(
+                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+                ),
                 &[
                     JValue::from(activity),
                     JValue::from(&service_j),
@@ -329,9 +360,14 @@ mod android {
             if obj.is_null() {
                 return Err(SecretStoreError::NotFound);
             }
-            let value_str = JString::from(obj);
-            let result = env.get_string(&value_str);
-            let value: String = jni_result(env, "read SecureStorage.get result", result)?.into();
+            let result = env.cast_local::<JString>(obj);
+            let value_str = jni_result(
+                env,
+                "cast SecureStorage.get return value to JString",
+                result,
+            )?;
+            let result = value_str.try_to_string(env);
+            let value = jni_result(env, "read SecureStorage.get result", result)?;
             Ok(value)
         })
     }
@@ -351,8 +387,10 @@ mod android {
             let password_j = jni_result(env, "new_string(password)", result)?;
             let result = env.call_static_method(
                 class,
-                "set",
-                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+                jni_str!("set"),
+                jni_sig!(
+                    "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"
+                ),
                 &[
                     JValue::from(activity),
                     JValue::from(&service_j),
@@ -374,8 +412,8 @@ mod android {
             let account_j = jni_result(env, "new_string(account)", result)?;
             let result = env.call_static_method(
                 class,
-                "delete",
-                "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V",
+                jni_str!("delete"),
+                jni_sig!("(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V"),
                 &[
                     JValue::from(activity),
                     JValue::from(&service_j),
@@ -394,7 +432,7 @@ pub(crate) type AndroidContextOverrideGuard = android::ContextOverrideGuard;
 #[cfg(target_os = "android")]
 pub(crate) fn install_android_context_override(
     vm: JavaVM,
-    context: GlobalRef,
+    context: Global<JObject<'static>>,
 ) -> AndroidContextOverrideGuard {
     android::install_context_override(vm, context)
 }

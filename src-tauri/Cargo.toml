@@ -50,7 +50,7 @@ eyeball = "0.8.8"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-store = "2"
 matrix-sdk-ui = "0.18.0"
-lru = "0.16"
+lru = "0.18"
 # Direct dep so timeline.rs can pass matrix-sdk-ui's returned
 # `imbl::Vector<Arc<TimelineItem>>` straight into our own functions — Cargo
 # treats two semver-incompatible `imbl` versions as distinct types even with
@@ -133,5 +133,5 @@ openssl = { version = "0.10", features = ["vendored"] }
 # Kotlin helper (`SecureStorage.kt`, bundled in `gen/android`) wrapping
 # `androidx.security`'s `EncryptedSharedPreferences` — itself backed by an
 # AES key generated and held in the Android Keystore, not a plaintext file.
-jni = "0.21"
+jni = "0.22"
 ndk-context = "0.1"
