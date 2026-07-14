@@ -13,6 +13,15 @@ const USER_ID = "@e2e:localhost";
 const OTHER_USER = { user_id: "@alice:localhost", display_name: "Alice" };
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { rich_message_rendering: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
