@@ -163,6 +163,31 @@ describe("remote cache install-id binding", () => {
     // Mismatched cohort must not apply — falls through to the catalog default.
     expect(mod.getFlag("canary")).toBe(false);
   });
+
+  it("keeps the cached remote if the stale-clear durable save fails (JS matches the file Rust reads)", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
+    localStorage.setItem("charm:featureFlagsInstallId", "new-install");
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn(async (key: string) =>
+        key === "featureFlagsRemote"
+          ? { state: { remote: { canary: true } }, updatedAt: 9, installId: "old-install" }
+          : undefined,
+      ),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockRejectedValue(new Error("disk full")),
+      reload: vi.fn().mockResolvedValue(undefined),
+      delete: vi.fn().mockResolvedValue(undefined),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+
+    const mod = await import("./index");
+    await mod.initializeFeatureFlags();
+    // The clear failed to persist, so the file still holds the old value; JS
+    // keeps showing it too rather than diverging to defaults.
+    expect(mod.getFlag("canary")).toBe(true);
+  });
 });
 
 describe("initializeFeatureFlags", () => {

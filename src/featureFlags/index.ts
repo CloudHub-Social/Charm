@@ -58,20 +58,26 @@ export async function initializeFeatureFlags(): Promise<void> {
   // fire-and-forget clear. (If that durable write itself fails, both sides
   // fall open to the last-known cache, as documented.)
   const hasCachedRemote = Object.keys(cachedRemote.remote).length > 0;
+  // Clears the stale/mismatched durable cache, keeping the JS cache consistent
+  // with the file the Rust core reads: only drop to `{}` if the durable clear
+  // actually succeeded — otherwise the file still holds the old value, so JS
+  // must keep showing it too (both fall open to the last-known cache, in sync,
+  // until a later clear/refresh lands).
+  const clearStaleCache = async (installId?: string): Promise<FeatureFlagRemote> => {
+    if (!hasCachedRemote) return {};
+    return (await persistRemoteFlags({}, installId)) ? {} : cachedRemote.remote;
+  };
   if (isRemoteConfigured()) {
     // Only mint/read the install id when a remote endpoint exists — otherwise a
     // build that never makes an OFREP request would still get a durable
     // per-install identifier (see PRIVACY.md).
     const currentInstallId = getInstallId();
-    if (cachedRemote.installId === currentInstallId) {
-      remoteCache = cachedRemote.remote;
-    } else {
-      remoteCache = {};
-      if (hasCachedRemote) await persistRemoteFlags({}, currentInstallId);
-    }
+    remoteCache =
+      cachedRemote.installId === currentInstallId
+        ? cachedRemote.remote
+        : await clearStaleCache(currentInstallId);
   } else {
-    remoteCache = {};
-    if (hasCachedRemote) await persistRemoteFlags({});
+    remoteCache = await clearStaleCache();
   }
   if (mutationId === cacheMutationId) {
     overridesCache = persistedOverrides;
