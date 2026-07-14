@@ -74,10 +74,10 @@ the semver bump (`major`, `minor`, `patch`, `docs`, or `note`) and the
 user-facing release note text. Knope combines pending changesets to decide
 version bumps and generate changelog entries.
 
-Add one before requesting review on a user-facing PR — `require-changeset.yml`
-enforces this and comments on the PR if one's missing. A maintainer can add
-the `internal` label to skip the check for maintenance/internal PRs with no
-user-facing impact.
+Add one before requesting review on a user-facing PR — `pr-checklist-gate.yml`
+enforces this alongside the other merge checklist requirements. A maintainer
+can add the `internal` label to skip the gate for maintenance/internal PRs with
+no user-facing impact.
 
 CLI paths:
 

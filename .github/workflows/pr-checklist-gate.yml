@@ -2,7 +2,8 @@ name: PR checklist gate
 
 # Enforces the "Merge gate checklist" items in
 # .github/PULL_REQUEST_TEMPLATE.md — feature-flag gating (docs/FEATURE_FLAGS.md),
-# Playwright e2e coverage, and Sentry instrumentation. CLAUDE.md/AGENTS.md
+# Playwright e2e coverage, Sentry instrumentation, and a Knope changeset for
+# releasable changes. CLAUDE.md/AGENTS.md
 # already ask agents to do these for relevant changes, but that's a soft
 # instruction buried in project docs — easy for an agent (or a human) to skip
 # under time pressure, and nothing previously stopped the PR from merging
@@ -14,12 +15,11 @@ name: PR checklist gate
 # path to instrument) apply the dedicated `internal` label to skip the gate
 # entirely — see the bypass in the script below.
 #
-# Deliberately text-based, not diff-based: it can't tell whether the e2e test
-# or Sentry call actually covers this PR's change, only that someone made an
-# affirmative claim one way or the other. That's a much weaker guarantee than
-# a diff-pattern check, but it closes the "just never mentioned it" failure
-# mode this was written for, and doesn't false-positive on PRs that
-# genuinely don't touch anything observable (docs, CI config, deps).
+# The three checklist claims are deliberately text-based: the gate can't tell
+# whether the e2e test or Sentry call actually covers this PR's change, only
+# that someone made an affirmative claim one way or the other. Changesets are
+# checked against the files added by the PR, so a pre-existing pending
+# changeset cannot accidentally satisfy the release-note requirement.
 #
 # Runs on pull_request (where it actually checks the PR body) and merge_group
 # (where it's a trivial pass, same pattern as review-gate.yml): a bot-authored
@@ -123,6 +123,33 @@ jobs:
                 `box, or add "N/A: <reason>" after it explaining why this PR ` +
                 `doesn't need it.`
               );
+            }
+
+            // Release PRs consume the pending changesets; they do not add a
+            // new one of their own. Internal PRs returned at the bypass above.
+            if (context.payload.pull_request.head.ref !== "release") {
+              const files = await github.paginate(
+                github.rest.pulls.listFiles,
+                {
+                  ...context.repo,
+                  pull_number: context.payload.pull_request.number,
+                  per_page: 100,
+                },
+              );
+              const hasChangeset = files.some(
+                (file) =>
+                  file.status === "added" &&
+                  /^\.changeset\/.+\.md$/.test(file.filename) &&
+                  file.filename !== ".changeset/README.md",
+              );
+              if (!hasChangeset) {
+                failures.push(
+                  "No changeset was added by this PR. Run `pnpm run " +
+                  "document-change`, add `.changeset/<name>.md`, or ask a " +
+                  "maintainer to apply the `internal` label for a " +
+                  "non-user-facing change."
+                );
+              }
             }
 
             if (failures.length > 0) {
