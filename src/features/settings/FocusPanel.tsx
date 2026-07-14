@@ -15,12 +15,17 @@ function formatUntil(until: number | null): string {
  * is not, so an already-set DND state (e.g. from the tray menu, which is
  * also flag-gated for its menu items — see `SettingsScreen`) keeps working
  * even if the flag were flipped off mid-session.
+ *
+ * Review fix: `SettingsScreen` keeps the "Focus" tab reachable as an
+ * off-ramp whenever `dndActive`, even with the flag off, so this panel must
+ * render (not blank out) in that same case — otherwise a user lands on a
+ * visible-but-empty tab with no control to turn DND back off.
  */
 export function FocusPanel() {
   const focusModeEnabled = useFlag("focus_mode");
   const { enabled, until, enable, disable } = useFocusMode();
 
-  if (!focusModeEnabled) return null;
+  if (!focusModeEnabled && !enabled) return null;
 
   return (
     <div className="max-w-lg space-y-6">

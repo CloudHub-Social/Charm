@@ -161,7 +161,7 @@ function SettingsBody({
             <DesktopPanel />
           </TabsContent>
         )}
-        {focusModeEnabled && (
+        {(focusModeEnabled || dndActive) && (
           <TabsContent value="focus">
             <FocusPanel />
           </TabsContent>

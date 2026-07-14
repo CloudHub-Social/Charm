@@ -204,6 +204,16 @@ describe("SettingsScreen", () => {
     renderScreen("account");
     await screen.findByRole("heading", { name: "Profile" });
 
-    expect(await screen.findByRole("tab", { name: "Focus" })).toBeInTheDocument();
+    const tab = await screen.findByRole("tab", { name: "Focus" });
+    expect(tab).toBeInTheDocument();
+
+    // Review fix: the tab being reachable isn't enough — its panel must
+    // actually render content (the DND toggle) rather than blank out, or
+    // the off-ramp is unusable. Regression coverage for the bug where
+    // `SettingsScreen`'s `TabsContent` and `FocusPanel`'s own early return
+    // stayed gated on `focusModeEnabled` alone.
+    tab.focus();
+    fireEvent.click(tab);
+    expect(await screen.findByRole("checkbox", { name: /do not disturb/i })).toBeInTheDocument();
   });
 });
