@@ -160,20 +160,30 @@ impl CryptoBackupStore {
                 .build()
                 .map_err(|error| error.to_string())?,
         );
-        let writer_id = random_identifier();
-        store
-            .put(
-                &ObjectPath::from(ACTIVE_WRITER_PATH),
-                PutPayload::from(writer_id.clone()),
-            )
-            .await
-            .map_err(|error| format!("failed to publish crypto snapshot writer fence: {error}"))?;
         Ok(Some(Self {
             key,
             store,
-            writer_id,
+            writer_id: random_identifier(),
             enforce_writer_fence: true,
         }))
+    }
+
+    /// Mark this fully initialized server as the only instance allowed to
+    /// publish crypto snapshots. Startup calls this only after restoration
+    /// and listener binding have succeeded, so a failed replacement cannot
+    /// fence out the healthy instance that is still serving traffic.
+    pub async fn activate_writer(&self) -> Result<(), String> {
+        if !self.enforce_writer_fence {
+            return Ok(());
+        }
+        self.store
+            .put(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from(self.writer_id.clone()),
+            )
+            .await
+            .map_err(|error| format!("failed to publish crypto snapshot writer fence: {error}"))?;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -296,11 +306,15 @@ impl CryptoBackupStore {
         if !self.enforce_writer_fence {
             return Ok(None);
         }
-        let result = self
-            .store
-            .get(&ObjectPath::from(ACTIVE_WRITER_PATH))
-            .await
-            .map_err(|error| format!("failed to read crypto snapshot writer fence: {error}"))?;
+        let result = match self.store.get(&ObjectPath::from(ACTIVE_WRITER_PATH)).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "failed to read crypto snapshot writer fence: {error}"
+                ));
+            }
+        };
         let bytes = result.bytes().await.map_err(|error| error.to_string())?;
         let writer = std::str::from_utf8(&bytes)
             .map_err(|error| format!("crypto snapshot writer fence is not UTF-8: {error}"))?
@@ -312,10 +326,13 @@ impl CryptoBackupStore {
     }
 
     async fn is_active_writer(&self) -> Result<bool, String> {
+        if !self.enforce_writer_fence {
+            return Ok(true);
+        }
         Ok(self
             .active_writer_id()
             .await?
-            .is_none_or(|active| active == self.writer_id))
+            .is_some_and(|active| active == self.writer_id))
     }
 
     async fn remove_uncommitted_generation(
@@ -490,9 +507,7 @@ impl CryptoBackupStore {
                 manifest.version
             ));
         }
-        if manifest.files.len() != DATABASE_FILES.len() {
-            return Err("crypto snapshot manifest has an incomplete database set".to_string());
-        }
+        validate_manifest_files(&manifest.files, &DATABASE_FILES)?;
         if manifest.generation != generation {
             return Err("crypto snapshot manifest generation does not match its path".to_string());
         }
@@ -616,6 +631,19 @@ impl CryptoBackupStore {
             )
             .map_err(|error| error.to_string())
     }
+}
+
+fn validate_manifest_files(files: &[SnapshotFile], known_files: &[&str]) -> Result<(), String> {
+    if files.is_empty() || files.len() > known_files.len() {
+        return Err("crypto snapshot manifest has an invalid database set".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for file in files {
+        if !known_files.contains(&file.name.as_str()) || !seen.insert(file.name.as_str()) {
+            return Err("crypto snapshot manifest has an invalid database set".to_string());
+        }
+    }
+    Ok(())
 }
 
 async fn load_backup_key() -> Result<Aes256Gcm, String> {
@@ -830,6 +858,35 @@ mod tests {
             a.aad("database", Some(1), Some(DATABASE_FILES[0])),
             b.aad("database", Some(1), Some(DATABASE_FILES[0]))
         );
+    }
+
+    #[test]
+    fn older_manifest_database_subsets_remain_valid() {
+        let files = vec![SnapshotFile {
+            name: "matrix-sdk-crypto.sqlite3".to_string(),
+            sha256: "digest".to_string(),
+            size: 1,
+        }];
+        assert!(validate_manifest_files(
+            &files,
+            &["matrix-sdk-crypto.sqlite3", "future-crypto-store.sqlite3"]
+        )
+        .is_ok());
+        assert!(validate_manifest_files(&[], &DATABASE_FILES).is_err());
+    }
+
+    #[tokio::test]
+    async fn writer_is_inactive_until_startup_activates_it() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let writer = CryptoBackupStore::new_for_test_with_store(
+            [43; 32],
+            "replacement-writer",
+            backend,
+            true,
+        );
+        assert!(!writer.is_active_writer().await.unwrap());
+        writer.activate_writer().await.unwrap();
+        assert!(writer.is_active_writer().await.unwrap());
     }
 
     #[test]

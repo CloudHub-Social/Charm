@@ -212,7 +212,10 @@ The server retains the three highest-priority committed generations and
 deletes older committed generations after each successful snapshot. Each
 generation's encrypted `manifest.json` is its commit marker. Restore prefers
 the active writer's newest complete generation, then falls back to earlier
-writers for corruption recovery. Logout deletes all generations best-effort.
+writers for corruption recovery. A replacement publishes its active-writer
+fence only after session restoration and listener binding succeed, so a failed
+startup cannot disable snapshots from the healthy serving instance. Logout
+deletes all generations best-effort.
 An optional bucket lifecycle expiry can clean up objects left by interrupted
 uploads, but its age also becomes the maximum lifetime of a dormant session's
 last backup.
