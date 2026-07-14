@@ -1,14 +1,16 @@
 import { createElement, useState, type PropsWithChildren, type ReactNode } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell, type MobileView } from "./AppShell";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 
 const mockUseAdaptiveLayout = vi.fn();
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
 vi.mock("./useAdaptiveLayout", () => ({
   useAdaptiveLayout: () => mockUseAdaptiveLayout(),
 }));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 /** Mirrors how `RoomsScreen` owns `mobileView` and passes it down controlled. */
 function Harness({
@@ -34,7 +36,7 @@ function Harness({
       isSettingsActive={isSettingsActive}
       spaceRail={<div>space-rail</div>}
       roomList={<div>room-list</div>}
-      content={<div>chat-content</div>}
+      content={<button onClick={() => setMobileView("list")}>chat-content</button>}
       rightPanel={rightPanel}
     />
   );
@@ -62,6 +64,10 @@ function renderShell(
 }
 
 describe("AppShell", () => {
+  beforeEach(() => {
+    mockUseFlag.mockReturnValue(true);
+  });
+
   it("renders the sidebar layout (room list, content, right panel side by side) on desktop", () => {
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     renderShell("!room:example.org", { rightPanel: <div>right-panel</div> });
@@ -89,6 +95,17 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
     expect(screen.queryByText("room-list")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Primary" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the existing bottom navigation in room detail when the redesign flag is disabled", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockReturnValue(false);
+    renderShell("!room:example.org");
+
+    expect(screen.getByText("chat-content")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /chats/i })).not.toHaveAttribute("aria-current");
   });
 
   it("shows the right panel instead of chat content in mobile detail view when it's open", () => {
@@ -99,16 +116,6 @@ describe("AppShell", () => {
     expect(screen.queryByText("chat-content")).not.toBeInTheDocument();
   });
 
-  it("tapping the Chats tab returns to the list view", () => {
-    mockUseAdaptiveLayout.mockReturnValue("mobile");
-    renderShell("!room:example.org");
-    expect(screen.getByText("chat-content")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
-
-    expect(screen.getByText("room-list")).toBeInTheDocument();
-  });
-
   it("tapping Settings opens the settings overlay via settingsOpenAtom", () => {
     mockUseAdaptiveLayout.mockReturnValue("mobile");
     const { store } = renderShell(null);
@@ -116,6 +123,15 @@ describe("AppShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /settings/i }));
 
     expect(store.get(settingsOpenAtom)).toBe("account");
+  });
+
+  it("keeps the mobile list visible when Chats is reselected", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    renderShell(null);
+
+    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+
+    expect(screen.getByText("room-list")).toBeInTheDocument();
   });
 
   it("marks Settings as current when isSettingsActive is true", () => {
@@ -145,7 +161,7 @@ describe("AppShell", () => {
     // Navigate back to the list without changing the active room — this is
     // the scenario the bug covers: tapping the same room again from the
     // list must still reopen detail, even though `activeRoomId` won't change.
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+    fireEvent.click(screen.getByText("chat-content"));
     expect(screen.getByText("room-list")).toBeInTheDocument();
 
     rerender(
@@ -155,5 +171,24 @@ describe("AppShell", () => {
     );
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
+  });
+
+  it("returns to the mobile list when the active room disappears", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const store = createStore();
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(Provider, { store }, children);
+    const { rerender } = render(<Harness activeRoomId="!room:example.org" />, { wrapper });
+
+    expect(screen.getByText("chat-content")).toBeInTheDocument();
+
+    rerender(
+      <Provider store={store}>
+        <Harness activeRoomId={null} />
+      </Provider>,
+    );
+
+    expect(screen.getByText("room-list")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
   });
 });

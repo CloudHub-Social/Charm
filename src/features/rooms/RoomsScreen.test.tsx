@@ -66,13 +66,18 @@ vi.mock("@/features/room-info/useRoomDetails", () => ({
 vi.mock("./ChatShell", () => ({
   ChatShell: ({
     room: activeRoom,
+    onBack,
     onNavigateToRoom,
   }: {
     room: RoomSummary | null;
+    onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
   }) => (
     <div>
       chat-content:{activeRoom?.room_id ?? "none"}
+      <button type="button" onClick={onBack}>
+        back-to-chats
+      </button>
       <button type="button" onClick={() => onNavigateToRoom("!b:example.org")}>
         direct-room-pill
       </button>
@@ -739,6 +744,62 @@ describe("RoomsScreen", () => {
     expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
   });
 
+  it("returns to the mobile list when the active room disappears", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    listRooms.mockResolvedValue([
+      room({ room_id: "!a:example.org" }),
+      room({ room_id: "!b:example.org", name: "Room B" }),
+    ]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([room({ room_id: "!b:example.org", name: "Room B" })]);
+    });
+
+    await screen.findByRole("button", { name: "!b:example.org" });
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+    expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
+  });
+
+  it("does not resync focus when room metadata changes for the same active room", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    // Initial null state, room selection, and AppShell's controlled view
+    // transition each synchronize focus. Wait for all three before isolating
+    // the metadata-only update this regression test exercises.
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledTimes(3));
+    expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org");
+    setFocusedRoom.mockClear();
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([room({ room_id: "!a:example.org", unread_count: 1 })]);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("chat-content:!a:example.org")).toBeInTheDocument(),
+    );
+    expect(setFocusedRoom).not.toHaveBeenCalled();
+    hasFocus.mockRestore();
+  });
+
   it("clears focus when the window loses focus", async () => {
     // jsdom doesn't tie `document.hasFocus()` to blur/focus events firing on
     // `window`, so drive it directly rather than relying on jsdom to
@@ -1053,9 +1114,9 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith("!a:example.org"));
     setFocusedRoom.mockClear();
 
-    // Tapping the Chats tab navigates back to the list — the room is still
+    // The room header's back action navigates to the list — the room is still
     // "active" but no longer on-screen, so it must stop reading as focused.
-    fireEvent.click(screen.getByRole("button", { name: /chats/i }));
+    fireEvent.click(screen.getByRole("button", { name: "back-to-chats" }));
 
     await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledWith(null));
     hasFocus.mockRestore();

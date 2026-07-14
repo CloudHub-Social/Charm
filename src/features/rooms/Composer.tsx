@@ -51,6 +51,8 @@ interface ComposerProps {
    * emptiness is the only signal Send's disabled state needs.
    */
   onEmptyChange?: (isEmpty: boolean) => void;
+  /** Mobile chat keeps formatting available without permanently spending a full toolbar row. */
+  showFormattingToolbar?: boolean;
 }
 
 /** Lets a parent (the Send button in `ChatShell`) trigger the same submit path as Enter. */
@@ -169,6 +171,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     onTypingInput,
     onBlur,
     onEmptyChange,
+    showFormattingToolbar = true,
   },
   ref,
 ) {
@@ -203,6 +206,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // extra guard in case that invariant ever changes.
   const currentRoomIdRef = useRef(roomId);
   currentRoomIdRef.current = roomId;
+  // TipTap extensions must keep a stable identity, but the responsive shell
+  // changes this value while the editor remains mounted. Let the placeholder
+  // extension read the latest prop without rebuilding the editor (which would
+  // discard unsaved edit-mode text).
+  const placeholderRef = useRef(placeholder);
+  placeholderRef.current = placeholder;
 
   // Called on every keystroke and room switch (acceptance criterion 8) —
   // the `useEffect` below covers "room switch" by reading the seam's
@@ -317,7 +326,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           leading: raw.emoji,
         })),
       }),
-      Placeholder.configure({ placeholder }),
+      Placeholder.configure({ placeholder: () => placeholderRef.current }),
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally created once: tiptap extensions need a stable identity (recreating resets editor state); live data is read via membersRef/roomsRef/the menu bridge inside each suggestion's items/render, not captured in this closure
     [],
@@ -381,7 +390,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         return false;
       },
     },
-    onUpdate: ({ editor: e }) => {
+    onUpdate: ({ editor: e, transaction }) => {
+      // Placeholder refreshes dispatch a no-op transaction so TipTap
+      // recomputes decorations. Only actual document changes are user input;
+      // treating every transaction as typing would emit a false typing notice
+      // when the viewport crosses the responsive breakpoint.
+      if (!transaction.docChanged) return;
       // Only `send`/`reply` mode content belongs in the shared room draft —
       // writing edit-mode keystrokes here would overwrite whatever the user
       // had actually drafted for their next new message, which then
@@ -393,6 +407,29 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     },
     onBlur: () => onBlur?.(),
   });
+
+  useEffect(() => {
+    if (!editor) return;
+    const editorProps = editor.options.editorProps ?? {};
+    const attributes =
+      typeof editorProps.attributes === "function"
+        ? editorProps.attributes(editor.state)
+        : editorProps.attributes;
+    editor.setOptions({
+      editorProps: {
+        ...editorProps,
+        attributes: {
+          ...attributes,
+          "aria-label": placeholder,
+          placeholder,
+        },
+      },
+    });
+    // Recomputes the Placeholder extension's decorations so its
+    // `data-placeholder` switches immediately even though the document did
+    // not change during the responsive-layout transition.
+    editor.view.dispatch(editor.state.tr);
+  }, [editor, placeholder]);
 
   // Reports the editor's initial content emptiness once it's created
   // (mount, or entering edit mode with pre-filled `initialHtml`) — `onUpdate`
@@ -458,7 +495,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div className="flex flex-1 flex-col gap-1">
-      <FormattingToolbar editor={editor} />
+      {showFormattingToolbar && <FormattingToolbar editor={editor} />}
       <EditorContent editor={editor} />
       {menu.state.open && (
         <AutocompletePopover

@@ -13,11 +13,16 @@ import type {
 } from "@/lib/matrix";
 import { makeRoomSummary } from "./testFixtures";
 import { messageRowKey } from "./messageRowShared";
-import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
+import { membersDrawerOpenAtomFamily, roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
-vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+const mockUseAdaptiveLayout = vi.hoisted(() => vi.fn(() => "desktop"));
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+vi.mock("@/features/shell/useAdaptiveLayout", () => ({
+  useAdaptiveLayout: () => mockUseAdaptiveLayout(),
+}));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
@@ -284,6 +289,8 @@ describe("ChatShell", () => {
   });
 
   beforeEach(() => {
+    mockUseAdaptiveLayout.mockReturnValue("desktop");
+    mockUseFlag.mockReturnValue(true);
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
@@ -314,6 +321,72 @@ describe("ChatShell", () => {
   it("prompts to select a room when none is active", () => {
     render(<ChatShell room={null} currentUserId="@me:localhost" />);
     expect(screen.getByText("Select a room to start chatting")).toBeInTheDocument();
+  });
+
+  it("renders mobile chat navigation, compact formatting, and room actions", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const onBack = vi.fn();
+    const store = createStore();
+    const otherRoom = { ...room, room_id: "!other:localhost", name: "Other room" };
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" onBack={onBack} />
+      </JotaiProvider>,
+    );
+
+    await screen.findByText("No messages yet");
+    expect(screen.getByText("Send the first message to start the conversation.")).toBeVisible();
+    expect(screen.getByPlaceholderText("Message")).toBeVisible();
+    expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to chats" }));
+    expect(onBack).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+    expect(screen.getByRole("button", { name: "Hide formatting" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={otherRoom} currentUserId="@me:localhost" onBack={onBack} />
+      </JotaiProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Show formatting" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Show members" }));
+    expect(store.get(membersDrawerOpenAtomFamily(otherRoom.room_id))).toBe(true);
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Room actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Room settings" }));
+    expect(store.get(roomSettingsAtom)).toEqual({ roomId: otherRoom.room_id, section: "general" });
+  });
+
+  it("keeps the existing mobile chat UI when the redesign flag is disabled", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    mockUseFlag.mockReturnValue(false);
+
+    renderChatShell();
+
+    await screen.findByText("No messages yet");
+    expect(screen.queryByText("Send the first message to start the conversation.")).toBeNull();
+    expect(screen.getByPlaceholderText("Message general")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show formatting" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Back to chats" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Room settings" })).toBeVisible();
   });
 
   it("disables Send while the composer is empty, and enables it once text is typed", async () => {
@@ -2467,6 +2540,7 @@ describe("ChatShell", () => {
   });
 
   it("shows a following-the-conversation bar that expands to list participants", async () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
     getRoomMembers.mockResolvedValueOnce([
       {
         user_id: "@alice:localhost",
@@ -2488,6 +2562,8 @@ describe("ChatShell", () => {
     const bar = await screen.findByRole("button", {
       name: "Alice and Bob are following the conversation",
     });
+    const composer = screen.getByTestId("composer-shell");
+    expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Alice", { selector: "span" })).not.toBeInTheDocument();
 

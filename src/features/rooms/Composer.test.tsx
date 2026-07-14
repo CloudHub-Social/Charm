@@ -47,6 +47,52 @@ describe("Composer", () => {
     await waitFor(() => expect(screen.getByLabelText("Message general")).toBeInTheDocument());
   });
 
+  it("can collapse the formatting toolbar for a compact mobile composer", async () => {
+    render(
+      <Composer
+        roomId="!room-mobile:example.org"
+        mode="send"
+        placeholder="Message"
+        onSubmit={vi.fn()}
+        onSlashCommand={vi.fn()}
+        onEscape={vi.fn()}
+        onTypingInput={vi.fn()}
+        showFormattingToolbar={false}
+      />,
+    );
+
+    expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Message")).toBeInTheDocument());
+  });
+
+  it("updates its placeholder without discarding an in-progress message", async () => {
+    const props = {
+      roomId: "!room-responsive:example.org",
+      mode: "send" as const,
+      onSubmit: vi.fn(),
+      onSlashCommand: vi.fn(),
+      onEscape: vi.fn(),
+      onTypingInput: vi.fn(),
+    };
+    const view = render(<Composer {...props} placeholder="Message General" />);
+    await waitFor(() => screen.getByLabelText("Message General"));
+
+    view.rerender(<Composer {...props} placeholder="Message" />);
+
+    const mobileEditable = await waitFor(() => screen.getByLabelText("Message"));
+    expect(mobileEditable).toHaveAttribute("placeholder", "Message");
+    expect(mobileEditable.querySelector("[data-placeholder='Message']")).toBeInTheDocument();
+    expect(props.onTypingInput).not.toHaveBeenCalled();
+
+    pasteText(mobileEditable, "draft survives rotation");
+    expect(props.onTypingInput).toHaveBeenCalledOnce();
+    view.rerender(<Composer {...props} placeholder="Message General" />);
+
+    expect(await screen.findByLabelText("Message General")).toHaveTextContent(
+      "draft survives rotation",
+    );
+  });
+
   it("does not render the autocomplete popover before any trigger is typed", () => {
     render(
       <Composer

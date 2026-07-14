@@ -16,5 +16,11 @@
     "default": false,
     "description": "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji.",
     "owner": "Spec 58 (rich message content rendering)"
+  },
+  {
+    "key": "mobile_chat_redesign",
+    "default": false,
+    "description": "Use the compact mobile-first room header, composer, and chat navigation.",
+    "owner": "Spec 52 (mobile chat UX)"
   }
 ]
