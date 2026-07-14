@@ -104,7 +104,7 @@ describe("MessageRow link previews (Spec 29)", () => {
     renderRow("bubble", "check this out https://example.com");
 
     await waitFor(() =>
-      expect(getUrlPreview).toHaveBeenCalledWith("!room:localhost", "https://example.com"),
+      expect(getUrlPreview).toHaveBeenCalledWith("!room:localhost", "https://example.com", 1),
     );
   });
 

@@ -457,8 +457,12 @@ export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean
  * a page with no usable OpenGraph data — never rejects for those cases; the
  * caller doesn't need a try/catch to render "no preview".
  */
-export function getUrlPreview(roomId: string, url: string): Promise<UrlPreview | null> {
-  return invoke("get_url_preview", { roomId, url });
+export function getUrlPreview(
+  roomId: string,
+  url: string,
+  eventTsMs?: number | null,
+): Promise<UrlPreview | null> {
+  return invoke("get_url_preview", { roomId, url, eventTsMs: eventTsMs ?? null });
 }
 
 export function onUploadProgress(

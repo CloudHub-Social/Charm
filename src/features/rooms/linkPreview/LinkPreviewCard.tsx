@@ -7,6 +7,7 @@ import { fetchUrlPreview } from "./previewCache";
 interface LinkPreviewCardProps {
   roomId: string;
   url: string;
+  eventTsMs?: number | null;
 }
 
 /** Resolves a preview's `imageUrl` to a webview-loadable source, reusing the
@@ -70,10 +71,13 @@ export function linkPreviewStaleTime(data: unknown): number {
  * "nothing" — it's simply not rendered until data arrives, avoiding a
  * layout-shifting placeholder for what's usually a sub-second fetch).
  */
-export function LinkPreviewCard({ roomId, url }: LinkPreviewCardProps) {
+export function LinkPreviewCard({ roomId, url, eventTsMs }: LinkPreviewCardProps) {
   const { data: preview } = useQuery({
-    queryKey: ["link-preview", roomId, url],
-    queryFn: () => fetchUrlPreview(roomId, url),
+    // eventTsMs is part of the cache key: the same URL previewed for two
+    // different messages (sent at different times) can legitimately return
+    // different homeserver-fetched data — see fetchUrlPreview's ts param.
+    queryKey: ["link-preview", roomId, url, eventTsMs ?? null],
+    queryFn: () => fetchUrlPreview(roomId, url, eventTsMs),
     staleTime: (query) => linkPreviewStaleTime(query.state.data),
     gcTime: 60 * 60 * 1000,
   });

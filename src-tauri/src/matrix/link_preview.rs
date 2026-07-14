@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use matrix_sdk::ruma::api::client::authenticated_media::get_media_preview as auth_preview;
 use matrix_sdk::ruma::api::client::media::get_media_preview as legacy_preview;
+use matrix_sdk::ruma::{MilliSecondsSinceUnixEpoch, UInt};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -99,14 +100,28 @@ pub async fn get_url_preview(
     // homeserver call itself is not room-scoped.
     room_id: String,
     url: String,
+    // The message event's own timestamp, forwarded as `preview_url`'s `ts`
+    // query param — per the C-S API spec, this asks the homeserver for the
+    // preview data closest to that point in time rather than whatever's
+    // current right now, so a preview rendered for an old message doesn't
+    // show a page's current title/thumbnail if it changed since the message
+    // was sent. `None` for messages with no known timestamp (shouldn't
+    // normally happen) falls back to "current", the previous behavior.
+    event_ts_ms: Option<i64>,
 ) -> Result<Option<UrlPreview>, String> {
     let _ = room_id;
     let client = state.require_client().await?;
-    Ok(get_url_preview_impl(&client, url).await)
+    Ok(get_url_preview_impl(&client, url, event_ts_ms).await)
 }
 
-pub async fn get_url_preview_impl(client: &Client, url: String) -> Option<UrlPreview> {
-    let data = fetch_preview_data(client, url, PREVIEW_TIMEOUT).await?;
+pub async fn get_url_preview_impl(
+    client: &Client,
+    url: String,
+    event_ts_ms: Option<i64>,
+) -> Option<UrlPreview> {
+    let ts =
+        event_ts_ms.map(|ms| MilliSecondsSinceUnixEpoch(UInt::new_saturating(ms.max(0) as u64)));
+    let data = fetch_preview_data(client, url, ts, PREVIEW_TIMEOUT).await?;
     UrlPreview::from_og_data(&data)
 }
 
@@ -124,20 +139,30 @@ pub async fn get_url_preview_impl(client: &Client, url: String) -> Option<UrlPre
 /// parameter (rather than always reading [`PREVIEW_TIMEOUT`]) purely so the
 /// test suite can exercise the timeout path without waiting out the real
 /// production budget.
-async fn fetch_preview_data(client: &Client, url: String, timeout: Duration) -> Option<Value> {
+async fn fetch_preview_data(
+    client: &Client,
+    url: String,
+    ts: Option<MilliSecondsSinceUnixEpoch>,
+    timeout: Duration,
+) -> Option<Value> {
     tokio::time::timeout(timeout, async {
-        if let Some(data) = fetch_auth(client, url.clone()).await {
+        if let Some(data) = fetch_auth(client, url.clone(), ts).await {
             return Some(data);
         }
-        fetch_legacy(client, url).await
+        fetch_legacy(client, url, ts).await
     })
     .await
     .ok()
     .flatten()
 }
 
-async fn fetch_auth(client: &Client, url: String) -> Option<Value> {
-    let request = auth_preview::v1::Request::new(url);
+async fn fetch_auth(
+    client: &Client,
+    url: String,
+    ts: Option<MilliSecondsSinceUnixEpoch>,
+) -> Option<Value> {
+    let mut request = auth_preview::v1::Request::new(url);
+    request.ts = ts;
     let response = client.send(request).await.ok()?;
 
     let raw = response.data?;
@@ -145,8 +170,13 @@ async fn fetch_auth(client: &Client, url: String) -> Option<Value> {
 }
 
 #[allow(deprecated)]
-async fn fetch_legacy(client: &Client, url: String) -> Option<Value> {
-    let request = legacy_preview::v3::Request::new(url);
+async fn fetch_legacy(
+    client: &Client,
+    url: String,
+    ts: Option<MilliSecondsSinceUnixEpoch>,
+) -> Option<Value> {
+    let mut request = legacy_preview::v3::Request::new(url);
+    request.ts = ts;
     let response = client.send(request).await.ok()?;
 
     let raw = response.data?;
@@ -181,7 +211,7 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let preview = get_url_preview_impl(&client, "https://example.com".to_string())
+        let preview = get_url_preview_impl(&client, "https://example.com".to_string(), None)
             .await
             .expect("expected a preview");
 
@@ -194,6 +224,38 @@ mod tests {
         assert_eq!(preview.image_width, Some(800));
         assert_eq!(preview.image_height, Some(600));
         assert_eq!(preview.site_name.as_deref(), Some("Example"));
+    }
+
+    /// Regression test: an `event_ts_ms` must forward as `preview_url`'s
+    /// `ts` query param, so a preview rendered for an old message asks the
+    /// homeserver for the preview near the message's own timestamp rather
+    /// than the page's current state. The mock only matches a request with
+    /// exactly this `ts` value — a request missing it (or carrying the
+    /// wrong one) 404s and the call returns `None`.
+    #[tokio::test]
+    async fn event_ts_ms_forwards_as_the_ts_query_param() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        Mock::given(method("GET"))
+            .and(path("/_matrix/client/v1/media/preview_url"))
+            .and(query_param("url", "https://example.com"))
+            .and(query_param("ts", "1700000000000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "og:title": "Historical Example",
+            })))
+            .mount(server.server())
+            .await;
+
+        let preview = get_url_preview_impl(
+            &client,
+            "https://example.com".to_string(),
+            Some(1700000000000),
+        )
+        .await
+        .expect("expected a preview matched on the ts query param");
+
+        assert_eq!(preview.title.as_deref(), Some("Historical Example"));
     }
 
     #[tokio::test]
@@ -220,7 +282,7 @@ mod tests {
             .await;
 
         let preview =
-            get_url_preview_impl(&client, "https://example.com/missing".to_string()).await;
+            get_url_preview_impl(&client, "https://example.com/missing".to_string(), None).await;
         assert!(preview.is_none());
     }
 
@@ -246,7 +308,7 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let preview = get_url_preview_impl(&client, "https://example.com".to_string())
+        let preview = get_url_preview_impl(&client, "https://example.com".to_string(), None)
             .await
             .expect("legacy endpoint should have produced a preview");
 
@@ -270,7 +332,7 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let preview = get_url_preview_impl(&client, "https://example.com".to_string()).await;
+        let preview = get_url_preview_impl(&client, "https://example.com".to_string(), None).await;
         assert!(preview.is_none());
     }
 
@@ -285,7 +347,7 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let preview = get_url_preview_impl(&client, "https://example.com".to_string()).await;
+        let preview = get_url_preview_impl(&client, "https://example.com".to_string(), None).await;
         assert!(preview.is_none());
     }
 
@@ -319,6 +381,7 @@ mod tests {
         let data = fetch_preview_data(
             &client,
             "https://example.com".to_string(),
+            None,
             tiny_client_timeout,
         )
         .await;
@@ -360,7 +423,8 @@ mod tests {
             .await;
 
         let started = std::time::Instant::now();
-        let data = fetch_preview_data(&client, "https://example.com".to_string(), budget).await;
+        let data =
+            fetch_preview_data(&client, "https://example.com".to_string(), None, budget).await;
         let elapsed = started.elapsed();
 
         assert!(data.is_none());

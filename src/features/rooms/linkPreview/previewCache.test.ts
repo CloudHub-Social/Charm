@@ -23,10 +23,14 @@ describe("fetchUrlPreview", () => {
       siteName: null,
     });
 
-    const preview = await fetchUrlPreview("!room:localhost", "https://example.com");
+    const preview = await fetchUrlPreview("!room:localhost", "https://example.com", 1700000000000);
 
     expect(preview?.title).toBe("Example");
-    expect(getUrlPreview).toHaveBeenCalledExactlyOnceWith("!room:localhost", "https://example.com");
+    expect(getUrlPreview).toHaveBeenCalledExactlyOnceWith(
+      "!room:localhost",
+      "https://example.com",
+      1700000000000,
+    );
   });
 
   it("passes through a null (no preview) result unchanged", async () => {

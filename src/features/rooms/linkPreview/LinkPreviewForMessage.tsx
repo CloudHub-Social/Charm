@@ -9,6 +9,7 @@ interface LinkPreviewForMessageProps {
   body: string;
   formattedBody?: string | null;
   roomId: string;
+  eventTsMs?: number | null;
 }
 
 /**
@@ -44,7 +45,12 @@ interface LinkPreviewForMessageProps {
  * defaults to treating the room as encrypted, i.e. suppressing the preview,
  * rather than assuming it's safe.
  */
-export function LinkPreviewForMessage({ body, formattedBody, roomId }: LinkPreviewForMessageProps) {
+export function LinkPreviewForMessage({
+  body,
+  formattedBody,
+  roomId,
+  eventTsMs,
+}: LinkPreviewForMessageProps) {
   const linkPreviewsEnabled = useFlag("link_previews");
   const url = linkPreviewsEnabled ? firstUrlInText(body, formattedBody) : null;
 
@@ -57,5 +63,5 @@ export function LinkPreviewForMessage({ body, formattedBody, roomId }: LinkPrevi
   const isEncrypted = roomDetails?.is_encrypted ?? true;
 
   if (!url || isEncrypted) return null;
-  return <LinkPreviewCard roomId={roomId} url={url} />;
+  return <LinkPreviewCard roomId={roomId} url={url} eventTsMs={eventTsMs} />;
 }

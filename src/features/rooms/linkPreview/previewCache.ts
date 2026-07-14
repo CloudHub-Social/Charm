@@ -11,6 +11,10 @@ import type { UrlPreview } from "@bindings/UrlPreview";
  * already dedupes by the `["link-preview", roomId, url]` key, so a second
  * cache here bought nothing.
  */
-export async function fetchUrlPreview(roomId: string, url: string): Promise<UrlPreview | null> {
-  return getUrlPreview(roomId, url);
+export async function fetchUrlPreview(
+  roomId: string,
+  url: string,
+  eventTsMs?: number | null,
+): Promise<UrlPreview | null> {
+  return getUrlPreview(roomId, url, eventTsMs);
 }
