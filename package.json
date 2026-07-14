@@ -29,6 +29,9 @@
     "test-storybook:ci": "concurrently -k -s command-test -n server,test \"http-server storybook-static -p 6006 --silent\" \"wait-on tcp:127.0.0.1:6006 && test-storybook --url http://127.0.0.1:6006\"",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
+    "docs:features:validate": "node scripts/sync-feature-docs.mjs",
+    "docs:features:check": "node scripts/sync-feature-docs.mjs --check",
+    "docs:features:sync": "node scripts/sync-feature-docs.mjs --write",
     "knip": "knip",
     "tokens:pull": "node scripts/tokens-pull.mjs",
     "check:observability-ratchet": "node scripts/check-observability-ratchet.mjs"

@@ -1,0 +1,33 @@
+---
+import gallery from '../data/feature-gallery.json';
+
+const statusLabel = { stable: 'Stable', preview: 'Preview' } as const;
+---
+
+<div class="feature-gallery">
+	{
+		gallery.features.map((feature) => (
+			<article class="feature-card">
+				<img
+					src={`/features/${feature.slug}.png`}
+					alt={feature.snapshot.alt}
+					loading="lazy"
+					width="1280"
+					height="720"
+				/>
+				<div class="feature-card__body">
+					<div class="feature-card__meta">
+						<span class:list={['feature-status', `feature-status--${feature.status}`]}>
+							{statusLabel[feature.status]}
+						</span>
+						<span>{feature.spec}</span>
+						{feature.flag && <code>{feature.flag}</code>}
+					</div>
+					<h2>{feature.title}</h2>
+					<p>{feature.summary}</p>
+					<small>{feature.snapshot.caption}</small>
+				</div>
+			</article>
+		))
+	}
+</div>

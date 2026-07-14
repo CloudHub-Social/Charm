@@ -242,6 +242,13 @@ export default defineConfig({
 					items: [{ label: 'Overview', slug: 'architecture/overview' }],
 				},
 				{
+					label: 'Features',
+					items: [
+						{ label: 'Feature gallery', slug: 'features' },
+						{ label: 'Maintaining the gallery', slug: 'features/maintaining' },
+					],
+				},
+				{
 					label: 'Operations',
 					items: [
 						{ label: 'Platform overview', slug: 'operations/overview' },
