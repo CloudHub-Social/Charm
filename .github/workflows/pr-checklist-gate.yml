@@ -11,8 +11,8 @@ name: PR checklist gate
 # fails a required check.
 #
 # Docs/internal/chore PRs (no feature to flag, no user path to e2e, no error
-# path to instrument) apply an `internal`/`documentation`/`docs` label to skip
-# the gate entirely — see the bypass in the script below.
+# path to instrument) apply the dedicated `internal` label to skip the gate
+# entirely — see the bypass in the script below.
 #
 # Deliberately text-based, not diff-based: it can't tell whether the e2e test
 # or Sentry call actually covers this PR's change, only that someone made an
@@ -30,7 +30,7 @@ name: PR checklist gate
 on:
   pull_request:
     # `labeled`/`unlabeled` matter because the checklist bypass keys off the
-    # `internal`/`documentation`/`docs` labels: without them, applying the label
+    # `internal` label: without these events, applying the label
     # to a PR that already failed this gate wouldn't re-run it (and removing the
     # label after a pass wouldn't re-enforce it).
     types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
@@ -59,12 +59,12 @@ jobs:
           script: |
             const body = context.payload.pull_request.body || "";
 
-            // Bypass: a PR the maintainer marks docs/internal/chore carries one
-            // of these labels, and the whole gate is skipped — such PRs have no
+            // Bypass: a PR the maintainer marks docs/internal/chore carries the
+            // dedicated internal label, and the whole gate is skipped — such PRs have no
             // feature to flag, no user-facing path to e2e, and no error path to
             // instrument, so requiring an N/A on every line is just noise. The
             // label is the trust boundary: applying it is a deliberate act.
-            const BYPASS_LABELS = ["internal", "documentation", "docs"];
+            const BYPASS_LABELS = ["internal"];
             const labels = (context.payload.pull_request.labels || [])
               .map((l) => (l.name || "").toLowerCase());
             const bypass = labels.find((l) => BYPASS_LABELS.includes(l));
