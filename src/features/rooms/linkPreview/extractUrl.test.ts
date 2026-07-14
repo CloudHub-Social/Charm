@@ -35,4 +35,36 @@ describe("firstUrlInText", () => {
   it("returns null when the only URL present isn't http(s)", () => {
     expect(firstUrlInText("see ftp://host/file.zip")).toBeNull();
   });
+
+  it("prefers formattedBody over the plain-text body when both are given", () => {
+    expect(
+      firstUrlInText(
+        "check https://plain.example.com",
+        "<p>check <a href='https://formatted.example.com'>this</a></p>",
+      ),
+    ).toBe("https://formatted.example.com");
+  });
+
+  it("excludes a URL that's only present inside a spoiler span", () => {
+    expect(
+      firstUrlInText(
+        "spoiler: https://secret.example.com/reveal",
+        '<span data-mx-spoiler="">https://secret.example.com/reveal</span>',
+      ),
+    ).toBeNull();
+  });
+
+  it("still finds a non-spoilered URL when a spoiler is also present", () => {
+    expect(
+      firstUrlInText(
+        "https://secret.example.com/reveal and https://public.example.com",
+        '<span data-mx-spoiler="">https://secret.example.com/reveal</span> and <a href="https://public.example.com">link</a>',
+      ),
+    ).toBe("https://public.example.com");
+  });
+
+  it("falls back to plain body when formattedBody is null or undefined", () => {
+    expect(firstUrlInText("https://example.com", null)).toBe("https://example.com");
+    expect(firstUrlInText("https://example.com", undefined)).toBe("https://example.com");
+  });
 });

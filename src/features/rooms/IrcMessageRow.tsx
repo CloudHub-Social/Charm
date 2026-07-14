@@ -110,7 +110,11 @@ export function IrcMessageRow({
                 // guarantees the preview card lands on its own line below the
                 // message text rather than immediately after it.
                 <div className="mt-0.5">
-                  <LinkPreviewForMessage body={message.body} roomId={roomId} />
+                  <LinkPreviewForMessage
+                    body={message.body}
+                    formattedBody={message.formatted_body}
+                    roomId={roomId}
+                  />
                 </div>
               )}
             {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}

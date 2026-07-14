@@ -133,7 +133,11 @@ export function BubbleMessageRow({
           )}
         </div>
         {!message.redacted && !message.media && !isUndecrypted && (
-          <LinkPreviewForMessage body={message.body} roomId={roomId} />
+          <LinkPreviewForMessage
+            body={message.body}
+            formattedBody={message.formatted_body}
+            roomId={roomId}
+          />
         )}
         {!message.redacted && (
           <ReactionBar

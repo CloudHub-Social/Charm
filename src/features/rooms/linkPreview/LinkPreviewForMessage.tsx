@@ -7,18 +7,26 @@ import { LinkPreviewCard } from "./LinkPreviewCard";
 
 interface LinkPreviewForMessageProps {
   body: string;
+  formattedBody?: string | null;
   roomId: string;
 }
 
 /**
- * Spec 29: detects the first URL in a message's plain-text body and renders
- * an unfurled preview card for it, gated behind the `link_previews` feature
+ * Spec 29: detects the first URL in a message's body and renders an
+ * unfurled preview card for it, gated behind the `link_previews` feature
  * flag. Renders nothing (and, critically, never mounts {@link LinkPreviewCard}
  * — so no preview fetch is ever triggered) when the flag is off, the body
  * has no URL, or the room is encrypted. Message layouts
  * (`BubbleMessageRow`/`DiscordMessageRow`/`IrcMessageRow`) all render this
  * the same way, right after the message body, only for non-redacted,
  * non-media, decrypted messages.
+ *
+ * Privacy (spoilers): `formattedBody` is preferred over the plain-text
+ * `body` fallback for URL detection (see `firstUrlInText`'s doc comment) —
+ * a URL sitting inside `<span data-mx-spoiler>` in the rendered HTML is
+ * excluded from the search, so a link the sender deliberately hid behind a
+ * spoiler reveal doesn't get auto-unfurled (and thus effectively revealed
+ * via the preview's title/thumbnail) before the reader clicks to reveal it.
  *
  * Privacy (E2EE): a link preview is fetched by asking the *homeserver* to
  * scrape the URL server-side (see `get_url_preview`'s Rust doc comment) —
@@ -36,9 +44,9 @@ interface LinkPreviewForMessageProps {
  * defaults to treating the room as encrypted, i.e. suppressing the preview,
  * rather than assuming it's safe.
  */
-export function LinkPreviewForMessage({ body, roomId }: LinkPreviewForMessageProps) {
+export function LinkPreviewForMessage({ body, formattedBody, roomId }: LinkPreviewForMessageProps) {
   const linkPreviewsEnabled = useFlag("link_previews");
-  const url = linkPreviewsEnabled ? firstUrlInText(body) : null;
+  const url = linkPreviewsEnabled ? firstUrlInText(body, formattedBody) : null;
 
   const { data: roomDetails } = useQuery({
     queryKey: roomDetailsQueryKey(roomId),
