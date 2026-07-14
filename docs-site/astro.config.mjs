@@ -89,7 +89,11 @@ function injectVaultSidebarLabels() {
 				const specsDir = path.join(process.cwd(), 'src/content/docs/specs');
 				for (const file of await walk(specsDir)) {
 					const raw = await fs.readFile(file, 'utf8');
-					if (raw.includes('\nsidebar:')) continue;
+					// Scoped to the frontmatter block only — a plain `raw.includes()`
+					// would false-positive on any spec whose body happens to mention
+					// "sidebar:" in prose or a code sample.
+					const frontmatterMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+					if (frontmatterMatch?.[1].includes('\nsidebar:')) continue;
 					const titleMatch = raw.match(/^title:\s*"?([^"\n]+)"?\s*$/m);
 					const label = titleMatch && labelByStem.get(titleMatch[1].trim());
 					if (!label) continue;
