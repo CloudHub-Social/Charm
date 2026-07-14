@@ -127,14 +127,16 @@ async function restoreUnsavedStoreValue(
   previous: unknown,
 ): Promise<void> {
   try {
-    // Prefer the file as the authority: save() may fail after partially
-    // updating the plugin's in-memory map, while reload() restores exactly
-    // what Rust and the next launch will read.
+    // Revert already-saved keys to their on-disk values.
     await store.reload();
-    return;
   } catch {
-    // If reload itself is unavailable, at least restore this key in memory.
+    // reload unavailable — the explicit per-key restore below still applies.
   }
+  // `reload()` MERGES the on-disk data into the in-memory map in Tauri; it does
+  // NOT drop a key that was `set()` in memory but never saved. So explicitly
+  // restore *this* key to its pre-write value (deleting it if it had none on
+  // disk), or a later successful `save()` would flush the unsaved change we're
+  // rolling back.
   try {
     if (previous === undefined) {
       await store.delete(key);
