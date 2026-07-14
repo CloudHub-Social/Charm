@@ -51,4 +51,38 @@ const loader = `// Generated from sitemap.json; source-sha256: ${sourceHash}
 `;
 
 fs.writeFileSync(loaderPath, loader);
-console.log(`Graph data loader generated (${Object.keys(graph).length} nodes).`);
+const loaderHash = createHash('sha256').update(loader).digest('hex').slice(0, 12);
+const versionedLoaderPath = `/sitegraph/sitemap.js?v=${loaderHash}`;
+const pendingDirectories = [path.join(siteRoot, 'dist')];
+let updatedPages = 0;
+
+while (pendingDirectories.length > 0) {
+	const directory = pendingDirectories.pop();
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		const entryPath = path.join(directory, entry.name);
+		if (entry.isDirectory()) {
+			pendingDirectories.push(entryPath);
+			continue;
+		}
+		if (!entry.name.endsWith('.html')) continue;
+
+		const html = fs.readFileSync(entryPath, 'utf8');
+		const versionedHtml = html.replaceAll(
+			'src="/sitegraph/sitemap.js"',
+			`src="${versionedLoaderPath}"`,
+		);
+		if (versionedHtml === html) continue;
+
+		fs.writeFileSync(entryPath, versionedHtml);
+		updatedPages += 1;
+	}
+}
+
+if (updatedPages === 0) {
+	console.error('Graph loader generation failed: no generated pages referenced the loader.');
+	process.exit(1);
+}
+
+console.log(
+	`Graph data loader generated (${Object.keys(graph).length} nodes, ${updatedPages} versioned pages).`,
+);

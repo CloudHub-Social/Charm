@@ -31,6 +31,7 @@ const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
 const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
 const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
 const internalPath = (href) => href.replace(/^\//, '').split(/[?#]/)[0];
+let expectedLoaderUrl;
 
 if (!fs.existsSync(graphLoaderPath)) {
 	errors.push('generated graph data loader is missing');
@@ -38,6 +39,8 @@ if (!fs.existsSync(graphLoaderPath)) {
 	const graphSource = fs.readFileSync(graphPath, 'utf8');
 	const expectedHash = createHash('sha256').update(graphSource).digest('hex');
 	const loaderSource = fs.readFileSync(graphLoaderPath, 'utf8');
+	const loaderHash = createHash('sha256').update(loaderSource).digest('hex').slice(0, 12);
+	expectedLoaderUrl = `/sitegraph/sitemap.js?v=${loaderHash}`;
 	if (!loaderSource.includes(`source-sha256: ${expectedHash}`)) {
 		errors.push('generated graph data loader does not match sitemap.json');
 	}
@@ -51,9 +54,10 @@ if (!fs.existsSync(graphLoaderPath)) {
 
 if (
 	!fs.existsSync(graphPagePath) ||
-	!fs.readFileSync(graphPagePath, 'utf8').includes('/sitegraph/sitemap.js')
+	!expectedLoaderUrl ||
+	!fs.readFileSync(graphPagePath, 'utf8').includes(expectedLoaderUrl)
 ) {
-	errors.push('generated documentation pages do not load the graph data asset');
+	errors.push('generated documentation pages do not load the versioned graph data asset');
 }
 
 const graphBundles = fs.existsSync(assetsPath)
