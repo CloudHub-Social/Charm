@@ -1,4 +1,5 @@
 import type { Decorator, Preview } from "@storybook/react-vite";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "@fontsource/manrope/400.css";
 import "@fontsource/manrope/500.css";
 import "@fontsource/manrope/600.css";
@@ -16,6 +17,23 @@ featureFlagTestHooks.setCache({ rich_message_rendering: true });
 // `body`, and `src/styles/tokens.css` keys its theme overrides off `[data-theme]`.
 // This toolbar switch drives that same attribute (plus density/font-size, Charm 2.0
 // Spec 09) so each story can be previewed under any combination.
+// Any component that calls `useQuery`/`useMutation` needs a `QueryClient`
+// ancestor to exist at all — TanStack Query throws on mount even for a
+// disabled (`enabled: false`) query if there's no `QueryClientProvider` in
+// the tree. A fresh, unconfigured client per story (retries off, so a
+// story with no mocked IPC/backend doesn't hang retrying) is enough for
+// components that only read from an empty/seeded cache; stories that need
+// specific cached data still layer their own `QueryClientProvider` with a
+// pre-seeded client inside their `render`, which simply shadows this one.
+const withQueryClient: Decorator = (Story) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={client}>
+      <Story />
+    </QueryClientProvider>
+  );
+};
+
 const withTheme: Decorator = (Story, context) => {
   const theme = typeof context.globals.theme === "string" ? context.globals.theme : "dark";
   const density = typeof context.globals.density === "string" ? context.globals.density : "cozy";
@@ -77,7 +95,7 @@ const preview: Preview = {
       },
     },
   },
-  decorators: [withTheme],
+  decorators: [withTheme, withQueryClient],
   parameters: {
     controls: {
       matchers: { color: /(background|color)$/i, date: /Date$/i },

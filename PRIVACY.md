@@ -45,6 +45,18 @@ Sentry SDK a second time. Rust-side crash monitoring is initialized during app
 startup, so turning the toggle off fully applies to native crash monitoring
 after restarting Charm.
 
+## Feature Flags
+
+Charm gates some features behind feature flags so they can be rolled out or
+turned off without a client release. When a remote flag endpoint is configured,
+Charm sends **one** value to Charm's own flag service: an anonymized per-install
+identifier, used only to bucket your install for percentage rollouts. This
+identifier is random, non-reversible, generated on your device, and is **never**
+your Matrix ID, email, or display name. No room, message, or account data is
+sent. This is independent of the Sentry toggle above — it applies whether or not
+you have enabled observability. Flag names and their on/off state are internal
+configuration, not personal data.
+
 ## Deletion
 
 Sentry data is managed in the CloudHub Social Sentry organization. To request

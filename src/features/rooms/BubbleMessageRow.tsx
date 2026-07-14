@@ -1,6 +1,7 @@
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
@@ -131,6 +132,15 @@ export function BubbleMessageRow({
             />
           )}
         </div>
+        {!message.redacted && !message.media && !isUndecrypted && (
+          <LinkPreviewForMessage
+            body={message.body}
+            formattedBody={message.formatted_body}
+            roomId={roomId}
+            eventTsMs={message.timestamp_ms}
+            edited={message.edited}
+          />
+        )}
         {!message.redacted && (
           <ReactionBar
             reactions={message.reactions}

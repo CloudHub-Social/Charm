@@ -50,6 +50,7 @@ import type { SyncStateEvent } from "@bindings/SyncStateEvent";
 import type { TimelinePage } from "@bindings/TimelinePage";
 import type { TypingUpdate } from "@bindings/TypingUpdate";
 import type { UploadProgress } from "@bindings/UploadProgress";
+import type { UrlPreview } from "@bindings/UrlPreview";
 import type { VerificationRequestSummary } from "@bindings/VerificationRequestSummary";
 import * as Sentry from "@sentry/react";
 import type { InvokeOptions } from "@/observability/ipc";
@@ -171,6 +172,7 @@ export type {
   TimelinePage,
   TypingUpdate,
   UploadProgress,
+  UrlPreview,
   VerificationRequestSummary,
 };
 
@@ -446,6 +448,23 @@ export function resolveMedia(roomId: string, eventId: string, thumbnail: boolean
   return invoke("resolve_media", { roomId, eventId, thumbnail });
 }
 
+/**
+ * Fetches an unfurled preview (title, description, thumbnail) for `url` via
+ * the homeserver's `/preview_url` endpoint (Spec 29). `roomId` is accepted
+ * for parity with the Rust command's signature (room-scoped preview policy
+ * is a possible future extension) but isn't otherwise used by the frontend.
+ * Resolves to `null` on any failure — 404, timeout, malformed response, or
+ * a page with no usable OpenGraph data — never rejects for those cases; the
+ * caller doesn't need a try/catch to render "no preview".
+ */
+export function getUrlPreview(
+  roomId: string,
+  url: string,
+  eventTsMs?: number | null,
+): Promise<UrlPreview | null> {
+  return invoke("get_url_preview", { roomId, url, eventTsMs: eventTsMs ?? null });
+}
+
 export function onUploadProgress(
   callback: (progress: UploadProgress) => void,
 ): Promise<UnlistenFn> {
@@ -668,7 +687,13 @@ export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
  * Starts an outgoing SAS verification of another of this account's own
  * devices and returns the new flow id. Drives the same
  * `verification:request`/`verification:sas_update:*` events as an incoming
- * request — see `VerificationOverlay`.
+ * request — see `VerificationOverlay`. Captured on failure like most
+ * commands (unlike the neighboring device-management wrappers): the Rust
+ * command's "device not found" case doesn't interpolate the device ID into
+ * its error text (see `devices.rs`), so it's safe to keep default capture —
+ * and a genuine SDK/store/network failure from `get_device`/
+ * `request_verification` here is exactly the kind of regression Sentry
+ * should surface.
  */
 export function requestDeviceVerification(deviceId: string): Promise<string> {
   return invoke("request_device_verification", { deviceId });

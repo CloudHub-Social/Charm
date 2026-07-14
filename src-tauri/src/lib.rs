@@ -490,13 +490,13 @@ fn get_feature_flags<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<std::collections::BTreeMap<String, bool>, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let overrides = feature_flags::read_overrides(&app_data_dir);
+    let (overrides, remote) = feature_flags::read_state(&app_data_dir);
     Ok(feature_flags::FeatureFlagKey::ALL
         .iter()
         .map(|&key| {
             (
                 key.as_wire_key().to_string(),
-                feature_flags::resolve(key, &overrides),
+                feature_flags::resolve(key, &overrides, &remote),
             )
         })
         .collect())
@@ -1047,6 +1047,7 @@ pub fn run() {
             matrix::account_data::set_account_data,
             matrix::account_data::get_local_onboarding_flag,
             matrix::account_data::set_local_onboarding_flag,
+            matrix::link_preview::get_url_preview,
             push::register_push,
             push::unregister_push,
             push::get_push_status
