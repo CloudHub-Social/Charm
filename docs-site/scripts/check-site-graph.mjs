@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const graphPath = path.join(siteRoot, 'dist/sitegraph/sitemap.json');
+const graphLoaderPath = path.join(siteRoot, 'dist/sitegraph/sitemap.js');
 const assetsPath = path.join(siteRoot, 'dist/_astro');
+const graphPagePath = path.join(siteRoot, 'dist/architecture/overview/index.html');
 const galleryPath = path.join(siteRoot, 'src/data/feature-gallery.json');
 const roadmapPath = path.join(siteRoot, 'src/data/roadmap.json');
 const errors = [];
@@ -28,6 +31,24 @@ const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
 const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
 const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
 const internalPath = (href) => href.replace(/^\//, '').split(/[?#]/)[0];
+
+if (!fs.existsSync(graphLoaderPath)) {
+	errors.push('generated graph data loader is missing');
+} else {
+	const graphSource = fs.readFileSync(graphPath, 'utf8');
+	const expectedHash = createHash('sha256').update(graphSource).digest('hex');
+	const loaderSource = fs.readFileSync(graphLoaderPath, 'utf8');
+	if (!loaderSource.includes(`source-sha256: ${expectedHash}`)) {
+		errors.push('generated graph data loader does not match sitemap.json');
+	}
+}
+
+if (
+	!fs.existsSync(graphPagePath) ||
+	!fs.readFileSync(graphPagePath, 'utf8').includes('/sitegraph/sitemap.js')
+) {
+	errors.push('generated documentation pages do not load the graph data asset');
+}
 
 const graphBundles = fs.existsSync(assetsPath)
 	? fs.readdirSync(assetsPath).filter((filename) => /^Graph\..+\.js$/.test(filename))

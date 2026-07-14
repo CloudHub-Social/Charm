@@ -9,7 +9,7 @@
 		"check:content": "node scripts/check-content.mjs",
 		"check:graph": "node scripts/check-site-graph.mjs",
 		"roadmap:generate": "node scripts/generate-roadmap.mjs",
-		"build": "astro build",
+		"build": "astro build && node scripts/generate-site-graph-loader.mjs",
     "preview": "astro preview",
     "astro": "astro"
   },
