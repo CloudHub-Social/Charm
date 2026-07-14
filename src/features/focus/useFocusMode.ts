@@ -48,9 +48,15 @@ export function useFocusMode() {
     enabled: inTauri,
   });
 
+  // Monotonic version for every local request and external state change.
+  // A tray event must supersede any Settings IPC confirmation still in
+  // flight, just as a newer Settings request supersedes an older one.
+  const latestRequestId = useRef(0);
+
   useEffect(() => {
     if (!inTauri) return undefined;
     const unlistenPromise = onDndChanged((state) => {
+      latestRequestId.current += 1;
       queryClient.setQueryData(DND_QUERY_KEY, state);
     });
     return () => {
@@ -89,8 +95,6 @@ export function useFocusMode() {
   // call so a response only gets written back if it's still the most
   // recent one in flight — a superseded response is silently dropped
   // rather than fighting the newer optimistic/confirmed state.
-  const latestRequestId = useRef(0);
-
   const apply = (nextEnabled: boolean, nextUntil: number | null) => {
     const requestId = ++latestRequestId.current;
     // Optimistic: the tray-menu path already feels instant, so the panel

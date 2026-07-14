@@ -149,6 +149,32 @@ describe("useFocusMode", () => {
     expect(result.current.enabled).toBe(false);
   });
 
+  it("ignores a Settings confirmation older than a tray event", async () => {
+    const { result } = renderHook(() => useFocusMode(), { wrapper });
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+    await waitFor(() => expect(dndChangedListener).not.toBeNull());
+
+    let resolveSettings!: (value: { enabled: boolean; until: number | null }) => void;
+    setDndState.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSettings = resolve;
+        }),
+    );
+
+    act(() => result.current.enable());
+    await waitFor(() => expect(result.current.enabled).toBe(true));
+
+    // A newer tray action turns DND off while the Settings request remains
+    // in flight. Its later confirmation must not restore the stale state.
+    act(() => dndChangedListener?.({ enabled: false, until: null }));
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+
+    act(() => resolveSettings({ enabled: true, until: null }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result.current.enabled).toBe(false);
+  });
+
   // Review fix: `invokeWeb` has no case for `get_dnd_state`/`set_dnd_state`
   // (falls to `unsupported(command)`, a rejected promise), so a caller that
   // renders on every platform — like `RoomList`'s chrome indicator, unlike

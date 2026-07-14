@@ -816,21 +816,12 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    // Spec 30: the Focus submenu is gated on the same `focus_mode` flag as
-    // the Settings panel's toggle (`FocusPanel`'s `useFlag("focus_mode")`)
-    // — a build/session with the flag off shouldn't offer DND from the tray
-    // either, matching "gate the new toggle UI with useFlag()" from the
-    // spec's feature-flag requirement.
-    let focus_mode_enabled = app
-        .path()
-        .app_data_dir()
-        .is_ok_and(|dir| feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode));
-    let mut tray_items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![&show_item];
-    if focus_mode_enabled {
-        tray_items.push(&dnd_submenu);
-    }
-    tray_items.push(&quit_item);
-    let tray_menu = Menu::with_items(app, &tray_items)?;
+    // The tray is constructed only once, but flags can change at runtime via
+    // Labs or remote refresh. Keep the submenu present so enabling the flag
+    // takes effect without a restart; every action that enables DND is gated
+    // again at click time below, so a flag-off session cannot activate it.
+    // `dnd_off` remains an unconditional rollback off-ramp.
+    let tray_menu = Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?;
 
     TrayIconBuilder::new()
         .icon(
@@ -843,10 +834,7 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             const MINUTE_MS: i64 = 60_000;
             let now = matrix::dnd::now_ms();
-            // Review fix: the tray menu itself is only built once at startup
-            // (`tray_items`/`focus_mode_enabled` above), so a flag flip while
-            // the app is running can't rebuild/remove the Focus submenu —
-            // it'd take a restart. Re-checking the flag fresh here, right
+            // Re-check the flag fresh here, right
             // before an "enable DND" action actually applies, means a
             // still-visible-but-stale menu item can no longer turn DND back
             // on once the flag is off, closing the gap the review flagged.
