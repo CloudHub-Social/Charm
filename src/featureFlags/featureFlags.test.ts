@@ -144,16 +144,29 @@ describe("feature-flag client", () => {
   });
 
   it("rolls back a browser override when localStorage fails", async () => {
-    const setItem = vi.spyOn(localStorage, "setItem").mockImplementation(() => {
-      throw new DOMException("quota exceeded", "QuotaExceededError");
-    });
-    const mod = await import("./index");
+    const workingStorage = localStorage;
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return workingStorage.length;
+      },
+      clear: () => workingStorage.clear(),
+      getItem: (key: string) => workingStorage.getItem(key),
+      key: (index: number) => workingStorage.key(index),
+      removeItem: (key: string) => workingStorage.removeItem(key),
+      setItem: () => {
+        throw new DOMException("quota exceeded", "QuotaExceededError");
+      },
+    } satisfies Storage);
 
-    await expect(mod.setFeatureFlagOverride("canary", true)).rejects.toThrow("quota exceeded");
-    expect(mod.getFeatureFlagOverrides()).toEqual({});
-    expect(mod.getFlag("canary")).toBe(false);
+    try {
+      const mod = await import("./index");
 
-    setItem.mockRestore();
+      await expect(mod.setFeatureFlagOverride("canary", true)).rejects.toThrow("quota exceeded");
+      expect(mod.getFeatureFlagOverrides()).toEqual({});
+      expect(mod.getFlag("canary")).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("serializes durable writes so a superseded persist can't clobber a newer one", async () => {
