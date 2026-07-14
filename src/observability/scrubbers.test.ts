@@ -16,6 +16,19 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText(text)).toBe("event $[redacted] is not an m.room.message");
   });
 
+  it("redacts multiple distinct secrets in the same string, not just the first", () => {
+    // The value branches use a negated character class ((?:[^"\\]|\\.)*),
+    // which can't cross a `"` boundary regardless of quantifier greediness —
+    // unlike a naive `.*"` pattern, there's no backtracking that could let
+    // the first match's value swallow a second secret later in the string.
+    expect(scrubSensitiveText('password="abc" access_token="xyz"')).toBe(
+      'password="[redacted]" access_token="[redacted]"',
+    );
+    expect(scrubSensitiveText("password=abc access_token=xyz")).toBe(
+      "password=[redacted] access_token=[redacted]",
+    );
+  });
+
   it("does not redact a short $-prefixed string that looks like a price, not an event ID", () => {
     expect(scrubSensitiveText("that costs $100")).toBe("that costs $100");
   });
