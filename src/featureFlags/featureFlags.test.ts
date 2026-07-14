@@ -103,6 +103,30 @@ describe("feature-flag client", () => {
     expect(mod.getFeatureFlagOverrides()).toEqual({});
   });
 
+  it("does not let a slow initialization overwrite a newer override", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let resolveLoad: ((store: object) => void) | undefined;
+    const delayedLoad = new Promise((resolve) => {
+      resolveLoad = resolve;
+    });
+    mocks.load.mockReturnValue(delayedLoad);
+
+    const mod = await import("./index");
+    const initialization = mod.initializeFeatureFlags();
+    const update = mod.setFeatureFlagOverride("canary", true);
+    expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
+
+    resolveLoad?.({
+      get: vi.fn().mockResolvedValue({ state: { overrides: { canary: false } }, updatedAt: 1 }),
+      set: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+    await Promise.all([initialization, update]);
+
+    expect(mod.getFeatureFlagOverrides()).toEqual({ canary: true });
+    expect(mod.getFlag("canary")).toBe(true);
+  });
+
   it("serializes durable writes so a superseded persist can't clobber a newer one", async () => {
     // Durable Tauri path: a fake store records what actually gets written. Even
     // with the first save artificially slow, the older (superseded) write must

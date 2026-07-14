@@ -16,6 +16,7 @@ export type { FeatureFlagDefinition } from "./catalog";
  * (the no-flag-flicker contract).
  */
 let overridesCache: FeatureFlagOverrides = {};
+let cacheMutationId = 0;
 const listeners = new Set<() => void>();
 
 function emit(): void {
@@ -31,7 +32,10 @@ function subscribe(listener: () => void): () => void {
 
 /** Loads persisted overrides into the cache. Call once, early (main.tsx). */
 export async function initializeFeatureFlags(): Promise<void> {
-  overridesCache = await readOverrides();
+  const mutationId = cacheMutationId;
+  const persistedOverrides = await readOverrides();
+  if (mutationId !== cacheMutationId) return;
+  overridesCache = persistedOverrides;
   emit();
 }
 
@@ -59,6 +63,7 @@ export function useFlag(key: FeatureFlagKey): boolean {
 
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
+  cacheMutationId += 1;
   overridesCache = { ...overridesCache, [key]: value };
   emit();
   await persistOverrides(overridesCache);
@@ -66,6 +71,7 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
 
 /** Clears a local override, reverting the flag to remote/default resolution. */
 export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
+  cacheMutationId += 1;
   const next = { ...overridesCache };
   delete next[key];
   overridesCache = next;
@@ -81,9 +87,11 @@ export function getFeatureFlagOverrides(): FeatureFlagOverrides {
 export const featureFlagTestHooks = {
   reset() {
     overridesCache = {};
+    cacheMutationId = 0;
     listeners.clear();
   },
   setCache(overrides: FeatureFlagOverrides) {
+    cacheMutationId += 1;
     overridesCache = overrides;
     emit();
   },
