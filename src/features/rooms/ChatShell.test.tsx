@@ -2535,6 +2535,8 @@ describe("ChatShell", () => {
     const bar = await screen.findByRole("button", {
       name: "Alice and Bob are following the conversation",
     });
+    const composer = screen.getByTestId("composer-shell");
+    expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Alice", { selector: "span" })).not.toBeInTheDocument();
 

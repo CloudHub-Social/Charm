@@ -471,6 +471,35 @@ describe("RoomsScreen", () => {
     expect(screen.queryByText(/chat-content:/)).not.toBeInTheDocument();
   });
 
+  it("does not resync focus when room metadata changes for the same active room", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    // Initial null state, room selection, and AppShell's controlled view
+    // transition each synchronize focus. Wait for all three before isolating
+    // the metadata-only update this regression test exercises.
+    await waitFor(() => expect(setFocusedRoom).toHaveBeenCalledTimes(3));
+    expect(setFocusedRoom).toHaveBeenLastCalledWith("!a:example.org");
+    setFocusedRoom.mockClear();
+
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([room({ room_id: "!a:example.org", unread_count: 1 })]);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("chat-content:!a:example.org")).toBeInTheDocument(),
+    );
+    expect(setFocusedRoom).not.toHaveBeenCalled();
+    hasFocus.mockRestore();
+  });
+
   it("clears focus when the window loses focus", async () => {
     // jsdom doesn't tie `document.hasFocus()` to blur/focus events firing on
     // `window`, so drive it directly rather than relying on jsdom to

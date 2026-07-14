@@ -83,6 +83,7 @@ export function RoomsScreen({
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
   const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
+  const focusedRoomId = activeRoom?.room_id ?? null;
   function selectRoom(roomId: string) {
     spaceDeepLinkSelectedRef.current = false;
     setActiveRoomId(roomId);
@@ -189,7 +190,7 @@ export function RoomsScreen({
         !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
-      setFocusedRoom(isShowingChat ? (activeRoom?.room_id ?? null) : null).catch(logAndIgnore);
+      setFocusedRoom(isShowingChat ? focusedRoomId : null).catch(logAndIgnore);
     }
     syncFocusedRoom();
     window.addEventListener("focus", syncFocusedRoom);
@@ -198,7 +199,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [activeRoom, settingsSection, roomSettingsTarget, layout, mobileView]);
+  }, [focusedRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
