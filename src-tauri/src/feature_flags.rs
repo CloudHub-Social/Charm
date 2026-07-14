@@ -42,27 +42,50 @@ const FEATURE_FLAGS_STORE_KEY: &str = "featureFlags";
 /// Feature Flag Context protocol's cap.
 const MAX_TRACKED_EVALUATIONS: usize = 100;
 
-/// Stable, authoritative flag keys. Serialized `snake_case` — the serialized
-/// string is the wire/store key and must never change once shipped (renaming a
-/// variant silently orphans any persisted override / remote-config entry).
-///
-/// Exported to the frontend as a union type; a JS catalog missing or misspelling
-/// a key fails `tsc`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../src/bindings/")]
-#[serde(rename_all = "snake_case")]
-pub enum FeatureFlagKey {
-    /// Internal no-op canary so the flag machinery is exercised before any real
-    /// Day-2 feature key exists. Not wired to any behavior. Delete this variant
-    /// (and its catalog/override/remote entries) once the first real flag lands.
-    Canary,
+// Define the enum and its exhaustive catalog slice from one variant list. This
+// makes it impossible to add a key without also including it in `ALL`.
+macro_rules! define_feature_flag_keys {
+    (
+        $(#[$enum_meta:meta])*
+        pub enum FeatureFlagKey {
+            $( $(#[$variant_meta:meta])* $variant:ident ),+ $(,)?
+        }
+    ) => {
+        $(#[$enum_meta])*
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
+        )]
+        #[ts(export, export_to = "../src/bindings/")]
+        #[serde(rename_all = "snake_case")]
+        pub enum FeatureFlagKey {
+            $(
+                $(#[$variant_meta])*
+                $variant,
+            )+
+        }
+
+        impl FeatureFlagKey {
+            pub const ALL: &'static [FeatureFlagKey] = &[$(FeatureFlagKey::$variant),+];
+        }
+    };
 }
 
-impl FeatureFlagKey {
-    /// Every flag in the catalog. Keep in sync with the enum variants (the
-    /// `all_flags_are_listed` test enforces this can't silently fall behind).
-    pub const ALL: &'static [FeatureFlagKey] = &[FeatureFlagKey::Canary];
+define_feature_flag_keys!(
+    /// Stable, authoritative flag keys. Serialized `snake_case` — the serialized
+    /// string is the wire/store key and must never change once shipped (renaming a
+    /// variant silently orphans any persisted override / remote-config entry).
+    ///
+    /// Exported to the frontend as a union type; a JS catalog missing or misspelling
+    /// a key fails `tsc`.
+    pub enum FeatureFlagKey {
+        /// Internal no-op canary so the flag machinery is exercised before any real
+        /// Day-2 feature key exists. Not wired to any behavior. Delete this variant
+        /// (and its catalog/override/remote entries) once the first real flag lands.
+        Canary,
+    }
+);
 
+impl FeatureFlagKey {
     /// The compiled-in default — also the offline / not-yet-rolled-out value.
     /// Keep new flags `false` until their feature is ready to ship.
     pub const fn default_value(self) -> bool {
@@ -273,15 +296,12 @@ mod tests {
     }
 
     #[test]
-    fn all_flags_are_listed() {
-        // Guards against adding an enum variant without adding it to ALL — the
-        // catalog and every match arm below would otherwise silently omit it.
+    fn catalog_entries_have_complete_metadata() {
         for entry in catalog() {
             assert_eq!(entry.default, entry.key.default_value());
             assert!(!entry.description.is_empty());
             assert!(!entry.owner.is_empty());
         }
-        assert_eq!(catalog().len(), FeatureFlagKey::ALL.len());
     }
 
     #[test]
