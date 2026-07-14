@@ -36,7 +36,9 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+          # workflow_run is privileged: only ever execute the trusted default
+          # branch, never code selected by event-controlled metadata.
+          ref: main
           token: ${{ secrets.FEATURE_DOCS_TOKEN || github.token }}
 
       - name: Download E2E snapshots
