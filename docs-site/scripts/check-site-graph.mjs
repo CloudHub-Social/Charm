@@ -41,6 +41,12 @@ if (!fs.existsSync(graphLoaderPath)) {
 	if (!loaderSource.includes(`source-sha256: ${expectedHash}`)) {
 		errors.push('generated graph data loader does not match sitemap.json');
 	}
+	if (loaderSource.includes('"title":"Charm 2.0 Spec — ')) {
+		errors.push('generated graph labels retain the repeated Charm 2.0 Spec prefix');
+	}
+	if (!loaderSource.includes('labelOpacityScale: 1')) {
+		errors.push('generated graph loader is missing the dense-graph label treatment');
+	}
 }
 
 if (

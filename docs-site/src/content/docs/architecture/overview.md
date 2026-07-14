@@ -1,6 +1,12 @@
 ---
 title: Architecture overview
 description: How Charm's Rust core, IPC layer, and frontend fit together.
+graph:
+  # This page is a shared backlink target for most product specs. Showing both
+  # directions turns a one-hop overview into the entire documentation graph.
+  # Backlinks remain listed below the graph, so the visual can focus on the
+  # handful of relationships curated by this page.
+  depthDirection: outgoing
 ---
 
 Charm 2.0 is a ground-up rewrite of the Charm Matrix client, built on
