@@ -110,10 +110,28 @@ jobs:
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
         if: github.event_name != 'pull_request'
 
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+      # GitHub's upload-pages-artifact wrapper currently calls the mutable
+      # `actions/upload-artifact@v4` tag internally, which Charm's action
+      # policy rejects. Reproduce its Linux tar step and invoke the repository's
+      # approved, fully pinned upload action directly.
+      - name: Package Pages artifact
+        if: github.event_name != 'pull_request'
+        run: |
+          tar \
+            --dereference --hard-dereference \
+            --directory docs-site/dist \
+            -cvf "$RUNNER_TEMP/artifact.tar" \
+            --exclude=.git \
+            --exclude=.github \
+            .
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: github.event_name != 'pull_request'
         with:
-          path: docs-site/dist
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
 
   deploy:
     name: Deploy
