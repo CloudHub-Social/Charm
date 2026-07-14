@@ -151,6 +151,20 @@ describe("RichMessageContent", () => {
     expect(screen.getByText("@here").tagName).toBe("MARK");
   });
 
+  it("does not highlight room mentions inside emails, URLs, or Matrix IDs", () => {
+    const { container } = render(
+      <RichMessageContent
+        body="ops@here.com https://example.org/@room @roommate @room:example.org then @here"
+        currentUserId="@me:localhost"
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "ops@here.com" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "https://example.org/@room" })).toBeInTheDocument();
+    expect(container.querySelectorAll("mark")).toHaveLength(1);
+    expect(screen.getByText("@here").tagName).toBe("MARK");
+  });
+
   it("loads KaTeX for Matrix math nodes", async () => {
     const { container } = render(
       <RichMessageContent

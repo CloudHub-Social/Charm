@@ -19,7 +19,9 @@ import { cn } from "@/lib/utils";
 import { sanitizeMatrixHtml } from "./composerSanitize";
 import { avatarColor, initials } from "./roomDisplay";
 
-const ROOM_MENTION_RE = /(@room|@here)/gi;
+// Treat room mentions as standalone tokens. The surrounding exclusions keep
+// email addresses, URLs, and Matrix IDs intact for their own renderers.
+const ROOM_MENTION_RE = /((?<![\p{L}\p{N}_@./:#?=&%-])@(?:room|here)(?![\p{L}\p{N}_:-]))/giu;
 const MATRIX_TO_PREFIX = "https://matrix.to/#/";
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
 
