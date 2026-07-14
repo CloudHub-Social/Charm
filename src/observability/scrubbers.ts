@@ -19,19 +19,27 @@ const COLONLESS_EVENT_ID_PATTERN = /\$[A-Za-z0-9_-]{10,}/g;
 // broad (any http(s) URL) since a false positive just redacts a harmless URL,
 // while a false negative leaks a self-hosted homeserver's address.
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
-// The value branch matches, in order: a fully-quoted string — allowing a
-// backslash-escaped quote inside (`(?:[^"\\]|\\.)*`) so a JSON-ish escaped
-// quote in the middle of a secret (`password="abc\"tail"`) doesn't get
-// treated as the closing quote, leaking the rest (`tail"`); an unquoted run
-// of non-delimiter characters, which also excludes `[`/`{` (in addition to
-// `]`/`}`) so a value that already contains an already-redacted URL
-// placeholder like `https://[redacted]` doesn't get partially re-matched and
-// leave a stray bracket behind; or — falling back when neither matched — an
-// *unterminated* quoted value (an opening quote with no closing quote, e.g.
-// a diagnostic string truncated mid-value like `access_token="abc123`).
-// Without that fallback, an unterminated value matches neither the quoted
-// branch (no closing quote) nor the unquoted branch (the leading quote isn't
-// a valid unquoted char), and slips through unredacted.
+// The value branch matches, in order:
+//  1. a fully-quoted string — allowing a backslash-escaped quote inside
+//     (`(?:[^"\\]|\\.)*`) so a JSON-ish escaped quote in the middle of a
+//     secret (`password="abc\"tail"`) doesn't get treated as the closing
+//     quote, leaking the rest (`tail"`);
+//  2. a fully bracket/brace-wrapped value (`access_token=[abc]`,
+//     `password={abc}` — some Debug/serde formatters render a value this
+//     way), matched and replaced as a balanced pair so it doesn't fall
+//     through to the unquoted branch below (which excludes `[`/`{` and so
+//     wouldn't even start matching at the opening bracket);
+//  3. an unquoted run of non-delimiter characters — excluding `[`/`{` (in
+//     addition to `]`/`}`) so this branch never *starts* inside something
+//     that should have been matched as a bracket-wrapped value by branch 2,
+//     nor partially consumes into one;
+//  4/5. falling back when none of the above matched: an *unterminated*
+//     quoted or bracket-wrapped value (an opening delimiter with no closing
+//     one, e.g. a diagnostic string truncated mid-value like
+//     `access_token="abc123` or `access_token=[abc`). Without that
+//     fallback, an unterminated value matches neither its balanced branch
+//     (no closing delimiter) nor the unquoted branch (the leading quote/
+//     bracket isn't a valid unquoted char), and slips through unredacted.
 // The field-name alternation ends with `[A-Za-z0-9]*secret` — a generic
 // catch-all for any field whose name simply *ends* in "secret"
 // (`client_secret`, `sharedSecret`, `shared_secret`, ...), mirroring
@@ -43,7 +51,7 @@ const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>]+/gi;
 // exact same field name on an object would already be redacted via
 // SECRET_FIELD_NAME_PATTERN.
 const SECRET_FIELD_PATTERN =
-  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*))/gi;
+  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey|[A-Za-z0-9]*secret)["']?\s*[:=]\s*)(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|\[((?:[^\]\\]|\\.)*)\]|\{((?:[^}\\]|\\.)*)\}|([^"'\s,{}[\]]+)|"((?:[^"\\]|\\.)*)|'((?:[^'\\]|\\.)*)|\[((?:[^\]\\]|\\.)*)|\{((?:[^}\\]|\\.)*))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
@@ -90,6 +98,8 @@ export function scrubSecrets(text: string): string {
       prefix: string,
       doubleQuoted?: string,
       singleQuoted?: string,
+      _bracketed?: string,
+      _braced?: string,
       _unquoted?: string,
       unterminatedDoubleQuoted?: string,
       unterminatedSingleQuoted?: string,
@@ -98,6 +108,11 @@ export function scrubSecrets(text: string): string {
       if (singleQuoted !== undefined) return `${prefix}'[redacted]'`;
       if (unterminatedDoubleQuoted !== undefined) return `${prefix}"[redacted]`;
       if (unterminatedSingleQuoted !== undefined) return `${prefix}'[redacted]`;
+      // Bracket/brace-wrapped values (both balanced and unterminated) fall
+      // through to the same bare `[redacted]` placeholder as an unquoted
+      // value — not wrapped in an extra outer `[`/`{` the way quoted values
+      // keep their quote marks, since e.g. `[[redacted]]` reads like a
+      // formatting bug rather than a clean redaction.
       return `${prefix}[redacted]`;
     },
   );

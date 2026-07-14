@@ -87,6 +87,18 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText('password="abc\\"tail"')).toBe('password="[redacted]"');
   });
 
+  it("redacts a fully bracket/brace-wrapped secret value (some Debug/serde formatters render it this way)", () => {
+    expect(scrubSensitiveText("access_token=[abc]")).toBe("access_token=[redacted]");
+    expect(scrubSensitiveText("password={abc}")).toBe("password=[redacted]");
+    // Multi-word content inside the brackets shouldn't leak either.
+    expect(scrubSensitiveText("password=[correct horse battery]")).toBe("password=[redacted]");
+  });
+
+  it("redacts a bracket/brace-wrapped secret value with no closing delimiter", () => {
+    expect(scrubSensitiveText("access_token=[abc123")).toBe("access_token=[redacted]");
+    expect(scrubSensitiveText("password={abc123")).toBe("password=[redacted]");
+  });
+
   it("cleanly redacts a secret field whose value is itself a URL, without a doubled placeholder", () => {
     // summarizeErrorText runs scrubSecrets *before* scrubUrls specifically so
     // this case works cleanly: scrubSecrets sees the original
