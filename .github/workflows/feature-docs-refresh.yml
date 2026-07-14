@@ -103,7 +103,9 @@ jobs:
             --head "$branch" \
             --title "docs: refresh feature screenshots" \
             --body "Automated refresh from Sentry Snapshots run ${SNAPSHOT_RUN_ID}. The curated images changed relative to the committed feature gallery.\n\nThis PR only updates deterministic public screenshots; review the visual diff before merging.\n\n### AI disclosure\n\n- [x] Fully AI generated: CI selected the manifest-listed Playwright fixtures and copied their latest deterministic PNGs. No application code or feature metadata changed.")"
-          gh pr edit "$pr_url" --add-label internal
+          if ! gh pr edit "$pr_url" --add-label internal; then
+            echo "::warning::Refresh PR opened, but the optional internal label could not be applied."
+          fi
 
       - name: Report refresh result
         if: always()
