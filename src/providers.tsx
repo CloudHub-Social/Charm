@@ -6,7 +6,7 @@ import type { createStore } from "jotai";
 /**
  * App-wide TanStack Query client. Rust is the source of truth, so the frontend caches
  * what the IPC layer returns and invalidates on the matching `*:update` Tauri events
- * (see the feature specs under `15.12 Charm 2.0/specs`). Kept module-level so callers
+ * (see the feature specs under `docs-site/src/content/docs/specs`). Kept module-level so callers
  * can `queryClient.invalidateQueries(...)` from event listeners.
  */
 export const queryClient = new QueryClient({

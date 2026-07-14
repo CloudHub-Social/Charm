@@ -11,7 +11,7 @@
 //! existing fail-open recovery-key re-prompt (`persistence.rs`'s restore
 //! path), not a hard failure. Extending this to `object_store`-backed
 //! durability is a tracked follow-up, deliberately not attempted here — see
-//! the Charm 2.0 vault's 2026-07-10 raw-capture note.
+//! the repository's persistent-crypto-state spec under `docs-site/`.
 //!
 //! **Keyed by a random per-session directory, not [`account_key`].** Unlike
 //! `media_cache.rs` (which must be *looked up* by account+device before any

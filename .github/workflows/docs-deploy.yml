@@ -5,12 +5,9 @@ name: Docs deploy
 # package.json/lockfile), so it doesn't affect the main app's dependency
 # graph or quality gate.
 #
-# The Charm 2.0 specs (docs-site's "Specs" section) live in a private vault
-# repo (Knowledge-Platform), not here — so a push-based trigger scoped to
-# this repo can't pick up spec-only edits. Runs on push to main (this
-# repo's docs changes), after the Release workflow publishes a GitHub Release,
-# on docs pull requests (build-only), on a daily schedule (spec-only edits),
-# and on manual dispatch.
+# Runs on docs changes, after the Release workflow publishes a GitHub Release,
+# and on manual dispatch. Specs are repository-native content under docs-site/,
+# so pull requests validate the exact pages that production will publish.
 
 on:
   push:
@@ -26,8 +23,6 @@ on:
   workflow_run:
     workflows: [Release]
     types: [completed]
-  schedule:
-    - cron: "17 6 * * *"
   workflow_dispatch:
 
 permissions:
@@ -43,44 +38,8 @@ jobs:
     name: Build
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    # Step-level `if:` conditions can't reference the `secrets` context
-    # directly (GitHub Actions rejects the workflow at parse time — a
-    # `secrets.X != ''` in an `if:` fails with "Unrecognized named-value:
-    # 'secrets'"). Route it through a job-level env var instead, which
-    # secrets *can* populate, and check that in the `if:` conditions below.
-    env:
-      # PR validation never needs the private specs and must not receive its
-      # deploy key. Trusted deploy events opt in when the key is configured.
-      HAS_SPECS_KEY: ${{ github.event_name != 'pull_request' && secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY != '' }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      # Specs vault sync: read-only access to just the Charm 2.0 specs/
-      # subfolder of the private Knowledge-Platform repo, via a deploy key
-      # scoped to that repo only. Skipped entirely if the key isn't
-      # configured yet, so the site still builds (without the Specs
-      # section) before that one-time setup is done.
-      - name: Check out Charm 2.0 specs vault
-        if: ${{ env.HAS_SPECS_KEY == 'true' }}
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          repository: Just-Insane/Knowledge-Platform
-          ssh-key: ${{ secrets.KNOWLEDGE_PLATFORM_DEPLOY_KEY }}
-          sparse-checkout: |
-            10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
-          sparse-checkout-cone-mode: false
-          path: knowledge-platform-vault
-
-      # starlight-obsidian requires a `.obsidian/app.json` marker to treat a
-      # directory as a vault root. The sparse checkout above only pulls the
-      # specs/ subfolder, not the real vault's .obsidian/ at its root, so
-      # synthesize a minimal one here — its content isn't read for anything
-      # we rely on (see docs-site/astro.config.mjs).
-      - name: Mark specs checkout as a vault root
-        if: ${{ env.HAS_SPECS_KEY == 'true' }}
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian"
-          echo '{}' > "$GITHUB_WORKSPACE/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs/.obsidian/app.json"
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -98,11 +57,13 @@ jobs:
         working-directory: docs-site
         run: pnpm install --frozen-lockfile
 
+      - name: Check content
+        working-directory: docs-site
+        run: pnpm check:content
+
       - name: Build
         working-directory: docs-site
         env:
-          PUBLISH_SPECS: ${{ env.HAS_SPECS_KEY }}
-          OBSIDIAN_VAULT_PATH: ${{ github.workspace }}/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
           # Read by the changelog page's `github` provider (starlight-changelogs)
           # to fetch GitHub Releases — the default token is enough since it's a
           # public repo, this just avoids unauthenticated rate limits.
