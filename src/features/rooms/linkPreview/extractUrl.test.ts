@@ -94,4 +94,31 @@ describe("firstUrlInText", () => {
       ),
     ).toBe("https://first.example");
   });
+
+  it("excludes a URL-looking string inside a code block", () => {
+    expect(
+      firstUrlInText(
+        "curl https://api.example.com/endpoint",
+        "<code>curl https://api.example.com/endpoint</code>",
+      ),
+    ).toBeNull();
+  });
+
+  it("excludes a URL inside a fenced <pre><code> block", () => {
+    expect(
+      firstUrlInText(
+        "GET https://api.example.com/endpoint",
+        "<pre><code>GET https://api.example.com/endpoint</code></pre>",
+      ),
+    ).toBeNull();
+  });
+
+  it("still finds a real link when a code block with a URL-looking string is also present", () => {
+    expect(
+      firstUrlInText(
+        "curl https://internal.example.com and see https://docs.example.com",
+        '<code>curl https://internal.example.com</code> and see <a href="https://docs.example.com">docs</a>',
+      ),
+    ).toBe("https://docs.example.com");
+  });
 });

@@ -33,6 +33,13 @@ function collectOrderedSearchText(node: Node, out: string[]): void {
   if (node.nodeType !== Node.ELEMENT_NODE) return;
 
   const el = node as Element;
+  // `RichMessageContent` deliberately leaves `code`/`pre` content
+  // un-linkified (its `Linkify` render hook returns the raw text unchanged
+  // when the match's parent is `code`/`pre`) — a URL-looking string in a
+  // code sample isn't a link the sender shared, so it shouldn't trigger a
+  // preview fetch either. Skip the whole subtree rather than just this
+  // element, since e.g. a `<pre><code>` wrapper nests both tags.
+  if (el.tagName === "CODE" || el.tagName === "PRE") return;
   if (el.tagName === "A" && el.hasAttribute("href") && !el.hasAttribute("data-mx-pill")) {
     out.push(el.getAttribute("href") ?? "");
   }
@@ -74,7 +81,10 @@ function collectOrderedSearchText(node: Node, out: string[]): void {
  * The search walks the DOM in document order (text and non-pill anchor
  * hrefs interleaved as encountered) rather than searching all text then all
  * hrefs, so a bare URL that appears later in the message can't jump ahead
- * of an earlier labeled link.
+ * of an earlier labeled link. It also skips `code`/`pre` subtrees entirely,
+ * matching `RichMessageContent`'s own choice to leave code-sample text
+ * un-linkified — a URL-looking string in a code block isn't a link the
+ * sender meant to share.
  */
 export function firstUrlInText(body: string, formattedBody?: string | null): string | null {
   if (!formattedBody) return firstHttpUrl(body);
