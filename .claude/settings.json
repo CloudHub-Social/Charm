@@ -66,6 +66,11 @@
             "type": "command",
             "command": "python3",
             "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/nudge-observability-coverage.py"]
+          },
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/nudge-feature-flag.py"]
           }
         ]
       }

@@ -1,13 +1,18 @@
 name: PR checklist gate
 
-# Enforces the two "Observability & e2e coverage" checklist items in
-# .github/PULL_REQUEST_TEMPLATE.md. CLAUDE.md/AGENTS.md already ask agents to
-# add e2e coverage and Sentry instrumentation for relevant changes, but that's
-# a soft instruction buried in project docs — easy for an agent (or a human)
-# to skip under time pressure, and nothing previously stopped the PR from
-# merging anyway. This makes the checklist self-enforcing: each of the two
-# lines must be either checked `[x]` or carry an explicit `N/A: <reason>`
-# explanation, or the PR fails a required check.
+# Enforces the "Merge gate checklist" items in
+# .github/PULL_REQUEST_TEMPLATE.md — feature-flag gating (docs/FEATURE_FLAGS.md),
+# Playwright e2e coverage, and Sentry instrumentation. CLAUDE.md/AGENTS.md
+# already ask agents to do these for relevant changes, but that's a soft
+# instruction buried in project docs — easy for an agent (or a human) to skip
+# under time pressure, and nothing previously stopped the PR from merging
+# anyway. This makes the checklist self-enforcing: each line must be either
+# checked `[x]` or carry an explicit `N/A: <reason>` explanation, or the PR
+# fails a required check.
+#
+# Docs/internal/chore PRs (no feature to flag, no user path to e2e, no error
+# path to instrument) apply the dedicated `internal` label to skip the gate
+# entirely — see the bypass in the script below.
 #
 # Deliberately text-based, not diff-based: it can't tell whether the e2e test
 # or Sentry call actually covers this PR's change, only that someone made an
@@ -24,7 +29,11 @@ name: PR checklist gate
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+    # `labeled`/`unlabeled` matter because the checklist bypass keys off the
+    # `internal` label: without these events, applying the label
+    # to a PR that already failed this gate wouldn't re-run it (and removing the
+    # label after a pass wouldn't re-enforce it).
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
   merge_group:
 
 permissions:
@@ -36,7 +45,7 @@ concurrency:
 
 jobs:
   checklist:
-    name: Observability & e2e checklist
+    name: Merge gate checklist
     runs-on: ubuntu-latest
     if: >-
       github.event_name != 'pull_request'
@@ -49,6 +58,23 @@ jobs:
         with:
           script: |
             const body = context.payload.pull_request.body || "";
+
+            // Bypass: a PR the maintainer marks docs/internal/chore carries the
+            // dedicated internal label, and the whole gate is skipped — such PRs have no
+            // feature to flag, no user-facing path to e2e, and no error path to
+            // instrument, so requiring an N/A on every line is just noise. The
+            // label is the trust boundary: applying it is a deliberate act.
+            const BYPASS_LABELS = ["internal"];
+            const labels = (context.payload.pull_request.labels || [])
+              .map((l) => (l.name || "").toLowerCase());
+            const bypass = labels.find((l) => BYPASS_LABELS.includes(l));
+            if (bypass) {
+              core.info(
+                `Merge gate checklist skipped — PR carries the "${bypass}" ` +
+                `label (bypass labels: ${BYPASS_LABELS.join(", ")}).`
+              );
+              return;
+            }
             // Only consider actual checklist-item lines ("- [ ] ..." / "- [x]
             // ..."), not prose elsewhere in the description that happens to
             // contain the same words (e.g. this PR's own description
@@ -60,6 +86,10 @@ jobs:
               .filter((l) => /^\s*-\s*\[[ xX]\]/.test(l));
 
             const REQUIRED = [
+              {
+                key: "feature-flag",
+                pattern: /gated behind a feature flag/i,
+              },
               {
                 key: "e2e",
                 pattern: /playwright e2e coverage/i,
@@ -97,7 +127,9 @@ jobs:
 
             if (failures.length > 0) {
               core.setFailed(
-                "Observability & e2e coverage checklist incomplete:\n\n" +
-                failures.map((f) => `- ${f}`).join("\n")
+                "Merge gate checklist incomplete:\n\n" +
+                failures.map((f) => `- ${f}`).join("\n") +
+                "\n\n(Docs/internal/chore PR? Apply the `internal` label to " +
+                "skip this gate.)"
               );
             }
