@@ -335,7 +335,7 @@ describe("RoomsScreen", () => {
     listRooms.mockResolvedValue([invite, room({ room_id: "!joined:example.org" })]);
     const onDeepLinkConsumed = vi.fn();
 
-    render(
+    const { rerender } = render(
       <RoomsScreen
         currentUserId="@me:example.org"
         deepLinkRoomId={invite.room_id}
@@ -347,6 +347,18 @@ describe("RoomsScreen", () => {
     await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
     expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("chat-content:none")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
   });
 
   it("consumes a deep link to a room absent from the loaded snapshot", async () => {

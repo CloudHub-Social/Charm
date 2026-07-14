@@ -76,7 +76,7 @@ export function RoomsScreen({
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
-  const spaceDeepLinkSelectedRef = useRef(false);
+  const autoSelectSuppressedRef = useRef(false);
 
   // Bumped on every room selection — via the room list, a deep link, or the
   // initial auto-select — even when it re-selects the already-active room.
@@ -86,25 +86,25 @@ export function RoomsScreen({
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
   function selectRoom(roomId: string) {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = false;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
   }
 
   function selectHome() {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = false;
     setRoomListMode("home");
     setSelectedSpaceId(null);
   }
 
   function selectDms() {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = false;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
   }
 
   function selectSpace(spaceId: string) {
-    spaceDeepLinkSelectedRef.current = false;
+    autoSelectSuppressedRef.current = false;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
   }
@@ -114,11 +114,11 @@ export function RoomsScreen({
   // no chat was active, such as right after a space deep link). `selectSpace`
   // alone would leave that window open for the auto-select effect below to
   // fire on the next sync-driven room-list update and switch back to the
-  // first non-space room — reusing `spaceDeepLinkSelectedRef` (the same
-  // guard the deep-link flow sets) suppresses that fallback the same way.
+  // first non-space room — reusing `autoSelectSuppressedRef` (the same guard
+  // the deep-link flow sets) suppresses that fallback the same way.
   function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
     selectSpace(spaceId);
-    spaceDeepLinkSelectedRef.current = true;
+    autoSelectSuppressedRef.current = true;
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -271,7 +271,7 @@ export function RoomsScreen({
       // opens, not just silently consume the link.
       selectRoomInVisibleMode(match);
       if (match.is_space) {
-        spaceDeepLinkSelectedRef.current = true;
+        autoSelectSuppressedRef.current = true;
       }
     } else if (match?.membership === "invite") {
       // Invites are actionable from the room-list inbox, not selectable as
@@ -280,6 +280,7 @@ export function RoomsScreen({
       setRoomListMode("home");
       setSelectedSpaceId(null);
       setMobileView("list");
+      autoSelectSuppressedRef.current = true;
     }
     // A resolved target absent from the completed snapshot is stale or not
     // visible to this account. Consume it rather than letting it suppress
@@ -293,7 +294,7 @@ export function RoomsScreen({
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
     const firstSelectableRoom = getInitialSelectableRoom(joinedRooms);
     if (activeRoomId === null && firstSelectableRoom) {
-      if (spaceDeepLinkSelectedRef.current) return;
+      if (autoSelectSuppressedRef.current) return;
       selectRoomInVisibleMode(firstSelectableRoom);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
