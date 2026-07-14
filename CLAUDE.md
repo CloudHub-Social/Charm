@@ -184,6 +184,31 @@ hand-written parser/renderer/player/widget.
 - The composer already models this (TipTap rather than a hand-rolled editor); follow
   that pattern elsewhere.
 
+## Feature flags
+
+New user-facing features must ship **behind a feature flag** that defaults off (so
+they can be dark-launched, staged, and killed without a client release). Full
+how-to in `docs/FEATURE_FLAGS.md`; the short version:
+
+- Add the key to the Rust catalog (`src-tauri/src/feature_flags.rs`) **and**
+  `src/featureFlags/catalog.ts` — the key is a ts-rs-exported `FeatureFlagKey`
+  union, so a mismatch fails `tsc`. Default `false`.
+- Gate the feature on `useFlag()` (React), `getFlag()` (other JS), or
+  `feature_flags::flag()` (Rust) — use `flag`, not `evaluate`, so the evaluation
+  reports to Sentry's Feature Flag Context.
+- Retire the flag (key + catalog entries + call sites) when the feature is fully
+  rolled out and stable.
+
+Enforced by the **"PR checklist gate"** CI check (a line in the PR template): a
+`New feature` PR must check the feature-flag box; a bug fix/refactor marks it
+`N/A: <reason>`; a docs/internal/chore PR applies the `internal` label to skip the
+gate. A repo-local Claude Code hook (`.claude/hooks/nudge-feature-flag.py`) also
+nudges before `gh pr create` when a PR adds new feature surface without a flag.
+
+(The remote rollout layer — GO Feature Flag / OFREP for kill-switch and staged
+rollout — is a follow-up increment; until it lands, flags are controlled by
+catalog defaults + local overrides. See `docs/FEATURE_FLAGS.md`.)
+
 ## macOS local dev code-signing
 
 `src-tauri/tauri.conf.json` has no `bundle.macOS.signingIdentity` set — CI and a
