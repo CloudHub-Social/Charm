@@ -51,6 +51,11 @@ to a DO Spaces CDN object the proxy reads.
   plain REST call; staying protocol-native keeps vendor-neutral swappability
   without a heavy SDK). The proxy is a standalone DO App Platform app reading
   the CDN object; it needs no credentials (public config).
+- **Desktop/mobile transport:** the packaged webview CSP limits `connect-src` to
+  `'self' ipc:`, so `ofrep.ts` routes the request through the Rust
+  `fetch_remote_flags` command (reqwest, not CSP-constrained) rather than a
+  direct `fetch()` — the same reason Sentry envelopes tunnel through IPC. The
+  web build fetches directly.
 
 ## Adding a flag
 
