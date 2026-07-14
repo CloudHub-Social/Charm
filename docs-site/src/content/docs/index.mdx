@@ -1,0 +1,33 @@
+---
+title: Charm
+description: A native Matrix client, rebuilt from the ground up.
+template: splash
+hero:
+  tagline: A native Matrix client built on matrix-rust-sdk and Tauri, with a new design language.
+  actions:
+    - text: Local development
+      link: /getting-started/local-dev/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/CloudHub-Social/Charm
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+	<Card title="Architecture" icon="puzzle">
+		How the Rust core, typed Tauri IPC, and React frontend fit together. See
+		[Architecture overview](/architecture/overview/).
+	</Card>
+	<Card title="Feature flags" icon="setting">
+		New user-facing features ship dark by default. See
+		[Feature flags](/contributing/feature-flags/).
+	</Card>
+	<Card title="CI / release tiers" icon="rocket">
+		How PR gating, nightly platform builds, and releases are split. See
+		[CI / release tiers](/contributing/ci-tiers/).
+	</Card>
+</CardGrid>
