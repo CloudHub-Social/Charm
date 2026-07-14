@@ -90,6 +90,10 @@ jobs:
         env:
           PUBLISH_SPECS: ${{ env.HAS_SPECS_KEY }}
           OBSIDIAN_VAULT_PATH: ${{ github.workspace }}/knowledge-platform-vault/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0/specs
+          # Read by the changelog page's `github` provider (starlight-changelogs)
+          # to fetch GitHub Releases — the default token is enough since it's a
+          # public repo, this just avoids unauthenticated rate limits.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm build
 
       - uses: actions/configure-pages@v5

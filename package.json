@@ -6,6 +6,10 @@
   "packageManager": "pnpm@11.0.3",
   "scripts": {
     "prepare": "sh scripts/install-git-hooks.sh",
+    "postinstall": "node scripts/install-knope.js",
+    "setup:knope": "node scripts/install-knope.js",
+    "knope": "knope",
+    "document-change": "knope document-change",
     "dev": "vite",
     "build": "tsc && vite build",
     "build:web": "tsc && vite build --mode web",
