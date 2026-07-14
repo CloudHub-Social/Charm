@@ -39,7 +39,7 @@ export function LoginScreen({ onSignedIn }: LoginScreenProps) {
     // defines the key with an empty value (common when it's left blank
     // rather than omitted) resolves to `""`, which `??` would treat as a
     // real override and leave the field blank instead of falling back.
-    import.meta.env.VITE_CHARM_DEFAULT_HOMESERVER_URL || "http://localhost:8008",
+    import.meta.env.VITE_CHARM_DEFAULT_HOMESERVER_URL || "https://cloudhub.social",
   );
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
