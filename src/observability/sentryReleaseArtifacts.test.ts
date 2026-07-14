@@ -42,6 +42,20 @@ function configureSentryReleaseEnv(env: Record<string, string | undefined> = {})
 }
 
 describe("Sentry release artifact workflow", () => {
+  it("treats nightly as a release channel within the development deployment tier", () => {
+    const workflow = readRepoFile(".github/workflows/nightly.yml");
+
+    expect(workflow).toContain("BUILD_ID_KIND: nightly");
+    expect(workflow).toContain("ENVIRONMENT_INPUT: development");
+    expect(workflow.match(/SENTRY_ENVIRONMENT: development/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(workflow.match(/VITE_SENTRY_ENVIRONMENT: development/g)?.length).toBeGreaterThanOrEqual(
+      4,
+    );
+    expect(workflow).not.toContain("ENVIRONMENT_INPUT: nightly");
+    expect(workflow).not.toContain("SENTRY_ENVIRONMENT: nightly");
+    expect(workflow).not.toContain("VITE_SENTRY_ENVIRONMENT: nightly");
+  });
+
   it("keeps the frontend release build guarded and uploadable to Sentry", () => {
     const workflow = readRepoFile(".github/workflows/release-builds.yml");
     const viteConfig = readRepoFile("vite.config.ts");
