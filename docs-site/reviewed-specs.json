@@ -1,4 +1,6 @@
-[
+{
+  "contentSha256": "ae6b58c6990d89608eb25575a86f925209fa5d1d0dff95c3ab68a6cc59c2925e",
+  "paths": [
   "day-1/Spec 01 — Timeline identity and profiles.md",
   "day-1/Spec 02 — Media and attachments.md",
   "day-1/Spec 03 — Message actions (edit, redact, reply, react).md",
@@ -76,4 +78,5 @@
   "day-2/Spec 11 — Jump to date.md",
   "day-2/Spec 12 — Bookmarks and saved messages.md",
   "day-2/Spec 13 — Scheduled and delayed send.md"
-]
+  ]
+}

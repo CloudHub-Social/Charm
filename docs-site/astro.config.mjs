@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
+import { createHash } from 'node:crypto';
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightObsidian, { obsidianSidebarEntries } from 'starlight-obsidian';
@@ -33,7 +34,7 @@ const vaultPath =
 // we'd add here would be a fake version number. Add it back
 // (`pnpm add -D starlight-versions`) once a real release is tagged.
 
-// Reviewed 2026-07-14: the 79 spec files listed in reviewed-specs.json are
+// Reviewed 2026-07-14: the 77 spec files listed in reviewed-specs.json are
 // public-safe (no PII, secrets, cost figures, or infra credentials). The two
 // `00 — Day-N spec index.md` files are excluded below — they're written as
 // internal planning logs ("owner adjudication" decision tables) rather than
@@ -43,20 +44,35 @@ const vaultPath =
 // manifest, so a scheduled deploy can never publish unreviewed content.
 const publishSpecs = process.env.PUBLISH_SPECS === 'true';
 
-// Allowlist, not blocklist: only files listed in reviewed-specs.json (the 79
-// reviewed on 2026-07-14) are ever published. If someone adds a new spec to
-// the vault later, it's excluded by default until a PR here adds it to the
-// manifest — so a scheduled deploy can never publish unreviewed vault
-// content. Escapes glob metacharacters (several spec filenames contain
-// literal parentheses, which micromatch would otherwise treat as extglob
-// syntax — the same issue that broke a plain filename-based ignore earlier).
+// Allowlist, not blocklist: only files listed in reviewed-specs.json (the 77
+// reviewed on 2026-07-14) are ever published, and their path+content digest
+// must still match that review. New files remain excluded and edits to an
+// existing reviewed path fail the build until a PR updates the digest after
+// another privacy review. Escapes glob metacharacters (several spec filenames
+// contain literal parentheses, which micromatch would otherwise treat as
+// extglob syntax — the same issue that broke a plain filename-based ignore).
 function escapeGlob(value) {
 	return value.replace(/[()[\]{}!?*+@|^$.\\]/g, '\\$&');
 }
 
 function computeUnreviewedIgnorePatterns() {
 	const manifestPath = path.join(process.cwd(), 'reviewed-specs.json');
-	const reviewed = new Set(JSON.parse(fsSync.readFileSync(manifestPath, 'utf8')));
+	const manifest = JSON.parse(fsSync.readFileSync(manifestPath, 'utf8'));
+	const reviewed = new Set(manifest.paths);
+	const contentHash = createHash('sha256');
+	for (const rel of [...reviewed].sort()) {
+		contentHash.update(rel);
+		contentHash.update('\0');
+		contentHash.update(fsSync.readFileSync(path.join(vaultPath, rel)));
+		contentHash.update('\0');
+	}
+	const actualHash = contentHash.digest('hex');
+	if (actualHash !== manifest.contentSha256) {
+		throw new Error(
+			'Reviewed spec content changed. Re-review the private specs and update ' +
+				`reviewed-specs.json (expected ${manifest.contentSha256}, got ${actualHash}).`,
+		);
+	}
 
 	function walk(dir, relDir) {
 		let entries;
