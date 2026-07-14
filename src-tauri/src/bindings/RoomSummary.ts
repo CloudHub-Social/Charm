@@ -94,12 +94,12 @@ avatar_path: string | null,
  * rooms matrix-rust-sdk can't resolve a single hero for (e.g. the peer
  * hasn't been synced yet).
  */
-dm_peer_user_id: string | null,
+dm_peer_user_id: string | null, 
 /**
  * Whether this is a normal joined room or a pending invitation. Left,
  * knocked, and banned rooms are deliberately excluded from snapshots.
  */
-membership: RoomMembershipKind,
+membership: RoomMembershipKind, 
 /**
  * The user who sent a pending invitation. `None` for joined rooms or
  * when a malformed/incomplete invite omitted its membership event.

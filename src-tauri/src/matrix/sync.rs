@@ -237,6 +237,15 @@ fn build_invite_notification(
     (title, format!("{inviter} invited you"))
 }
 
+fn should_notify_invite(
+    mode: Option<matrix_sdk::notification_settings::RoomNotificationMode>,
+) -> bool {
+    !matches!(
+        mode,
+        Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+    )
+}
+
 /// Notifies only for invites in a steady-state sync response. The initial
 /// sync's invited rooms are existing inbox state, not new activity.
 async fn notify_new_room_invites(
@@ -250,6 +259,9 @@ async fn notify_new_room_invites(
         let Some(room) = client.get_room(room_id) else {
             continue;
         };
+        if !should_notify_invite(room.notification_mode().await) {
+            continue;
+        }
         let details = room.invite_details().await.ok();
         let inviter_user_id = details.as_ref().map(|details| details.inviter_id.as_str());
         let inviter_display_name = details
@@ -468,7 +480,9 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 
 #[cfg(test)]
 mod invite_notification_tests {
-    use super::build_invite_notification;
+    use matrix_sdk::notification_settings::RoomNotificationMode;
+
+    use super::{build_invite_notification, should_notify_invite};
 
     #[test]
     fn uses_room_and_inviter_display_names() {
@@ -491,5 +505,17 @@ mod invite_notification_tests {
                 "@alice:example.org invited you".to_owned(),
             ),
         );
+    }
+
+    #[test]
+    fn suppresses_invites_only_when_notifications_are_muted() {
+        assert!(!should_notify_invite(Some(RoomNotificationMode::Mute)));
+        assert!(should_notify_invite(Some(
+            RoomNotificationMode::MentionsAndKeywordsOnly,
+        )));
+        assert!(should_notify_invite(Some(
+            RoomNotificationMode::AllMessages
+        )));
+        assert!(should_notify_invite(None));
     }
 }
