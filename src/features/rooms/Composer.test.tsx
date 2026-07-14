@@ -82,8 +82,10 @@ describe("Composer", () => {
     const mobileEditable = await waitFor(() => screen.getByLabelText("Message"));
     expect(mobileEditable).toHaveAttribute("placeholder", "Message");
     expect(mobileEditable.querySelector("[data-placeholder='Message']")).toBeInTheDocument();
+    expect(props.onTypingInput).not.toHaveBeenCalled();
 
     pasteText(mobileEditable, "draft survives rotation");
+    expect(props.onTypingInput).toHaveBeenCalledOnce();
     view.rerender(<Composer {...props} placeholder="Message General" />);
 
     expect(await screen.findByLabelText("Message General")).toHaveTextContent(

@@ -388,7 +388,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         return false;
       },
     },
-    onUpdate: ({ editor: e }) => {
+    onUpdate: ({ editor: e, transaction }) => {
+      // Placeholder refreshes dispatch a no-op transaction so TipTap
+      // recomputes decorations. Only actual document changes are user input;
+      // treating every transaction as typing would emit a false typing notice
+      // when the viewport crosses the responsive breakpoint.
+      if (!transaction.docChanged) return;
       // Only `send`/`reply` mode content belongs in the shared room draft —
       // writing edit-mode keystrokes here would overwrite whatever the user
       // had actually drafted for their next new message, which then
