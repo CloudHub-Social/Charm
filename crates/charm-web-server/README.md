@@ -65,6 +65,9 @@ server.md`.
   API, independently AES-256-GCM encrypted, and committed to a separate
   private Spaces bucket. Snapshot authentication binds the cookie-token
   hash, Matrix user/device, random crypto-store id, generation, and filename.
+  A bucket-level active-writer fence makes only the newest App Platform
+  instance eligible to commit snapshots during zero-downtime deployment;
+  restore ranks that writer's generations ahead of stale-instance uploads.
   Recovery-key import creates an immediate snapshot; active sessions refresh
   every five minutes and again during graceful shutdown. Room/state/media
   caches are intentionally excluded because the homeserver can rebuild them.
@@ -205,12 +208,14 @@ Platform, redeploying, verifying a snapshot, then revoking the old key. To
 rotate the crypto backup key without invalidating existing snapshots, first
 deploy dual-key read support and rewrite every manifest/database generation;
 never replace the Doppler value in place before that migration exists.
-The server retains the three newest committed generations and deletes older
-committed generations after each successful snapshot. Each generation's
-encrypted `manifest.json` is its commit marker, and restore chooses the newest
-complete generation. Logout deletes all generations best-effort. An optional
-bucket lifecycle expiry can clean up objects left by interrupted uploads, but
-its age also becomes the maximum lifetime of a dormant session's last backup.
+The server retains the three highest-priority committed generations and
+deletes older committed generations after each successful snapshot. Each
+generation's encrypted `manifest.json` is its commit marker. Restore prefers
+the active writer's newest complete generation, then falls back to earlier
+writers for corruption recovery. Logout deletes all generations best-effort.
+An optional bucket lifecycle expiry can clean up objects left by interrupted
+uploads, but its age also becomes the maximum lifetime of a dormant session's
+last backup.
 
 ### Observability (Sentry) env vars
 

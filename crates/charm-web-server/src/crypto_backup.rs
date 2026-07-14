@@ -36,6 +36,7 @@ pub const DOPPLER_TOKEN_ENV: &str = "CHARM_WEB_SERVER_DOPPLER_TOKEN";
 const DOPPLER_DOWNLOAD_URL: &str = "https://api.doppler.com/v3/configs/config/secrets/download?format=json&secrets=CHARM_WEB_SERVER_CRYPTO_BACKUP_KEY";
 const SNAPSHOT_FORMAT_VERSION: u8 = 1;
 const RETAIN_COMMITTED_GENERATIONS: usize = 3;
+const ACTIVE_WRITER_PATH: &str = "control/active-writer";
 // Only the crypto database is irreplaceable. Room/state/event-cache/media
 // stores are rebuilt from the homeserver after restore; backing them up would
 // multiply storage and transfer cost without preventing a recovery-key prompt.
@@ -90,6 +91,8 @@ struct EncryptedObject {
 struct SnapshotManifest {
     version: u8,
     generation: u64,
+    #[serde(default)]
+    writer_id: String,
     files: Vec<SnapshotFile>,
 }
 
@@ -103,6 +106,8 @@ struct SnapshotFile {
 pub struct CryptoBackupStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
+    writer_id: String,
+    enforce_writer_fence: bool,
 }
 
 struct TempDirGuard {
@@ -144,18 +149,30 @@ impl CryptoBackupStore {
         };
         let region_endpoint = require(ENDPOINT_ENV)?;
         let endpoint = virtual_hosted_endpoint(&bucket, &region_endpoint);
-        let store = AmazonS3Builder::new()
-            .with_bucket_name(&bucket)
-            .with_region(require(REGION_ENV)?)
-            .with_endpoint(endpoint)
-            .with_access_key_id(require(ACCESS_KEY_ID_ENV)?)
-            .with_secret_access_key(require(SECRET_ACCESS_KEY_ENV)?)
-            .with_virtual_hosted_style_request(true)
-            .build()
-            .map_err(|error| error.to_string())?;
+        let store: Arc<dyn ObjectStore> = Arc::new(
+            AmazonS3Builder::new()
+                .with_bucket_name(&bucket)
+                .with_region(require(REGION_ENV)?)
+                .with_endpoint(endpoint)
+                .with_access_key_id(require(ACCESS_KEY_ID_ENV)?)
+                .with_secret_access_key(require(SECRET_ACCESS_KEY_ENV)?)
+                .with_virtual_hosted_style_request(true)
+                .build()
+                .map_err(|error| error.to_string())?,
+        );
+        let writer_id = random_identifier();
+        store
+            .put(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from(writer_id.clone()),
+            )
+            .await
+            .map_err(|error| format!("failed to publish crypto snapshot writer fence: {error}"))?;
         Ok(Some(Self {
             key,
-            store: Arc::new(store),
+            store,
+            writer_id,
+            enforce_writer_fence: true,
         }))
     }
 
@@ -164,6 +181,23 @@ impl CryptoBackupStore {
         Self {
             key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
             store: Arc::new(object_store::memory::InMemory::new()),
+            writer_id: "test-writer".to_string(),
+            enforce_writer_fence: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_store(
+        key_bytes: [u8; 32],
+        writer_id: &str,
+        store: Arc<dyn ObjectStore>,
+        enforce_writer_fence: bool,
+    ) -> Self {
+        Self {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store,
+            writer_id: writer_id.to_string(),
+            enforce_writer_fence,
         }
     }
 
@@ -172,6 +206,9 @@ impl CryptoBackupStore {
         binding: &CryptoSnapshotBinding,
         source_dir: &Path,
     ) -> Result<(), String> {
+        if !self.is_active_writer().await? {
+            return Ok(());
+        }
         let generation = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -221,6 +258,7 @@ impl CryptoBackupStore {
         let manifest = SnapshotManifest {
             version: SNAPSHOT_FORMAT_VERSION,
             generation,
+            writer_id: self.writer_id.clone(),
             files,
         };
         let plaintext = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
@@ -232,6 +270,15 @@ impl CryptoBackupStore {
         // generation. There is deliberately no shared "latest" pointer for
         // two App Platform instances to overwrite out of order during a
         // zero-downtime deploy.
+        // Re-check after uploading the database objects. A replacement
+        // instance may have published its fence while this snapshot was in
+        // flight; in that case this stale writer must not publish a commit
+        // marker. Restore also ranks manifests by the current fence, closing
+        // the tiny race between this check and the manifest put itself.
+        if !self.is_active_writer().await? {
+            self.remove_uncommitted_generation(binding, &manifest).await;
+            return Ok(());
+        }
         self.store
             .put(
                 &manifest_object_path(&binding.store_key, generation),
@@ -239,10 +286,53 @@ impl CryptoBackupStore {
             )
             .await
             .map_err(|error| error.to_string())?;
-        if let Err(error) = self.prune_committed_generations(&binding.store_key).await {
+        if let Err(error) = self.prune_committed_generations(binding).await {
             tracing::warn!("crypto snapshot committed but old-generation cleanup failed: {error}");
         }
         Ok(())
+    }
+
+    async fn active_writer_id(&self) -> Result<Option<String>, String> {
+        if !self.enforce_writer_fence {
+            return Ok(None);
+        }
+        let result = self
+            .store
+            .get(&ObjectPath::from(ACTIVE_WRITER_PATH))
+            .await
+            .map_err(|error| format!("failed to read crypto snapshot writer fence: {error}"))?;
+        let bytes = result.bytes().await.map_err(|error| error.to_string())?;
+        let writer = std::str::from_utf8(&bytes)
+            .map_err(|error| format!("crypto snapshot writer fence is not UTF-8: {error}"))?
+            .trim();
+        if writer.is_empty() {
+            return Err("crypto snapshot writer fence is empty".to_string());
+        }
+        Ok(Some(writer.to_string()))
+    }
+
+    async fn is_active_writer(&self) -> Result<bool, String> {
+        Ok(self
+            .active_writer_id()
+            .await?
+            .is_none_or(|active| active == self.writer_id))
+    }
+
+    async fn remove_uncommitted_generation(
+        &self,
+        binding: &CryptoSnapshotBinding,
+        manifest: &SnapshotManifest,
+    ) {
+        for file in &manifest.files {
+            let _ = self
+                .store
+                .delete(&database_object_path(
+                    &binding.store_key,
+                    manifest.generation,
+                    &file.name,
+                ))
+                .await;
+        }
     }
 
     pub async fn restore(
@@ -260,10 +350,36 @@ impl CryptoBackupStore {
                 generations.push(generation);
             }
         }
-        generations.sort_unstable_by(|left, right| right.cmp(left));
+        generations.sort_unstable();
         generations.dedup();
         if generations.is_empty() {
             return Ok(false);
+        }
+
+        let active_writer = self.active_writer_id().await?;
+        let mut manifests = Vec::new();
+        let mut last_error = None;
+        for generation in generations {
+            match self.read_manifest(binding, generation).await {
+                Ok(manifest) => manifests.push(manifest),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        manifests.sort_unstable_by(|left, right| {
+            let left_active = active_writer
+                .as_deref()
+                .is_some_and(|active| left.writer_id == active);
+            let right_active = active_writer
+                .as_deref()
+                .is_some_and(|active| right.writer_id == active);
+            right_active
+                .cmp(&left_active)
+                .then_with(|| right.generation.cmp(&left.generation))
+        });
+        if manifests.is_empty() {
+            return Err(
+                last_error.unwrap_or_else(|| "no usable crypto snapshot generation".to_string())
+            );
         }
 
         // Another request may have completed the same restore after the
@@ -274,11 +390,10 @@ impl CryptoBackupStore {
             return Ok(true);
         }
 
-        let mut last_error = None;
-        for generation in generations {
+        for manifest in manifests {
             let mut staging_dir = TempDirGuard::new(create_restore_temp_dir(destination_dir)?);
             match self
-                .restore_generation(binding, staging_dir.path(), generation)
+                .restore_generation(binding, staging_dir.path(), &manifest)
                 .await
             {
                 Ok(()) => {
@@ -307,35 +422,8 @@ impl CryptoBackupStore {
         &self,
         binding: &CryptoSnapshotBinding,
         destination_dir: &Path,
-        generation: u64,
+        manifest: &SnapshotManifest,
     ) -> Result<(), String> {
-        let manifest_path = manifest_object_path(&binding.store_key, generation);
-        let result = match self.store.get(&manifest_path).await {
-            Ok(result) => result,
-            Err(object_store::Error::NotFound { .. }) => {
-                return Err("crypto snapshot manifest disappeared during restore".to_string());
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-        let bytes = result.bytes().await.map_err(|error| error.to_string())?;
-        let encrypted: EncryptedObject =
-            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        let plaintext =
-            self.decrypt(&encrypted, &binding.aad("manifest", Some(generation), None))?;
-        let manifest: SnapshotManifest =
-            serde_json::from_slice(&plaintext).map_err(|error| error.to_string())?;
-        if manifest.version != SNAPSHOT_FORMAT_VERSION {
-            return Err(format!(
-                "unsupported crypto snapshot version {}",
-                manifest.version
-            ));
-        }
-        if manifest.files.len() != DATABASE_FILES.len() {
-            return Err("crypto snapshot manifest has an incomplete database set".to_string());
-        }
-        if manifest.generation != generation {
-            return Err("crypto snapshot manifest generation does not match its path".to_string());
-        }
         std::fs::create_dir_all(destination_dir).map_err(|error| error.to_string())?;
 
         for file in &manifest.files {
@@ -376,6 +464,41 @@ impl CryptoBackupStore {
         Ok(())
     }
 
+    async fn read_manifest(
+        &self,
+        binding: &CryptoSnapshotBinding,
+        generation: u64,
+    ) -> Result<SnapshotManifest, String> {
+        let manifest_path = manifest_object_path(&binding.store_key, generation);
+        let result = match self.store.get(&manifest_path).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => {
+                return Err("crypto snapshot manifest disappeared during restore".to_string());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        let bytes = result.bytes().await.map_err(|error| error.to_string())?;
+        let encrypted: EncryptedObject =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let plaintext =
+            self.decrypt(&encrypted, &binding.aad("manifest", Some(generation), None))?;
+        let manifest: SnapshotManifest =
+            serde_json::from_slice(&plaintext).map_err(|error| error.to_string())?;
+        if manifest.version != SNAPSHOT_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported crypto snapshot version {}",
+                manifest.version
+            ));
+        }
+        if manifest.files.len() != DATABASE_FILES.len() {
+            return Err("crypto snapshot manifest has an incomplete database set".to_string());
+        }
+        if manifest.generation != generation {
+            return Err("crypto snapshot manifest generation does not match its path".to_string());
+        }
+        Ok(manifest)
+    }
+
     pub async fn remove(&self, store_key: &str) -> Result<(), String> {
         let prefix = ObjectPath::from(format!("crypto/{store_key}/"));
         let mut objects = self.store.list(Some(&prefix));
@@ -390,27 +513,50 @@ impl CryptoBackupStore {
         Ok(())
     }
 
-    async fn prune_committed_generations(&self, store_key: &str) -> Result<(), String> {
-        let prefix = ObjectPath::from(format!("crypto/{store_key}/"));
+    async fn prune_committed_generations(
+        &self,
+        binding: &CryptoSnapshotBinding,
+    ) -> Result<(), String> {
+        let prefix = ObjectPath::from(format!("crypto/{}/", binding.store_key));
         let mut objects = self.store.list(Some(&prefix));
         let mut locations = Vec::new();
-        let mut committed = Vec::new();
+        let mut generations = Vec::new();
         use futures_util::StreamExt;
         while let Some(object) = objects.next().await {
             let object = object.map_err(|error| error.to_string())?;
-            if let Some(generation) = manifest_generation(store_key, &object.location) {
-                committed.push(generation);
+            if let Some(generation) = manifest_generation(&binding.store_key, &object.location) {
+                generations.push(generation);
             }
             locations.push(object.location);
         }
-        committed.sort_unstable_by(|left, right| right.cmp(left));
-        committed.dedup();
+        generations.sort_unstable();
+        generations.dedup();
+
+        let active_writer = self.active_writer_id().await?;
+        let mut committed = Vec::new();
+        for generation in generations {
+            if let Ok(manifest) = self.read_manifest(binding, generation).await {
+                committed.push(manifest);
+            }
+        }
+        committed.sort_unstable_by(|left, right| {
+            let left_active = active_writer
+                .as_deref()
+                .is_some_and(|active| left.writer_id == active);
+            let right_active = active_writer
+                .as_deref()
+                .is_some_and(|active| right.writer_id == active);
+            right_active
+                .cmp(&left_active)
+                .then_with(|| right.generation.cmp(&left.generation))
+        });
         let obsolete = committed
             .into_iter()
             .skip(RETAIN_COMMITTED_GENERATIONS)
+            .map(|manifest| manifest.generation)
             .collect::<std::collections::HashSet<_>>();
         for location in locations {
-            if object_generation(store_key, &location)
+            if object_generation(&binding.store_key, &location)
                 .is_some_and(|value| obsolete.contains(&value))
             {
                 self.store
@@ -547,14 +693,18 @@ fn backup_sqlite_databases(source_dir: &Path, destination_dir: &Path) -> Result<
 
 fn create_snapshot_temp_dir() -> Result<PathBuf, String> {
     let base = std::env::var(DATA_DIR_ENV).unwrap_or_else(|_| "./data".to_string());
-    let suffix: String = rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(24)
-        .map(char::from)
-        .collect();
+    let suffix = random_identifier();
     let path = PathBuf::from(base).join("crypto-snapshot-tmp").join(suffix);
     std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
+}
+
+fn random_identifier() -> String {
+    rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect()
 }
 
 fn create_restore_temp_dir(destination_dir: &Path) -> Result<PathBuf, String> {
@@ -757,6 +907,74 @@ mod tests {
             .query_row("SELECT value FROM example", (), |row| row.get(0))
             .unwrap();
         assert_eq!(value, "new");
+    }
+
+    #[tokio::test]
+    async fn active_writer_snapshot_outranks_a_stale_writers_later_upload() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let old_writer = CryptoBackupStore::new_for_test_with_store(
+            [47; 32],
+            "old-writer",
+            backend.clone(),
+            false,
+        );
+        let active_writer = CryptoBackupStore::new_for_test_with_store(
+            [47; 32],
+            "active-writer",
+            backend.clone(),
+            true,
+        );
+        let fenced_old_writer = CryptoBackupStore::new_for_test_with_store(
+            [47; 32],
+            "old-writer",
+            backend.clone(),
+            true,
+        );
+        backend
+            .put(
+                &ObjectPath::from(ACTIVE_WRITER_PATH),
+                PutPayload::from("active-writer"),
+            )
+            .await
+            .unwrap();
+
+        let source = scratch_dir("writer-fence-source");
+        let database = source.join(DATABASE_FILES[0]);
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        connection
+            .execute_batch("CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('old');")
+            .unwrap();
+        let session = dummy_session("@alice:example.invalid");
+        let binding = CryptoSnapshotBinding::new("opaque-token", &session, "writerfencestore");
+
+        old_writer.snapshot(&binding, &source).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        connection
+            .execute("UPDATE example SET value = 'active'", ())
+            .unwrap();
+        active_writer.snapshot(&binding, &source).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        connection
+            .execute("UPDATE example SET value = 'stale-late'", ())
+            .unwrap();
+        let prefix = ObjectPath::from("crypto/writerfencestore/");
+        let before = backend.list(Some(&prefix)).collect::<Vec<_>>().await.len();
+        fenced_old_writer.snapshot(&binding, &source).await.unwrap();
+        let after = backend.list(Some(&prefix)).collect::<Vec<_>>().await.len();
+        assert_eq!(after, before, "an inactive writer must not publish objects");
+        // Force a stale manifest into the test backend to cover the narrow
+        // race after a real writer's final fence check. Restore must still
+        // rank the active writer first even though this generation is later.
+        old_writer.snapshot(&binding, &source).await.unwrap();
+
+        let destination = scratch_dir("writer-fence-destination");
+        std::fs::remove_dir_all(&destination).unwrap();
+        assert!(active_writer.restore(&binding, &destination).await.unwrap());
+        let restored = rusqlite::Connection::open(destination.join(DATABASE_FILES[0])).unwrap();
+        let value: String = restored
+            .query_row("SELECT value FROM example", (), |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "active");
     }
 
     #[tokio::test]
