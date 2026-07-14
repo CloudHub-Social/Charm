@@ -67,4 +67,21 @@ describe("rectToAutocompletePosition", () => {
       else Reflect.deleteProperty(window, "visualViewport");
     }
   });
+
+  it("normalizes caret coordinates when the visual viewport is panned", () => {
+    const original = Object.getOwnPropertyDescriptor(window, "visualViewport");
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { width: 375, height: 400, offsetTop: 300, offsetLeft: 20 },
+    });
+
+    try {
+      expect(
+        rectToAutocompletePosition(rect({ top: 340, right: 140, bottom: 360, left: 120 })),
+      ).toEqual({ top: 64, left: 100, maxHeight: 240 });
+    } finally {
+      if (original) Object.defineProperty(window, "visualViewport", original);
+      else Reflect.deleteProperty(window, "visualViewport");
+    }
+  });
 });
