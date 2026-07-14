@@ -58,19 +58,34 @@ import {
 import { useChatTyping } from "./useChatTyping";
 import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
+import { MessagePillProfileDialog, type MessagePillProfile } from "./MessagePillProfileDialog";
 
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
   onBack?: () => void;
+  onNavigateToRoom?: (roomIdentifier: string) => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
  * Virtuoso's `context` prop rather than closing over component state, so it's
  * a stable reference across renders instead of being redefined on every one. */
-function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean } }) {
-  if (!context?.loadingMore) return null;
-  return <p className="pb-2 text-center text-xs text-muted-foreground">Loading older messages…</p>;
+function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean; hasMore: boolean } }) {
+  if (context?.loadingMore) {
+    return (
+      <p className="pb-2 text-center text-xs text-muted-foreground">Loading older messages…</p>
+    );
+  }
+  if (context && !context.hasMore) {
+    return (
+      <div className="flex items-center gap-3 pb-3 text-[11px] font-medium text-muted-foreground">
+        <span className="h-px flex-1 bg-border" />
+        <span>You're all caught up</span>
+        <span className="h-px flex-1 bg-border" />
+      </div>
+    );
+  }
+  return null;
 }
 
 /**
@@ -137,7 +152,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   return canRedactBySender;
 }
 
-export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
+export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobile = layout === "mobile";
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
@@ -148,6 +163,7 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
   // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
   const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   const [followingExpanded, setFollowingExpanded] = useState(false);
+  const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -770,7 +786,7 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
             followOutput="auto"
             startReached={loadMoreHistory}
             atBottomStateChange={handleVirtuosoAtBottomStateChange}
-            context={{ loadingMore }}
+            context={{ loadingMore, hasMore }}
             components={{ Header: LoadingOlderHeader }}
             // Without this, Virtuoso keys rendered rows by their current
             // position, not identity. A full `timeline:update` snapshot can
@@ -826,6 +842,7 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
                   <MessageRow
                     message={message}
                     roomId={room.room_id}
+                    currentUserId={currentUserId}
                     own={own}
                     sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
                     sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
@@ -854,6 +871,8 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
                     onDelete={() => handleDelete(message.event_id)}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
                     onJumpToMessage={handleJumpToMessage}
+                    onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
+                    onRoomPillClick={onNavigateToRoom}
                   />
                 </div>
               );
@@ -964,7 +983,6 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
           )}
         </button>
       )}
-
       <div
         data-testid="composer-shell"
         className={cn(
@@ -1052,6 +1070,7 @@ export function ChatShell({ room, currentUserId, onBack }: ChatShellProps) {
           </button>
         </div>
       </div>
+      <MessagePillProfileDialog profile={pillProfile} onClose={() => setPillProfile(null)} />
     </div>
   );
 }

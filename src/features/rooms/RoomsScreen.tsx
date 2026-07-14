@@ -67,6 +67,9 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
+  const [roomsLoading, setRoomsLoading] = useState(true);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
@@ -88,6 +91,21 @@ export function RoomsScreen({
     spaceDeepLinkSelectedRef.current = false;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
+  }
+
+  function navigateToRoomPill(roomIdentifier: string) {
+    if (roomIdentifier.startsWith("!")) {
+      const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomIdentifier);
+      if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+      return;
+    }
+    if (!roomIdentifier.startsWith("#")) return;
+    resolveRoomAlias(roomIdentifier)
+      .then((roomId) => {
+        const joinedRoom = roomsRef.current.find((candidate) => candidate.room_id === roomId);
+        if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+      })
+      .catch(logAndIgnore);
   }
 
   function selectHome() {
@@ -132,7 +150,7 @@ export function RoomsScreen({
     } else if (room.parent_space_ids.length > 0) {
       const joinedParentSpaceIds = room.parent_space_ids
         .filter((spaceId) =>
-          rooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+          roomsRef.current.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
         )
         .toSorted();
       const parentSpaceId = joinedParentSpaceIds[0];
@@ -157,9 +175,22 @@ export function RoomsScreen({
   useSettingsHashSync();
 
   useEffect(() => {
-    listRooms().then(setRooms).catch(logAndIgnore);
-    const unlisten = onRoomListUpdate(setRooms);
+    let cancelled = false;
+    listRooms()
+      .then((nextRooms) => {
+        if (!cancelled) setRooms(nextRooms);
+      })
+      .catch(logAndIgnore)
+      .finally(() => {
+        if (!cancelled) setRoomsLoading(false);
+      });
+    const unlisten = onRoomListUpdate((nextRooms) => {
+      if (cancelled) return;
+      setRooms(nextRooms);
+      setRoomsLoading(false);
+    });
     return () => {
+      cancelled = true;
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
@@ -312,6 +343,7 @@ export function RoomsScreen({
         roomList={
           <RoomList
             rooms={rooms}
+            loading={roomsLoading}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
@@ -328,6 +360,7 @@ export function RoomsScreen({
             room={activeRoom}
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
+            onNavigateToRoom={navigateToRoomPill}
           />
         }
         rightPanel={

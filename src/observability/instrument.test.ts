@@ -39,6 +39,7 @@ vi.mock("@sentry/react", () => ({
   replayCanvasIntegration: vi.fn(() => ({ name: "ReplayCanvas" })),
   browserProfilingIntegration: vi.fn(() => ({ name: "BrowserProfiling" })),
   consoleLoggingIntegration: vi.fn(() => ({ name: "ConsoleLogging" })),
+  featureFlagsIntegration: vi.fn(() => ({ name: "FeatureFlags" })),
   feedbackIntegration: vi.fn(() => feedbackIntegration),
   init: vi.fn(),
   setTag: vi.fn(),

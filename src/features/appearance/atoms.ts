@@ -10,6 +10,7 @@ export type ReducedMotion = "system" | "on" | "off";
  * `dom.ts`) — it's a structural JSX choice consumed directly by
  * `MessageRow`, not a CSS variable. */
 export type MessageLayout = "bubble" | "discord" | "irc";
+export type JumboEmojiSize = "off" | "sm" | "md" | "lg";
 
 export interface AppearanceState {
   theme: Theme;
@@ -17,6 +18,7 @@ export interface AppearanceState {
   density: Density;
   reducedMotion: ReducedMotion;
   messageLayout: MessageLayout;
+  jumboEmojiSize: JumboEmojiSize;
 }
 
 /**
@@ -37,6 +39,7 @@ export const VALID_FONT_SIZES: readonly FontSize[] = ["sm", "md", "lg", "xl"];
 export const VALID_DENSITIES: readonly Density[] = ["compact", "cozy"];
 export const VALID_REDUCED_MOTIONS: readonly ReducedMotion[] = ["system", "on", "off"];
 export const VALID_MESSAGE_LAYOUTS: readonly MessageLayout[] = ["bubble", "discord", "irc"];
+export const VALID_JUMBO_EMOJI_SIZES: readonly JumboEmojiSize[] = ["off", "sm", "md", "lg"];
 
 /** Matches the defaults baked into `index.html`'s inline boot script and
  * `tokens.css` (dark-first, cozy density, M font size, system motion).
@@ -48,6 +51,7 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
   density: "cozy",
   reducedMotion: "system",
   messageLayout: "bubble",
+  jumboEmojiSize: "lg",
 };
 
 /**
@@ -61,3 +65,4 @@ export const fontSizeAtom = atom<FontSize>(DEFAULT_APPEARANCE.fontSize);
 export const densityAtom = atom<Density>(DEFAULT_APPEARANCE.density);
 export const reducedMotionAtom = atom<ReducedMotion>(DEFAULT_APPEARANCE.reducedMotion);
 export const messageLayoutAtom = atom<MessageLayout>(DEFAULT_APPEARANCE.messageLayout);
+export const jumboEmojiSizeAtom = atom<JumboEmojiSize>(DEFAULT_APPEARANCE.jumboEmojiSize);

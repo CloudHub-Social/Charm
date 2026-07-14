@@ -6,6 +6,11 @@ import "@fontsource/manrope/700.css";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import "../src/styles/tokens.css";
+import { featureFlagTestHooks } from "../src/featureFlags";
+
+// Stories document shipped UI states, including features that default off
+// while they are being staged for rollout.
+featureFlagTestHooks.setCache({ rich_message_rendering: true });
 
 // Charm is dark-first: the design tokens set the canvas background/foreground on
 // `body`, and `src/styles/tokens.css` keys its theme overrides off `[data-theme]`.

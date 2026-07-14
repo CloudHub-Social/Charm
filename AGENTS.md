@@ -40,6 +40,24 @@ pnpm build            # tsc && vite build — must succeed with no errors
 - Search related open/merged PRs and issues on `origin` before opening one; link
   related issues (`Closes #N` / `Related to #N`) after confirming with the user.
 
+## Feature flags
+
+New user-facing features must ship **behind a feature flag** that defaults off, so
+they can be dark-launched, rolled out in stages, and killed without a client
+release. See `docs/FEATURE_FLAGS.md` for the how-to.
+
+- Add the flag key to the Rust catalog (`src-tauri/src/feature_flags.rs`) **and**
+  `src/featureFlags/catalog.ts` (the key is a ts-rs-exported union, so a mismatch
+  is a compile error), defaulting `false`.
+- Gate the feature on `useFlag()` (React), `getFlag()` (other JS), or
+  `feature_flags::flag()` (Rust) — use `flag`, not `evaluate`, so the evaluation
+  is reported to Sentry.
+- Retire the flag (key + catalog entries + call sites) once the feature is fully
+  rolled out and stable.
+- This is enforced by the **"PR checklist gate"** CI check (a line in the PR
+  template). Bug fixes / refactors mark that line `N/A: <reason>`; docs/internal/
+  chore PRs apply the `internal` label to skip the gate.
+
 ## Matrix Spec Compliance
 
 - New features and fixes must match the current Matrix spec, or the relevant MSC if

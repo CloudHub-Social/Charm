@@ -55,11 +55,25 @@ vi.mock("@/features/room-info/useRoomDetails", () => ({
 }));
 
 vi.mock("./ChatShell", () => ({
-  ChatShell: ({ room: activeRoom, onBack }: { room: RoomSummary | null; onBack: () => void }) => (
+  ChatShell: ({
+    room: activeRoom,
+    onBack,
+    onNavigateToRoom,
+  }: {
+    room: RoomSummary | null;
+    onBack: () => void;
+    onNavigateToRoom: (roomIdentifier: string) => void;
+  }) => (
     <div>
       chat-content:{activeRoom?.room_id ?? "none"}
       <button type="button" onClick={onBack}>
         back-to-chats
+      </button>
+      <button type="button" onClick={() => onNavigateToRoom("!b:example.org")}>
+        direct-room-pill
+      </button>
+      <button type="button" onClick={() => onNavigateToRoom("#b:example.org")}>
+        alias-room-pill
       </button>
     </div>
   ),
@@ -603,6 +617,56 @@ describe("RoomsScreen", () => {
     await screen.findByText("chat-content:!a:example.org");
 
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
+
+    await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("navigates joined room-id and alias pills through the visible room context", async () => {
+    listRooms.mockResolvedValue([
+      room({ room_id: "!a:example.org" }),
+      room({ room_id: "!b:example.org" }),
+    ]);
+    resolveRoomAlias.mockResolvedValue("!b:example.org");
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!a:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "direct-room-pill" }));
+    await screen.findByText("chat-content:!b:example.org");
+
+    fireEvent.click(screen.getByRole("button", { name: "alias-room-pill" }));
+    await waitFor(() => expect(resolveRoomAlias).toHaveBeenCalledWith("#b:example.org"));
+  });
+
+  it("uses the latest room list when an alias finishes resolving", async () => {
+    let finishAliasResolution: ((roomId: string) => void) | undefined;
+    resolveRoomAlias.mockReturnValue(
+      new Promise<string>((resolve) => {
+        finishAliasResolution = resolve;
+      }),
+    );
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:!a:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "alias-room-pill" }));
+    const updateRooms = onRoomListUpdate.mock.calls[0][0] as (rooms: RoomSummary[]) => void;
+    act(() => {
+      updateRooms([room({ room_id: "!a:example.org" }), room({ room_id: "!b:example.org" })]);
+    });
+    await act(async () => finishAliasResolution?.("!b:example.org"));
 
     await screen.findByText("chat-content:!b:example.org");
   });

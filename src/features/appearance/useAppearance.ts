@@ -3,11 +3,13 @@ import { useCallback } from "react";
 import {
   densityAtom,
   fontSizeAtom,
+  jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
   themeAtom,
   type Density,
   type FontSize,
+  type JumboEmojiSize,
   type MessageLayout,
   type ReducedMotion,
   type Theme,
@@ -33,6 +35,7 @@ export function useAppearance() {
   const [density, setDensityAtom] = useAtom(densityAtom);
   const [reducedMotion, setReducedMotionAtom] = useAtom(reducedMotionAtom);
   const [messageLayout, setMessageLayoutAtom] = useAtom(messageLayoutAtom);
+  const [jumboEmojiSize, setJumboEmojiSizeAtom] = useAtom(jumboEmojiSizeAtom);
 
   const commit = useCallback(
     (next: {
@@ -41,6 +44,7 @@ export function useAppearance() {
       density: Density;
       reducedMotion: ReducedMotion;
       messageLayout: MessageLayout;
+      jumboEmojiSize: JumboEmojiSize;
     }) => {
       applyAppearanceToDom(next);
       void persistAppearance(next);
@@ -51,41 +55,49 @@ export function useAppearance() {
   const setTheme = useCallback(
     (next: Theme) => {
       setThemeAtom(next);
-      commit({ theme: next, fontSize, density, reducedMotion, messageLayout });
+      commit({ theme: next, fontSize, density, reducedMotion, messageLayout, jumboEmojiSize });
     },
-    [commit, density, fontSize, messageLayout, reducedMotion, setThemeAtom],
+    [commit, density, fontSize, jumboEmojiSize, messageLayout, reducedMotion, setThemeAtom],
   );
 
   const setFontSize = useCallback(
     (next: FontSize) => {
       setFontSizeAtom(next);
-      commit({ theme, fontSize: next, density, reducedMotion, messageLayout });
+      commit({ theme, fontSize: next, density, reducedMotion, messageLayout, jumboEmojiSize });
     },
-    [commit, density, messageLayout, reducedMotion, setFontSizeAtom, theme],
+    [commit, density, jumboEmojiSize, messageLayout, reducedMotion, setFontSizeAtom, theme],
   );
 
   const setDensity = useCallback(
     (next: Density) => {
       setDensityAtom(next);
-      commit({ theme, fontSize, density: next, reducedMotion, messageLayout });
+      commit({ theme, fontSize, density: next, reducedMotion, messageLayout, jumboEmojiSize });
     },
-    [commit, fontSize, messageLayout, reducedMotion, setDensityAtom, theme],
+    [commit, fontSize, jumboEmojiSize, messageLayout, reducedMotion, setDensityAtom, theme],
   );
 
   const setReducedMotion = useCallback(
     (next: ReducedMotion) => {
       setReducedMotionAtom(next);
-      commit({ theme, fontSize, density, reducedMotion: next, messageLayout });
+      commit({ theme, fontSize, density, reducedMotion: next, messageLayout, jumboEmojiSize });
     },
-    [commit, density, fontSize, messageLayout, setReducedMotionAtom, theme],
+    [commit, density, fontSize, jumboEmojiSize, messageLayout, setReducedMotionAtom, theme],
   );
 
   const setMessageLayout = useCallback(
     (next: MessageLayout) => {
       setMessageLayoutAtom(next);
-      commit({ theme, fontSize, density, reducedMotion, messageLayout: next });
+      commit({ theme, fontSize, density, reducedMotion, messageLayout: next, jumboEmojiSize });
     },
-    [commit, density, fontSize, reducedMotion, setMessageLayoutAtom, theme],
+    [commit, density, fontSize, jumboEmojiSize, reducedMotion, setMessageLayoutAtom, theme],
+  );
+
+  const setJumboEmojiSize = useCallback(
+    (next: JumboEmojiSize) => {
+      setJumboEmojiSizeAtom(next);
+      commit({ theme, fontSize, density, reducedMotion, messageLayout, jumboEmojiSize: next });
+    },
+    [commit, density, fontSize, messageLayout, reducedMotion, setJumboEmojiSizeAtom, theme],
   );
 
   return {
@@ -94,10 +106,12 @@ export function useAppearance() {
     density,
     reducedMotion,
     messageLayout,
+    jumboEmojiSize,
     setTheme,
     setFontSize,
     setDensity,
     setReducedMotion,
     setMessageLayout,
+    setJumboEmojiSize,
   };
 }

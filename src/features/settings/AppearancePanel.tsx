@@ -10,11 +10,13 @@ import { cn } from "@/lib/utils";
 import type {
   Density,
   FontSize,
+  JumboEmojiSize,
   MessageLayout,
   ReducedMotion,
   Theme,
 } from "@/features/appearance/atoms";
 import { useAppearance } from "@/features/appearance/useAppearance";
+import { useFlag } from "@/featureFlags";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const THEME_LABELS: Record<Theme, string> = {
@@ -49,6 +51,13 @@ const MESSAGE_LAYOUT_LABELS: Record<MessageLayout, string> = {
 };
 
 const MESSAGE_LAYOUT_ORDER: MessageLayout[] = ["bubble", "discord", "irc"];
+
+const JUMBO_EMOJI_LABELS: Record<JumboEmojiSize, string> = {
+  off: "Off",
+  sm: "Small",
+  md: "Medium",
+  lg: "Large",
+};
 
 /** Tiny CSS-drawn preview of what each layout looks like — two stacked
  * lines standing in for two messages, shaped per mode (rounded pill for
@@ -155,17 +164,20 @@ function PickerControl<T extends string>({
  * `<html>` immediately, no reload) and persists across restart.
  */
 export function AppearancePanel() {
+  const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const {
     theme,
     fontSize,
     density,
     reducedMotion,
     messageLayout,
+    jumboEmojiSize,
     setTheme,
     setFontSize,
     setDensity,
     setReducedMotion,
     setMessageLayout,
+    setJumboEmojiSize,
   } = useAppearance();
 
   return (
@@ -220,6 +232,19 @@ export function AppearancePanel() {
             </p>
           )}
         </SettingTile>
+        {richMessageRenderingEnabled && (
+          <SettingTile
+            title="Emoji-only messages"
+            description="Scale up messages containing only emoji."
+            control={
+              <PickerControl
+                value={jumboEmojiSize}
+                labels={JUMBO_EMOJI_LABELS}
+                onChange={setJumboEmojiSize}
+              />
+            }
+          />
+        )}
       </SettingsCard>
     </div>
   );

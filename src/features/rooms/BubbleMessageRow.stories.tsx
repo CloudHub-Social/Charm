@@ -72,3 +72,16 @@ export const Pending: Story = {
 export const Error: Story = {
   args: { own: true, isError: true },
 };
+
+export const RichContent: Story = {
+  args: {
+    message: makeMessageSummary({
+      event_id: "$rich",
+      sender: "@bob:localhost",
+      sender_display_name: "Bob",
+      body: "Spoiler, code, table, Alice, math and emoji",
+      formatted_body:
+        '<p><span data-mx-spoiler="Movie ending">The butler did it</span></p><pre><code class="language-js">const charm = true;</code></pre><table><tr><th>Feature</th><th>Status</th></tr><tr><td>Rich HTML</td><td>Ready</td></tr></table><p><a data-mx-pill href="https://matrix.to/#/%40alice%3Alocalhost">Alice</a> @room <span data-mx-maths="x^2">x squared</span></p>',
+    }),
+  },
+};
