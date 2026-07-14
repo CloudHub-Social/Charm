@@ -142,11 +142,22 @@ function mentionsSpec(item, spec) {
 	}
 
 	const titleReference = new RegExp(`\\bspec(?:ification)?\\s+0*${number}\\b`, 'i');
+	const dayTwoTitleReference = new RegExp(
+		`day[-\\s]?2\\s+spec(?:ification)?\\s+0*${number}\\b`,
+		'i',
+	);
 	const explicitBodyReference = new RegExp(
 		`day[-\\s]?1\\s+spec(?:ification)?\\s+0*${number}\\b`,
 		'i',
 	);
-	return titleReference.test(title) || explicitBodyReference.test(body);
+	return (
+		(titleReference.test(title) && !dayTwoTitleReference.test(title)) ||
+		explicitBodyReference.test(body)
+	);
+}
+
+function specLabel(specId) {
+	return specId.replace(/^day-([12])-(\d{2})$/, 'Day-$1 Spec $2');
 }
 
 function publicPullRequest(pullRequest) {
@@ -268,7 +279,7 @@ const attention = [
 		number: pullRequest.number,
 		title: pullRequest.title,
 		url: pullRequest.url,
-		detail: `${pullRequest.specId.replace('-', ' ')} · ${pullRequest.draft ? 'draft' : 'ready for review'}`,
+		detail: `${specLabel(pullRequest.specId)} · ${pullRequest.draft ? 'draft' : 'ready for review'}`,
 	})),
 	...openIssues.slice(0, 4).map((issue) => ({
 		type: 'issue',
