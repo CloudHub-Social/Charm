@@ -865,7 +865,7 @@ async fn build_client_for_restore(
                         .to_string(),
                 );
             };
-            let dir = crate::crypto_store::create_store_dir(store_key)?;
+            let dir = crate::crypto_store::store_dir_path(store_key)?;
             let binding = crate::crypto_backup::CryptoSnapshotBinding::new(
                 &entry.token,
                 &entry.session,

@@ -105,6 +105,33 @@ pub struct CryptoBackupStore {
     store: Arc<dyn ObjectStore>,
 }
 
+struct TempDirGuard {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl TempDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 impl CryptoBackupStore {
     pub async fn from_env() -> Result<Option<Self>, String> {
         let bucket = match std::env::var(BUCKET_ENV) {
@@ -151,21 +178,18 @@ impl CryptoBackupStore {
             .as_nanos()
             .try_into()
             .map_err(|_| "snapshot generation timestamp overflowed u64".to_string())?;
-        let snapshot_dir = create_snapshot_temp_dir()?;
+        let snapshot_dir = TempDirGuard::new(create_snapshot_temp_dir()?);
         let source = source_dir.to_path_buf();
-        let destination = snapshot_dir.clone();
+        let destination = snapshot_dir.path().to_path_buf();
         let backup_result =
             tokio::task::spawn_blocking(move || backup_sqlite_databases(&source, &destination))
                 .await
                 .map_err(|error| error.to_string())?;
-        if let Err(error) = backup_result {
-            let _ = std::fs::remove_dir_all(&snapshot_dir);
-            return Err(error);
-        }
+        backup_result?;
 
         let mut files = Vec::new();
         for name in DATABASE_FILES {
-            let path = snapshot_dir.join(name);
+            let path = snapshot_dir.path().join(name);
             if !path.is_file() {
                 continue;
             }
@@ -190,7 +214,6 @@ impl CryptoBackupStore {
                 size: bytes.len() as u64,
             });
         }
-        let _ = std::fs::remove_dir_all(&snapshot_dir);
         if files.is_empty() {
             return Err("crypto store contained no recognized SQLite databases".to_string());
         }
@@ -243,15 +266,24 @@ impl CryptoBackupStore {
             return Ok(false);
         }
 
+        if destination_dir.exists() {
+            return Err("refusing to restore over an existing crypto store directory".to_string());
+        }
+
         let mut last_error = None;
         for generation in generations {
+            let mut staging_dir = TempDirGuard::new(create_restore_temp_dir(destination_dir)?);
             match self
-                .restore_generation(binding, destination_dir, generation)
+                .restore_generation(binding, staging_dir.path(), generation)
                 .await
             {
-                Ok(()) => return Ok(true),
+                Ok(()) => {
+                    std::fs::rename(staging_dir.path(), destination_dir)
+                        .map_err(|error| error.to_string())?;
+                    staging_dir.disarm();
+                    return Ok(true);
+                }
                 Err(error) => {
-                    let _ = std::fs::remove_dir_all(destination_dir);
                     last_error = Some(error);
                 }
             }
@@ -513,6 +545,31 @@ fn create_snapshot_temp_dir() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+fn create_restore_temp_dir(destination_dir: &Path) -> Result<PathBuf, String> {
+    let parent = destination_dir
+        .parent()
+        .ok_or_else(|| "crypto restore destination has no parent directory".to_string())?;
+    let name = destination_dir
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "crypto restore destination has an invalid directory name".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    for _ in 0..10 {
+        let suffix: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(24)
+            .map(char::from)
+            .collect();
+        let path = parent.join(format!(".{name}.restore-{suffix}"));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("failed to allocate a unique crypto restore staging directory".to_string())
+}
+
 fn manifest_object_path(store_key: &str, generation: u64) -> ObjectPath {
     ObjectPath::from(format!("crypto/{store_key}/{generation}/manifest.json"))
 }
@@ -581,6 +638,20 @@ mod tests {
         let path = std::env::temp_dir().join(format!("charm-crypto-backup-{name}-{suffix}"));
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn temp_directory_guard_cleans_up_unless_disarmed() {
+        let removed = scratch_dir("guard-removed");
+        drop(TempDirGuard::new(removed.clone()));
+        assert!(!removed.exists());
+
+        let retained = scratch_dir("guard-retained");
+        let mut guard = TempDirGuard::new(retained.clone());
+        guard.disarm();
+        drop(guard);
+        assert!(retained.exists());
+        std::fs::remove_dir_all(retained).unwrap();
     }
 
     #[test]
