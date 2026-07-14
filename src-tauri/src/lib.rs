@@ -1008,6 +1008,7 @@ pub fn run() {
             matrix::room_admin::add_room_alias,
             matrix::room_admin::remove_room_alias,
             matrix::room_admin::set_canonical_alias,
+            matrix::room_admin::remove_alt_alias,
             matrix::room_admin::invite_member,
             matrix::room_admin::kick_member,
             matrix::room_admin::ban_member,

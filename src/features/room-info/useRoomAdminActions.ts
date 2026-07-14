@@ -5,6 +5,7 @@ import {
   enableRoomEncryption,
   inviteMember,
   kickMember,
+  removeAltAlias,
   removeRoomAlias,
   removeRoomAvatar,
   setCanonicalAlias,
@@ -84,6 +85,7 @@ export function useRoomAdminActions(roomId: string) {
     setCanonicalAlias: useRoomAdminMutation(roomId, (alias: string | null) =>
       setCanonicalAlias(roomId, alias),
     ),
+    removeAltAlias: useRoomAdminMutation(roomId, (alias: string) => removeAltAlias(roomId, alias)),
   };
 }
 

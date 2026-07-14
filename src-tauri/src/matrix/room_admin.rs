@@ -813,6 +813,43 @@ pub async fn set_canonical_alias_impl(
     Ok(())
 }
 
+/// Removes `alias` from `m.room.canonical_alias`'s `alt_aliases` list,
+/// leaving the `alias` (canonical) field untouched. Used by the frontend
+/// when an alt alias is unpublished from the room directory — unlike
+/// [`set_canonical_alias`], this never touches the canonical field, so it's
+/// safe to call even when `alias` isn't (and never was) canonical.
+#[tauri::command]
+pub async fn remove_alt_alias(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    alias: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    remove_alt_alias_impl(&client, &room_id, &alias).await
+}
+
+/// Core logic behind [`remove_alt_alias`].
+pub async fn remove_alt_alias_impl(
+    client: &Client,
+    room_id: &str,
+    alias: &str,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_alias = RoomAliasId::parse(alias).map_err(|e| e.to_string())?;
+
+    let mut content = RoomCanonicalAliasEventContent::new();
+    content.alias = room.canonical_alias();
+    content.alt_aliases = room.alt_aliases();
+    content
+        .alt_aliases
+        .retain(|existing| existing != &parsed_alias);
+
+    room.send_state_event(content)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -1179,6 +1216,78 @@ mod tests {
 
         let result =
             set_canonical_alias_impl(&client, room_id.as_str(), Some("not-a-valid-alias")).await;
+        assert!(
+            result.is_err(),
+            "expected a malformed alias to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    /// `remove_alt_alias_impl` must strip only the given alias out of
+    /// `alt_aliases`, leaving both the canonical `alias` field and any other
+    /// `alt_aliases` entries untouched — this is the fix for the frontend's
+    /// "removed alias left stale in alt_aliases" bug found by review (see
+    /// `RoomAliasManagement.tsx`'s `handleRemoveAlias`).
+    #[tokio::test]
+    async fn remove_alt_alias_impl_strips_only_the_given_alias() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let factory = EventFactory::new().room(room_id).sender(&ALICE);
+        let canonical = matrix_sdk::ruma::owned_room_alias_id!("#canonical:example.org");
+        let alt_to_remove = matrix_sdk::ruma::owned_room_alias_id!("#stale:example.org");
+        let alt_to_keep = matrix_sdk::ruma::owned_room_alias_id!("#keep:example.org");
+        let room_builder =
+            JoinedRoomBuilder::new(room_id).add_state_event(factory.canonical_alias(
+                Some(canonical.clone()),
+                vec![alt_to_remove.clone(), alt_to_keep.clone()],
+            ));
+        server.sync_room(&client, room_builder).await;
+
+        // Assert the exact request body sent to the homeserver, not just
+        // that *some* canonical_alias PUT succeeded — this is what actually
+        // proves `alt_to_remove` is gone while `canonical` and
+        // `alt_to_keep` survive untouched.
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.canonical_alias/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "alias": canonical,
+                "alt_aliases": [alt_to_keep],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$alt_alias_removed",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = remove_alt_alias_impl(&client, room_id.as_str(), alt_to_remove.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected the alt alias to be removed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_alt_alias_impl_rejects_a_malformed_alias() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let result = remove_alt_alias_impl(&client, room_id.as_str(), "not-a-valid-alias").await;
         assert!(
             result.is_err(),
             "expected a malformed alias to be rejected before any network call, got {result:?}"

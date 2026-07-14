@@ -9,6 +9,7 @@ const checkRoomAliasAvailable = vi.fn().mockResolvedValue(true);
 const addRoomAlias = vi.fn().mockResolvedValue(undefined);
 const removeRoomAlias = vi.fn().mockResolvedValue(undefined);
 const setCanonicalAlias = vi.fn().mockResolvedValue(undefined);
+const removeAltAlias = vi.fn().mockResolvedValue(undefined);
 const getProfile = vi.fn().mockResolvedValue({
   user_id: "@me:example.org",
   display_name: null,
@@ -21,6 +22,7 @@ vi.mock("@/lib/matrix", () => ({
   addRoomAlias: (...args: unknown[]) => addRoomAlias(...args),
   removeRoomAlias: (...args: unknown[]) => removeRoomAlias(...args),
   setCanonicalAlias: (...args: unknown[]) => setCanonicalAlias(...args),
+  removeAltAlias: (...args: unknown[]) => removeAltAlias(...args),
   getProfile: (...args: unknown[]) => getProfile(...args),
 }));
 
@@ -132,6 +134,38 @@ describe("RoomAliasManagement", () => {
     await waitFor(() => {
       expect(removeRoomAlias).toHaveBeenCalledWith("#general:example.org");
     });
+  });
+
+  it("clears a removed alias from alt_aliases when it wasn't canonical", async () => {
+    getRoomLocalAliases.mockResolvedValue(["#alt:example.org"]);
+    const details = makeRoomDetails({
+      canonical_alias: "#general:example.org",
+      alt_aliases: ["#alt:example.org"],
+    });
+    renderWithProviders(<RoomAliasManagement details={details} />);
+
+    await screen.findByText("#alt:example.org");
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => {
+      expect(removeRoomAlias).toHaveBeenCalledWith("#alt:example.org");
+    });
+    await waitFor(() => {
+      expect(removeAltAlias).toHaveBeenCalledWith(details.room_id, "#alt:example.org");
+    });
+    expect(setCanonicalAlias).not.toHaveBeenCalled();
+  });
+
+  it("offers alt_aliases as canonical-alias dropdown options", async () => {
+    getRoomLocalAliases.mockResolvedValue([]);
+    const details = makeRoomDetails({ alt_aliases: ["#alt-only:example.org"] });
+    renderWithProviders(<RoomAliasManagement details={details} />);
+
+    await screen.findByText("No published addresses yet.");
+    openDropdownMenu("None");
+    expect(
+      await screen.findByText("#alt-only:example.org", { selector: "[role=menuitemradio]" }),
+    ).toBeInTheDocument();
   });
 
   it("sets the canonical alias via the dropdown", async () => {

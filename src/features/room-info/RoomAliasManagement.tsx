@@ -113,15 +113,24 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
             onError: (error) =>
               setAddError(`Alias removed, but couldn't clear it as canonical: ${error.message}`),
           });
+        } else if (details.alt_aliases.includes(alias)) {
+          actions.removeAltAlias.mutate(alias, {
+            onError: (error) =>
+              setAddError(
+                `Alias removed, but couldn't clear it from alt aliases: ${error.message}`,
+              ),
+          });
         }
       },
       onError: (error) => setAddError(error.message),
     });
   }
 
-  const canonicalOptions = [details.canonical_alias, ...(aliases ?? [])].filter(
-    (alias, index, all): alias is string => alias !== null && all.indexOf(alias) === index,
-  );
+  const canonicalOptions = [
+    details.canonical_alias,
+    ...(aliases ?? []),
+    ...details.alt_aliases,
+  ].filter((alias, index, all): alias is string => alias !== null && all.indexOf(alias) === index);
 
   return (
     <div className="flex flex-col gap-4">

@@ -810,6 +810,11 @@ export function setCanonicalAlias(roomId: string, alias: string | null): Promise
   return invoke("set_canonical_alias", { roomId, alias });
 }
 
+/** Removes `alias` from `m.room.canonical_alias`'s `alt_aliases` list without touching the canonical `alias` field. */
+export function removeAltAlias(roomId: string, alias: string): Promise<void> {
+  return invoke("remove_alt_alias", { roomId, alias });
+}
+
 /** Fires for a joined room whenever a batch of state events (settings, power levels, membership) syncs — see `mod.rs`'s `emit_room_updates`. */
 export function onRoomDetailsUpdate(callback: (details: RoomDetails) => void): Promise<UnlistenFn> {
   return listen<RoomDetails>("room_details:update", (e) => callback(e.payload));
