@@ -71,6 +71,8 @@ export function RoomsScreen({
   const { openSettings } = useSettingsNavigation();
   const roomInvitesEnabled = useFlag("room_invites");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const roomsRef = useRef(rooms);
+  roomsRef.current = rooms;
   const [roomsLoaded, setRoomsLoaded] = useState(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
@@ -96,6 +98,25 @@ export function RoomsScreen({
     autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
+  }
+
+  function navigateToRoomPill(roomIdentifier: string) {
+    if (roomIdentifier.startsWith("!")) {
+      const joinedRoom = roomsRef.current.find(
+        (candidate) => candidate.room_id === roomIdentifier && candidate.membership === "join",
+      );
+      if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+      return;
+    }
+    if (!roomIdentifier.startsWith("#")) return;
+    resolveRoomAlias(roomIdentifier)
+      .then((roomId) => {
+        const joinedRoom = roomsRef.current.find(
+          (candidate) => candidate.room_id === roomId && candidate.membership === "join",
+        );
+        if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+      })
+      .catch(logAndIgnore);
   }
 
   function selectHome() {
@@ -167,17 +188,23 @@ export function RoomsScreen({
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
 
   useEffect(() => {
+    let cancelled = false;
     listRooms()
       .then((nextRooms) => {
+        if (cancelled) return;
         setRooms(nextRooms);
-        setRoomsLoaded(true);
       })
-      .catch(logAndIgnore);
+      .catch(logAndIgnore)
+      .finally(() => {
+        if (!cancelled) setRoomsLoaded(true);
+      });
     const unlisten = onRoomListUpdate((nextRooms) => {
+      if (cancelled) return;
       setRooms(nextRooms);
       setRoomsLoaded(true);
     });
     return () => {
+      cancelled = true;
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
   }, []);
@@ -399,6 +426,7 @@ export function RoomsScreen({
         roomList={
           <RoomList
             rooms={roomInvitesEnabled ? rooms : joinedRooms}
+            loading={!roomsLoaded}
             activeRoomId={activeRoomId}
             onSelectRoom={selectRoom}
             onSelectSpace={selectSpace}
@@ -412,7 +440,13 @@ export function RoomsScreen({
             onDeclineInvite={handleDeclineInvite}
           />
         }
-        content={<ChatShell room={activeRoom} currentUserId={currentUserId} />}
+        content={
+          <ChatShell
+            room={activeRoom}
+            currentUserId={currentUserId}
+            onNavigateToRoom={navigateToRoomPill}
+          />
+        }
         rightPanel={
           activeRoom && membersDrawerOpen ? (
             <MembersDrawer

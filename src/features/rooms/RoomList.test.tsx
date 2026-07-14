@@ -98,6 +98,12 @@ afterEach(() => {
 });
 
 describe("RoomList", () => {
+  it("shows room skeletons while the initial room list is loading", () => {
+    renderRoomList(<RoomList {...roomListProps({ loading: true })} />);
+    expect(screen.getByRole("status", { name: "Loading rooms" })).toBeInTheDocument();
+    expect(screen.queryByText("No rooms yet")).not.toBeInTheDocument();
+  });
+
   it("shows the empty state when there are no rooms", () => {
     renderRoomList(<RoomList {...roomListProps()} />);
     expect(screen.getByText("No rooms yet")).toBeInTheDocument();

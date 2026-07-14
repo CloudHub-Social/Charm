@@ -38,6 +38,7 @@ import type { RoomListMode } from "./SpaceRail";
 
 interface RoomListProps {
   rooms: RoomSummary[];
+  loading?: boolean;
   activeRoomId: string | null;
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
@@ -89,6 +90,7 @@ function reorderWithin(sectionRooms: RoomSummary[], roomId: string, targetIndex:
 
 export function RoomList({
   rooms,
+  loading = false,
   activeRoomId,
   onSelectRoom,
   onSelectSpace,
@@ -466,7 +468,20 @@ export function RoomList({
           )}
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2">
-          {mode === "space" && !selectedSpace ? (
+          {loading ? (
+            <output
+              aria-label="Loading rooms"
+              className="flex animate-pulse flex-col gap-2 px-1 py-2"
+            >
+              {[0, 1, 2, 3, 4, 5].map((row) => (
+                <span key={row} className="flex min-h-11 items-center gap-2 rounded-md px-2">
+                  <span className="size-8 shrink-0 rounded-full bg-muted" />
+                  <span className={cn("h-3 rounded bg-muted", row % 3 === 0 ? "w-2/3" : "w-1/2")} />
+                </span>
+              ))}
+              <span className="sr-only">Loading rooms…</span>
+            </output>
+          ) : mode === "space" && !selectedSpace ? (
             // Space mode with nothing selected has nothing to search *in* —
             // this guard wins over an active query rather than showing search
             // results (or "No matching rooms") for an undefined scope.

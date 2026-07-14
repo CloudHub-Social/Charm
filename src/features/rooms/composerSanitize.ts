@@ -62,6 +62,8 @@ const ALLOWED_ATTR = [
   "data-mx-bg-color",
   "data-mx-spoiler",
   "data-mx-pill",
+  "data-mx-maths",
+  "class",
 ];
 
 // `<img>` is otherwise-allowed spec HTML, but per the Matrix spec its `src`
@@ -79,6 +81,14 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
       data.keepAttr = false;
     }
   }
+  if (data.attrName === "class") {
+    const languageToken =
+      node.nodeName.toLowerCase() === "code"
+        ? data.attrValue.split(/\s+/).find((token) => /^language-[a-z0-9_-]+$/i.test(token))
+        : undefined;
+    if (languageToken) data.attrValue = languageToken;
+    else data.keepAttr = false;
+  }
 });
 
 /**
@@ -88,10 +98,12 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
  * including `<script>`, event-handler attributes (`onerror`, etc.), and
  * `javascript:`/`data:` URLs in `href`/`src` (DOMPurify's default URL
  * sanitization already blocks these; the allowlist above is the extra,
- * Matrix-specific restriction). `class` is deliberately not allowlisted:
- * the Matrix formatted-body subset has no notion of arbitrary CSS classes,
- * and allowing it would let a remote `formatted_body` apply this app's own
- * Tailwind utilities (e.g. `fixed inset-0 z-50`) inside the bubble.
+ * Matrix-specific restriction). `class` survives only for a single
+ * `language-*` token on `<code>` so the syntax highlighter can select a
+ * grammar; the hook above strips it everywhere else, preventing remote HTML
+ * from applying the app's own Tailwind utilities inside a message. When a
+ * code element supplies multiple classes, only its first safe `language-*`
+ * token survives.
  */
 export function sanitizeMatrixHtml(dirtyHtml: string): string {
   return DOMPurify.sanitize(dirtyHtml, {

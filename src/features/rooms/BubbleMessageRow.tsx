@@ -6,13 +6,8 @@ import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
-import { sanitizeMatrixHtml } from "./composerSanitize";
-import {
-  MAX_RECEIPT_AVATARS,
-  formatTime,
-  handleMessageLinkClick,
-  type MessageRowLayoutProps,
-} from "./messageRowShared";
+import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
+import { MAX_RECEIPT_AVATARS, formatTime, type MessageRowLayoutProps } from "./messageRowShared";
 
 /** Default layout (Charm 2.0 Spec 27): rounded, colored bubble, right-aligned
  * for the current user, avatar shown only on the first message of a
@@ -21,6 +16,7 @@ import {
 export function BubbleMessageRow({
   message,
   roomId,
+  currentUserId,
   own,
   sameSenderAsPrev,
   sameSenderAsNext,
@@ -36,6 +32,8 @@ export function BubbleMessageRow({
   onDelete,
   onCopy,
   onJumpToMessage,
+  onUserPillClick,
+  onRoomPillClick,
   isPending,
   isError,
   disableRelationActions,
@@ -101,37 +99,21 @@ export function BubbleMessageRow({
               eventId={message.event_id}
               body={message.body}
             />
-          ) : message.formatted_body ? (
-            // Re-sanitized here rather than trusted from the sender —
-            // `formatted_body` crosses IPC as untrusted content from
-            // whoever sent the event (any client, not just this
-            // one), so the Matrix-allowlist sanitizer runs on both
-            // the send path (`serializeComposerContent`) and this
-            // render path independently.
-            //
-            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the div itself isn't interactive
-            <div
-              className={cn(
-                "w-fit rounded-md px-3 py-[var(--message-row-padding-y)] text-[15px] [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
-                own ? "bg-primary-solid text-primary-foreground" : "bg-secondary text-foreground",
-                isError && "border border-destructive",
-              )}
-              // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
-              dangerouslySetInnerHTML={{
-                __html: sanitizeMatrixHtml(message.formatted_body),
-              }}
-              onClick={handleMessageLinkClick}
-            />
+          ) : isUndecrypted ? (
+            <UndecryptedMessage />
           ) : (
-            <div
+            <RichMessageContent
+              body={message.body}
+              formattedBody={message.formatted_body}
+              currentUserId={currentUserId ?? ""}
+              onUserPillClick={onUserPillClick}
+              onRoomPillClick={onRoomPillClick}
               className={cn(
-                "w-fit rounded-md px-3 py-[var(--message-row-padding-y)] text-[15px]",
+                "w-fit max-w-full rounded-md px-3 py-[var(--message-row-padding-y)] text-[15px]",
                 own ? "bg-primary-solid text-primary-foreground" : "bg-secondary text-foreground",
                 isError && "border border-destructive",
               )}
-            >
-              {message.body}
-            </div>
+            />
           )}
           {!message.redacted && (
             <MessageActions

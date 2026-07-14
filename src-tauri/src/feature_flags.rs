@@ -85,6 +85,9 @@ define_feature_flag_keys!(
         /// Spec 56 room-invite inbox, actions, deep-link handling, and native
         /// invite notifications.
         RoomInvites,
+        /// Spec 58 rich-message enhancements: linkification, syntax highlighting,
+        /// tables, Matrix pills, room mentions, math, and jumbo emoji.
+        RichMessageRendering,
     }
 );
 
@@ -95,6 +98,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => false,
             FeatureFlagKey::RoomInvites => false,
+            FeatureFlagKey::RichMessageRendering => false,
         }
     }
 
@@ -108,6 +112,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomInvites => {
                 "Pending room invitations, accept/decline actions, deep-link handling, and invite notifications."
             }
+            FeatureFlagKey::RichMessageRendering => {
+                "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji."
+            }
         }
     }
 
@@ -117,6 +124,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => "Spec 35 (feature-flag plumbing)",
             FeatureFlagKey::RoomInvites => "Spec 56 (room invites surface)",
+            FeatureFlagKey::RichMessageRendering => "Spec 58 (rich message content rendering)",
         }
     }
 
@@ -126,6 +134,7 @@ impl FeatureFlagKey {
         match self {
             FeatureFlagKey::Canary => "canary",
             FeatureFlagKey::RoomInvites => "room_invites",
+            FeatureFlagKey::RichMessageRendering => "rich_message_rendering",
         }
     }
 }

@@ -73,6 +73,20 @@ describe("useAppearance", () => {
     expect(document.documentElement.dataset.reducedMotion).toBe("on");
   });
 
+  it("setJumboEmojiSize updates and persists the emoji-only message size", async () => {
+    const { result } = renderHook(() => useAppearance(), { wrapper });
+    act(() => {
+      result.current.setJumboEmojiSize("off");
+    });
+    expect(result.current.jumboEmojiSize).toBe("off");
+    await vi.waitFor(() =>
+      expect(storeSet).toHaveBeenCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ jumboEmojiSize: "off" }) }),
+      ),
+    );
+  });
+
   it("write-throughs to the localStorage mirror", () => {
     const { result } = renderHook(() => useAppearance(), { wrapper });
     act(() => {

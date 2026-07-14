@@ -3,8 +3,8 @@ import { MediaMessage } from "./media/MediaMessage";
 import { nickColor } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
-import { sanitizeMatrixHtml } from "./composerSanitize";
-import { formatTime, handleMessageLinkClick, type MessageRowLayoutProps } from "./messageRowShared";
+import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
+import { formatTime, type MessageRowLayoutProps } from "./messageRowShared";
 
 /** Single-line-per-message, `[HH:MM] <sender> body` layout (Charm 2.0 Spec
  * 27) — closest to a terminal chat client. Deliberately ignores
@@ -17,6 +17,7 @@ import { formatTime, handleMessageLinkClick, type MessageRowLayoutProps } from "
 export function IrcMessageRow({
   message,
   roomId,
+  currentUserId,
   own,
   canRedact,
   isNew,
@@ -28,6 +29,8 @@ export function IrcMessageRow({
   onDelete,
   onCopy,
   onJumpToMessage,
+  onUserPillClick,
+  onRoomPillClick,
   isPending,
   isError,
   disableRelationActions,
@@ -58,7 +61,7 @@ export function IrcMessageRow({
       >
         &lt;{nick}&gt;
       </span>
-      <span className="min-w-0 flex-1 break-words text-[13px] text-foreground">
+      <div className="min-w-0 flex-1 break-words text-[13px] text-foreground">
         {message.redacted ? (
           <span className="italic text-muted-foreground">* message deleted</span>
         ) : (
@@ -83,38 +86,27 @@ export function IrcMessageRow({
                 eventId={message.event_id}
                 body={message.body}
               />
-            ) : message.formatted_body ? (
-              // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the span itself isn't interactive
-              <span
+            ) : isUndecrypted ? (
+              <UndecryptedMessage />
+            ) : (
+              <RichMessageContent
+                body={message.body}
+                formattedBody={message.formatted_body}
+                currentUserId={currentUserId ?? ""}
+                onUserPillClick={onUserPillClick}
+                onRoomPillClick={onRoomPillClick}
                 className={cn(
-                  // `sanitizeMatrixHtml`'s full allowlist (composerSanitize.ts)
-                  // includes block-level tags — p, blockquote, headings, lists,
-                  // div, table and its children, details/summary, hr, pre — that
-                  // a real Matrix client can legitimately send as formatted_body.
-                  // Forcing every descendant inline (rather than naming each
-                  // block tag) stays correct as the sanitizer's allowlist
-                  // changes, and keeps the row on IRC mode's single line
-                  // instead of taking a block-level line break.
-                  "[&_*]:inline [&_a]:underline [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1",
+                  "inline text-[13px]",
                   isError && "rounded border border-destructive px-1",
                 )}
-                // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
-                dangerouslySetInnerHTML={{
-                  __html: sanitizeMatrixHtml(message.formatted_body),
-                }}
-                onClick={handleMessageLinkClick}
               />
-            ) : (
-              <span className={cn(isError && "rounded border border-destructive px-1")}>
-                {message.body}
-              </span>
             )}
             {isPending && <span className="ml-1 text-muted-foreground">(sending…)</span>}
             {isError && <span className="ml-1 text-destructive">(failed to send)</span>}
             {message.edited && <span className="ml-1 text-muted-foreground">(edited)</span>}
           </>
         )}
-      </span>
+      </div>
       {!message.redacted && (
         <>
           <ReactionBar

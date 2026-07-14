@@ -3,6 +3,8 @@ import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearancePanel } from "./AppearancePanel";
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 const storeSet = vi.fn();
 const load = vi.fn();
 
@@ -36,7 +38,7 @@ beforeEach(() => {
 });
 
 describe("AppearancePanel", () => {
-  it("renders the heading and all five appearance pickers", () => {
+  it("renders the heading and all six appearance pickers", () => {
     renderPanel();
     expect(screen.getByRole("heading", { name: "Appearance" })).toBeInTheDocument();
     expect(screen.getByText("Theme")).toBeInTheDocument();
@@ -44,6 +46,7 @@ describe("AppearancePanel", () => {
     expect(screen.getByText("Message density")).toBeInTheDocument();
     expect(screen.getByText("Motion")).toBeInTheDocument();
     expect(screen.getByText("Message layout")).toBeInTheDocument();
+    expect(screen.getByText("Emoji-only messages")).toBeInTheDocument();
   });
 
   it("defaults to Dark theme, Medium font, Cozy density, Match system motion", () => {
