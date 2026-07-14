@@ -12,6 +12,7 @@ import App from "./App";
 import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
 import { isTauri } from "./lib/platform";
+import { initializeFeatureFlags } from "./featureFlags";
 import { checkUncleanPreviousSession } from "./observability/crashRecovery";
 import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
@@ -59,6 +60,12 @@ function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean })
 // never be able to leave the app permanently blank. Run alongside the
 // crash-recovery check rather than after it, so neither adds to the other's
 // latency.
+// Load persisted feature-flag overrides in the background — deliberately not
+// awaited, so a slow/hung store read can't delay first paint. Components read
+// catalog defaults until it resolves, then re-render (the no-flag-flicker
+// contract). Overrides are dev/Labs-only today, so there's no user-visible flip.
+void initializeFeatureFlags();
+
 const [settings, uncleanPreviousSession] = await Promise.all([
   bootstrapSentryWithTimeout(),
   checkUncleanPreviousSession(),

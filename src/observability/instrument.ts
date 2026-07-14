@@ -107,6 +107,7 @@ type SentryIntegration =
   | ReturnType<typeof Sentry.replayCanvasIntegration>
   | ReturnType<typeof Sentry.browserProfilingIntegration>
   | ReturnType<typeof Sentry.consoleLoggingIntegration>
+  | ReturnType<typeof Sentry.featureFlagsIntegration>
   | ReturnType<typeof Sentry.feedbackIntegration>;
 
 function environment(): string {
@@ -152,7 +153,14 @@ function tracePropagationTargets(): (string | RegExp)[] {
 }
 
 function integrations(settings: ObservabilitySettings): SentryIntegration[] {
-  const enabledIntegrations: SentryIntegration[] = [Sentry.browserTracingIntegration()];
+  const enabledIntegrations: SentryIntegration[] = [
+    Sentry.browserTracingIntegration(),
+    // Buffers feature-flag evaluations (`reportFlagEvaluation` in
+    // `src/featureFlags/sentry.ts`) and attaches the set to error/transaction
+    // events, so an issue shows which flags were active. Captures nothing until
+    // a flag is evaluated, so it's safe to always include when Sentry is on.
+    Sentry.featureFlagsIntegration(),
+  ];
   if (settings.replayEnabled) {
     enabledIntegrations.push(
       Sentry.replayIntegration({
