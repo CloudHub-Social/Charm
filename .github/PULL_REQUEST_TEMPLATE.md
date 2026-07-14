@@ -19,7 +19,7 @@ Fixes #
 - [ ] My code follows the style guidelines of this project
 - [ ] I have performed a self-review of my own code
 - [ ] I have commented my code, particularly in hard-to-understand areas
-- [ ] I have made corresponding changes to the documentation
+- [ ] I updated the linked repository spec and documentation when behavior, scope, acceptance criteria, dependencies, or implementation status changed
 - [ ] My changes generate no new warnings
 - [ ] `pnpm lint`, `pnpm fmt:check`, `pnpm typecheck`, `pnpm test:coverage`, `pnpm knip`, and `pnpm build` all pass locally
 

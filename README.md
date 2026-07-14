@@ -3,7 +3,8 @@
 Charm 2.0 — a ground-up rewrite of the Charm Matrix client (matrix-rust-sdk over typed
 Tauri IPC, new design language). This is the active `charm` project going forward.
 
-> Charm 1.0 (the matrix-js-sdk client) now lives at `~/git/Charm-1.0`
+> Charm 1.0 (the matrix-js-sdk client) lives in
+> [`CloudHub-Social/Charm-1.0`](https://github.com/CloudHub-Social/Charm-1.0)
 > (GitHub: `CloudHub-Social/Charm-1.0`).
 
 Charm 2.0 is under active pre-release development — expect breaking changes and
@@ -253,5 +254,6 @@ add `endpoints` once a release/update server exists.
 
 ## Planning / source of truth
 
-Scope, architecture, and design decisions live in the vault:
-`Knowledge-Platform/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0.md`.
+Scope, architecture, design decisions, and feature specs live in
+[`docs-site/src/content/docs/`](docs-site/src/content/docs/) and publish to
+[charm-docs.cloudhub.social](https://charm-docs.cloudhub.social/).

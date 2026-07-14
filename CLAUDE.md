@@ -2,10 +2,14 @@
 
 Charm 2.0 is a ground-up rewrite of the Charm Matrix client (matrix-rust-sdk over
 typed Tauri IPC, new design language). Scope, architecture, and design decisions
-live in the vault planning doc:
-`Knowledge-Platform/10-19 Personal Life/15 Personal projects/15.12 Charm 2.0.md` —
-treat it as the source of truth until it's explicitly revised there. Charm 1.0 (the
-matrix-js-sdk client) lives at `~/git/Charm-1.0` (GitHub `CloudHub-Social/Charm-1.0`).
+live under `docs-site/src/content/docs/`; treat the product docs and feature specs
+there as the reviewed source of truth. Personal notes may link to those pages but do
+not supersede them. Charm 1.0 (the matrix-js-sdk client) lives in the separate GitHub
+repository `CloudHub-Social/Charm-1.0`.
+
+When implementation changes documented behavior, scope, acceptance criteria,
+dependencies, or status, update the relevant repository spec in the same PR. Run
+`pnpm --dir docs-site check:content` and `pnpm --dir docs-site build` for docs changes.
 
 ## Identity — keep it clean
 
@@ -253,8 +257,8 @@ macOS certificate above:
   paid-program-only capabilities — including end-to-end APNs push testing,
   which needs a paid-program push key/certificate. (Current per-spec testing
   status under this signing tier — e.g. Spec 11 push, Spec 10 desktop shell —
-  lives in the Charm 2.0 vault spec notes, not here; this section is build/
-  install mechanics only.)
+  lives in `docs-site/src/content/docs/specs/`; this section is build/install
+  mechanics only.)
 - The generated iOS entitlements currently include `aps-environment` and
   `com.apple.security.application-groups` for Spec 11. If Xcode refuses to sign
   a Personal Team build because those capabilities are unavailable, remove them
@@ -330,7 +334,7 @@ account-bound signing material:
 
 What's actually testable on this signing tier per current spec — day-one basics
 (launch, login, sync, local storage) vs. specific gaps like Spec 11 push — is
-tracked in the Charm 2.0 vault (`15.12 Charm 2.0/specs/`), not here.
+tracked in `docs-site/src/content/docs/specs/`, not here.
 
 ## Code navigation (graphify)
 

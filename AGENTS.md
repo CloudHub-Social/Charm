@@ -2,7 +2,7 @@
 
 Workflow and process rules for AI agents working on the Charm 2.0 rewrite. See
 `CLAUDE.md` for the Claude-Code-specific setup (hooks, identity, branch rules) and
-the vault planning doc `15.12 Charm 2.0` for scope and architecture.
+`docs-site/src/content/docs/` for product scope, architecture, and feature specs.
 
 ---
 
@@ -39,6 +39,18 @@ pnpm build            # tsc && vite build — must succeed with no errors
 - Keep descriptions short, clear, and human-readable.
 - Search related open/merged PRs and issues on `origin` before opening one; link
   related issues (`Closes #N` / `Related to #N`) after confirming with the user.
+
+## Documentation source of truth
+
+- Product docs, architecture, operational guides, and feature specs live under
+  `docs-site/src/content/docs/` and are reviewed with the code they govern.
+- When a change alters documented behavior, scope, acceptance criteria, dependencies,
+  or implementation status, update the linked repository spec in the same PR.
+- Personal notes and historical vault captures can provide context, but they do not
+  override the repository docs. Do not add private workspace paths or Obsidian
+  wikilinks to published content.
+- Run `pnpm --dir docs-site check:content` and `pnpm --dir docs-site build` for docs
+  changes.
 
 ## Reusable agent skills
 

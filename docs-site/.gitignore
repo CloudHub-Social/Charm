@@ -4,10 +4,6 @@ dist/
 .astro/
 # astro-d2 generated diagram SVGs
 public/d2/
-# starlight-obsidian writes generated spec pages here at build/dev time —
-# regenerated from the private Knowledge-Platform vault, never committed
-src/content/docs/specs/
-
 # dependencies
 node_modules/
 

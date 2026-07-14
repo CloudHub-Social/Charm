@@ -2,6 +2,16 @@
 	/* Starlight's splash hero reserves a second column for an optional image.
 	 * Charm has no hero image, so collapse that empty column and keep the
 	 * landing page focused on navigation rather than decorative whitespace. */
+	html[data-has-hero] main {
+		display: grid;
+		justify-items: center;
+	}
+
+	html[data-has-hero] .content-panel {
+		width: 100%;
+		max-width: calc(var(--sl-content-width) + 2 * var(--sl-content-pad-x));
+	}
+
 	html[data-has-hero] .hero {
 		grid-template-columns: minmax(0, 1fr);
 		align-items: start;

@@ -22,8 +22,6 @@
       "mcp__Claude_Preview__preview_logs",
       "mcp__Claude_Preview__preview_inspect",
       "mcp__Claude_Preview__preview_network",
-      "mcp__obsidian__read_note",
-      "mcp__obsidian__get_notes_info",
       "mcp__sentry__get_sentry_resource"
     ]
   },

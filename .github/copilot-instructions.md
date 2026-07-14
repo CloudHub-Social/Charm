@@ -39,3 +39,10 @@ binding file — change the Rust struct and regenerate (`cargo test --lib`).
 Add Sentry breadcrumbs/logging/metrics for new error paths, IPC calls, and user
 actions, and Playwright e2e coverage (`e2e/*.spec.ts`) for user-facing changes.
 Both are enforced by the same PR checklist gate. See `SENTRY.md`.
+
+## Documentation
+
+Repository docs and feature specs under `docs-site/src/content/docs/` are the
+source of truth. Update the linked spec in the same PR when behavior, scope,
+acceptance criteria, dependencies, or implementation status changes. Do not add
+private workspace paths or Obsidian wikilinks to published docs.

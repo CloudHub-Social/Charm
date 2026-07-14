@@ -2,8 +2,8 @@
 
 Charm gates runtime behavior behind feature flags so Day-2 features can ship
 disabled, roll out in stages, and be turned off without a client release. This
-document is the contributor guide; the design rationale lives in the vault spec
-(Charm 2.0 Spec 35).
+document is the contributor guide; the design rationale lives in the repository
+spec ([Spec 35](<../docs-site/src/content/docs/specs/day-1/Spec 35 — Feature flags (OpenFeature + Sentry evaluation tracking).md>)).
 
 ## Architecture at a glance
 

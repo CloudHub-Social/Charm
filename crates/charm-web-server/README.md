@@ -5,9 +5,8 @@ Companion HTTP server for Charm's web client (Spec 16). Exposes
 browser, unmodified above `src/lib/matrix.ts`, talking to a real homeserver
 through this server instead of Tauri IPC.
 
-See the full spec: `Knowledge-Platform/10-19 Personal Life/15 Personal
-projects/15.12 Charm 2.0/specs/Spec 16 — Web client via companion Matrix
-server.md`.
+See the full repository spec:
+[`Spec 16 — Web client via companion Matrix server`](<../../docs-site/src/content/docs/specs/day-1/Spec 16 — Web client via companion Matrix server.md>).
 
 ## Scope of this sub-PR (A)
 
