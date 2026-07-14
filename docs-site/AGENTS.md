@@ -19,6 +19,12 @@ Manage the background server with `astro dev stop`, `astro dev status`, and `ast
 - Cross-link feature evidence to its governing specs, and connect specs to
   related implementation, contributor, and operations guides where the
   relationship is substantive.
+- The product roadmap is generated from repository specs plus GitHub state.
+  Implementation PRs must name the exact `Day-1 Spec NN` or `Day-2 Spec NN`
+  they advance so the nightly refresh can associate work without guesswork.
+- Do not hand-edit `src/data/roadmap.json`. Refresh it with
+  `pnpm roadmap:generate`; production also regenerates it before main-branch
+  and nightly deployments.
 - Update the relevant spec in the same PR when implementation changes its
   behavior, scope, acceptance criteria, dependencies, or status.
 - Feature gallery entries describe deterministic user journeys, not isolated

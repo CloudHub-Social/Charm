@@ -8,6 +8,7 @@
 		"start": "astro dev",
 		"check:content": "node scripts/check-content.mjs",
 		"check:graph": "node scripts/check-site-graph.mjs",
+		"roadmap:generate": "node scripts/generate-roadmap.mjs",
 		"build": "astro build",
     "preview": "astro preview",
     "astro": "astro"

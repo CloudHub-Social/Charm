@@ -1,0 +1,25 @@
+---
+title: Product roadmap
+description: A nightly view of Charm's shipped, active, and planned product specs.
+---
+
+import RoadmapDashboard from '../../../components/RoadmapDashboard.astro';
+
+Charm's roadmap is a live view over reviewable specs, not a calendar promise.
+Every capability links back to its durable scope, dependencies, acceptance
+criteria, and implementation notes.
+
+<RoadmapDashboard />
+
+## Changing the roadmap
+
+A roadmap change belongs in the repository when it affects product scope,
+architecture, dependencies, acceptance criteria, or shipped status. Update the
+governing spec in the implementation pull request and name it explicitly as
+`Day-1 Spec NN` or `Day-2 Spec NN`; the nightly refresh uses those references to
+associate GitHub work without guessing.
+
+The [documentation workflow](/contributing/documentation/) describes how to make
+and validate durable changes. The [Day-1](/specs/day-1/) and
+[Day-2](/specs/day-2/) indexes remain authoritative when a feature ships in
+multiple phases or needs manual platform verification.

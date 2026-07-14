@@ -6,6 +6,7 @@ const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const contentRoot = path.join(siteRoot, 'src/content/docs');
 const specsRoot = path.join(contentRoot, 'specs');
 const featureGalleryPath = path.join(siteRoot, 'src/data/feature-gallery.json');
+const roadmapPath = path.join(siteRoot, 'src/data/roadmap.json');
 const errors = [];
 
 function markdownFiles(directory) {
@@ -35,6 +36,7 @@ function frontmatter(source) {
 
 const docs = markdownFiles(contentRoot);
 const specs = markdownFiles(specsRoot);
+const canonicalSpecCount = specs.filter((file) => /^Spec \d{2} —/.test(path.basename(file))).length;
 const routes = new Set(
 	docs.map((file) => {
 		const parsed = path.parse(path.relative(contentRoot, file));
@@ -66,6 +68,37 @@ for (const feature of featureGallery.features ?? []) {
 			errors.push(`feature ${feature.slug} links to unknown spec route ${specLink.href}`);
 		}
 	}
+}
+
+if (!fs.existsSync(roadmapPath)) {
+	console.error('Documentation content check failed: roadmap data is missing; run pnpm roadmap:generate.');
+	process.exit(1);
+}
+
+const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
+const roadmapStatuses = new Set(['shipped', 'follow-up', 'in-progress', 'planned']);
+const roadmapIds = new Set();
+if (roadmap.schemaVersion !== 1) errors.push('roadmap data has an unsupported schema version');
+if (!Number.isFinite(Date.parse(roadmap.generatedAt))) {
+	errors.push('roadmap data has an invalid generatedAt timestamp');
+}
+if (!Array.isArray(roadmap.specs) || roadmap.specs.length !== canonicalSpecCount) {
+	errors.push(
+		`roadmap data must contain all ${canonicalSpecCount} canonical specs, found ${roadmap.specs?.length ?? 0}`,
+	);
+} else {
+	for (const spec of roadmap.specs) {
+		if (roadmapIds.has(spec.id)) errors.push(`roadmap data repeats spec id ${spec.id}`);
+		roadmapIds.add(spec.id);
+		if (!routes.has(spec.route)) errors.push(`roadmap spec ${spec.id} uses unknown route ${spec.route}`);
+		if (!roadmapStatuses.has(spec.status)) {
+			errors.push(`roadmap spec ${spec.id} has unknown status ${spec.status}`);
+		}
+	}
+}
+const roadmapTotal = Object.values(roadmap.summary ?? {}).reduce((total, count) => total + count, 0);
+if (roadmapTotal !== roadmap.specs?.length) {
+	errors.push(`roadmap summary totals ${roadmapTotal}, expected ${roadmap.specs?.length ?? 0}`);
 }
 
 for (const file of docs) {

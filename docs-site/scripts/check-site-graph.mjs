@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const graphPath = path.join(siteRoot, 'dist/sitegraph/sitemap.json');
+const assetsPath = path.join(siteRoot, 'dist/_astro');
 const galleryPath = path.join(siteRoot, 'src/data/feature-gallery.json');
+const roadmapPath = path.join(siteRoot, 'src/data/roadmap.json');
 const errors = [];
 
 if (!fs.existsSync(graphPath)) {
@@ -12,9 +14,35 @@ if (!fs.existsSync(graphPath)) {
 	process.exit(1);
 }
 
+for (const [file, description] of [
+	[galleryPath, 'feature gallery data'],
+	[roadmapPath, 'roadmap data'],
+]) {
+	if (!fs.existsSync(file)) {
+		console.error(`Site graph check failed: ${description} is missing.`);
+		process.exit(1);
+	}
+}
+
 const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
 const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
+const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
 const internalPath = (href) => href.replace(/^\//, '').split(/[?#]/)[0];
+
+const graphBundles = fs.existsSync(assetsPath)
+	? fs.readdirSync(assetsPath).filter((filename) => /^Graph\..+\.js$/.test(filename))
+	: [];
+
+if (graphBundles.length === 0) {
+	errors.push('generated graph client bundle is missing');
+}
+
+for (const filename of graphBundles) {
+	const source = fs.readFileSync(path.join(assetsPath, filename), 'utf8');
+	if (/\bprocess\.(?:platform|version)\b/.test(source)) {
+		errors.push(`${filename} contains Node-only process globals and will fail in the browser`);
+	}
+}
 
 for (const [route, node] of Object.entries(graph)) {
 	if (!node.external && node.exists === false) {
@@ -23,6 +51,7 @@ for (const [route, node] of Object.entries(graph)) {
 }
 
 const requiredBridges = new Map([
+	['product/roadmap/', roadmap.specs.map((spec) => internalPath(spec.route))],
 	[
 		'operations/sentry/',
 		[

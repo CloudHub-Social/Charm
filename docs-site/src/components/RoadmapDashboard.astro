@@ -1,0 +1,253 @@
+---
+import roadmap from '../data/roadmap.json';
+
+const statusLabels = {
+	shipped: 'Shipped',
+	'follow-up': 'Shipped + follow-up',
+	'in-progress': 'In progress',
+	planned: 'Planned',
+} as const;
+
+const generatedDate = new Intl.DateTimeFormat('en-CA', {
+	dateStyle: 'medium',
+	timeZone: 'UTC',
+}).format(new Date(roadmap.generatedAt));
+
+const groups = [
+	{
+		id: 'foundation',
+		title: 'Foundation · Day-1 Specs 01–27',
+		description: 'The original daily-driver, platform, observability, and post-Day-1 foundation.',
+		specs: roadmap.specs.filter((spec) => spec.tier === 'day-1' && spec.number <= 27),
+	},
+	{
+		id: 'parity',
+		title: 'Parity and platform depth · Day-1 Specs 28–62',
+		description: 'The audited feature-parity tail plus mobile, desktop, and integration work.',
+		specs: roadmap.specs.filter((spec) => spec.tier === 'day-1' && spec.number >= 28),
+	},
+	{
+		id: 'day-2',
+		title: 'Day 2 · Specs 01–13',
+		description: 'Power-user and administration capabilities, with independent numbering.',
+		specs: roadmap.specs.filter((spec) => spec.tier === 'day-2'),
+	},
+];
+---
+
+<div class="roadmap-dashboard">
+	<section class="roadmap-hero" aria-labelledby="roadmap-status-heading">
+		<div>
+			<p class="roadmap-eyebrow">Repository status · refreshed nightly</p>
+			<h2 id="roadmap-status-heading">From reviewed specs to shipped work</h2>
+			<p>
+				The dashboard joins the repository-native spec catalog with live pull-request and issue
+				state. It was last generated <strong>{generatedDate}</strong>.
+			</p>
+		</div>
+		<a class="roadmap-repository" href={`https://github.com/${roadmap.repository}`}>View repository →</a>
+	</section>
+
+	<div class="roadmap-summary" aria-label="Roadmap summary">
+		<div><strong>{roadmap.summary.shipped}</strong><span>Shipped</span></div>
+		<div><strong>{roadmap.summary['follow-up']}</strong><span>Shipped + follow-up</span></div>
+		<div><strong>{roadmap.summary['in-progress']}</strong><span>In progress</span></div>
+		<div><strong>{roadmap.summary.planned}</strong><span>Planned</span></div>
+	</div>
+
+	<nav class="roadmap-jump" aria-label="Roadmap sections">
+		<a href="#attention">Attention</a>
+		<a href="#workstreams">Workstreams</a>
+		<a href="#foundation">Foundation</a>
+		<a href="#parity">Parity</a>
+		<a href="#day-2">Day 2</a>
+		<a href="#interpretation">How to read this</a>
+	</nav>
+
+	<section id="attention" class="roadmap-section">
+		<div class="roadmap-section__heading">
+			<div>
+				<p class="roadmap-eyebrow">Current queue</p>
+				<h2>Needs attention</h2>
+			</div>
+			<span>{roadmap.attention.length} {roadmap.attention.length === 1 ? 'item' : 'items'}</span>
+		</div>
+		{
+			roadmap.attention.length > 0 ? (
+				<ul class="roadmap-attention">
+					{roadmap.attention.map((item) => (
+						<li>
+							<span class:list={['roadmap-kind', `roadmap-kind--${item.type}`]}>
+								{item.type === 'pull-request' ? 'PR' : 'Issue'} #{item.number}
+							</span>
+							<div>
+								<a href={item.url}>{item.title}</a>
+								{item.detail && <small>{item.detail}</small>}
+							</div>
+						</li>
+					))}
+				</ul>
+			) : (
+				<p>No roadmap-linked pull requests or prioritized issues need attention.</p>
+			)
+		}
+	</section>
+
+	<section id="workstreams" class="roadmap-section">
+		<div class="roadmap-section__heading">
+			<div>
+				<p class="roadmap-eyebrow">Portfolio view</p>
+				<h2>Workstreams</h2>
+			</div>
+		</div>
+		<div class="roadmap-workstreams">
+			{
+				roadmap.workstreams.map((workstream) => (
+					<a class="roadmap-workstream" href={`#${workstream.id}`}>
+						<h3>{workstream.label}</h3>
+						<p>{workstream.description}</p>
+						<span>
+							{workstream.counts.shipped} shipped ·{' '}
+							{workstream.counts['follow-up'] + workstream.counts['in-progress']} active ·{' '}
+							{workstream.counts.planned} planned
+						</span>
+					</a>
+				))
+			}
+		</div>
+	</section>
+
+	{
+		groups.map((group) => (
+			<section id={group.id} class="roadmap-section roadmap-spec-group">
+				<div class="roadmap-section__heading">
+					<div>
+						<p class="roadmap-eyebrow">{group.specs.length} specs</p>
+						<h2>{group.title}</h2>
+						<p>{group.description}</p>
+					</div>
+				</div>
+				<div class="roadmap-table-wrap">
+					<table>
+						<thead>
+							<tr>
+								<th scope="col">Spec</th>
+								<th scope="col">Status</th>
+								<th scope="col">Delivery links</th>
+							</tr>
+						</thead>
+						<tbody>
+							{group.specs.map((spec) => (
+								<tr>
+									<td>
+										<a href={spec.route}>
+											<span>{String(spec.number).padStart(2, '0')}</span>
+											{spec.title}
+										</a>
+									</td>
+									<td>
+										<span class:list={['roadmap-status', `roadmap-status--${spec.status}`]}>
+											{statusLabels[spec.status]}
+										</span>
+									</td>
+									<td>
+										{spec.pullRequests.length > 0 || spec.issues.length > 0 ? (
+											<span class="roadmap-prs">
+												{spec.pullRequests.slice(0, 6).map((pullRequest) => (
+													<a
+														href={pullRequest.url}
+														title={pullRequest.title}
+														class:list={[pullRequest.state === 'open' && 'is-open']}
+													>
+														#{pullRequest.number}
+													</a>
+												))}
+												{spec.issues.slice(0, 3).map((issue) => (
+													<a href={issue.url} title={issue.title} class="is-issue">
+														Issue #{issue.number}
+													</a>
+												))}
+											</span>
+										) : (
+											<span aria-label="No linked pull requests">—</span>
+										)}
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		))
+	}
+
+	<section id="interpretation" class="roadmap-section roadmap-explainer">
+		<div>
+			<p class="roadmap-eyebrow">Status model</p>
+			<h2>How to read this</h2>
+		</div>
+		<ul>
+			<li><strong>Shipped</strong> means the spec index or a linked pull request records merged work.</li>
+			<li><strong>Shipped + follow-up</strong> means merged work exists and another linked PR is open.</li>
+			<li><strong>In progress</strong> means a linked PR is open but no phase is recorded as shipped.</li>
+			<li><strong>Planned</strong> means the reviewed spec exists without linked implementation work.</li>
+		</ul>
+		<p>
+			Automation only associates work that names the spec or links its route. A spec remains the
+			authority for partial phases, dependencies, acceptance criteria, and hardware verification.
+		</p>
+	</section>
+</div>
+
+<style>
+	.roadmap-dashboard { display: grid; gap: 2rem; min-width: 0; margin-top: 1.75rem; }
+	.roadmap-dashboard > * { min-width: 0; max-width: 100%; }
+	.roadmap-hero { display: flex; align-items: end; justify-content: space-between; gap: 1.5rem; padding: clamp(1.5rem, 4vw, 2.5rem); border: 1px solid var(--sl-color-gray-5); border-radius: 1rem; background: radial-gradient(circle at 10% 0%, color-mix(in srgb, var(--sl-color-accent) 16%, transparent), transparent 42%), var(--sl-color-bg-nav); }
+	.roadmap-hero :where(h2, p), .roadmap-section__heading :where(h2, p), .roadmap-workstream :where(h3, p), .roadmap-explainer :where(h2, p) { margin: 0; }
+	.roadmap-hero h2 { margin-top: 0.35rem; font-size: clamp(1.5rem, 4vw, 2.35rem); }
+	.roadmap-hero p:last-child { max-width: 66ch; margin-top: 0.75rem; color: var(--sl-color-gray-2); }
+	.roadmap-repository { flex: 0 0 auto; padding: 0.6rem 0.9rem; border: 1px solid var(--sl-color-accent); border-radius: 999px; font-weight: 700; text-decoration: none; }
+	.roadmap-eyebrow { color: var(--sl-color-accent-high); font-size: var(--sl-text-xs); font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+	.roadmap-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; width: 100%; }
+	.roadmap-summary > div { display: grid; gap: 0.15rem; min-width: 0; padding: 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; background: var(--sl-color-bg-nav); }
+	.roadmap-summary strong { font-size: var(--sl-text-h2); }
+	.roadmap-summary span { overflow-wrap: anywhere; color: var(--sl-color-gray-2); font-size: var(--sl-text-sm); }
+	.roadmap-jump { display: flex; flex-wrap: wrap; gap: 0.5rem; position: sticky; top: calc(var(--sl-nav-height) + 0.75rem); z-index: 2; padding: 0.65rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.8rem; background: color-mix(in srgb, var(--sl-color-bg) 90%, transparent); backdrop-filter: blur(12px); }
+	.roadmap-jump a { padding: 0.35rem 0.7rem; border-radius: 999px; color: var(--sl-color-text); font-size: var(--sl-text-sm); font-weight: 650; text-decoration: none; }
+	.roadmap-jump a:hover { background: var(--sl-color-gray-6); }
+	.roadmap-section { scroll-margin-top: calc(var(--sl-nav-height) + 5rem); }
+	.roadmap-section__heading { display: flex; align-items: end; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+	.roadmap-section__heading h2 { margin-top: 0.2rem; }
+	.roadmap-section__heading p:last-child { margin-top: 0.4rem; color: var(--sl-color-gray-2); }
+	.roadmap-section__heading > span { color: var(--sl-color-gray-2); font-size: var(--sl-text-sm); }
+	.roadmap-attention { display: grid; gap: 0; margin: 0; padding: 0; border: 1px solid var(--sl-color-gray-5); border-radius: 0.8rem; background: var(--sl-color-bg-nav); list-style: none; }
+	.roadmap-attention li { display: grid; grid-template-columns: 6.25rem minmax(0, 1fr); gap: 1rem; align-items: start; padding: 0.9rem 1rem; }
+	.roadmap-attention li + li { border-top: 1px solid var(--sl-color-gray-5); }
+	.roadmap-attention li div { display: grid; gap: 0.2rem; }
+	.roadmap-attention small { color: var(--sl-color-gray-2); }
+	.roadmap-kind, .roadmap-status { width: fit-content; padding: 0.18rem 0.5rem; border: 1px solid currentcolor; border-radius: 999px; font-size: var(--sl-text-xs); font-weight: 750; white-space: nowrap; }
+	.roadmap-kind--pull-request, .roadmap-status--in-progress, .roadmap-status--follow-up { color: var(--sl-color-orange-high); }
+	.roadmap-kind--issue { color: var(--sl-color-red-high); }
+	.roadmap-status--shipped { color: var(--sl-color-green-high); }
+	.roadmap-status--planned { color: var(--sl-color-gray-2); }
+	.roadmap-workstreams { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; }
+	.roadmap-workstream { display: grid; gap: 0.55rem; padding: 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.8rem; color: var(--sl-color-text); background: var(--sl-color-bg-nav); text-decoration: none; }
+	.roadmap-workstream:hover { border-color: var(--sl-color-accent); }
+	.roadmap-workstream p, .roadmap-workstream span { color: var(--sl-color-gray-2); font-size: var(--sl-text-sm); }
+	.roadmap-table-wrap { overflow-x: auto; border: 1px solid var(--sl-color-gray-5); border-radius: 0.8rem; background: var(--sl-color-bg-nav); }
+	.roadmap-table-wrap table { width: 100%; margin: 0; border: 0; font-size: var(--sl-text-sm); }
+	.roadmap-table-wrap :where(th, td) { padding: 0.7rem 0.85rem; border: 0; border-bottom: 1px solid var(--sl-color-gray-5); vertical-align: middle; }
+	.roadmap-table-wrap tbody tr:last-child td { border-bottom: 0; }
+	.roadmap-table-wrap th { color: var(--sl-color-gray-2); font-size: var(--sl-text-xs); letter-spacing: 0.04em; text-transform: uppercase; }
+	.roadmap-table-wrap td:first-child a { display: grid; grid-template-columns: 2.2rem minmax(15rem, 1fr); gap: 0.55rem; align-items: baseline; font-weight: 650; text-decoration: none; }
+	.roadmap-table-wrap td:first-child a span { color: var(--sl-color-gray-3); font-variant-numeric: tabular-nums; }
+	.roadmap-prs { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+	.roadmap-prs a { padding: 0.1rem 0.35rem; border-radius: 0.35rem; background: var(--sl-color-gray-6); text-decoration: none; }
+	.roadmap-prs a.is-open { color: var(--sl-color-orange-high); }
+	.roadmap-prs a.is-issue { color: var(--sl-color-red-high); }
+	.roadmap-explainer { display: grid; grid-template-columns: minmax(10rem, 0.5fr) minmax(0, 1.5fr); gap: 1.5rem; padding: 1.4rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.8rem; background: var(--sl-color-bg-nav); }
+	.roadmap-explainer ul { margin: 0; }
+	.roadmap-explainer > p { grid-column: 2; color: var(--sl-color-gray-2); }
+	@media (max-width: 50rem) { .roadmap-hero { align-items: start; flex-direction: column; } .roadmap-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .roadmap-workstreams { grid-template-columns: 1fr; } .roadmap-explainer { grid-template-columns: 1fr; } .roadmap-explainer > p { grid-column: 1; } }
+	@media (max-width: 32rem) { .roadmap-attention li { grid-template-columns: 1fr; gap: 0.5rem; } .roadmap-table-wrap :where(th:nth-child(3), td:nth-child(3)) { display: none; } }
+</style>

@@ -1,0 +1,1381 @@
+{
+  "schemaVersion": 1,
+  "repository": "CloudHub-Social/Charm",
+  "generatedAt": "2026-07-14T22:54:53.031Z",
+  "source": "GitHub pull requests, prioritized issues, and repository-native specs",
+  "summary": {
+    "shipped": 33,
+    "follow-up": 1,
+    "in-progress": 0,
+    "planned": 41
+  },
+  "attention": [
+    {
+      "type": "issue",
+      "number": 48,
+      "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/48",
+      "detail": "enhancement"
+    }
+  ],
+  "workstreams": [
+    {
+      "id": "foundation",
+      "label": "Foundation",
+      "description": "Original Day-1 and post-Day-1 specs 01–27.",
+      "specIds": [
+        "day-1-01",
+        "day-1-02",
+        "day-1-03",
+        "day-1-04",
+        "day-1-05",
+        "day-1-06",
+        "day-1-07",
+        "day-1-08",
+        "day-1-09",
+        "day-1-10",
+        "day-1-11",
+        "day-1-12",
+        "day-1-13",
+        "day-1-14",
+        "day-1-15",
+        "day-1-16",
+        "day-1-17",
+        "day-1-18",
+        "day-1-19",
+        "day-1-20",
+        "day-1-21",
+        "day-1-22",
+        "day-1-23",
+        "day-1-24",
+        "day-1-25",
+        "day-1-26",
+        "day-1-27"
+      ],
+      "counts": {
+        "shipped": 26,
+        "follow-up": 1,
+        "in-progress": 0,
+        "planned": 0
+      }
+    },
+    {
+      "id": "parity",
+      "label": "Parity and platform depth",
+      "description": "Day-1 parity, native integration, and product-depth specs 28–62.",
+      "specIds": [
+        "day-1-28",
+        "day-1-29",
+        "day-1-30",
+        "day-1-31",
+        "day-1-32",
+        "day-1-33",
+        "day-1-34",
+        "day-1-35",
+        "day-1-36",
+        "day-1-37",
+        "day-1-38",
+        "day-1-39",
+        "day-1-40",
+        "day-1-41",
+        "day-1-42",
+        "day-1-43",
+        "day-1-44",
+        "day-1-45",
+        "day-1-46",
+        "day-1-47",
+        "day-1-48",
+        "day-1-49",
+        "day-1-50",
+        "day-1-51",
+        "day-1-52",
+        "day-1-53",
+        "day-1-54",
+        "day-1-55",
+        "day-1-56",
+        "day-1-57",
+        "day-1-58",
+        "day-1-59",
+        "day-1-60",
+        "day-1-61",
+        "day-1-62"
+      ],
+      "counts": {
+        "shipped": 7,
+        "follow-up": 0,
+        "in-progress": 0,
+        "planned": 28
+      }
+    },
+    {
+      "id": "day-2",
+      "label": "Day 2",
+      "description": "Independent power-user and administration capabilities.",
+      "specIds": [
+        "day-2-01",
+        "day-2-02",
+        "day-2-03",
+        "day-2-04",
+        "day-2-05",
+        "day-2-06",
+        "day-2-07",
+        "day-2-08",
+        "day-2-09",
+        "day-2-10",
+        "day-2-11",
+        "day-2-12",
+        "day-2-13"
+      ],
+      "counts": {
+        "shipped": 0,
+        "follow-up": 0,
+        "in-progress": 0,
+        "planned": 13
+      }
+    }
+  ],
+  "specs": [
+    {
+      "id": "day-1-01",
+      "tier": "day-1",
+      "number": 1,
+      "title": "Timeline identity and profiles",
+      "route": "/specs/day-1/spec-01--timeline-identity-and-profiles/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 22,
+          "title": "Spec 01: Timeline identity and profiles",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/22",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-06T18:28:29Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-02",
+      "tier": "day-1",
+      "number": 2,
+      "title": "Media and attachments",
+      "route": "/specs/day-1/spec-02--media-and-attachments/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 10,
+          "title": "Spec 02: media and attachments",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/10",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T19:57:21Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-03",
+      "tier": "day-1",
+      "number": 3,
+      "title": "Message actions (edit, redact, reply, react)",
+      "route": "/specs/day-1/spec-03--message-actions-edit-redact-reply-react/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 11,
+          "title": "Spec 03: message actions (edit, redact, reply, react)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/11",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T17:59:38Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-04",
+      "tier": "day-1",
+      "number": 4,
+      "title": "Composer upgrade (rich text, slash commands, autocomplete)",
+      "route": "/specs/day-1/spec-04--composer-upgrade-rich-text-slash-commands-autocomplete/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 15,
+          "title": "Spec 04: Composer upgrade (rich text, slash commands, autocomplete)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/15",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-06T01:59:32Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-05",
+      "tier": "day-1",
+      "number": 5,
+      "title": "Read receipts, typing, and presence",
+      "route": "/specs/day-1/spec-05--read-receipts-typing-and-presence/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 9,
+          "title": "Spec 05: read receipts, typing, and presence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/9",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T15:46:00Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-06",
+      "tier": "day-1",
+      "number": 6,
+      "title": "Spaces and room-list organization",
+      "route": "/specs/day-1/spec-06--spaces-and-room-list-organization/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 14,
+          "title": "Spec 06: spaces and room-list organization",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/14",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T21:51:31Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-07",
+      "tier": "day-1",
+      "number": 7,
+      "title": "Room management and moderation",
+      "route": "/specs/day-1/spec-07--room-management-and-moderation/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 21,
+          "title": "Spec 07: Room management and moderation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/21",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-06T14:18:17Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-08",
+      "tier": "day-1",
+      "number": 8,
+      "title": "Settings and device management",
+      "route": "/specs/day-1/spec-08--settings-and-device-management/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 18,
+          "title": "Spec 08: Settings and device management",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/18",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-06T17:51:57Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-09",
+      "tier": "day-1",
+      "number": 9,
+      "title": "Theming and appearance",
+      "route": "/specs/day-1/spec-09--theming-and-appearance/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 27,
+          "title": "Spec 09: Theming and appearance",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/27",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T01:58:03Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-10",
+      "tier": "day-1",
+      "number": 10,
+      "title": "Native platform shell",
+      "route": "/specs/day-1/spec-10--native-platform-shell/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 28,
+          "title": "Spec 10: Native platform shell",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/28",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T02:24:08Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-11",
+      "tier": "day-1",
+      "number": 11,
+      "title": "Push notifications",
+      "route": "/specs/day-1/spec-11--push-notifications/",
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 44,
+          "title": "Spec 11: Push notifications (Android UnifiedPush + iOS APNs)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/44",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T13:35:18Z"
+        }
+      ],
+      "issues": [
+        {
+          "number": 48,
+          "title": "Spec 11: Android embedded-FCM push fallback needs a VAPID gateway (infra, not app code)",
+          "url": "https://github.com/CloudHub-Social/Charm/issues/48",
+          "updatedAt": "2026-07-11T03:47:25Z",
+          "labels": [
+            "enhancement"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "day-1-12",
+      "tier": "day-1",
+      "number": 12,
+      "title": "First-run onboarding",
+      "route": "/specs/day-1/spec-12--first-run-onboarding/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 30,
+          "title": "Spec 12: First-run onboarding",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/30",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T01:30:27Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-13",
+      "tier": "day-1",
+      "number": 13,
+      "title": "Voice-video platform spike",
+      "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 230,
+          "title": "fix(linux,ios): wire up in-webview getUserMedia permission grants",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/230",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-13T14:29:26Z"
+        },
+        {
+          "number": 229,
+          "title": "fix(android): declare CAMERA/RECORD_AUDIO permissions for in-webview getUserMedia",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/229",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-13T13:52:33Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-14",
+      "tier": "day-1",
+      "number": 14,
+      "title": "Adopt matrix-sdk-ui Timeline",
+      "route": "/specs/day-1/spec-14--adopt-matrix-sdk-ui-timeline/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 12,
+          "title": "Spec 14: Adopt matrix-sdk-ui Timeline",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/12",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T21:55:18Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-15",
+      "tier": "day-1",
+      "number": 15,
+      "title": "Per-account store isolation",
+      "route": "/specs/day-1/spec-15--per-account-store-isolation/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 13,
+          "title": "Isolate the SQLCipher store and keychain entries per Matrix account (Spec 15)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/13",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-05T22:25:44Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-16",
+      "tier": "day-1",
+      "number": 16,
+      "title": "Web client via companion Matrix server",
+      "route": "/specs/day-1/spec-16--web-client-via-companion-matrix-server/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 98,
+          "title": "Spec 16 web frontend and deploy leg",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/98",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T04:23:25Z"
+        },
+        {
+          "number": 55,
+          "title": "Spec 16 Phase 2 (sub-PR B): companion web server — WebSocket events + encrypted session persistence",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/55",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T01:42:33Z"
+        },
+        {
+          "number": 49,
+          "title": "Spec 16 Phase 2 (sub-PR A): companion web server — HTTP router + session store",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/49",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T15:03:53Z"
+        },
+        {
+          "number": 45,
+          "title": "Spec 16 Phase 1: extract _impl functions from all #[tauri::command] handlers",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/45",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T12:52:49Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-17",
+      "tier": "day-1",
+      "number": 17,
+      "title": "Room settings IA rework (match Charm 1.0 structure)",
+      "route": "/specs/day-1/spec-17--room-settings-ia-rework-match-charm-10-structure/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 53,
+          "title": "Spec 17: room settings IA rework (modal + left-nav + Permissions section)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/53",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-07T20:51:01Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-18",
+      "tier": "day-1",
+      "number": 18,
+      "title": "Global settings IA rework (match Charm 1.0 structure)",
+      "route": "/specs/day-1/spec-18--global-settings-ia-rework-match-charm-10-structure/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 57,
+          "title": "Spec 18: Global settings IA rework (match Charm 1.0 structure)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/57",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T02:02:08Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-19",
+      "tier": "day-1",
+      "number": 19,
+      "title": "\"Charm 2.0 Spec — Space hierarchy and room-list rebuild (match Charm 1.0",
+      "route": "/specs/day-1/spec-19--space-hierarchy-and-room-list-rebuild-match-charm-10-structure/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 150,
+          "title": "Implement Spec 19 Phase 3: room-list search",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/150",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-10T23:54:00Z"
+        },
+        {
+          "number": 153,
+          "title": "Spec 19 Phase 4: space creation and join-by-address",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/153",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-10T23:32:55Z"
+        },
+        {
+          "number": 102,
+          "title": "Implement Spec 19 Phase 2 space rail",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/102",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T18:56:45Z"
+        },
+        {
+          "number": 99,
+          "title": "Implement Spec 19 Phase 1 space foundations",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/99",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T23:01:51Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-20",
+      "tier": "day-1",
+      "number": 20,
+      "title": "Structured UIA error type for settings commands",
+      "route": "/specs/day-1/spec-20--structured-uia-error-type-for-settings-commands/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 60,
+          "title": "Spec 20: structured UIA error type for settings commands",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/60",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T01:40:38Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-21",
+      "tier": "day-1",
+      "number": 21,
+      "title": "\"Charm 2.0 Spec — Sentry observability (error monitoring, tracing,",
+      "route": "/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 94,
+          "title": "Add Sentry user feedback UI",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/94",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T11:53:57Z"
+        },
+        {
+          "number": 96,
+          "title": "Add consent-gated Android Sentry runtime init",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/96",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T01:57:54Z"
+        },
+        {
+          "number": 97,
+          "title": "Add Rust Sentry tracing log bridge",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/97",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T23:39:07Z"
+        },
+        {
+          "number": 95,
+          "title": "Wire Sentry size analysis reports",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/95",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T22:14:51Z"
+        },
+        {
+          "number": 93,
+          "title": "Correlate attachment IPC breadcrumbs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/93",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T19:05:08Z"
+        },
+        {
+          "number": 91,
+          "title": "Add Sentry IPC breadcrumbs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/91",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T18:00:52Z"
+        },
+        {
+          "number": 87,
+          "title": "Add Sentry Android artifact uploads",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/87",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T17:29:01Z"
+        },
+        {
+          "number": 85,
+          "title": "Add Sentry platform symbol uploads",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/85",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T16:40:11Z"
+        },
+        {
+          "number": 83,
+          "title": "Add Sentry release artifact upload workflow",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/83",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T16:04:58Z"
+        },
+        {
+          "number": 81,
+          "title": "Add opt-in Sentry observability foundation",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/81",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T15:42:36Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-22",
+      "tier": "day-1",
+      "number": 22,
+      "title": "User feedback categorization and GitHub label mapping",
+      "route": "/specs/day-1/spec-22--user-feedback-categorization-and-github-label-mapping/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 165,
+          "title": "Add required feedback category and GitHub label mapping (Spec 22)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/165",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T00:26:56Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-23",
+      "tier": "day-1",
+      "number": 23,
+      "title": "User feedback client context capture",
+      "route": "/specs/day-1/spec-23--user-feedback-client-context-capture/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 169,
+          "title": "Attach build version and real per-OS platform to Sentry feedback (Spec 23)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/169",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T01:53:56Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-24",
+      "tier": "day-1",
+      "number": 24,
+      "title": "Build and release identification (short SHA, PR previews)",
+      "route": "/specs/day-1/spec-24--build-and-release-identification-short-sha-pr-previews/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 182,
+          "title": "Fix misleading doc comment: charm.build.id vs AboutPanel build id",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/182",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T12:22:10Z"
+        },
+        {
+          "number": 184,
+          "title": "Fix compute-build-id.mjs CLI to handle non-Error throws safely",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/184",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T04:03:59Z"
+        },
+        {
+          "number": 166,
+          "title": "Spec 24: canonical build/release identifiers (short SHA, PR previews)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/166",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T01:10:17Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-25",
+      "tier": "day-1",
+      "number": 25,
+      "title": "Spec 25 — Persistent crypto state and recovery-key-sufficient",
+      "route": "/specs/day-1/spec-25--persistent-crypto-state-and-recovery-key-sufficient-verification-web-client/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 181,
+          "title": "Spec 25 Phase 1 follow-up: fix 3 leak bugs, split persisted-vs-open crypto state",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/181",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T02:38:49Z"
+        },
+        {
+          "number": 172,
+          "title": "Spec 25 Phase 1: persist the Olm/Megolm crypto store per web session",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/172",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T02:27:47Z"
+        },
+        {
+          "number": 173,
+          "title": "Spec 25 Phase 2: recovery-key-alone marks a session's device verified",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/173",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T01:47:13Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-26",
+      "tier": "day-1",
+      "number": 26,
+      "title": "Timeline scroll anchoring and bottom-up rendering",
+      "route": "/specs/day-1/spec-26--timeline-scroll-anchoring-and-bottom-up-rendering/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 232,
+          "title": "Spec 26 Phase 2: bottom-up, virtualized timeline rendering",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/232",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-13T21:27:11Z"
+        },
+        {
+          "number": 194,
+          "title": "Add timeline scroll anchoring and bottom-up scroll behavior (Spec 26 Phase 1)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/194",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T12:49:55Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-27",
+      "tier": "day-1",
+      "number": 27,
+      "title": "Chat message layout modes (bubble, Discord, IRC)",
+      "route": "/specs/day-1/spec-27--chat-message-layout-modes-bubble-discord-irc/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 195,
+          "title": "Add chat message layout modes: bubble, Discord, IRC (Spec 27)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/195",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-11T13:36:48Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-28",
+      "tier": "day-1",
+      "number": 28,
+      "title": "Cross-room message search",
+      "route": "/specs/day-1/spec-28--cross-room-message-search/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-29",
+      "tier": "day-1",
+      "number": 29,
+      "title": "Link previews",
+      "route": "/specs/day-1/spec-29--link-previews/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 250,
+          "title": "Spec 29: Link previews",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/250",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T16:25:21Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-30",
+      "tier": "day-1",
+      "number": 30,
+      "title": "Focus mode and do-not-disturb",
+      "route": "/specs/day-1/spec-30--focus-mode-and-do-not-disturb/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 249,
+          "title": "Spec 30: Focus mode / Do Not Disturb",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/249",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T18:05:29Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-31",
+      "tier": "day-1",
+      "number": 31,
+      "title": "Room upgrades",
+      "route": "/specs/day-1/spec-31--room-upgrades/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-32",
+      "tier": "day-1",
+      "number": 32,
+      "title": "Room alias management",
+      "route": "/specs/day-1/spec-32--room-alias-management/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 251,
+          "title": "Spec 32: Room alias management",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/251",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T13:26:01Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-33",
+      "tier": "day-1",
+      "number": 33,
+      "title": "Space nesting and hierarchy reorganization",
+      "route": "/specs/day-1/spec-33--space-nesting-and-hierarchy-reorganization/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-34",
+      "tier": "day-1",
+      "number": 34,
+      "title": "Labs and experimental settings panel",
+      "route": "/specs/day-1/spec-34--labs-and-experimental-settings-panel/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 253,
+          "title": "Add Labs settings panel for feature-flag overrides (Spec 34)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/253",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T13:53:29Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-35",
+      "tier": "day-1",
+      "number": 35,
+      "title": "Feature flags (OpenFeature + Sentry evaluation tracking)",
+      "route": "/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-36",
+      "tier": "day-1",
+      "number": 36,
+      "title": "User profile cards",
+      "route": "/specs/day-1/spec-36--user-profile-cards/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-37",
+      "tier": "day-1",
+      "number": 37,
+      "title": "Message action parity",
+      "route": "/specs/day-1/spec-37--message-action-parity/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-38",
+      "tier": "day-1",
+      "number": 38,
+      "title": "Full emoji picker",
+      "route": "/specs/day-1/spec-38--full-emoji-picker/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-39",
+      "tier": "day-1",
+      "number": 39,
+      "title": "Timeline state and membership events",
+      "route": "/specs/day-1/spec-39--timeline-state-and-membership-events/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-40",
+      "tier": "day-1",
+      "number": 40,
+      "title": "Presence and receipt privacy controls",
+      "route": "/specs/day-1/spec-40--presence-and-receipt-privacy-controls/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-41",
+      "tier": "day-1",
+      "number": 41,
+      "title": "Voice message recording",
+      "route": "/specs/day-1/spec-41--voice-message-recording/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-42",
+      "tier": "day-1",
+      "number": 42,
+      "title": "Media send polish",
+      "route": "/specs/day-1/spec-42--media-send-polish/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-43",
+      "tier": "day-1",
+      "number": 43,
+      "title": "Composer parity",
+      "route": "/specs/day-1/spec-43--composer-parity/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-44",
+      "tier": "day-1",
+      "number": 44,
+      "title": "Crypto key backup setup and key import/export",
+      "route": "/specs/day-1/spec-44--crypto-key-backup-setup-and-key-import-export/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-45",
+      "tier": "day-1",
+      "number": 45,
+      "title": "Registration and password-reset flows",
+      "route": "/specs/day-1/spec-45--registration-and-password-reset-flows/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-46",
+      "tier": "day-1",
+      "number": 46,
+      "title": "Notification rule granularity and email pushers",
+      "route": "/specs/day-1/spec-46--notification-rule-granularity-and-email-pushers/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-47",
+      "tier": "day-1",
+      "number": 47,
+      "title": "Appearance and display parity",
+      "route": "/specs/day-1/spec-47--appearance-and-display-parity/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-48",
+      "tier": "day-1",
+      "number": 48,
+      "title": "Desktop shell and settings controls",
+      "route": "/specs/day-1/spec-48--desktop-shell-and-settings-controls/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-49",
+      "tier": "day-1",
+      "number": 49,
+      "title": "Widget support",
+      "route": "/specs/day-1/spec-49--widget-support/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-50",
+      "tier": "day-1",
+      "number": 50,
+      "title": "Cross-device settings sync",
+      "route": "/specs/day-1/spec-50--cross-device-settings-sync/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-51",
+      "tier": "day-1",
+      "number": 51,
+      "title": "App localization (i18n)",
+      "route": "/specs/day-1/spec-51--app-localization-i18n/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-52",
+      "tier": "day-1",
+      "number": 52,
+      "title": "Responsive and mobile-web layout hardening",
+      "route": "/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 245,
+          "title": "Make the mobile room view feel like a chat app",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/245",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T04:43:27Z"
+        },
+        {
+          "number": 242,
+          "title": "Fix mobile web viewport overflow",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/242",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T02:33:04Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-53",
+      "tier": "day-1",
+      "number": 53,
+      "title": "Avatars and presence visuals",
+      "route": "/specs/day-1/spec-53--avatars-and-presence-visuals/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-54",
+      "tier": "day-1",
+      "number": 54,
+      "title": "Room-list row enrichment, filtering and sorting",
+      "route": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-55",
+      "tier": "day-1",
+      "number": 55,
+      "title": "Command palette and quick switcher",
+      "route": "/specs/day-1/spec-55--command-palette-and-quick-switcher/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-56",
+      "tier": "day-1",
+      "number": 56,
+      "title": "Room invites surface",
+      "route": "/specs/day-1/spec-56--room-invites-surface/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 243,
+          "title": "Add room invite handling",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/243",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T04:05:17Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-57",
+      "tier": "day-1",
+      "number": 57,
+      "title": "In-app activity and notifications inbox",
+      "route": "/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-58",
+      "tier": "day-1",
+      "number": 58,
+      "title": "Rich message content rendering",
+      "route": "/specs/day-1/spec-58--rich-message-content-rendering/",
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 244,
+          "title": "Spec 58: render rich Matrix message content",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/244",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T03:37:44Z"
+        }
+      ],
+      "issues": []
+    },
+    {
+      "id": "day-1-59",
+      "tier": "day-1",
+      "number": 59,
+      "title": "GIF picker (Klipy)",
+      "route": "/specs/day-1/spec-59--gif-picker-klipy/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-60",
+      "tier": "day-1",
+      "number": 60,
+      "title": "iOS platform integrations",
+      "route": "/specs/day-1/spec-60--ios-platform-integrations/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-61",
+      "tier": "day-1",
+      "number": 61,
+      "title": "Android platform integrations",
+      "route": "/specs/day-1/spec-61--android-platform-integrations/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-62",
+      "tier": "day-1",
+      "number": 62,
+      "title": "Desktop platform integrations (macOS and Windows)",
+      "route": "/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-01",
+      "tier": "day-2",
+      "number": 1,
+      "title": "Threads",
+      "route": "/specs/day-2/spec-01--threads/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-02",
+      "tier": "day-2",
+      "number": 2,
+      "title": "Native voice and video calling",
+      "route": "/specs/day-2/spec-02--native-voice-and-video-calling/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-03",
+      "tier": "day-2",
+      "number": 3,
+      "title": "Polls",
+      "route": "/specs/day-2/spec-03--polls/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-04",
+      "tier": "day-2",
+      "number": 4,
+      "title": "Message pinning",
+      "route": "/specs/day-2/spec-04--message-pinning/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-05",
+      "tier": "day-2",
+      "number": 5,
+      "title": "Custom emoji and sticker packs",
+      "route": "/specs/day-2/spec-05--custom-emoji-and-sticker-packs/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-06",
+      "tier": "day-2",
+      "number": 6,
+      "title": "Room directory and public room browser",
+      "route": "/specs/day-2/spec-06--room-directory-and-public-room-browser/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-07",
+      "tier": "day-2",
+      "number": 7,
+      "title": "Location sharing",
+      "route": "/specs/day-2/spec-07--location-sharing/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-08",
+      "tier": "day-2",
+      "number": 8,
+      "title": "Image editing before send",
+      "route": "/specs/day-2/spec-08--image-editing-before-send/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-09",
+      "tier": "day-2",
+      "number": 9,
+      "title": "Multi-account switcher UI",
+      "route": "/specs/day-2/spec-09--multi-account-switcher-ui/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-10",
+      "tier": "day-2",
+      "number": 10,
+      "title": "Export chat history",
+      "route": "/specs/day-2/spec-10--export-chat-history/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-11",
+      "tier": "day-2",
+      "number": 11,
+      "title": "Jump to date",
+      "route": "/specs/day-2/spec-11--jump-to-date/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-12",
+      "tier": "day-2",
+      "number": 12,
+      "title": "Bookmarks and saved messages",
+      "route": "/specs/day-2/spec-12--bookmarks-and-saved-messages/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-2-13",
+      "tier": "day-2",
+      "number": 13,
+      "title": "Scheduled and delayed send",
+      "route": "/specs/day-2/spec-13--scheduled-and-delayed-send/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    }
+  ]
+}
