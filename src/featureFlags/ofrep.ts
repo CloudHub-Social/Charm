@@ -1,5 +1,4 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
-import { invoke } from "@/lib/matrixTransport";
 import { FEATURE_FLAG_KEYS } from "./catalog";
 import type { FeatureFlagRemote } from "./resolve";
 import { isTauri } from "@/lib/platform";
@@ -86,6 +85,10 @@ export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFla
  * command fixes the target URL itself, so this can't be abused for SSRF.
  */
 async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse | null> {
+  // Keep the transport lazy: importing it eagerly makes every feature-flag
+  // consumer load the full Matrix transport (and its platform dependencies),
+  // even when remote evaluation is disabled or running on the web path.
+  const { invoke } = await import("@/lib/matrixTransport");
   return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
 }
 
