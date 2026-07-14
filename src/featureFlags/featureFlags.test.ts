@@ -202,6 +202,31 @@ describe("feature-flag client", () => {
     expect(mod.getFlag("canary")).toBe(false);
   });
 
+  it("removes an unsaved store value when reload also fails", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let inMemory: unknown;
+    const remove = vi.fn().mockImplementation(() => {
+      inMemory = undefined;
+      return Promise.resolve(true);
+    });
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockImplementation(() => Promise.resolve(inMemory)),
+      set: vi.fn().mockImplementation((_key: string, value: unknown) => {
+        inMemory = value;
+        return Promise.resolve();
+      }),
+      save: vi.fn().mockRejectedValue(new Error("disk full")),
+      reload: vi.fn().mockRejectedValue(new Error("reload failed")),
+      delete: remove,
+    });
+
+    const { persistOverrides } = await import("./store");
+    await expect(persistOverrides({ canary: true })).rejects.toThrow("disk full");
+
+    expect(remove).toHaveBeenCalledWith("featureFlags");
+    expect(inMemory).toBeUndefined();
+  });
+
   it("rolls back to durable state when a newer overlapping Tauri write fails", async () => {
     mocks.isTauri.mockReturnValue(true);
     mocks.load.mockResolvedValue({
