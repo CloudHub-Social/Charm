@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useFlag } from "@/featureFlags";
+import { useFocusMode } from "@/features/focus/useFocusMode";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { AboutPanel } from "./AboutPanel";
 import { AccountPanel } from "./AccountPanel";
@@ -45,7 +46,12 @@ const SECTIONS: {
   { value: "appearance", label: "Appearance" },
   { value: "observability", label: "Observability" },
   { value: "desktop", label: "Desktop", desktopOnly: true },
-  { value: "focus", label: "Focus", flagGated: true },
+  // Review fix: `invokeWeb` (matrixTransport.ts) has no case for
+  // `get_dnd_state`/`set_dnd_state` — Do Not Disturb is a Tauri/native
+  // concept (tray icon, OS notifications) the web companion build has no
+  // transport for, same reason `general`/`notifications` above are
+  // `webUnsupported` rather than adding web-side command support.
+  { value: "focus", label: "Focus", flagGated: true, webUnsupported: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
 ];
@@ -64,11 +70,20 @@ function SettingsBody({
   const showDesktopSection = useIsDesktopPlatform();
   const webBuild = isWebBuild();
   const focusModeEnabled = useFlag("focus_mode");
+  // Review fix: if `focus_mode` is later disabled (rollout killed, local
+  // override cleared) while a user still has an active/indefinite DND
+  // persisted, Rust enforcement keeps suppressing notifications regardless
+  // of this flag — so hiding the Focus section entirely would leave them
+  // with no in-app way to turn it back off. Keep the section reachable
+  // whenever DND is currently on, even with the flag off, purely as an
+  // off-ramp; `!webBuild` still applies since the underlying IPC is
+  // Tauri-only either way.
+  const { enabled: dndActive } = useFocusMode();
   const sections = SECTIONS.filter(
     (s) =>
       (!s.desktopOnly || showDesktopSection) &&
       (!s.webUnsupported || !webBuild) &&
-      (!s.flagGated || focusModeEnabled),
+      (!s.flagGated || focusModeEnabled || dndActive),
   );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from

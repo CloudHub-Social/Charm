@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { getDndState, onDndChanged, setDndState } from "@/lib/matrix";
+import { isWebBuild } from "@/lib/platform";
 
 export const DND_QUERY_KEY = ["settings", "dnd"] as const;
 
@@ -23,20 +24,31 @@ export const DND_PRESETS = [
  */
 export function useFocusMode() {
   const queryClient = useQueryClient();
+  // Review fix: Do Not Disturb is a Tauri/native concept (tray icon, OS
+  // notifications) — `invokeWeb` (matrixTransport.ts) has no case for
+  // `get_dnd_state`/`set_dnd_state`, so calling them on the web companion
+  // build would only ever reject with an `UnsupportedCommand` error. Callers
+  // that render regardless of platform (e.g. `RoomList`'s chrome indicator,
+  // unlike `FocusPanel` which is already excluded from web builds via
+  // `SettingsScreen`'s `webUnsupported` filter) still need this to no-op
+  // cleanly rather than spam a perpetually-erroring query.
+  const webBuild = isWebBuild();
 
   const { data } = useQuery({
     queryKey: DND_QUERY_KEY,
     queryFn: getDndState,
+    enabled: !webBuild,
   });
 
   useEffect(() => {
+    if (webBuild) return undefined;
     const unlistenPromise = onDndChanged((state) => {
       queryClient.setQueryData(DND_QUERY_KEY, state);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [queryClient]);
+  }, [queryClient, webBuild]);
 
   const enabled = data?.enabled ?? false;
   const until = data?.until ?? null;

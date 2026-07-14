@@ -8,6 +8,7 @@ const getDndState = vi.fn();
 const setDndState = vi.fn();
 const onDndChanged = vi.fn();
 let dndChangedListener: ((state: { enabled: boolean; until: number | null }) => void) | null = null;
+let webBuild = false;
 
 vi.mock("@/lib/matrix", () => ({
   getDndState: (...args: unknown[]) => getDndState(...args),
@@ -17,6 +18,10 @@ vi.mock("@/lib/matrix", () => ({
     dndChangedListener = callback;
     return Promise.resolve(() => {});
   },
+}));
+
+vi.mock("@/lib/platform", () => ({
+  isWebBuild: () => webBuild,
 }));
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -35,6 +40,7 @@ beforeEach(() => {
     );
   onDndChanged.mockReset();
   dndChangedListener = null;
+  webBuild = false;
 });
 
 describe("useFocusMode", () => {
@@ -101,5 +107,19 @@ describe("useFocusMode", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Review fix: `invokeWeb` has no case for `get_dnd_state`/`set_dnd_state`
+  // (falls to `unsupported(command)`, a rejected promise), so a caller that
+  // renders on every platform — like `RoomList`'s chrome indicator, unlike
+  // `FocusPanel` which `SettingsScreen` already excludes from web builds —
+  // must not even attempt the query there.
+  it("never calls getDndState or subscribes to dnd:changed on a web build", async () => {
+    webBuild = true;
+    const { result } = renderHook(() => useFocusMode(), { wrapper });
+
+    await waitFor(() => expect(result.current.enabled).toBe(false));
+    expect(getDndState).not.toHaveBeenCalled();
+    expect(onDndChanged).not.toHaveBeenCalled();
   });
 });

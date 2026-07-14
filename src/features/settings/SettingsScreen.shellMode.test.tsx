@@ -52,6 +52,9 @@ vi.mock("@/lib/matrix", () => ({
   unregisterPush: vi.fn(),
   getAutostart: vi.fn().mockResolvedValue(false),
   setAutostart: vi.fn(),
+  getDndState: vi.fn().mockResolvedValue({ enabled: false, until: null }),
+  setDndState: vi.fn().mockResolvedValue({ enabled: false, until: null }),
+  onDndChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 function renderScreen(section: "account") {

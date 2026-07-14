@@ -106,7 +106,22 @@ pub fn is_active_at(store_root: &Path) -> bool {
     let Some(app_data_dir) = store_root.parent() else {
         return false;
     };
-    read_persisted_at(app_data_dir).is_active(now_ms())
+    if !read_persisted_at(app_data_dir).is_active(now_ms()) {
+        return false;
+    }
+    // Spec 30 review fix: enforcement is gated on `focus_mode` too, not just
+    // the persisted state. Without this, a user who enabled indefinite DND
+    // while the flag was on, then had it rolled back off, would have no
+    // in-app way to turn DND back off (the Settings entry and tray submenu
+    // are both flag-gated too, per `FocusPanel`/`setup_tray_and_menu`) —
+    // notifications would stay silently suppressed until someone hand-edited
+    // `focus.json` or re-enabled the flag. Tying enforcement to the same
+    // flag means disabling it is itself the off-ramp: suppression stops
+    // immediately, no separate affordance needed.
+    crate::feature_flags::flag(
+        app_data_dir,
+        crate::feature_flags::FeatureFlagKey::FocusMode,
+    )
 }
 
 /// Loads persisted DND state into `MatrixState::dnd` at app startup.
@@ -154,8 +169,18 @@ pub fn effective(app: &AppHandle) -> DndState {
 /// Whether local/push notification dispatch should be suppressed right now —
 /// the single enforcement check shared by `shell::maybe_send_notification`
 /// and `push::handle_push`, so neither re-derives DND logic independently.
+///
+/// Also gated on the `focus_mode` flag (see `is_active_at`'s doc comment for
+/// why): a killed rollout stops enforcement immediately rather than leaving
+/// a persisted DND with no in-app way to clear it.
 pub fn is_dnd_active(app: &AppHandle) -> bool {
-    effective(app).enabled
+    if !effective(app).enabled {
+        return false;
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return false;
+    };
+    crate::feature_flags::flag(&dir, crate::feature_flags::FeatureFlagKey::FocusMode)
 }
 
 #[tauri::command]
@@ -230,6 +255,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Writes a `feature-flags.json` override enabling `focus_mode` at
+    /// `app_data_dir`, mirroring the on-disk shape `feature_flags::flag`
+    /// reads (see `feature_flags::read_overrides`'s doc comment) — needed
+    /// because enforcement now also requires the flag (see `is_active_at`'s
+    /// doc comment), so a bare `focus.json` is no longer enough to test it.
+    fn enable_focus_mode_flag_at(app_data_dir: &Path) {
+        std::fs::create_dir_all(app_data_dir).unwrap();
+        std::fs::write(
+            app_data_dir.join("feature-flags.json"),
+            r#"{"featureFlags":{"state":{"overrides":{"focus_mode":true}}}}"#,
+        )
+        .unwrap();
+    }
+
     /// `is_active_at` takes a `store_root` (e.g. `<app_data_dir>/matrix_store`)
     /// and must read `focus.json` from its *parent* (`app_data_dir`), not
     /// from `store_root` itself — see the doc comment above. This pins that
@@ -248,8 +287,36 @@ mod tests {
                 until: None,
             },
         );
+        enable_focus_mode_flag_at(&app_data_dir);
 
         assert!(is_active_at(&store_root));
+
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+    }
+
+    /// Review fix: a killed `focus_mode` rollout must stop enforcement
+    /// immediately, even with an indefinite DND persisted — otherwise a user
+    /// would have no in-app way to turn notifications back on once both the
+    /// Settings entry and tray submenu disappear with the flag. This is the
+    /// "off-ramp" this repo's review comment asked for: disabling the flag
+    /// *is* the off-ramp, rather than a separate always-visible affordance.
+    #[test]
+    fn is_active_at_is_false_when_focus_mode_flag_is_off_despite_persisted_dnd() {
+        let app_data_dir =
+            std::env::temp_dir().join(format!("charm-dnd-test-flag-off-{}", now_ms()));
+        let store_root = app_data_dir.join("matrix_store");
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+        write_persisted_at(
+            &app_data_dir,
+            DndState {
+                enabled: true,
+                until: None,
+            },
+        );
+        // Deliberately no `enable_focus_mode_flag_at` call: the flag is off
+        // by default (no override file at all), matching a killed rollout.
+
+        assert!(!is_active_at(&store_root));
 
         let _ = std::fs::remove_dir_all(&app_data_dir);
     }

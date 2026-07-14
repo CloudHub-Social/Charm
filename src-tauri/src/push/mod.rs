@@ -1316,6 +1316,14 @@ mod tests {
             r#"{"focus":{"state":{"enabled":true,"until":null}}}"#,
         )
         .unwrap();
+        // Enforcement also requires the `focus_mode` flag (a review fix so a
+        // killed rollout stops suppressing immediately) — see
+        // `dnd::is_active_at`'s doc comment.
+        std::fs::write(
+            app_data_dir.join("feature-flags.json"),
+            r#"{"featureFlags":{"state":{"overrides":{"focus_mode":true}}}}"#,
+        )
+        .unwrap();
 
         let result = handle_headless_push(
             &store_root,
