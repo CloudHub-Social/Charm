@@ -326,6 +326,45 @@ describe("RoomsScreen", () => {
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
   });
 
+  it("consumes a deep link to an invite without selecting its timeline", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    listRooms.mockResolvedValue([invite, room({ room_id: "!joined:example.org" })]);
+    const onDeepLinkConsumed = vi.fn();
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    expect(screen.getByRole("button", { name: `accept:${invite.room_id}` })).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
+  it("consumes a deep link to a room absent from the loaded snapshot", async () => {
+    const onDeepLinkConsumed = vi.fn();
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId="!missing:example.org"
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
   it("opens the create/join space dialog without changing the current selection", async () => {
     listRooms.mockResolvedValue([
       room({ room_id: "!space:example.org", name: "Team", is_space: true }),
@@ -596,6 +635,27 @@ describe("RoomsScreen", () => {
 
     await waitFor(() => expect(acceptInvite).toHaveBeenCalledWith(invite.room_id));
     expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+  });
+
+  it("uses the refreshed snapshot when an accepted room belongs to a space", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const space = room({ room_id: "!space:example.org", is_space: true });
+    const joined = room({
+      room_id: invite.room_id,
+      membership: "join",
+      parent_space_ids: [space.room_id],
+    });
+    listRooms.mockReset().mockResolvedValueOnce([invite]).mockResolvedValueOnce([space, joined]);
+
+    renderRoomsScreen();
+    fireEvent.click(await screen.findByRole("button", { name: `accept:${invite.room_id}` }));
+
+    expect(await screen.findByText(`chat-content:${invite.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText(`space-rail:space:${space.room_id}`)).toBeInTheDocument();
   });
 
   it("declines an invite and removes it after refreshing the snapshot", async () => {

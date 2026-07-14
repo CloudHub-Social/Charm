@@ -69,6 +69,7 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  const [roomsLoaded, setRoomsLoaded] = useState(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
@@ -120,7 +121,7 @@ export function RoomsScreen({
     spaceDeepLinkSelectedRef.current = true;
   }
 
-  function selectRoomInVisibleMode(room: RoomSummary) {
+  function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
     if (room.is_space) {
       selectSpace(room.room_id);
       setActiveRoomId(null);
@@ -132,7 +133,7 @@ export function RoomsScreen({
     } else if (room.parent_space_ids.length > 0) {
       const joinedParentSpaceIds = room.parent_space_ids
         .filter((spaceId) =>
-          joinedRooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
+          visibleRooms.some((candidate) => candidate.room_id === spaceId && candidate.is_space),
         )
         .toSorted();
       const parentSpaceId = joinedParentSpaceIds[0];
@@ -159,8 +160,16 @@ export function RoomsScreen({
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
 
   useEffect(() => {
-    listRooms().then(setRooms).catch(logAndIgnore);
-    const unlisten = onRoomListUpdate(setRooms);
+    listRooms()
+      .then((nextRooms) => {
+        setRooms(nextRooms);
+        setRoomsLoaded(true);
+      })
+      .catch(logAndIgnore);
+    const unlisten = onRoomListUpdate((nextRooms) => {
+      setRooms(nextRooms);
+      setRoomsLoaded(true);
+    });
     return () => {
       unlisten.then((fn) => fn()).catch(logAndIgnore);
     };
@@ -178,7 +187,10 @@ export function RoomsScreen({
     const joinedRoom = nextRooms.find(
       (room) => room.room_id === roomId && room.membership === "join",
     );
-    if (joinedRoom) selectRoomInVisibleMode(joinedRoom);
+    if (joinedRoom) {
+      const nextJoinedRooms = nextRooms.filter((room) => room.membership === "join");
+      selectRoomInVisibleMode(joinedRoom, nextJoinedRooms);
+    }
   }
 
   async function handleDeclineInvite(roomId: string) {
@@ -249,9 +261,9 @@ export function RoomsScreen({
   }, [deepLinkRoomId]);
 
   useEffect(() => {
-    if (!resolvedDeepLinkTarget) return;
-    const match = joinedRooms.find((room) => room.room_id === resolvedDeepLinkTarget);
-    if (match) {
+    if (!resolvedDeepLinkTarget || !roomsLoaded) return;
+    const match = rooms.find((room) => room.room_id === resolvedDeepLinkTarget);
+    if (match?.membership === "join") {
       // `selectRoom`, not a plain `setActiveRoomId`: a deep link targeting
       // the room that's already active (e.g. re-tapping the same
       // `charm://room/<id>` link while mobile is showing a list tab) must
@@ -261,11 +273,21 @@ export function RoomsScreen({
       if (match.is_space) {
         spaceDeepLinkSelectedRef.current = true;
       }
-      setResolvedDeepLinkTarget(null);
-      onDeepLinkConsumed();
+    } else if (match?.membership === "invite") {
+      // Invites are actionable from the room-list inbox, not selectable as
+      // timelines. Bring that inbox into view and consume the deep link so
+      // it cannot block normal room selection indefinitely.
+      setRoomListMode("home");
+      setSelectedSpaceId(null);
+      setMobileView("list");
     }
+    // A resolved target absent from the completed snapshot is stale or not
+    // visible to this account. Consume it rather than letting it suppress
+    // initial room selection forever.
+    setResolvedDeepLinkTarget(null);
+    onDeepLinkConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedDeepLinkTarget, joinedRooms, onDeepLinkConsumed]);
+  }, [resolvedDeepLinkTarget, rooms, roomsLoaded, onDeepLinkConsumed]);
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
