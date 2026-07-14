@@ -95,6 +95,8 @@ const SESSIONS_PREFIX: &str = "sessions";
 /// never responds can't tie up a request — and the connection handling
 /// it — indefinitely).
 const RESTORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const SNAPSHOT_READY_ATTEMPTS: usize = 5;
+const SNAPSHOT_READY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedSession {
@@ -281,11 +283,24 @@ impl PersistenceStore {
         let (Some(backup), Some((store_key, _passphrase))) = (&self.crypto_backup, crypto) else {
             return Ok(());
         };
-        let Some(source_dir) = crate::crypto_store::existing_store_dir(store_key)? else {
-            return Err("cannot snapshot a missing crypto store directory".to_string());
-        };
         let binding = crate::crypto_backup::CryptoSnapshotBinding::new(token, session, store_key);
-        backup.snapshot(&binding, &source_dir).await
+        for attempt in 0..SNAPSHOT_READY_ATTEMPTS {
+            let result = match crate::crypto_store::existing_store_dir(store_key)? {
+                Some(source_dir) => backup.snapshot(&binding, &source_dir).await,
+                None => Err("cannot snapshot a missing crypto store directory".to_string()),
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if snapshot_source_is_not_ready(&error)
+                        && attempt + 1 < SNAPSHOT_READY_ATTEMPTS =>
+                {
+                    tokio::time::sleep(SNAPSHOT_READY_RETRY_DELAY).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("snapshot retry loop always returns on its final attempt")
     }
 
     /// Decrypts every persisted session object, for the startup-only restore
@@ -805,6 +820,11 @@ impl PersistenceStore {
     }
 }
 
+fn snapshot_source_is_not_ready(error: &str) -> bool {
+    error == "cannot snapshot a missing crypto store directory"
+        || error == "crypto store contained no recognized SQLite databases"
+}
+
 /// Builds the `Client` [`restore_one`] restores its session into — backed by
 /// `entry`'s crypto store when it has one.
 ///
@@ -1128,6 +1148,52 @@ mod tests {
             "@restart:example.invalid"
         );
         assert_eq!(all[0].session.tokens.access_token, "test-access-token");
+    }
+
+    #[tokio::test]
+    async fn snapshot_crypto_store_retries_until_the_database_is_ready() {
+        let _lock = crate::ENV_TEST_LOCK.lock().await;
+        let data_dir = scratch_dir("snapshot-retry-data");
+        let persistence_dir = scratch_dir("snapshot-retry-persistence");
+        let restore_dir = scratch_dir("snapshot-retry-restore");
+        std::fs::remove_dir_all(&restore_dir).unwrap();
+        let _data_dir = EnvVarGuard::set(DATA_DIR_ENV, data_dir.to_str().unwrap());
+
+        let backup = Arc::new(crate::crypto_backup::CryptoBackupStore::new_for_test(
+            [43u8; 32],
+        ));
+        let store = PersistenceStore::new_for_test(&persistence_dir, [44u8; 32])
+            .with_crypto_backup(Some(backup.clone()));
+        let matrix_session = dummy_session("@snapshot-retry:example.invalid");
+        let store_key = "snapshotretrystore";
+        let source_dir = data_dir.join("crypto").join(store_key);
+
+        let create_database = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            std::fs::create_dir_all(&source_dir).unwrap();
+            rusqlite::Connection::open(source_dir.join("matrix-sdk-crypto.sqlite3"))
+                .unwrap()
+                .execute_batch("CREATE TABLE example(value TEXT);")
+                .unwrap();
+        });
+
+        store
+            .snapshot_crypto_store(
+                "snapshot-retry-token",
+                &matrix_session,
+                Some((store_key, "unused-passphrase")),
+            )
+            .await
+            .unwrap();
+        create_database.await.unwrap();
+
+        let binding = crate::crypto_backup::CryptoSnapshotBinding::new(
+            "snapshot-retry-token",
+            &matrix_session,
+            store_key,
+        );
+        assert!(backup.restore(&binding, &restore_dir).await.unwrap());
+        assert!(restore_dir.join("matrix-sdk-crypto.sqlite3").is_file());
     }
 
     #[tokio::test]
