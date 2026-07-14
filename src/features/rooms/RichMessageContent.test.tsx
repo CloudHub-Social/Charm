@@ -2,9 +2,16 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RichMessageContent, parseMatrixPillTarget } from "./RichMessageContent";
 
+const featureFlagMocks = vi.hoisted(() => ({ enabled: true }));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: () => featureFlagMocks.enabled,
+}));
+
 let clipboardWriteText: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  featureFlagMocks.enabled = true;
   clipboardWriteText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -13,6 +20,16 @@ beforeEach(() => {
 });
 
 describe("RichMessageContent", () => {
+  it("keeps staged enhancements disabled when the feature flag is off", () => {
+    featureFlagMocks.enabled = false;
+    const { container } = render(
+      <RichMessageContent body="https://example.org 🎉" currentUserId="@me:localhost" />,
+    );
+
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(container.firstChild).not.toHaveAttribute("data-jumbo-emoji");
+  });
+
   it("keeps spoiler content concealed until the user reveals it", () => {
     render(
       <RichMessageContent

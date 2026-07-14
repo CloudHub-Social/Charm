@@ -17,6 +17,8 @@ import { roomSettingsAtom } from "@/features/room-info/roomInfoAtoms";
 import { messageLayoutAtom } from "@/features/appearance/atoms";
 import { TYPING_AUTO_HIDE_MS } from "./useChatTyping";
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 // ChatShell talks to Tauri IPC the moment it mounts (get_timeline_page,
 // timeline:update / receipts:update / typing:update / upload:progress
 // listeners, mark_room_read) — mock lib/matrix entirely so the test

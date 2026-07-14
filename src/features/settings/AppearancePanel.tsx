@@ -16,6 +16,7 @@ import type {
   Theme,
 } from "@/features/appearance/atoms";
 import { useAppearance } from "@/features/appearance/useAppearance";
+import { useFlag } from "@/featureFlags";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const THEME_LABELS: Record<Theme, string> = {
@@ -163,6 +164,7 @@ function PickerControl<T extends string>({
  * `<html>` immediately, no reload) and persists across restart.
  */
 export function AppearancePanel() {
+  const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const {
     theme,
     fontSize,
@@ -230,17 +232,19 @@ export function AppearancePanel() {
             </p>
           )}
         </SettingTile>
-        <SettingTile
-          title="Emoji-only messages"
-          description="Scale up messages containing only emoji."
-          control={
-            <PickerControl
-              value={jumboEmojiSize}
-              labels={JUMBO_EMOJI_LABELS}
-              onChange={setJumboEmojiSize}
-            />
-          }
-        />
+        {richMessageRenderingEnabled && (
+          <SettingTile
+            title="Emoji-only messages"
+            description="Scale up messages containing only emoji."
+            control={
+              <PickerControl
+                value={jumboEmojiSize}
+                labels={JUMBO_EMOJI_LABELS}
+                onChange={setJumboEmojiSize}
+              />
+            }
+          />
+        )}
       </SettingsCard>
     </div>
   );

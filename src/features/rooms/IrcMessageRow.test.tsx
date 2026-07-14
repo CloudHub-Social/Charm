@@ -4,6 +4,8 @@ import { IrcMessageRow } from "./IrcMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLayoutProps {
   return {
     message: makeMessageSummary({

@@ -3,6 +3,8 @@ import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearancePanel } from "./AppearancePanel";
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 const storeSet = vi.fn();
 const load = vi.fn();
 

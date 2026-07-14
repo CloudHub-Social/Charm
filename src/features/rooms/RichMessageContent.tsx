@@ -12,6 +12,7 @@ import { Check, Copy } from "lucide-react";
 import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import { useAtomValue } from "jotai";
 import { jumboEmojiSizeAtom } from "@/features/appearance/atoms";
+import { useFlag } from "@/featureFlags";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { openExternalUrl } from "@/lib/openExternalUrl";
 import { cn } from "@/lib/utils";
@@ -295,6 +296,7 @@ export function RichMessageContent({
   onUserPillClick,
   onRoomPillClick,
 }: RichMessageContentProps) {
+  const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const jumboEmojiSize = useAtomValue(jumboEmojiSizeAtom);
   const sanitizedFormattedBody = useMemo(
     () => (formattedBody ? sanitizeMatrixHtml(formattedBody) : null),
@@ -306,9 +308,11 @@ export function RichMessageContent({
       new DOMParser().parseFromString(sanitizedFormattedBody, "text/html").body.textContent ?? ""
     );
   }, [body, sanitizedFormattedBody]);
-  const jumbo = jumboEmojiSize !== "off" && isOnlyEmoji(renderedText);
+  const jumbo =
+    richMessageRenderingEnabled && jumboEmojiSize !== "off" && isOnlyEmoji(renderedText);
   const content = useMemo(() => {
     if (!sanitizedFormattedBody) {
+      if (!richMessageRenderingEnabled) return body;
       return (
         <Linkify
           options={{
@@ -333,6 +337,7 @@ export function RichMessageContent({
       // oxlint-disable-next-line react/no-unstable-nested-components -- html-react-parser requires a per-render replacement hook so it can close over the current user and pill navigation callbacks.
       replace(domNode) {
         if (domNode instanceof Text) {
+          if (!richMessageRenderingEnabled) return undefined;
           const parentName = domNode.parent instanceof Element ? domNode.parent.name : "";
           if (parentName === "code" || parentName === "pre") return undefined;
           return highlightRoomMentions(domNode.data) as ReturnType<
@@ -351,13 +356,13 @@ export function RichMessageContent({
         }
 
         const tex = domNode.attribs["data-mx-maths"];
-        if (tex !== undefined) {
+        if (richMessageRenderingEnabled && tex !== undefined) {
           return (
             <MathContent tex={tex || textContent(children)} display={domNode.name === "div"} />
           );
         }
 
-        if (domNode.name === "pre") {
+        if (richMessageRenderingEnabled && domNode.name === "pre") {
           const codeNode = children.find(
             (child): child is Element => child instanceof Element && child.name === "code",
           );
@@ -371,7 +376,7 @@ export function RichMessageContent({
           );
         }
 
-        if (domNode.name === "table") {
+        if (richMessageRenderingEnabled && domNode.name === "table") {
           return (
             <div className="my-2 max-w-full overflow-x-auto">
               <table className="w-max min-w-full border-collapse text-sm">
@@ -381,7 +386,7 @@ export function RichMessageContent({
           );
         }
 
-        if (domNode.name === "th" || domNode.name === "td") {
+        if (richMessageRenderingEnabled && (domNode.name === "th" || domNode.name === "td")) {
           const Component = domNode.name;
           return (
             <Component
@@ -401,7 +406,7 @@ export function RichMessageContent({
             domNode.attribs["data-mx-pill"] !== undefined
               ? parseMatrixPillTarget(domNode.attribs.href)
               : null;
-          if (target) {
+          if (richMessageRenderingEnabled && target) {
             return (
               <MatrixPill
                 target={target}
@@ -432,7 +437,14 @@ export function RichMessageContent({
     };
 
     return parse(sanitizedFormattedBody, options);
-  }, [body, currentUserId, onRoomPillClick, onUserPillClick, sanitizedFormattedBody]);
+  }, [
+    body,
+    currentUserId,
+    onRoomPillClick,
+    onUserPillClick,
+    richMessageRenderingEnabled,
+    sanitizedFormattedBody,
+  ]);
 
   return (
     <div
