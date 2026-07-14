@@ -56,6 +56,11 @@ vi.mock("@/lib/matrix", () => ({
   addRoomAlias: vi.fn().mockResolvedValue(undefined),
   removeRoomAlias: vi.fn().mockResolvedValue(undefined),
   setCanonicalAlias: vi.fn().mockResolvedValue(undefined),
+  getProfile: vi.fn().mockResolvedValue({
+    user_id: "@me:example.org",
+    display_name: null,
+    avatar_url: null,
+  }),
 }));
 
 beforeEach(() => {
@@ -155,5 +160,16 @@ describe("RoomSettingsForm", () => {
     renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
 
     expect(screen.getByText("Addresses")).toBeInTheDocument();
+  });
+
+  it("hides the Addresses section on web builds even when the flag is on", () => {
+    featureFlagMocks.roomAliasManagement = true;
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    renderWithProviders(<RoomSettingsForm details={makeRoomDetails()} />);
+
+    expect(screen.queryByText("Addresses")).not.toBeInTheDocument();
+
+    vi.unstubAllEnvs();
   });
 });

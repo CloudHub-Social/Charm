@@ -9,6 +9,11 @@ const checkRoomAliasAvailable = vi.fn().mockResolvedValue(true);
 const addRoomAlias = vi.fn().mockResolvedValue(undefined);
 const removeRoomAlias = vi.fn().mockResolvedValue(undefined);
 const setCanonicalAlias = vi.fn().mockResolvedValue(undefined);
+const getProfile = vi.fn().mockResolvedValue({
+  user_id: "@me:example.org",
+  display_name: null,
+  avatar_url: null,
+});
 
 vi.mock("@/lib/matrix", () => ({
   getRoomLocalAliases: (...args: unknown[]) => getRoomLocalAliases(...args),
@@ -16,6 +21,7 @@ vi.mock("@/lib/matrix", () => ({
   addRoomAlias: (...args: unknown[]) => addRoomAlias(...args),
   removeRoomAlias: (...args: unknown[]) => removeRoomAlias(...args),
   setCanonicalAlias: (...args: unknown[]) => setCanonicalAlias(...args),
+  getProfile: (...args: unknown[]) => getProfile(...args),
 }));
 
 describe("RoomAliasManagement", () => {
@@ -42,7 +48,7 @@ describe("RoomAliasManagement", () => {
     expect(await screen.findByText("Couldn't load room addresses.")).toBeInTheDocument();
   });
 
-  it("adds a new alias built from the local part and the room's server name", async () => {
+  it("adds a new alias built from the local part and the signed-in user's server name", async () => {
     getRoomLocalAliases.mockResolvedValue([]);
     const details = makeRoomDetails({ room_id: "!test:example.org" });
     renderWithProviders(<RoomAliasManagement details={details} />);
@@ -55,6 +61,32 @@ describe("RoomAliasManagement", () => {
 
     await waitFor(() => {
       expect(addRoomAlias).toHaveBeenCalledWith(details.room_id, "#team-room:example.org");
+    });
+  });
+
+  it("uses the signed-in user's homeserver, not the room's, for federated rooms", async () => {
+    getProfile.mockResolvedValueOnce({
+      user_id: "@me:my-homeserver.example",
+      display_name: null,
+      avatar_url: null,
+    });
+    getRoomLocalAliases.mockResolvedValue([]);
+    const details = makeRoomDetails({ room_id: "!test:someone-elses-server.example" });
+    renderWithProviders(<RoomAliasManagement details={details} />);
+
+    await screen.findByText("No published addresses yet.");
+    expect(await screen.findByText(":my-homeserver.example")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("New alias local part"), {
+      target: { value: "team-room" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(addRoomAlias).toHaveBeenCalledWith(
+        details.room_id,
+        "#team-room:my-homeserver.example",
+      );
     });
   });
 

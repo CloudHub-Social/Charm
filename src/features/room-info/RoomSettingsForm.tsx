@@ -257,7 +257,7 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
         </div>
       </section>
 
-      {roomAliasManagementEnabled && (
+      {roomAliasManagementEnabled && !isWebBuild() && (
         <section className="flex flex-col gap-6">
           <h3 className="text-sm font-semibold text-foreground">Addresses</h3>
           <RoomAliasManagement details={details} />

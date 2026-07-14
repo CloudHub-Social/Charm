@@ -12,6 +12,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { RoomDetails } from "@/lib/matrix";
 import { checkRoomAliasAvailable } from "@/lib/matrix";
+import { useProfile } from "@/features/settings/useProfile";
 import { useRoomAdminActions } from "./useRoomAdminActions";
 import { useRoomAliases } from "./useRoomAliases";
 
@@ -57,15 +58,18 @@ interface RoomAliasManagementProps {
 export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
   const actions = useRoomAdminActions(details.room_id);
   const { data: aliases, isLoading, isError } = useRoomAliases(details.room_id);
+  const { data: profile } = useProfile();
   const [newAlias, setNewAlias] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [checkingAvailability, setCheckingAvailability] = useState(false);
   const canManage = details.can.set_canonical_alias;
 
-  // The user only types the local part; server name is fixed to this room's
-  // own homeserver the same way Charm 1.0's alias composer does — a local
-  // alias can't be published on a different server anyway.
-  const serverName = details.room_id.split(":").slice(1).join(":");
+  // The user only types the local part; server name is the signed-in user's
+  // own homeserver, not the room's origin server — a local alias can only be
+  // published on the server the alias-create/directory endpoints actually
+  // hit, which is the user's own homeserver, and those can differ for a
+  // federated room.
+  const serverName = profile?.user_id.split(":").slice(1).join(":") ?? "";
 
   async function handleAddAlias() {
     const localPart = newAlias.trim().replace(/^#/, "");
@@ -203,7 +207,11 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
             <Button
               size="sm"
               disabled={
-                !canManage || !newAlias.trim() || checkingAvailability || actions.addAlias.isPending
+                !canManage ||
+                !newAlias.trim() ||
+                !serverName ||
+                checkingAvailability ||
+                actions.addAlias.isPending
               }
               onClick={handleAddAlias}
             >
