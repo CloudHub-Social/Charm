@@ -2,6 +2,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FocusPanel } from "./FocusPanel";
 import { renderWithProviders } from "@/test/renderWithProviders";
+import type * as PlatformModule from "@/lib/platform";
 
 vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
 
@@ -14,6 +15,14 @@ vi.mock("@/lib/matrix", () => ({
   setDndState: (...args: unknown[]) => setDndState(...args),
   onDndChanged: (...args: unknown[]) => onDndChanged(...args),
 }));
+
+// `useFocusMode` only queries/subscribes when `isTauri()` is true (jsdom has
+// no `window.__TAURI_INTERNALS__`), so without this override every assertion
+// here would see the query permanently disabled.
+vi.mock("@/lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof PlatformModule>();
+  return { ...actual, isTauri: () => true };
+});
 
 beforeEach(() => {
   getDndState.mockReset().mockResolvedValue({ enabled: false, until: null });

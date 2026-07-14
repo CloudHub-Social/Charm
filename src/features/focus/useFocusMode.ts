@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { getDndState, onDndChanged, setDndState } from "@/lib/matrix";
-import { isWebBuild } from "@/lib/platform";
+import { isTauri } from "@/lib/platform";
 
 export const DND_QUERY_KEY = ["settings", "dnd"] as const;
 
@@ -32,23 +32,31 @@ export function useFocusMode() {
   // unlike `FocusPanel` which is already excluded from web builds via
   // `SettingsScreen`'s `webUnsupported` filter) still need this to no-op
   // cleanly rather than spam a perpetually-erroring query.
-  const webBuild = isWebBuild();
+  //
+  // Gate on `isTauri()` rather than `isWebBuild()`: the latter is false in
+  // *any* plain-browser context that isn't specifically configured as the
+  // web companion build (e.g. Storybook, Vite dev server without
+  // `VITE_CHARM_WEB_API_BASE_URL`) — there's no `window.__TAURI_INTERNALS__`
+  // there either, so both `invoke` and `listen` (which synchronously touches
+  // `transformCallback`) would throw. `isTauri()` is the actual "is there a
+  // Tauri bridge to call" check.
+  const inTauri = isTauri();
 
   const { data } = useQuery({
     queryKey: DND_QUERY_KEY,
     queryFn: getDndState,
-    enabled: !webBuild,
+    enabled: inTauri,
   });
 
   useEffect(() => {
-    if (webBuild) return undefined;
+    if (!inTauri) return undefined;
     const unlistenPromise = onDndChanged((state) => {
       queryClient.setQueryData(DND_QUERY_KEY, state);
     });
     return () => {
       void unlistenPromise.then((unlisten) => unlisten());
     };
-  }, [queryClient, webBuild]);
+  }, [queryClient, inTauri]);
 
   const enabled = data?.enabled ?? false;
   const until = data?.until ?? null;

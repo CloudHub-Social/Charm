@@ -4,6 +4,7 @@ import { createStore, Provider as JotaiProvider } from "jotai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsScreen } from "./SettingsScreen";
 import { settingsOpenAtom, type SettingsSection } from "./settingsAtoms";
+import type * as PlatformModule from "@/lib/platform";
 
 const getAutostart = vi.fn().mockResolvedValue(false);
 const getDndState = vi.fn().mockReturnValue(new Promise(() => {}));
@@ -65,6 +66,19 @@ let focusModeFlagEnabled = false;
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => (key === "focus_mode" ? focusModeFlagEnabled : false),
 }));
+
+// `useFocusMode` gates its `getDndState` query on `isTauri()` (whether
+// `window.__TAURI_INTERNALS__` exists) rather than `isWebBuild()` — jsdom has
+// neither, so without this override the query would stay disabled and every
+// Focus/DND assertion below would see stale `enabled: false` regardless of
+// what `getDndState` is mocked to return. `isWebBuild()` itself is left as
+// the real implementation (still driven by `VITE_CHARM_BUILD_TARGET`) since
+// `SettingsScreen`'s own web-build gating is what several tests below are
+// exercising.
+vi.mock("@/lib/platform", async (importOriginal) => {
+  const actual = await importOriginal<typeof PlatformModule>();
+  return { ...actual, isTauri: () => true };
+});
 
 function renderScreen(section: SettingsSection | null) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

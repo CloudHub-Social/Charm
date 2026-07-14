@@ -8,7 +8,7 @@ const getDndState = vi.fn();
 const setDndState = vi.fn();
 const onDndChanged = vi.fn();
 let dndChangedListener: ((state: { enabled: boolean; until: number | null }) => void) | null = null;
-let webBuild = false;
+let inTauri = true;
 
 vi.mock("@/lib/matrix", () => ({
   getDndState: (...args: unknown[]) => getDndState(...args),
@@ -21,7 +21,7 @@ vi.mock("@/lib/matrix", () => ({
 }));
 
 vi.mock("@/lib/platform", () => ({
-  isWebBuild: () => webBuild,
+  isTauri: () => inTauri,
 }));
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -40,7 +40,7 @@ beforeEach(() => {
     );
   onDndChanged.mockReset();
   dndChangedListener = null;
-  webBuild = false;
+  inTauri = true;
 });
 
 describe("useFocusMode", () => {
@@ -113,9 +113,10 @@ describe("useFocusMode", () => {
   // (falls to `unsupported(command)`, a rejected promise), so a caller that
   // renders on every platform — like `RoomList`'s chrome indicator, unlike
   // `FocusPanel` which `SettingsScreen` already excludes from web builds —
-  // must not even attempt the query there.
-  it("never calls getDndState or subscribes to dnd:changed on a web build", async () => {
-    webBuild = true;
+  // must not even attempt the query there. Same guard also covers any plain
+  // browser context with no Tauri bridge at all (Storybook, web build).
+  it("never calls getDndState or subscribes to dnd:changed outside Tauri", async () => {
+    inTauri = false;
     const { result } = renderHook(() => useFocusMode(), { wrapper });
 
     await waitFor(() => expect(result.current.enabled).toBe(false));
