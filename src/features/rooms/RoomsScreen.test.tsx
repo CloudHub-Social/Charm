@@ -396,6 +396,78 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
   });
 
+  it("keeps a deep-linked space selected when declining an unrelated invite", async () => {
+    const space = room({ room_id: "!space:example.org", is_space: true });
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms
+      .mockReset()
+      .mockResolvedValueOnce([space, invite, joined])
+      .mockResolvedValueOnce([space, joined]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={space.room_id}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText(`space-rail:space:${space.room_id}`);
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: `decline:${invite.room_id}` }));
+    await waitFor(() => expect(declineInvite).toHaveBeenCalledWith(invite.room_id));
+    expect(screen.getByText(`space-rail:space:${space.room_id}`)).toBeInTheDocument();
+    expect(screen.getByText("chat-content:none")).toBeInTheDocument();
+  });
+
+  it("auto-selects a joined room when a deep-linked invite is revoked", async () => {
+    const invite = room({
+      room_id: "!invite:example.org",
+      membership: "invite",
+      inviter_user_id: "@alice:example.org",
+    });
+    const joined = room({ room_id: "!joined:example.org" });
+    listRooms.mockResolvedValue([invite, joined]);
+
+    const { rerender } = render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={invite.room_id}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByRole("button", { name: `decline:${invite.room_id}` });
+    rerender(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([joined]));
+
+    expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
+  });
+
   it("consumes a deep link to a room absent from the loaded snapshot", async () => {
     const onDeepLinkConsumed = vi.fn();
 

@@ -79,7 +79,9 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
-  const autoSelectSuppressedRef = useRef(false);
+  const autoSelectSuppressedRef = useRef<
+    { kind: "space" } | { kind: "invite"; roomId: string } | null
+  >(null);
 
   // Bumped on every room selection — via the room list, a deep link, or the
   // initial auto-select — even when it re-selects the already-active room.
@@ -89,25 +91,25 @@ export function RoomsScreen({
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
   function selectRoom(roomId: string) {
-    autoSelectSuppressedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setActiveRoomId(roomId);
     setSelectionRequestId((n) => n + 1);
   }
 
   function selectHome() {
-    autoSelectSuppressedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("home");
     setSelectedSpaceId(null);
   }
 
   function selectDms() {
-    autoSelectSuppressedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("dms");
     setSelectedSpaceId(null);
   }
 
   function selectSpace(spaceId: string) {
-    autoSelectSuppressedRef.current = false;
+    autoSelectSuppressedRef.current = null;
     setRoomListMode("space");
     setSelectedSpaceId(spaceId);
   }
@@ -121,7 +123,7 @@ export function RoomsScreen({
   // the deep-link flow sets) suppresses that fallback the same way.
   function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
     selectSpace(spaceId);
-    autoSelectSuppressedRef.current = true;
+    autoSelectSuppressedRef.current = { kind: "space" };
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -211,7 +213,12 @@ export function RoomsScreen({
     // room selection while that invite is actionable. Once it is declined,
     // release the guard before publishing the refreshed snapshot so the
     // first joined room can fill the otherwise-empty detail pane.
-    autoSelectSuppressedRef.current = false;
+    if (
+      autoSelectSuppressedRef.current?.kind === "invite" &&
+      autoSelectSuppressedRef.current.roomId === roomId
+    ) {
+      autoSelectSuppressedRef.current = null;
+    }
     await refreshRooms();
   }
 
@@ -288,7 +295,7 @@ export function RoomsScreen({
       // opens, not just silently consume the link.
       selectRoomInVisibleMode(match);
       if (match.is_space) {
-        autoSelectSuppressedRef.current = true;
+        autoSelectSuppressedRef.current = { kind: "space" };
       }
     } else if (match?.membership === "invite") {
       // Invites are actionable from the room-list inbox, not selectable as
@@ -297,7 +304,7 @@ export function RoomsScreen({
       setRoomListMode("home");
       setSelectedSpaceId(null);
       setMobileView("list");
-      autoSelectSuppressedRef.current = true;
+      autoSelectSuppressedRef.current = { kind: "invite", roomId: match.room_id };
     }
     // A resolved target absent from the completed snapshot is stale or not
     // visible to this account. Consume it rather than letting it suppress
@@ -306,6 +313,20 @@ export function RoomsScreen({
     onDeepLinkConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvedDeepLinkTarget, rooms, roomsLoaded, onDeepLinkConsumed]);
+
+  useEffect(() => {
+    const suppression = autoSelectSuppressedRef.current;
+    if (suppression?.kind !== "invite" || !roomsLoaded) return;
+    const inviteStillPending = rooms.some(
+      (room) => room.room_id === suppression.roomId && room.membership === "invite",
+    );
+    if (!inviteStillPending) {
+      // The invite may have been declined locally, accepted, or revoked by
+      // the inviter. Only release invite-owned suppression here; a deliberate
+      // no-room space selection must remain stable across unrelated updates.
+      autoSelectSuppressedRef.current = null;
+    }
+  }, [rooms, roomsLoaded]);
 
   useEffect(() => {
     if (deepLinkRoomId) return; // let a pending deep link win the initial selection
