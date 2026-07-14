@@ -105,9 +105,13 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
         // directory, it doesn't touch `m.room.canonical_alias` (see
         // `remove_room_alias`'s doc comment in `room_admin.rs`).
         if (details.canonical_alias === alias) {
-          actions.setCanonicalAlias.mutate(null);
+          actions.setCanonicalAlias.mutate(null, {
+            onError: (error) =>
+              setAddError(`Alias removed, but couldn't clear it as canonical: ${error.message}`),
+          });
         }
       },
+      onError: (error) => setAddError(error.message),
     });
   }
 
@@ -122,16 +126,26 @@ export function RoomAliasManagement({ details }: RoomAliasManagementProps) {
         <PermissionGate allowed={canManage}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" disabled={!canManage}>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!canManage || actions.setCanonicalAlias.isPending}
+              >
                 {details.canonical_alias ?? "None"}
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuRadioGroup
                 value={details.canonical_alias ?? NONE_VALUE}
-                onValueChange={(value) =>
-                  actions.setCanonicalAlias.mutate(value === NONE_VALUE ? null : value)
-                }
+                onValueChange={(value) => {
+                  // Disabling the trigger while a mutation is pending (above)
+                  // prevents overlapping calls from racing on stale
+                  // `alt_aliases` state server-side — see room_admin.rs.
+                  if (actions.setCanonicalAlias.isPending) return;
+                  actions.setCanonicalAlias.mutate(value === NONE_VALUE ? null : value, {
+                    onError: (error) => setAddError(error.message),
+                  });
+                }}
               >
                 <DropdownMenuRadioItem value={NONE_VALUE}>None</DropdownMenuRadioItem>
                 {canonicalOptions.map((alias) => (
