@@ -145,6 +145,8 @@ describe("RoomSettingsModal", () => {
     await screen.findByDisplayValue("Design Team");
 
     expect(screen.getByRole("tablist")).toHaveAttribute("aria-orientation", "horizontal");
+    expect(screen.getByRole("dialog")).toHaveClass("pt-[env(safe-area-inset-top)]");
+    expect(screen.getByRole("dialog")).toHaveClass("pb-[env(safe-area-inset-bottom)]");
     mockUseAdaptiveLayout.mockReturnValue("desktop");
   });
 

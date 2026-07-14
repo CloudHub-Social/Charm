@@ -52,7 +52,7 @@ export function Lightbox({
             <img
               src={href}
               alt={alt}
-              className="max-h-[90vh] max-w-full rounded-md object-contain"
+              className="max-h-[90dvh] max-w-full rounded-md object-contain"
             />
           ) : (
             // User-sent video has no caption track to attach — <track> below satisfies the a11y rule.
@@ -60,7 +60,7 @@ export function Lightbox({
               src={href}
               controls
               autoPlay
-              className="max-h-[90vh] max-w-full rounded-md object-contain"
+              className="max-h-[90dvh] max-w-full rounded-md object-contain"
             >
               <track kind="captions" />
             </video>

@@ -74,7 +74,7 @@ export function OnboardingScreen({ onDone }: OnboardingScreenProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-background">
+    <div className="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       <div className="flex justify-end p-4">
         <Button variant="ghost" size="sm" className="h-11" onClick={onDone}>
           Skip

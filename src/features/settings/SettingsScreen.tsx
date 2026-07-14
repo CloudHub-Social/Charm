@@ -167,7 +167,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
 
   if (layout === "mobile") {
     return (
-      <div className="fixed inset-0 z-40 flex flex-col bg-background">
+      <div className="fixed inset-0 z-40 flex flex-col bg-background pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
         <div className="flex shrink-0 items-center justify-between border-b border-border p-4">
           <span className="text-base font-bold text-foreground">Settings</span>
           <Button
@@ -194,7 +194,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
   return (
     <Dialog open onOpenChange={(open) => !open && closeSettings()}>
       <DialogContent
-        className="flex h-[36rem] max-h-[85vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className="flex h-[36rem] max-h-[85dvh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">Settings</DialogTitle>
