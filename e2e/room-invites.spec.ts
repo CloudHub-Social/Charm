@@ -12,6 +12,12 @@ const INVITED_ROOM = {
 };
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({ state: { overrides: { room_invites: true } }, updatedAt: Date.now() }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: "@invitee:e2e",
     deviceId: "INVITE_E2E",
