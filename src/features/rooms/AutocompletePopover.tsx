@@ -7,12 +7,18 @@ export interface AutocompleteItem {
   leading?: string;
 }
 
+export interface AutocompletePosition {
+  top: number;
+  left: number;
+  maxHeight?: number;
+}
+
 interface AutocompletePopoverProps {
   items: AutocompleteItem[];
   activeIndex: number;
   onSelect: (index: number) => void;
   /** Viewport-relative position (from the trigger character's `clientRect`). */
-  position: { top: number; left: number };
+  position: AutocompletePosition;
 }
 
 /**
@@ -34,8 +40,8 @@ export function AutocompletePopover({
     <div
       role="listbox"
       aria-label="Suggestions"
-      className="fixed z-50 max-h-60 w-64 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
-      style={{ top: position.top, left: position.left }}
+      className="fixed z-50 max-h-60 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+      style={{ top: position.top, left: position.left, maxHeight: position.maxHeight }}
     >
       {items.map((item, index) => (
         <button

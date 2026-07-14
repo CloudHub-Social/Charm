@@ -629,7 +629,7 @@ export function ChatShell({ room, currentUserId, onNavigateToRoom }: ChatShellPr
       onDrop={handleDrop}
     >
       <div className="flex items-center justify-between gap-2 border-b border-border p-4">
-        <div className="flex items-center gap-2 text-[15px] font-bold text-foreground">
+        <div className="flex min-w-0 items-center gap-2 text-[15px] font-bold text-foreground">
           <Avatar size="sm">
             <AvatarImage src={resolveAvatar(room.avatar_path, room.avatar_url)} alt="" />
             <AvatarFallback
@@ -640,7 +640,7 @@ export function ChatShell({ room, currentUserId, onNavigateToRoom }: ChatShellPr
             </AvatarFallback>
             {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
           </Avatar>
-          <span>{displayName(room.room_id, room.name)}</span>
+          <span className="truncate">{displayName(room.room_id, room.name)}</span>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -878,7 +878,7 @@ export function ChatShell({ room, currentUserId, onNavigateToRoom }: ChatShellPr
         </div>
       )}
 
-      <div className="p-3">
+      <div className="px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
         <input
           ref={attachmentInputRef}
           type="file"

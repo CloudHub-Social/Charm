@@ -8,6 +8,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "rea
 import { getRoomMembers, listRooms } from "@/lib/matrix";
 import type { AutocompleteItem } from "./AutocompletePopover";
 import { AutocompletePopover } from "./AutocompletePopover";
+import { rectToAutocompletePosition } from "./autocompletePosition";
 import { resolveEnterKeyAction } from "./composerKeybinding";
 import { serializeComposerContent, type SerializedComposerContent } from "./composerSerialize";
 import { useSuggestionMenu, type SuggestionMenuApi } from "./composerSuggestionMenu";
@@ -57,11 +58,6 @@ export interface ComposerHandle {
   submit: () => void;
 }
 
-function rectToPosition(rect: DOMRect | null | undefined): { top: number; left: number } {
-  if (!rect) return { top: 0, left: 0 };
-  return { top: rect.bottom + 4, left: rect.left };
-}
-
 /**
  * Bridges one `suggestion` provider's own lifecycle (`onStart`/`onUpdate`/
  * `onExit`, which run outside React's render cycle) into the single shared
@@ -78,7 +74,7 @@ function createMenuBridgeRender<T>(menu: SuggestionMenuApi, toItem: (raw: T) => 
       // the menu", so an open-but-empty menu would swallow Enter forever
       // with nothing for `selectActive` to commit.
       if (props.items.length === 0) return;
-      const position = rectToPosition(props.clientRect?.());
+      const position = rectToAutocompletePosition(props.clientRect?.());
       menu.open(props.items.map(toItem), position, (index: number) => {
         const item = props.items[index];
         if (item !== undefined) props.command(item);
@@ -89,7 +85,7 @@ function createMenuBridgeRender<T>(menu: SuggestionMenuApi, toItem: (raw: T) => 
         menu.close();
         return;
       }
-      const position = rectToPosition(props.clientRect?.());
+      const position = rectToAutocompletePosition(props.clientRect?.());
       menu.update(props.items.map(toItem), position, (index: number) => {
         const item = props.items[index];
         if (item !== undefined) props.command(item);

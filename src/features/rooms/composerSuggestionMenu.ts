@@ -1,11 +1,11 @@
 import { useCallback, useRef, useState } from "react";
-import type { AutocompleteItem } from "./AutocompletePopover";
+import type { AutocompleteItem, AutocompletePosition } from "./AutocompletePopover";
 
 export interface SuggestionMenuState {
   open: boolean;
   items: AutocompleteItem[];
   activeIndex: number;
-  position: { top: number; left: number };
+  position: AutocompletePosition;
 }
 
 const CLOSED_STATE: SuggestionMenuState = {
@@ -40,7 +40,7 @@ export function useSuggestionMenu() {
   const open = useCallback(
     (
       items: AutocompleteItem[],
-      position: { top: number; left: number },
+      position: AutocompletePosition,
       onSelect: (index: number) => void,
     ) => {
       pendingSelectRef.current = onSelect;
@@ -52,7 +52,7 @@ export function useSuggestionMenu() {
   const update = useCallback(
     (
       items: AutocompleteItem[],
-      position: { top: number; left: number },
+      position: AutocompletePosition,
       onSelect: (index: number) => void,
     ) => {
       pendingSelectRef.current = onSelect;
