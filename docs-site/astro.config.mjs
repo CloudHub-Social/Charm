@@ -39,6 +39,10 @@ export default defineConfig({
 			title: 'Charm',
 			tagline: 'A native Matrix client, rebuilt from the ground up.',
 			customCss: ['./src/styles/docs.css'],
+			// The site-graph plugin's production data-fetch script is not emitted
+			// by v0.5.0. The post-build graph loader supplies the generated sitemap
+			// through a regular JS asset instead, before DOMContentLoaded.
+			head: [{ tag: 'script', attrs: { src: '/sitegraph/sitemap.js', defer: true } }],
 			// The actual Charm app icon (public/favicon.png at the repo root) —
 			// no SVG source exists for it, and Starlight's favicon option
 			// accepts .png directly.
