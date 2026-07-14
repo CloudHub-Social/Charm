@@ -121,7 +121,11 @@ export async function readOverrides(): Promise<FeatureFlagOverrides> {
 let persistMutationId = 0;
 let durablePersistTail: Promise<void> = Promise.resolve();
 
-async function restoreUnsavedStoreValue(store: Store, previous: unknown): Promise<void> {
+async function restoreUnsavedStoreValue(
+  store: Store,
+  key: string,
+  previous: unknown,
+): Promise<void> {
   try {
     // Prefer the file as the authority: save() may fail after partially
     // updating the plugin's in-memory map, while reload() restores exactly
@@ -133,9 +137,9 @@ async function restoreUnsavedStoreValue(store: Store, previous: unknown): Promis
   }
   try {
     if (previous === undefined) {
-      await store.delete(FEATURE_FLAGS_STORE_KEY);
+      await store.delete(key);
     } else {
-      await store.set(FEATURE_FLAGS_STORE_KEY, previous);
+      await store.set(key, previous);
     }
   } catch {
     // Preserve the original persistence error for the caller.
@@ -162,13 +166,13 @@ export async function persistOverrides(
     const previous = await store.get<unknown>(FEATURE_FLAGS_STORE_KEY);
     await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
     if (mutationId !== persistMutationId) {
-      await restoreUnsavedStoreValue(store, previous);
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_STORE_KEY, previous);
       return false;
     }
     try {
       await store.save();
     } catch (error) {
-      await restoreUnsavedStoreValue(store, previous);
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_STORE_KEY, previous);
       throw error;
     }
     // Once save starts, this envelope may have reached disk even if a newer
@@ -288,8 +292,16 @@ export async function persistRemoteFlags(
   const task = durablePersistTail.then(async () => {
     const store = await getStore();
     if (!store) return false;
+    // Roll back on save failure so a stale remote value left in the shared
+    // in-memory map isn't flushed to disk by a later persistOverrides save().
+    const previous = await store.get<unknown>(FEATURE_FLAGS_REMOTE_STORE_KEY);
     await store.set(FEATURE_FLAGS_REMOTE_STORE_KEY, envelope);
-    await store.save();
+    try {
+      await store.save();
+    } catch (error) {
+      await restoreUnsavedStoreValue(store, FEATURE_FLAGS_REMOTE_STORE_KEY, previous);
+      throw error;
+    }
     return true;
   });
   durablePersistTail = task.then(

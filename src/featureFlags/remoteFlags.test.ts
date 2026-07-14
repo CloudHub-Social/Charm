@@ -80,10 +80,12 @@ describe("refreshRemoteFlags", () => {
   it("does not apply remote values when the durable Tauri save fails", async () => {
     vi.stubEnv("VITE_CHARM_OFREP_URL", "https://flags.example.com");
     mocks.isTauri.mockReturnValue(true);
+    const reload = vi.fn().mockResolvedValue(undefined);
     mocks.load.mockResolvedValue({
       get: vi.fn().mockResolvedValue(undefined),
       set: vi.fn().mockResolvedValue(undefined),
       save: vi.fn().mockRejectedValue(new Error("disk full")),
+      reload,
     });
     vi.stubGlobal(
       "fetch",
@@ -100,6 +102,9 @@ describe("refreshRemoteFlags", () => {
     // And the localStorage mirror must not be written either, or it would win
     // (newer timestamp) on the next launch and diverge from the durable file.
     expect(localStorage.getItem("charm:featureFlagsRemote")).toBeNull();
+    // The in-memory store is rolled back (reload) so the failed remote value
+    // can't be flushed to disk by a later override save.
+    expect(reload).toHaveBeenCalled();
   });
 });
 
