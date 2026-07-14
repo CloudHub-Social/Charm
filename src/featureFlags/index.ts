@@ -63,20 +63,39 @@ export function useFlag(key: FeatureFlagKey): boolean {
 
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
-  cacheMutationId += 1;
-  overridesCache = { ...overridesCache, [key]: value };
+  const mutationId = ++cacheMutationId;
+  const previous = overridesCache;
+  const next = { ...overridesCache, [key]: value };
+  overridesCache = next;
   emit();
-  await persistOverrides(overridesCache);
+  try {
+    await persistOverrides(next);
+  } catch (error) {
+    if (mutationId === cacheMutationId) {
+      overridesCache = previous;
+      emit();
+    }
+    throw error;
+  }
 }
 
 /** Clears a local override, reverting the flag to remote/default resolution. */
 export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
-  cacheMutationId += 1;
+  const mutationId = ++cacheMutationId;
+  const previous = overridesCache;
   const next = { ...overridesCache };
   delete next[key];
   overridesCache = next;
   emit();
-  await persistOverrides(overridesCache);
+  try {
+    await persistOverrides(next);
+  } catch (error) {
+    if (mutationId === cacheMutationId) {
+      overridesCache = previous;
+      emit();
+    }
+    throw error;
+  }
 }
 
 /** Current overrides snapshot (for the Labs panel to render toggle state). */

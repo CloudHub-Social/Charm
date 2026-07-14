@@ -305,6 +305,17 @@ mod tests {
     }
 
     #[test]
+    fn generated_frontend_catalog_matches_rust_catalog() {
+        let generated: Value =
+            serde_json::from_str(include_str!("bindings/featureFlagCatalog.json"))
+                .expect("generated frontend feature flag catalog must be valid JSON");
+        assert_eq!(
+            generated,
+            serde_json::to_value(catalog()).expect("Rust feature flag catalog must serialize")
+        );
+    }
+
+    #[test]
     fn serialized_key_matches_wire_string() {
         for &key in FeatureFlagKey::ALL {
             let serialized = serde_json::to_string(&key).unwrap();

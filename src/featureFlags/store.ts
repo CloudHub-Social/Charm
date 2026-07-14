@@ -1,4 +1,5 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
+import type { Store } from "@tauri-apps/plugin-store";
 import { FEATURE_FLAG_CATALOG } from "./catalog";
 import type { FeatureFlagOverrides } from "./resolve";
 import { isTauri } from "@/lib/platform";
@@ -73,12 +74,19 @@ function writeLocalEnvelope(envelope: PersistedEnvelope): void {
   }
 }
 
-async function getStore() {
+let storePromise: Promise<Store> | undefined;
+
+async function getStore(): Promise<Store | null> {
   // `load()` hangs forever outside the native shell (its IPC callback never
   // arrives), so gate on isTauri() the same way persistence.ts does.
   if (!isTauri()) return null;
-  const { load } = await import("@tauri-apps/plugin-store");
-  return load(FEATURE_FLAGS_STORE_FILENAME, { autoSave: false, defaults: {} });
+  storePromise ??= import("@tauri-apps/plugin-store")
+    .then(({ load }) => load(FEATURE_FLAGS_STORE_FILENAME, { autoSave: false, defaults: {} }))
+    .catch((error) => {
+      storePromise = undefined;
+      throw error;
+    });
+  return storePromise;
 }
 
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
@@ -120,24 +128,27 @@ export async function persistOverrides(
 ): Promise<void> {
   const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = { state: { overrides }, updatedAt };
-  writeLocalEnvelope(envelope);
-  try {
-    const durablePersist = durablePersistTail.then(async () => {
-      if (mutationId !== persistMutationId) return;
-      const store = await getStore();
-      if (!store || mutationId !== persistMutationId) return;
-      await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
-      if (mutationId !== persistMutationId) return;
-      await store.save();
-    });
-    // Chain the next write onto this one regardless of outcome, so a failed
-    // save doesn't wedge the queue.
-    durablePersistTail = durablePersist.then(
-      () => undefined,
-      () => undefined,
-    );
-    await durablePersist;
-  } catch {
-    // The local mirror already landed; dev/browser builds rely on it.
+  if (!isTauri()) {
+    writeLocalEnvelope(envelope);
+    return;
   }
+
+  const durablePersist = durablePersistTail.then(async () => {
+    if (mutationId !== persistMutationId) return false;
+    const store = await getStore();
+    if (!store) throw new Error("Feature flag store is unavailable");
+    if (mutationId !== persistMutationId) return false;
+    await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
+    if (mutationId !== persistMutationId) return false;
+    await store.save();
+    return mutationId === persistMutationId;
+  });
+  // Chain the next write onto this one regardless of outcome, so a failed
+  // save doesn't wedge the queue.
+  durablePersistTail = durablePersist.then(
+    () => undefined,
+    () => undefined,
+  );
+  const persisted = await durablePersist;
+  if (persisted) writeLocalEnvelope(envelope);
 }

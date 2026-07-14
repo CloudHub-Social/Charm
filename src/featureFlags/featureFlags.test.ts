@@ -127,6 +127,22 @@ describe("feature-flag client", () => {
     expect(mod.getFlag("canary")).toBe(true);
   });
 
+  it("rolls back an override when the durable Tauri write fails", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockRejectedValue(new Error("disk full")),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const mod = await import("./index");
+    await expect(mod.setFeatureFlagOverride("canary", true)).rejects.toThrow("disk full");
+
+    expect(mod.getFeatureFlagOverrides()).toEqual({});
+    expect(mod.getFlag("canary")).toBe(false);
+    expect(localStorage.getItem("charm:featureFlags")).toBeNull();
+  });
+
   it("serializes durable writes so a superseded persist can't clobber a newer one", async () => {
     // Durable Tauri path: a fake store records what actually gets written. Even
     // with the first save artificially slow, the older (superseded) write must
