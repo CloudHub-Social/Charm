@@ -2,6 +2,8 @@
 dist/
 # generated types
 .astro/
+# astro-d2 generated diagram SVGs
+public/d2/
 
 # dependencies
 node_modules/

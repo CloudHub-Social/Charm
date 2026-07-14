@@ -7,6 +7,18 @@ Charm 2.0 is a ground-up rewrite of the Charm Matrix client, built on
 [`matrix-rust-sdk`](https://github.com/matrix-org/matrix-rust-sdk) over typed
 [Tauri](https://tauri.app) IPC, with a new design language.
 
+```d2
+direction: right
+Rust core -> IPC bindings: ts-rs
+IPC bindings -> React frontend: "@bindings/*"
+Rust core: {
+  shape: rectangle
+}
+React frontend: {
+  shape: rectangle
+}
+```
+
 ## Layers
 
 - **Rust core** (`src-tauri/src/`) — owns the Matrix session, sync loop, local
