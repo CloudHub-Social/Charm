@@ -87,18 +87,15 @@ describe("observability scrubbers", () => {
     expect(scrubSensitiveText('password="abc\\"tail"')).toBe('password="[redacted]"');
   });
 
-  it("doesn't re-match an already-redacted URL placeholder and leave a stray bracket or leak the host", () => {
-    // summarizeErrorText's scrubUrls pass runs first and replaces the URL
-    // with the literal text `https://[redacted]`. Before excluding `[`/`{`
-    // from the unquoted value's character class, scrubSecrets would then
-    // partially re-match into that placeholder (stopping at the `]` inside
-    // it) and leave a stray, mangled `[redacted]]` behind. The important
-    // property is no leaked host and no malformed trailing bracket — not a
-    // specific cosmetic string, since the two independent passes both use
-    // literal `[`/`]` text.
-    const result = summarizeErrorText("access_token=https://example.com");
-    expect(result).not.toContain("example.com");
-    expect(result).not.toMatch(/]]/);
+  it("cleanly redacts a secret field whose value is itself a URL, without a doubled placeholder", () => {
+    // summarizeErrorText runs scrubSecrets *before* scrubUrls specifically so
+    // this case works cleanly: scrubSecrets sees the original
+    // "access_token=https://example.com" and captures the whole URL as the
+    // secret's value in one match, rather than scrubUrls redacting the URL
+    // first and scrubSecrets then partially re-matching into the leftover
+    // "[redacted]" placeholder text (which used to produce a mangled
+    // "access_token=[redacted][redacted]").
+    expect(summarizeErrorText("access_token=https://example.com")).toBe("access_token=[redacted]");
   });
 
   it("reports the scrubbed (not original) length when truncating error text", () => {

@@ -138,7 +138,18 @@ export function summarizeErrorText(value: string): string {
   // Includes `scrubUrls` (unlike `scrubSensitiveText`) — see that function's
   // doc comment for why URL redaction is scoped to this diagnostic-text path
   // rather than the generic Sentry-event scrubber.
-  const scrubbed = scrubSecrets(scrubUrls(scrubMatrixIds(value)));
+  //
+  // `scrubSecrets` runs *before* `scrubUrls` (unlike scrubUrls's own doc
+  // comment, which describes running after `scrubMatrixIds` — that ordering
+  // is unaffected). If URLs were scrubbed first, a secret field whose value
+  // is itself a URL (`access_token=https://example.com`) would already be
+  // `access_token=https://[redacted]` by the time `scrubSecrets` runs; its
+  // unquoted-value branch (which excludes `[`) would then only capture
+  // `https://` and leave the `[redacted]` placeholder's own `[`/`]`
+  // characters as unmatched literal text, producing a doubled
+  // `access_token=[redacted][redacted]`. Scrubbing secrets first means the
+  // whole URL is captured and replaced in one match.
+  const scrubbed = scrubUrls(scrubSecrets(scrubMatrixIds(value)));
   if (scrubbed.length <= MAX_SUMMARIZED_ERROR_LENGTH) return scrubbed;
   return `${scrubbed.slice(0, MAX_SUMMARIZED_ERROR_LENGTH)}…[truncated, full length ${scrubbed.length}]`;
 }
