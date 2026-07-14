@@ -9,6 +9,7 @@ import {
   discoverHomeserver,
   login,
   register,
+  requestDeviceVerification,
   startQrLogin,
   startSsoLogin,
   submitQrCheckCode,
@@ -39,6 +40,7 @@ describe("expected-failure IPC calls opt out of Sentry capture", () => {
     ["change_password", () => changePassword("new-password", "old-password")],
     ["deactivate_account", () => deactivateAccount("password")],
     ["delete_device", () => deleteDevice("device-id", "password")],
+    ["request_device_verification", () => requestDeviceVerification("device-id")],
   ])("passes captureOnError: false for %s", async (command, call) => {
     await call();
 

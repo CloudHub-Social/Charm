@@ -664,6 +664,12 @@ export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
   return invoke("get_device_delete_url", { deviceId });
 }
 
+// captureOnError: false — the Rust command's "device not found" failure
+// embeds the opaque device ID in its error text verbatim (there's no
+// syntactic marker like a Matrix ID's sigil or a URL's scheme to redact it
+// against safely), and this is an expected, foreseeable outcome of a race
+// between the devices list rendering and the user clicking verify (the
+// device having since been removed/expired), not a bug worth a Sentry alert.
 /**
  * Starts an outgoing SAS verification of another of this account's own
  * devices and returns the new flow id. Drives the same
@@ -671,7 +677,7 @@ export function getDeviceDeleteUrl(deviceId: string): Promise<string | null> {
  * request — see `VerificationOverlay`.
  */
 export function requestDeviceVerification(deviceId: string): Promise<string> {
-  return invoke("request_device_verification", { deviceId });
+  return invoke("request_device_verification", { deviceId }, { captureOnError: false });
 }
 
 /** `null` when there's no OIDC account-management URL to offer — see the Rust command's doc comment. */
