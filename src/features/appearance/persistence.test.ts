@@ -38,6 +38,7 @@ describe("local mirror", () => {
       density: "compact",
       reducedMotion: "on",
       messageLayout: "discord",
+      jumboEmojiSize: "lg",
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -168,6 +169,7 @@ describe("mergeAppearance", () => {
       density: "compact",
       reducedMotion: "off",
       messageLayout: "irc",
+      jumboEmojiSize: "md",
     };
     expect(mergeAppearance(full)).toEqual(full);
   });

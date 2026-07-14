@@ -4,6 +4,8 @@ import { IrcMessageRow } from "./IrcMessageRow";
 import { makeMessageSummary } from "./testFixtures";
 import type { MessageRowLayoutProps } from "./messageRowShared";
 
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLayoutProps {
   return {
     message: makeMessageSummary({
@@ -172,11 +174,7 @@ describe("IrcMessageRow", () => {
     expect(nick).toHaveClass("shrink");
   });
 
-  it("forces block-level formatted_body markup inline so it stays on one line", () => {
-    // Uses a `[&_*]:inline` wildcard rather than naming each block tag, so
-    // this stays correct against the sanitizer's full allowlist (headings,
-    // tables, details/summary, hr, etc.) — not just the originally-cited
-    // p/blockquote/list/div/pre subset.
+  it("preserves block-level formatted_body structure for quotes and lists", () => {
     render(
       <IrcMessageRow
         {...baseProps({
@@ -193,7 +191,8 @@ describe("IrcMessageRow", () => {
     const heading = screen.getByText("a heading").closest("h1");
     expect(blockquote).toBeInTheDocument();
     expect(heading).toBeInTheDocument();
-    expect(blockquote?.closest("span")).toHaveClass("[&_*]:inline");
+    expect(blockquote?.closest("div.rich-message")).toHaveClass("[&_blockquote]:border-l-2");
+    expect(blockquote?.closest("div.rich-message")).not.toHaveClass("[&_*]:inline");
   });
 
   it("plays the entrance animation for a new message", () => {

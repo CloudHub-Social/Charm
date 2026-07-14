@@ -12,6 +12,7 @@ export { messageRowKey } from "./messageRowShared";
 interface MessageRowProps {
   message: RoomMessageSummary;
   roomId: string;
+  currentUserId?: string;
   /** Whether `message.sender === currentUserId`. */
   own: boolean;
   sameSenderAsPrev: boolean;
@@ -35,6 +36,8 @@ interface MessageRowProps {
   onCopy: () => void;
   /** See `MessageRowLayoutProps.onJumpToMessage`. */
   onJumpToMessage: (eventId: string) => void;
+  onUserPillClick?: (userId: string, label: string) => void;
+  onRoomPillClick?: (roomIdentifier: string) => void;
 }
 
 /**

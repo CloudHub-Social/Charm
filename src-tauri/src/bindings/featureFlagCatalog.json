@@ -4,5 +4,11 @@
     "default": false,
     "description": "Internal no-op flag used to exercise the feature-flag system. Not connected to any feature.",
     "owner": "Spec 35 (feature-flag plumbing)"
+  },
+  {
+    "key": "rich_message_rendering",
+    "default": false,
+    "description": "Render enhanced Matrix message content including code, tables, pills, math, and jumbo emoji.",
+    "owner": "Spec 58 (rich message content rendering)"
   }
 ]

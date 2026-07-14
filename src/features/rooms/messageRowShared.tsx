@@ -1,7 +1,4 @@
-import type { MouseEvent } from "react";
-import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomMessageSummary } from "@/lib/matrix";
-import { openExternalUrl } from "@/lib/openExternalUrl";
 import type { MessageActionsHandle } from "./MessageActions";
 
 /** Caps the read-receipt avatar stack under a message; the rest collapse into a "+N". */
@@ -15,49 +12,6 @@ export const MAX_RECEIPT_AVATARS = 3;
  * so a link outside this set would be rejected at that layer too even if
  * this check were somehow bypassed.
  */
-export const ALLOWED_LINK_PROTOCOLS = new Set(["http:", "https:", "mailto:", "tel:"]);
-
-/**
- * Intercepts clicks on links inside a rendered `formatted_body` message
- * bubble. Without this, a plain `<a href>` click navigates the app's *entire*
- * webview to that URL — no address bar, no way back, and (this being a
- * single-page desktop app) no way to distinguish "phishing page styled like
- * a login screen" from the real thing. Any message from any room member can
- * contain one, so this can't be treated as a rare/internal link. Opens
- * through the OS's default browser instead (real browser chrome, and out of
- * this app's own IPC-privileged webview entirely) and only for schemes on
- * `ALLOWED_LINK_PROTOCOLS` — a relative/fragment href (both valid per the
- * sanitizer's allowlist) is simply left alone rather than resolved and opened.
- */
-export function handleMessageLinkClick(event: MouseEvent<HTMLElement>) {
-  // `event.target` is normally an Element for a real click, but isn't
-  // guaranteed to be one (e.g. a synthetic/dispatched event) — this is a
-  // type assertion away from a runtime throw on `.closest`.
-  if (!(event.target instanceof HTMLElement)) return;
-  const anchor = event.target.closest("a");
-  if (!anchor) return;
-
-  const href = anchor.getAttribute("href");
-  if (!href) return;
-
-  let parsed: URL;
-  try {
-    // No base argument: a relative or fragment href (both valid per the
-    // sanitizer's allowlist) throws here instead of being silently resolved
-    // into an absolute `http(s)` URL against the app's own origin and
-    // handed to `openExternalUrl` — that would both contradict "left alone" above
-    // and make no sense to open in an external browser. Only a href that's
-    // already absolute reaches the scheme check below.
-    parsed = new URL(href);
-  } catch {
-    return;
-  }
-  if (!ALLOWED_LINK_PROTOCOLS.has(parsed.protocol)) return;
-
-  event.preventDefault();
-  openExternalUrl(parsed.href).catch(logAndIgnore);
-}
-
 export function formatTime(timestampMs: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
     new Date(timestampMs),
@@ -75,6 +29,7 @@ export function messageRowKey(message: RoomMessageSummary): string {
 export interface MessageRowLayoutProps {
   message: RoomMessageSummary;
   roomId: string;
+  currentUserId?: string;
   /** Whether `message.sender === currentUserId`. */
   own: boolean;
   sameSenderAsPrev: boolean;
@@ -104,6 +59,8 @@ export interface MessageRowLayoutProps {
    * isn't in the currently-loaded `messages` (e.g. further back than
    * backward pagination has loaded). */
   onJumpToMessage: (eventId: string) => void;
+  onUserPillClick?: (userId: string, label: string) => void;
+  onRoomPillClick?: (roomIdentifier: string) => void;
   isPending: boolean;
   isError: boolean;
   disableRelationActions: boolean;

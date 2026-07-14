@@ -6,13 +6,8 @@ import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
 import { ReplyPreview } from "./ReplyPreview";
-import { sanitizeMatrixHtml } from "./composerSanitize";
-import {
-  MAX_RECEIPT_AVATARS,
-  formatTime,
-  handleMessageLinkClick,
-  type MessageRowLayoutProps,
-} from "./messageRowShared";
+import { RichMessageContent, UndecryptedMessage } from "./RichMessageContent";
+import { MAX_RECEIPT_AVATARS, formatTime, type MessageRowLayoutProps } from "./messageRowShared";
 
 /** Flat, left-aligned, avatar-per-sender-block layout (Charm 2.0 Spec 27).
  * Own and others' messages look the same — no left/right split, no bubble
@@ -24,6 +19,7 @@ import {
 export function DiscordMessageRow({
   message,
   roomId,
+  currentUserId,
   own,
   sameSenderAsPrev,
   canRedact,
@@ -38,6 +34,8 @@ export function DiscordMessageRow({
   onDelete,
   onCopy,
   onJumpToMessage,
+  onUserPillClick,
+  onRoomPillClick,
   isPending,
   isError,
   disableRelationActions,
@@ -109,28 +107,20 @@ export function DiscordMessageRow({
               eventId={message.event_id}
               body={message.body}
             />
-          ) : message.formatted_body ? (
-            // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- onClick only delegates to real <a> elements inside the sanitized HTML, which are natively keyboard-operable; the div itself isn't interactive
-            <div
-              className={cn(
-                "min-w-0 break-words text-[15px] text-foreground [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-2 [&_code]:rounded [&_code]:bg-black/10 [&_code]:px-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ul]:list-disc [&_ul]:pl-5",
-                isError && "rounded-md border border-destructive px-1",
-              )}
-              // eslint-disable-next-line react/no-danger -- sanitized above via sanitizeMatrixHtml
-              dangerouslySetInnerHTML={{
-                __html: sanitizeMatrixHtml(message.formatted_body),
-              }}
-              onClick={handleMessageLinkClick}
-            />
+          ) : isUndecrypted ? (
+            <UndecryptedMessage />
           ) : (
-            <div
+            <RichMessageContent
+              body={message.body}
+              formattedBody={message.formatted_body}
+              currentUserId={currentUserId ?? ""}
+              onUserPillClick={onUserPillClick}
+              onRoomPillClick={onRoomPillClick}
               className={cn(
-                "min-w-0 break-words text-[15px] text-foreground",
+                "text-[15px] text-foreground",
                 isError && "rounded-md border border-destructive px-1",
               )}
-            >
-              {message.body}
-            </div>
+            />
           )}
           {!message.redacted && (
             <MessageActions
