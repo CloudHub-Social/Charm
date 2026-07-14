@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,7 +127,14 @@ for (const key of excludedFlags) {
 if (await exists(targetDir)) {
   const committedPngs = (await readdir(targetDir)).filter((name) => name.endsWith(".png"));
   for (const name of committedPngs) {
-    if (!targets.has(name)) noteError(`orphaned feature image: ${path.join(targetDir, name)}`);
+    if (targets.has(name)) continue;
+    const orphan = path.join(targetDir, name);
+    if (mode === "write") {
+      await rm(orphan);
+      process.stdout.write(`removed orphaned ${path.relative(repoRoot, orphan)}\n`);
+    } else {
+      noteError(`orphaned feature image: ${orphan}`);
+    }
   }
 }
 
