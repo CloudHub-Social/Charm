@@ -301,7 +301,7 @@ export function NotificationsPanel() {
             disabled={setRoomMode.isPending}
           />
         ))}
-        {joinedRooms.length === 0 && (
+        {rooms !== undefined && joinedRooms.length === 0 && (
           <SettingTile title={<span className="text-muted-foreground">No rooms yet.</span>} />
         )}
       </SettingsCard>

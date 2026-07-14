@@ -68,6 +68,14 @@ beforeEach(() => {
 });
 
 describe("NotificationsPanel", () => {
+  it("does not show the empty-room state while rooms are still loading", () => {
+    listRooms.mockReturnValue(new Promise(() => {}));
+
+    renderWithProviders(<NotificationsPanel />);
+
+    expect(screen.queryByText("No rooms yet.")).not.toBeInTheDocument();
+  });
+
   it("adds a keyword", async () => {
     renderWithProviders(<NotificationsPanel />);
 
