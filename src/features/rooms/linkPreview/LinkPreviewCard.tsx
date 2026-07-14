@@ -8,6 +8,14 @@ interface LinkPreviewCardProps {
   roomId: string;
   url: string;
   eventTsMs?: number | null;
+  /** Applied to a wrapping `<div>` around the card, but only once this
+   * component has decided it actually has something to render — never
+   * while the fetch is pending or once it's resolved to no usable data.
+   * A caller needing layout spacing before the card (e.g. IRC's
+   * single-line rows, which have no `flex-col` gap of their own) can't
+   * apply that spacing at the call site without also adding it for a
+   * message whose preview never actually shows up. */
+  wrapperClassName?: string;
 }
 
 /** Resolves a preview's `imageUrl` to a webview-loadable source, reusing the
@@ -71,7 +79,12 @@ export function linkPreviewStaleTime(data: unknown): number {
  * "nothing" — it's simply not rendered until data arrives, avoiding a
  * layout-shifting placeholder for what's usually a sub-second fetch).
  */
-export function LinkPreviewCard({ roomId, url, eventTsMs }: LinkPreviewCardProps) {
+export function LinkPreviewCard({
+  roomId,
+  url,
+  eventTsMs,
+  wrapperClassName,
+}: LinkPreviewCardProps) {
   const { data: preview } = useQuery({
     // eventTsMs is part of the cache key: the same URL previewed for two
     // different messages (sent at different times) can legitimately return
@@ -89,7 +102,7 @@ export function LinkPreviewCard({ roomId, url, eventTsMs }: LinkPreviewCardProps
 
   const siteName = preview.siteName ?? hostnameOf(url);
 
-  return (
+  const card = (
     <a
       {...externalLinkProps(url)}
       className="mt-1 flex max-w-md gap-3 rounded-md border border-border p-2 no-underline hover:bg-muted/50"
@@ -110,4 +123,5 @@ export function LinkPreviewCard({ roomId, url, eventTsMs }: LinkPreviewCardProps
       </div>
     </a>
   );
+  return wrapperClassName ? <div className={wrapperClassName}>{card}</div> : card;
 }

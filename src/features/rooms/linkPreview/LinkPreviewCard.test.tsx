@@ -113,4 +113,47 @@ describe("LinkPreviewCard", () => {
     expect(screen.queryByRole("img")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
   });
+
+  it("wraps the card in wrapperClassName only once real preview data has resolved", async () => {
+    getUrlPreview.mockResolvedValueOnce({
+      title: "Example Domain",
+      description: null,
+      imageUrl: null,
+      imageWidth: null,
+      imageHeight: null,
+      siteName: null,
+    });
+
+    const { container } = render(
+      <LinkPreviewCard
+        roomId="!room:localhost"
+        url="https://example.com"
+        wrapperClassName="mt-0.5"
+      />,
+      { wrapper },
+    );
+
+    // While the fetch is still pending, no wrapper (and no card) exists.
+    expect(container.querySelector(".mt-0\\.5")).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByText("Example Domain")).toBeInTheDocument());
+    expect(container.querySelector(".mt-0\\.5")).toBeInTheDocument();
+  });
+
+  it("never adds wrapperClassName when the preview resolves to no data", async () => {
+    getUrlPreview.mockResolvedValueOnce(null);
+
+    const { container } = render(
+      <LinkPreviewCard
+        roomId="!room:localhost"
+        url="https://example.com/missing"
+        wrapperClassName="mt-0.5"
+      />,
+      { wrapper },
+    );
+
+    await waitFor(() => expect(getUrlPreview).toHaveBeenCalled());
+    expect(container.querySelector(".mt-0\\.5")).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+  });
 });
