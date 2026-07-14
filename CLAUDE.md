@@ -162,6 +162,28 @@ re-exported through `src/lib/matrix.ts`; the frontend imports them via the
 rather than the default `bigint`), regenerate, and commit. CI fails if the committed
 bindings drift from the Rust source.
 
+## Libraries over custom code — default to established libraries
+
+**Use established, well-maintained libraries as much as possible; almost never roll
+our own.** This is especially true for solved problems where a bespoke
+implementation is an XSS / edge-case / maintenance trap: rich text and HTML
+rendering, markdown, HTML sanitization, syntax highlighting, math (KaTeX), emoji
+detection/rendering, GIF handling, media playback, blurhash, waveforms,
+fuzzy-matching, i18n, and date/time formatting. Prefer a maintained library over a
+hand-written parser/renderer/player/widget.
+
+- Reach for a custom implementation only when no suitable library exists, licensing
+  or bundle size is prohibitive, or a library genuinely can't meet a hard
+  requirement — and say why in the PR.
+- This composes with the dependency rule below: preferring a library still means
+  **getting user confirmation before adding the package** (see the existing
+  dependency-change gate). Prefer libraries; don't add them silently.
+- Watch bundle size — lazy-load heavy libraries (e.g. a syntax highlighter or KaTeX)
+  rather than putting them in the base bundle. The repo already has bundle-size
+  analysis in CI.
+- The composer already models this (TipTap rather than a hand-rolled editor); follow
+  that pattern elsewhere.
+
 ## macOS local dev code-signing
 
 `src-tauri/tauri.conf.json` has no `bundle.macOS.signingIdentity` set — CI and a

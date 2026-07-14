@@ -48,6 +48,19 @@ pnpm build            # tsc && vite build — must succeed with no errors
   diverging from established client patterns.
 - Link the relevant spec section or MSC in the PR description when spec-driven.
 
+## Libraries over Custom Code
+
+- **Default to established, well-maintained libraries; almost never roll our own** —
+  especially for solved problems where bespoke code is an XSS/edge-case/maintenance
+  trap: rich text & HTML rendering, markdown, sanitization, syntax highlighting, math
+  (KaTeX), emoji, GIF handling, media playback, blurhash, waveforms, fuzzy-matching,
+  i18n, and date/time formatting.
+- Hand-roll only when no suitable library exists, licensing/bundle size is
+  prohibitive, or a library can't meet a hard requirement — and justify it in the PR.
+- Lazy-load heavy libraries (syntax highlighter, KaTeX) instead of bloating the base
+  bundle. This composes with the confirmation rule below — prefer a library, but
+  still confirm before adding it.
+
 ## Dependency Changes
 
 - Adding or removing packages requires explicit user confirmation before running
