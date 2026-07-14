@@ -85,7 +85,10 @@ export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFla
  * command fixes the target URL itself, so this can't be abused for SSRF.
  */
 async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse | null> {
-  const { invoke } = await import("@tauri-apps/api/core");
+  // Keep the transport lazy: importing it eagerly makes every feature-flag
+  // consumer load the full Matrix transport (and its platform dependencies),
+  // even when remote evaluation is disabled or running on the web path.
+  const { invoke } = await import("@/lib/matrixTransport");
   return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
 }
 
