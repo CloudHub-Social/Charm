@@ -122,7 +122,7 @@ describe("RichMessageContent", () => {
     const { rerender } = render(
       <RichMessageContent body="Attention @room" currentUserId="@me:localhost" />,
     );
-    expect(screen.getByText("@room").tagName).toBe("MARK");
+    expect(screen.getByText("@room")).toHaveClass("bg-warning-solid", "text-white");
 
     rerender(
       <RichMessageContent

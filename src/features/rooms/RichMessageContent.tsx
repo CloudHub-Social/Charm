@@ -53,10 +53,7 @@ function highlightRoomMentions(text: string): ReactNode {
         const key = `${offset}:${part}`;
         offset += part.length;
         return /^@(room|here)$/i.test(part) ? (
-          <mark
-            key={key}
-            className="rounded bg-warning px-0.5 font-semibold text-warning-foreground"
-          >
+          <mark key={key} className="rounded bg-warning-solid px-0.5 font-semibold text-white">
             {part}
           </mark>
         ) : (
