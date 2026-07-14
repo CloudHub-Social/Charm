@@ -52,6 +52,10 @@ export function useFocusMode() {
   // A tray event must supersede any Settings IPC confirmation still in
   // flight, just as a newer Settings request supersedes an older one.
   const latestRequestId = useRef(0);
+  // Keep Settings writes in invocation order. Ignoring an older response is
+  // not enough: both IPC commands mutate Rust's persisted state, so an older
+  // enable that finishes last could otherwise overwrite a newer disable.
+  const writeQueue = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     if (!inTauri) return undefined;
@@ -88,19 +92,21 @@ export function useFocusMode() {
     return () => clearTimeout(timer);
   }, [enabled, until, queryClient]);
 
-  // Review fix: rapid double-toggles (e.g. enable a preset then immediately
-  // disable) fire two overlapping setDndState calls; if the earlier one
-  // resolves after the later one, its `confirmed` response would overwrite
-  // the newer selection in the cache. `latestRequestId` tags each apply()
-  // call so a response only gets written back if it's still the most
-  // recent one in flight — a superseded response is silently dropped
-  // rather than fighting the newer optimistic/confirmed state.
+  // Rapid double-toggles (e.g. enable a preset then immediately disable) are
+  // serialized so Rust persists them in user-action order. `latestRequestId`
+  // separately prevents an older confirmation from fighting a newer
+  // optimistic state or tray event in the query cache.
   const apply = (nextEnabled: boolean, nextUntil: number | null) => {
     const requestId = ++latestRequestId.current;
     // Optimistic: the tray-menu path already feels instant, so the panel
     // toggle should too rather than waiting a round trip.
     queryClient.setQueryData(DND_QUERY_KEY, { enabled: nextEnabled, until: nextUntil });
-    void setDndState(nextEnabled, nextUntil).then((confirmed) => {
+    const write = writeQueue.current.then(() => setDndState(nextEnabled, nextUntil));
+    writeQueue.current = write.then(
+      () => undefined,
+      () => undefined,
+    );
+    void write.then((confirmed) => {
       if (requestId !== latestRequestId.current) return;
       queryClient.setQueryData(DND_QUERY_KEY, confirmed);
     });

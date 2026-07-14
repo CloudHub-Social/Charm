@@ -816,12 +816,21 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         ],
     )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    // The tray is constructed only once, but flags can change at runtime via
-    // Labs or remote refresh. Keep the submenu present so enabling the flag
-    // takes effect without a restart; every action that enables DND is gated
-    // again at click time below, so a flag-off session cannot activate it.
-    // `dnd_off` remains an unconditional rollback off-ramp.
-    let tray_menu = Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?;
+    // The native tray is built once at startup, so only expose the Focus
+    // submenu when the off-by-default feature is enabled at that point. A
+    // later Labs/remote activation is still usable from Settings immediately
+    // and appears in the tray after restart. The click handler re-checks the
+    // flag as well so a rollout killed while the app is open cannot leave a
+    // stale native control capable of enabling DND.
+    let focus_mode_enabled = app
+        .path()
+        .app_data_dir()
+        .is_ok_and(|dir| feature_flags::flag(&dir, feature_flags::FeatureFlagKey::FocusMode));
+    let tray_menu = if focus_mode_enabled {
+        Menu::with_items(app, &[&show_item, &dnd_submenu, &quit_item])?
+    } else {
+        Menu::with_items(app, &[&show_item, &quit_item])?
+    };
 
     TrayIconBuilder::new()
         .icon(
@@ -834,10 +843,9 @@ fn setup_tray_and_menu(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             const MINUTE_MS: i64 = 60_000;
             let now = matrix::dnd::now_ms();
-            // Re-check the flag fresh here, right
-            // before an "enable DND" action actually applies, means a
-            // still-visible-but-stale menu item can no longer turn DND back
-            // on once the flag is off, closing the gap the review flagged.
+            // Re-check the flag fresh here, right before an "enable DND"
+            // action actually applies. A still-visible-but-stale menu item
+            // can no longer turn DND back on once the flag is off.
             // "dnd_off" is deliberately exempt: it's the off-ramp itself
             // (same reasoning as `SettingsScreen`'s Focus-tab off-ramp), and
             // must keep working regardless of the flag so a user with DND

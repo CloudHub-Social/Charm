@@ -109,12 +109,11 @@ describe("useFocusMode", () => {
     }
   });
 
-  it("ignores a stale setDndState confirmation that resolves after a newer request", async () => {
+  it("serializes rapid Settings writes so Rust persists the latest action last", async () => {
     const { result } = renderHook(() => useFocusMode(), { wrapper });
     await waitFor(() => expect(result.current.enabled).toBe(false));
 
     let resolveFirst!: (value: { enabled: boolean; until: number | null }) => void;
-    let resolveSecond!: (value: { enabled: boolean; until: number | null }) => void;
     setDndState
       .mockImplementationOnce(
         () =>
@@ -122,31 +121,20 @@ describe("useFocusMode", () => {
             resolveFirst = resolve;
           }),
       )
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveSecond = resolve;
-          }),
-      );
+      .mockResolvedValueOnce({ enabled: false, until: null });
 
-    // Enable a preset, then immediately disable it — two overlapping calls.
+    // Enable a preset, then immediately disable it. The second IPC must wait
+    // for the first so Rust cannot persist the older enable last.
     act(() => result.current.enable(30 * 60_000));
     act(() => result.current.disable());
 
-    await waitFor(() => expect(setDndState).toHaveBeenCalledTimes(2));
-
-    // The *later* request (disable) resolves first, then the *earlier*
-    // request (enable) resolves after it — its stale confirmation must not
-    // clobber the newer disable's confirmed state.
-    act(() => resolveSecond({ enabled: false, until: null }));
-    await waitFor(() => expect(result.current.enabled).toBe(false));
+    await waitFor(() => expect(setDndState).toHaveBeenCalledTimes(1));
+    expect(result.current.enabled).toBe(false);
 
     act(() => resolveFirst({ enabled: true, until: Date.now() + 30 * 60_000 }));
-
-    // Give the stale resolution a tick to (incorrectly) apply if the bug
-    // were still present, then assert it didn't.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(result.current.enabled).toBe(false);
+    await waitFor(() => expect(setDndState).toHaveBeenCalledTimes(2));
+    expect(setDndState).toHaveBeenNthCalledWith(2, false, null);
+    await waitFor(() => expect(result.current.enabled).toBe(false));
   });
 
   it("ignores a Settings confirmation older than a tray event", async () => {
