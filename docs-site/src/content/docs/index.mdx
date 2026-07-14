@@ -1,33 +1,45 @@
 ---
 title: Charm
-description: A native Matrix client, rebuilt from the ground up.
+description: Architecture, development, deployment, and operations for Charm.
 template: splash
 hero:
-  tagline: A native Matrix client built on matrix-rust-sdk and Tauri, with a new design language.
+  tagline: Build, ship, and operate the native Matrix client across Tauri, the web, and its companion services.
   actions:
-    - text: Local development
+    - text: Start developing
       link: getting-started/local-dev/
       icon: right-arrow
       variant: primary
-    - text: View on GitHub
-      link: https://github.com/CloudHub-Social/Charm
-      icon: external
+    - text: Explore the architecture
+      link: architecture/overview/
+      icon: puzzle
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<CardGrid stagger>
-	<Card title="Architecture" icon="puzzle">
-		How the Rust core, typed Tauri IPC, and React frontend fit together. See
-		[Architecture overview](architecture/overview/).
-	</Card>
-	<Card title="Feature flags" icon="setting">
-		New user-facing features ship dark by default. See
-		[Feature flags](contributing/feature-flags/).
-	</Card>
-	<Card title="CI / release tiers" icon="rocket">
-		How PR gating, nightly platform builds, and releases are split. See
-		[CI / release tiers](contributing/ci-tiers/).
-	</Card>
+## Build and understand
+
+Charm combines a shared Rust Matrix core, generated Tauri IPC bindings, and a
+React frontend. Start with the system map, then use the contributor guides for
+the workflow you are changing.
+
+<CardGrid>
+	<LinkCard title="Architecture" href="architecture/overview/" description="Understand the Rust core, generated IPC contracts, React client, and web target." />
+	<LinkCard title="Local development" href="getting-started/local-dev/" description="Install the toolchains, run Tauri or the browser build, and use the same checks as CI." />
+	<LinkCard title="Feature flags" href="contributing/feature-flags/" description="Ship user-facing work dark by default and roll it out through the remote flag layer." />
+	<LinkCard title="CI and releases" href="contributing/ci-tiers/" description="See what runs on pull requests, the merge queue, nightlies, and release builds." />
+</CardGrid>
+
+## Operate the platform
+
+The web client is more than a static build: Cloudflare Workers serve the app
+and proxy authenticated API traffic to a Rust service on DigitalOcean. Sentry
+connects runtime telemetry, release artifacts, and visual regression evidence
+across those surfaces.
+
+<CardGrid>
+	<LinkCard title="Platform operations" href="operations/overview/" description="Start with the deployment topology, environments, ownership boundaries, and smoke checks." />
+	<LinkCard title="Sentry observability" href="operations/sentry/" description="Configure consent-gated telemetry, releases, source maps, debug files, and visual snapshots." />
+	<LinkCard title="Rust companion API" href="operations/web-server/" description="Run and deploy the axum service that exposes matrix-rust-sdk to the browser client." />
+	<LinkCard title="Cloudflare previews" href="operations/cloudflare-previews/" description="Understand per-PR Worker previews, same-origin API proxying, secrets, and failure modes." />
 </CardGrid>
