@@ -1,4 +1,5 @@
 import type { FeatureFlagKey } from "@bindings/FeatureFlagKey";
+import { invoke } from "@/lib/matrixTransport";
 import { FEATURE_FLAG_KEYS } from "./catalog";
 import type { FeatureFlagRemote } from "./resolve";
 import { isTauri } from "@/lib/platform";
@@ -85,7 +86,6 @@ export async function fetchRemoteFlags(targetingKey: string): Promise<FeatureFla
  * command fixes the target URL itself, so this can't be abused for SSRF.
  */
 async function evaluateViaIpc(targetingKey: string): Promise<OfrepBulkResponse | null> {
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<OfrepBulkResponse>("fetch_remote_flags", { targetingKey });
 }
 

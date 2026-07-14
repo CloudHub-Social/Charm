@@ -3,7 +3,9 @@ import { fetchRemoteFlags, isRemoteConfigured, parseRemoteFlags } from "./ofrep"
 
 const mocks = vi.hoisted(() => ({ isTauri: vi.fn(() => false), invoke: vi.fn() }));
 vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => mocks.invoke(...args) }));
+vi.mock("@/lib/matrixTransport", () => ({
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+}));
 
 beforeEach(() => {
   mocks.isTauri.mockReturnValue(false);
