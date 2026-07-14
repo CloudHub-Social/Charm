@@ -93,6 +93,8 @@ struct SnapshotManifest {
     generation: u64,
     #[serde(default)]
     writer_id: String,
+    #[serde(default)]
+    final_snapshot: bool,
     files: Vec<SnapshotFile>,
 }
 
@@ -216,7 +218,26 @@ impl CryptoBackupStore {
         binding: &CryptoSnapshotBinding,
         source_dir: &Path,
     ) -> Result<(), String> {
-        if !self.is_active_writer().await? {
+        self.snapshot_with_mode(binding, source_dir, false).await
+    }
+
+    /// Commit one last snapshot while this instance is shutting down, even
+    /// when a replacement has already taken the normal writer fence.
+    pub async fn snapshot_final(
+        &self,
+        binding: &CryptoSnapshotBinding,
+        source_dir: &Path,
+    ) -> Result<(), String> {
+        self.snapshot_with_mode(binding, source_dir, true).await
+    }
+
+    async fn snapshot_with_mode(
+        &self,
+        binding: &CryptoSnapshotBinding,
+        source_dir: &Path,
+        final_snapshot: bool,
+    ) -> Result<(), String> {
+        if !final_snapshot && !self.is_active_writer().await? {
             return Ok(());
         }
         let generation = SystemTime::now()
@@ -269,6 +290,7 @@ impl CryptoBackupStore {
             version: SNAPSHOT_FORMAT_VERSION,
             generation,
             writer_id: self.writer_id.clone(),
+            final_snapshot,
             files,
         };
         let plaintext = serde_json::to_vec(&manifest).map_err(|error| error.to_string())?;
@@ -285,7 +307,7 @@ impl CryptoBackupStore {
         // flight; in that case this stale writer must not publish a commit
         // marker. Restore also ranks manifests by the current fence, closing
         // the tiny race between this check and the manifest put itself.
-        if !self.is_active_writer().await? {
+        if !final_snapshot && !self.is_active_writer().await? {
             self.remove_uncommitted_generation(binding, &manifest).await;
             return Ok(());
         }
@@ -382,17 +404,7 @@ impl CryptoBackupStore {
                 Err(error) => last_error = Some(error),
             }
         }
-        manifests.sort_unstable_by(|left, right| {
-            let left_active = active_writer
-                .as_deref()
-                .is_some_and(|active| left.writer_id == active);
-            let right_active = active_writer
-                .as_deref()
-                .is_some_and(|active| right.writer_id == active);
-            right_active
-                .cmp(&left_active)
-                .then_with(|| right.generation.cmp(&left.generation))
-        });
+        prioritize_manifests(&mut manifests, active_writer.as_deref());
         if manifests.is_empty() {
             return Err(
                 last_error.unwrap_or_else(|| "no usable crypto snapshot generation".to_string())
@@ -554,22 +566,13 @@ impl CryptoBackupStore {
                 committed.push(manifest);
             }
         }
-        committed.sort_unstable_by(|left, right| {
-            let left_active = active_writer
-                .as_deref()
-                .is_some_and(|active| left.writer_id == active);
-            let right_active = active_writer
-                .as_deref()
-                .is_some_and(|active| right.writer_id == active);
-            right_active
-                .cmp(&left_active)
-                .then_with(|| right.generation.cmp(&left.generation))
-        });
-        let obsolete = committed
+        let rejected = prioritize_manifests(&mut committed, active_writer.as_deref());
+        let mut obsolete = committed
             .into_iter()
             .skip(RETAIN_COMMITTED_GENERATIONS)
             .map(|manifest| manifest.generation)
             .collect::<std::collections::HashSet<_>>();
+        obsolete.extend(rejected);
         for location in locations {
             if object_generation(&binding.store_key, &location)
                 .is_some_and(|value| obsolete.contains(&value))
@@ -644,6 +647,38 @@ fn validate_manifest_files(files: &[SnapshotFile], known_files: &[&str]) -> Resu
         }
     }
     Ok(())
+}
+
+/// Order complete generations by recency while excluding the narrow race in
+/// which an outgoing normal snapshot commits after a replacement's first
+/// snapshot. Explicit final snapshots remain eligible because they carry the
+/// outgoing process's last crypto state across a graceful handoff.
+fn prioritize_manifests(
+    manifests: &mut Vec<SnapshotManifest>,
+    active_writer: Option<&str>,
+) -> Vec<u64> {
+    let first_active_generation = active_writer.and_then(|active| {
+        manifests
+            .iter()
+            .filter(|manifest| manifest.writer_id == active)
+            .map(|manifest| manifest.generation)
+            .min()
+    });
+    let mut rejected = Vec::new();
+    manifests.retain(|manifest| {
+        let usable = active_writer.is_none_or(|active| {
+            manifest.writer_id == active
+                || manifest.final_snapshot
+                || first_active_generation
+                    .is_none_or(|first_active| manifest.generation < first_active)
+        });
+        if !usable {
+            rejected.push(manifest.generation);
+        }
+        usable
+    });
+    manifests.sort_unstable_by(|left, right| right.generation.cmp(&left.generation));
+    rejected
 }
 
 async fn load_backup_key() -> Result<Aes256Gcm, String> {
@@ -1032,6 +1067,60 @@ mod tests {
             .query_row("SELECT value FROM example", (), |row| row.get(0))
             .unwrap();
         assert_eq!(value, "active");
+    }
+
+    #[tokio::test]
+    async fn outgoing_final_snapshot_remains_eligible_after_writer_handoff() {
+        let backend: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let outgoing = CryptoBackupStore::new_for_test_with_store(
+            [53; 32],
+            "outgoing-writer",
+            backend.clone(),
+            true,
+        );
+        let replacement = CryptoBackupStore::new_for_test_with_store(
+            [53; 32],
+            "replacement-writer",
+            backend,
+            true,
+        );
+        replacement.activate_writer().await.unwrap();
+
+        let session = dummy_session("@alice:example.invalid");
+        let binding = CryptoSnapshotBinding::new("opaque-token", &session, "handoffstore");
+        let replacement_source = scratch_dir("replacement-source");
+        rusqlite::Connection::open(replacement_source.join(DATABASE_FILES[0]))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('replacement');",
+            )
+            .unwrap();
+        replacement
+            .snapshot(&binding, &replacement_source)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        let outgoing_source = scratch_dir("outgoing-final-source");
+        rusqlite::Connection::open(outgoing_source.join(DATABASE_FILES[0]))
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('outgoing-final');",
+            )
+            .unwrap();
+        outgoing
+            .snapshot_final(&binding, &outgoing_source)
+            .await
+            .unwrap();
+
+        let destination = scratch_dir("handoff-destination");
+        std::fs::remove_dir_all(&destination).unwrap();
+        assert!(replacement.restore(&binding, &destination).await.unwrap());
+        let restored = rusqlite::Connection::open(destination.join(DATABASE_FILES[0])).unwrap();
+        let value: String = restored
+            .query_row("SELECT value FROM example", (), |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "outgoing-final");
     }
 
     #[tokio::test]

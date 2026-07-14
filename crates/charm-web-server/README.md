@@ -208,14 +208,15 @@ Platform, redeploying, verifying a snapshot, then revoking the old key. To
 rotate the crypto backup key without invalidating existing snapshots, first
 deploy dual-key read support and rewrite every manifest/database generation;
 never replace the Doppler value in place before that migration exists.
-The server retains the three highest-priority committed generations and
+The server retains the three newest usable committed generations and
 deletes older committed generations after each successful snapshot. Each
-generation's encrypted `manifest.json` is its commit marker. Restore prefers
-the active writer's newest complete generation, then falls back to earlier
-writers for corruption recovery. A replacement publishes its active-writer
-fence only after session restoration and listener binding succeed, so a failed
-startup cannot disable snapshots from the healthy serving instance. Logout
-deletes all generations best-effort.
+generation's encrypted `manifest.json` is its commit marker. Restore orders
+complete generations by recency. Normal snapshots from a superseded writer are
+fenced out, while its explicitly marked graceful-shutdown snapshot remains
+eligible so the replacement can recover crypto changes learned during handoff.
+A replacement publishes its active-writer fence only after session restoration
+and listener binding succeed, so a failed startup cannot disable snapshots
+from the healthy serving instance. Logout deletes all generations best-effort.
 An optional bucket lifecycle expiry can clean up objects left by interrupted
 uploads, but its age also becomes the maximum lifetime of a dormant session's
 last backup.

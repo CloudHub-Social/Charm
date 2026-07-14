@@ -185,7 +185,7 @@ async fn snapshot_active_sessions(state: &AppState, persistence: &PersistenceSto
             .as_ref()
             .map(|value| (value.store_key.as_str(), value.passphrase.as_str()));
         if let Err(error) = persistence
-            .snapshot_crypto_store(&token, &matrix_session, crypto)
+            .snapshot_final_crypto_store(&token, &matrix_session, crypto)
             .await
         {
             tracing::error!("failed to write final crypto snapshot during shutdown: {error}");

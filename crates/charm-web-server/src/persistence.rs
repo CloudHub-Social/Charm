@@ -280,12 +280,36 @@ impl PersistenceStore {
         session: &MatrixSession,
         crypto: Option<(&str, &str)>,
     ) -> Result<(), String> {
+        self.snapshot_crypto_store_with_mode(token, session, crypto, false)
+            .await
+    }
+
+    pub async fn snapshot_final_crypto_store(
+        &self,
+        token: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        self.snapshot_crypto_store_with_mode(token, session, crypto, true)
+            .await
+    }
+
+    async fn snapshot_crypto_store_with_mode(
+        &self,
+        token: &str,
+        session: &MatrixSession,
+        crypto: Option<(&str, &str)>,
+        final_snapshot: bool,
+    ) -> Result<(), String> {
         let (Some(backup), Some((store_key, _passphrase))) = (&self.crypto_backup, crypto) else {
             return Ok(());
         };
         let binding = crate::crypto_backup::CryptoSnapshotBinding::new(token, session, store_key);
         for attempt in 0..SNAPSHOT_READY_ATTEMPTS {
             let result = match crate::crypto_store::existing_store_dir(store_key)? {
+                Some(source_dir) if final_snapshot => {
+                    backup.snapshot_final(&binding, &source_dir).await
+                }
                 Some(source_dir) => backup.snapshot(&binding, &source_dir).await,
                 None => Err("cannot snapshot a missing crypto store directory".to_string()),
             };
