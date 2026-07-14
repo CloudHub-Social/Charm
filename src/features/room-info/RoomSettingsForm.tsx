@@ -19,9 +19,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import type { HistoryVisibilityKind, JoinRuleKind, RoomDetails } from "@/lib/matrix";
+import { RoomAliasManagement } from "./RoomAliasManagement";
 import { useRoomAdminActions } from "./useRoomAdminActions";
 
 const JOIN_RULE_LABELS: Record<JoinRuleKind, string> = {
@@ -84,6 +86,7 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
   const [topic, setTopic] = useState(details.topic ?? "");
   const [confirmingEncryption, setConfirmingEncryption] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement>(null);
+  const roomAliasManagementEnabled = useFlag("room_alias_management");
 
   useEffect(() => {
     setName(details.name ?? "");
@@ -253,6 +256,13 @@ export function RoomSettingsForm({ details }: RoomSettingsFormProps) {
           </PermissionGate>
         </div>
       </section>
+
+      {roomAliasManagementEnabled && (
+        <section className="flex flex-col gap-6">
+          <h3 className="text-sm font-semibold text-foreground">Addresses</h3>
+          <RoomAliasManagement details={details} />
+        </section>
+      )}
 
       <section className="flex flex-col gap-6">
         <h3 className="text-sm font-semibold text-foreground">Advanced</h3>

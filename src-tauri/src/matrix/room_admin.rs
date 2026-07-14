@@ -5,7 +5,9 @@
 //! duplicates — see [`super::members::RoomMemberSummary`]).
 
 use matrix_sdk::room::power_levels::RoomPowerLevelChanges;
+use matrix_sdk::ruma::api::client::room::aliases;
 use matrix_sdk::ruma::events::room::avatar::RoomAvatarEventContent;
+use matrix_sdk::ruma::events::room::canonical_alias::RoomCanonicalAliasEventContent;
 use matrix_sdk::ruma::events::room::history_visibility::{
     HistoryVisibility, RoomHistoryVisibilityEventContent,
 };
@@ -13,7 +15,7 @@ use matrix_sdk::ruma::events::room::join_rules::{JoinRule, Restricted, RoomJoinR
 use matrix_sdk::ruma::events::room::member::MembershipState;
 use matrix_sdk::ruma::events::room::power_levels::{RoomPowerLevels, UserPowerLevel};
 use matrix_sdk::ruma::events::StateEventType;
-use matrix_sdk::ruma::{Int, RoomId, UserId};
+use matrix_sdk::ruma::{Int, OwnedRoomAliasId, RoomAliasId, RoomId, UserId};
 use matrix_sdk::{Client, Room, RoomMemberships};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -188,6 +190,13 @@ pub struct RoomPermissions {
     pub invite: bool,
     pub kick: bool,
     pub ban: bool,
+    /// Gates both the canonical-alias selector and add/remove-alias controls
+    /// (Spec 32) — Matrix has no separate power-level requirement for
+    /// publishing/unpublishing a room-directory alias, only for the
+    /// `m.room.canonical_alias` *state event* itself, so this single check
+    /// covers the whole alias-management surface per the spec's power-level
+    /// gating requirement.
+    pub set_canonical_alias: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -206,6 +215,16 @@ pub struct RoomDetails {
     pub my_power_level: i64,
     pub power_levels: PowerLevelThresholds,
     pub can: RoomPermissions,
+    /// The room's current `m.room.canonical_alias` (`alias`), if any — see
+    /// [`build_room_details`] for how this is read off live room state.
+    pub canonical_alias: Option<String>,
+    /// `m.room.canonical_alias`'s `alt_aliases` — aliases the room
+    /// acknowledges but doesn't treat as primary. Distinct from the
+    /// server-published-alias list returned by [`get_room_local_aliases`]:
+    /// an alias can be published on the directory without being listed here
+    /// (or vice versa, if the state event lists a stale/foreign alias) —
+    /// see Spec 32's non-goals about directory vs. canonical-alias state.
+    pub alt_aliases: Vec<String>,
 }
 
 /// Room v12+ creators have an "infinite" power level (see [`UserPowerLevel::Infinite`]),
@@ -264,6 +283,8 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         invite: power_levels.user_can_invite(own_user_id),
         kick: power_levels.user_can_kick(own_user_id),
         ban: power_levels.user_can_ban(own_user_id),
+        set_canonical_alias: power_levels
+            .user_can_send_state(own_user_id, StateEventType::RoomCanonicalAlias),
     };
 
     let is_encrypted = room
@@ -286,6 +307,12 @@ pub async fn build_room_details(client: &Client, room_id: &str) -> Result<RoomDe
         my_power_level,
         power_levels: (&power_levels).into(),
         can,
+        canonical_alias: room.canonical_alias().map(|alias| alias.to_string()),
+        alt_aliases: room
+            .alt_aliases()
+            .into_iter()
+            .map(|alias| alias.to_string())
+            .collect(),
     })
 }
 
@@ -643,6 +670,149 @@ pub async fn unban_member_impl(
     Ok(())
 }
 
+/// Local (server-published, room-directory) aliases for `room_id` — distinct
+/// from `RoomDetails.canonical_alias`/`alt_aliases`, which come off the room's
+/// `m.room.canonical_alias` *state event* rather than the directory (Spec 32's
+/// non-goal note: alias CRUD and canonical-alias state are separate concerns).
+/// Hits the network every call — the local-server alias list isn't part of
+/// sync state, same rationale as [`super::rooms::resolve_alias`].
+#[tauri::command]
+pub async fn get_room_local_aliases(
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<Vec<String>, String> {
+    let client = state.require_client().await?;
+    get_room_local_aliases_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`get_room_local_aliases`].
+pub async fn get_room_local_aliases_impl(
+    client: &Client,
+    room_id: &str,
+) -> Result<Vec<String>, String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let request = aliases::v3::Request::new(parsed_room_id);
+    let response = client.send(request).await.map_err(|e| e.to_string())?;
+    Ok(response
+        .aliases
+        .into_iter()
+        .map(|a| a.to_string())
+        .collect())
+}
+
+/// Checks whether `alias` is free to publish on the user's homeserver — the
+/// frontend's "Add alias" flow calls this before [`add_room_alias`] so a
+/// taken alias surfaces as "already in use" without attempting (and having
+/// to unwind) a doomed create.
+#[tauri::command]
+pub async fn check_room_alias_available(
+    state: State<'_, MatrixState>,
+    alias: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    check_room_alias_available_impl(&client, &alias).await
+}
+
+/// Core logic behind [`check_room_alias_available`].
+pub async fn check_room_alias_available_impl(client: &Client, alias: &str) -> Result<bool, String> {
+    let parsed_alias = RoomAliasId::parse(alias).map_err(|e| e.to_string())?;
+    client
+        .is_room_alias_available(&parsed_alias)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Publishes `alias` in the homeserver's room directory pointing at
+/// `room_id`. This is directory publishing, not `m.room.canonical_alias`
+/// state — call [`set_canonical_alias`] separately to make it canonical (the
+/// frontend's "offer to set it as canonical" flow does both in sequence).
+/// The availability check above is advisory only (a TOCTOU race is possible),
+/// so this call's own conflict error is still the source of truth.
+#[tauri::command]
+pub async fn add_room_alias(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    alias: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    add_room_alias_impl(&client, &room_id, &alias).await
+}
+
+/// Core logic behind [`add_room_alias`].
+pub async fn add_room_alias_impl(
+    client: &Client,
+    room_id: &str,
+    alias: &str,
+) -> Result<(), String> {
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let parsed_alias = RoomAliasId::parse(alias).map_err(|e| e.to_string())?;
+    client
+        .create_room_alias(&parsed_alias, &parsed_room_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Unpublishes `alias` from the homeserver's room directory. Does not touch
+/// `m.room.canonical_alias` — if `alias` was canonical or listed in
+/// `alt_aliases`, the frontend is responsible for calling
+/// [`set_canonical_alias`] to clear/update that state too, same as removing a
+/// member's admin rights doesn't retroactively undo what they did with them.
+#[tauri::command]
+pub async fn remove_room_alias(state: State<'_, MatrixState>, alias: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    remove_room_alias_impl(&client, &alias).await
+}
+
+/// Core logic behind [`remove_room_alias`].
+pub async fn remove_room_alias_impl(client: &Client, alias: &str) -> Result<(), String> {
+    let parsed_alias = RoomAliasId::parse(alias).map_err(|e| e.to_string())?;
+    client
+        .remove_room_alias(&parsed_alias)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Sets or clears `m.room.canonical_alias`'s `alias` field. `alt_aliases` is
+/// preserved as-is (Spec 32 doesn't offer alt-alias editing) unless the new
+/// canonical `alias` was previously in `alt_aliases`, in which case it's
+/// removed from there to avoid listing the same alias in both fields.
+#[tauri::command]
+pub async fn set_canonical_alias(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    alias: Option<String>,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    set_canonical_alias_impl(&client, &room_id, alias.as_deref()).await
+}
+
+/// Core logic behind [`set_canonical_alias`].
+pub async fn set_canonical_alias_impl(
+    client: &Client,
+    room_id: &str,
+    alias: Option<&str>,
+) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    let parsed_alias: Option<OwnedRoomAliasId> = alias
+        .map(RoomAliasId::parse)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+
+    let mut content = RoomCanonicalAliasEventContent::new();
+    content.alt_aliases = room.alt_aliases();
+    if let Some(ref parsed) = parsed_alias {
+        content.alt_aliases.retain(|existing| existing != parsed);
+    }
+    content.alias = parsed_alias;
+
+    room.send_state_event(content)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -690,6 +860,328 @@ mod tests {
         assert!(
             result.is_err(),
             "expected a nonexistent avatar path to be rejected, got {result:?}"
+        );
+    }
+
+    // --- Spec 32: room alias management ---
+
+    #[tokio::test]
+    async fn get_room_local_aliases_impl_returns_the_server_aliases() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/aliases",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "aliases": ["#room-alias:example.org", "#another-alias:example.org"],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let aliases = get_room_local_aliases_impl(&client, "!room:example.org")
+            .await
+            .expect("aliases should be fetched");
+
+        assert_eq!(
+            aliases,
+            vec![
+                "#room-alias:example.org".to_string(),
+                "#another-alias:example.org".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn check_room_alias_available_impl_true_when_unresolved() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server
+            .mock_room_directory_resolve_alias()
+            .not_found()
+            .mock_once()
+            .mount()
+            .await;
+
+        let available = check_room_alias_available_impl(&client, "#free-alias:example.org")
+            .await
+            .expect("availability check should succeed");
+        assert!(
+            available,
+            "expected an unresolved alias to be reported available"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_room_alias_available_impl_false_when_resolved() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server
+            .mock_room_directory_resolve_alias()
+            .ok("!room:example.org", Vec::new())
+            .mock_once()
+            .mount()
+            .await;
+
+        let available = check_room_alias_available_impl(&client, "#taken-alias:example.org")
+            .await
+            .expect("availability check should succeed");
+        assert!(
+            !available,
+            "expected a resolved alias to be reported unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_room_alias_available_impl_rejects_a_malformed_alias() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let result = check_room_alias_available_impl(&client, "not-a-valid-alias").await;
+        assert!(
+            result.is_err(),
+            "expected a malformed alias to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_room_alias_impl_succeeds() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server
+            .mock_room_directory_create_room_alias()
+            .ok()
+            .mock_once()
+            .mount()
+            .await;
+
+        let result =
+            add_room_alias_impl(&client, "!room:example.org", "#new-alias:example.org").await;
+        assert!(
+            result.is_ok(),
+            "expected alias creation to succeed, got {result:?}"
+        );
+    }
+
+    /// A homeserver rejects `PUT /directory/room/{alias}` with `409
+    /// M_ROOM_IN_USE` when the alias is already taken by another room — this
+    /// must surface as an error, not be swallowed.
+    #[tokio::test]
+    async fn add_room_alias_impl_surfaces_an_alias_already_taken_conflict() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/directory/room/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                    "errcode": "M_ROOM_IN_USE",
+                    "error": "Room alias already taken",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_room_alias_impl(&client, "!room:example.org", "#taken-alias:example.org").await;
+        assert!(
+            result.is_err(),
+            "expected an already-taken alias to be rejected, got {result:?}"
+        );
+    }
+
+    /// A homeserver rejects alias creation with `403 M_FORBIDDEN` when the
+    /// user lacks permission to publish aliases in the room directory.
+    #[tokio::test]
+    async fn add_room_alias_impl_surfaces_insufficient_permission() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/directory/room/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                    "errcode": "M_FORBIDDEN",
+                    "error": "You don't have permission to create this alias",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_room_alias_impl(&client, "!room:example.org", "#no-permission:example.org").await;
+        assert!(
+            result.is_err(),
+            "expected insufficient permission to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_room_alias_impl_rejects_a_malformed_alias() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let result = add_room_alias_impl(&client, "!room:example.org", "not-a-valid-alias").await;
+        assert!(
+            result.is_err(),
+            "expected a malformed alias to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_room_alias_impl_succeeds() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server
+            .mock_room_directory_remove_room_alias()
+            .ok()
+            .mock_once()
+            .mount()
+            .await;
+
+        let result = remove_room_alias_impl(&client, "#existing-alias:example.org").await;
+        assert!(
+            result.is_ok(),
+            "expected alias removal to succeed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_room_alias_impl_surfaces_insufficient_permission() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/directory/room/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                    "errcode": "M_FORBIDDEN",
+                    "error": "You don't have permission to remove this alias",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result = remove_room_alias_impl(&client, "#no-permission:example.org").await;
+        assert!(
+            result.is_err(),
+            "expected insufficient permission to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_canonical_alias_impl_sets_the_alias() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let event_id = matrix_sdk::ruma::event_id!("$canonical_alias_event");
+        server
+            .mock_room_send_state()
+            .for_type(StateEventType::RoomCanonicalAlias)
+            .ok(event_id)
+            .mock_once()
+            .mount()
+            .await;
+
+        let result =
+            set_canonical_alias_impl(&client, room_id.as_str(), Some("#canonical:example.org"))
+                .await;
+        assert!(
+            result.is_ok(),
+            "expected canonical alias to be set, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_canonical_alias_impl_clears_the_alias() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let event_id = matrix_sdk::ruma::event_id!("$canonical_alias_cleared");
+        server
+            .mock_room_send_state()
+            .for_type(StateEventType::RoomCanonicalAlias)
+            .ok(event_id)
+            .mock_once()
+            .mount()
+            .await;
+
+        let result = set_canonical_alias_impl(&client, room_id.as_str(), None).await;
+        assert!(
+            result.is_ok(),
+            "expected canonical alias to be cleared, got {result:?}"
+        );
+    }
+
+    /// A homeserver rejects `m.room.canonical_alias` with `403 M_FORBIDDEN`
+    /// when the sender's power level is below `state_default` (or a
+    /// per-event override) for that event type.
+    #[tokio::test]
+    async fn set_canonical_alias_impl_surfaces_insufficient_permission() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.canonical_alias/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                    "errcode": "M_FORBIDDEN",
+                    "error": "You don't have permission to set the canonical alias",
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result =
+            set_canonical_alias_impl(&client, room_id.as_str(), Some("#canonical:example.org"))
+                .await;
+        assert!(
+            result.is_err(),
+            "expected insufficient permission to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_canonical_alias_impl_rejects_a_malformed_alias() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let result =
+            set_canonical_alias_impl(&client, room_id.as_str(), Some("not-a-valid-alias")).await;
+        assert!(
+            result.is_err(),
+            "expected a malformed alias to be rejected before any network call, got {result:?}"
         );
     }
 }

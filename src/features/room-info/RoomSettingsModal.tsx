@@ -99,7 +99,8 @@ export function RoomSettingsModal({ currentUserId }: RoomSettingsModalProps) {
               >
                 <div className="mb-4 flex items-center justify-between gap-2">
                   <span className="truncate text-base font-bold text-foreground">
-                    {details.name ?? details.room_id}
+                    {/* Prefer the room name, then a canonical alias (Spec 32), over the raw room id — the id is the least human-readable fallback. */}
+                    {details.name ?? details.canonical_alias ?? details.room_id}
                   </span>
                   <button
                     type="button"
