@@ -110,6 +110,12 @@ Use these variables for local or release builds:
 - `SENTRY_UPLOAD=true`: release-build guard that requires the three upload
   variables above and fails the build if any are missing.
 
+Sentry environments describe deployment tiers, not release channels. Hosted
+development deployments and installable nightly builds both use
+`development`; nightly builds remain distinguishable by their canonical
+`{version}+nightly.{short_sha}` release/build id. PR previews use `preview`,
+and public release builds use `production`.
+
 The Vite plugin is gated on `SENTRY_UPLOAD=true` plus all three upload
 variables, so dev and normal PR builds do not create releases or emit
 sourcemaps even if repository secrets are available. Release upload workflows
