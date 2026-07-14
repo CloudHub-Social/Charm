@@ -143,6 +143,24 @@ describe("feature-flag client", () => {
     expect(localStorage.getItem("charm:featureFlags")).toBeNull();
   });
 
+  it("rolls back to durable state when a newer overlapping Tauri write fails", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockRejectedValue(new Error("disk full")),
+      save: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const mod = await import("./index");
+    const superseded = mod.setFeatureFlagOverride("canary", true);
+    const failed = mod.setFeatureFlagOverride("canary", false);
+
+    await expect(superseded).resolves.toBeUndefined();
+    await expect(failed).rejects.toThrow("disk full");
+    expect(mod.getFeatureFlagOverrides()).toEqual({});
+    expect(mod.getFlag("canary")).toBe(false);
+  });
+
   it("rolls back a browser override when localStorage fails", async () => {
     const workingStorage = localStorage;
     vi.stubGlobal("localStorage", {

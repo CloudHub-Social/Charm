@@ -64,7 +64,6 @@ export function useFlag(key: FeatureFlagKey): boolean {
 /** Sets a local override (Labs panel / dev tooling) and persists it. */
 export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean): Promise<void> {
   const mutationId = ++cacheMutationId;
-  const previous = overridesCache;
   const next = { ...overridesCache, [key]: value };
   overridesCache = next;
   emit();
@@ -72,8 +71,11 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
     await persistOverrides(next);
   } catch (error) {
     if (mutationId === cacheMutationId) {
-      overridesCache = previous;
-      emit();
+      const persistedOverrides = await readOverrides();
+      if (mutationId === cacheMutationId) {
+        overridesCache = persistedOverrides;
+        emit();
+      }
     }
     throw error;
   }
@@ -82,7 +84,6 @@ export async function setFeatureFlagOverride(key: FeatureFlagKey, value: boolean
 /** Clears a local override, reverting the flag to remote/default resolution. */
 export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<void> {
   const mutationId = ++cacheMutationId;
-  const previous = overridesCache;
   const next = { ...overridesCache };
   delete next[key];
   overridesCache = next;
@@ -91,8 +92,11 @@ export async function clearFeatureFlagOverride(key: FeatureFlagKey): Promise<voi
     await persistOverrides(next);
   } catch (error) {
     if (mutationId === cacheMutationId) {
-      overridesCache = previous;
-      emit();
+      const persistedOverrides = await readOverrides();
+      if (mutationId === cacheMutationId) {
+        overridesCache = persistedOverrides;
+        emit();
+      }
     }
     throw error;
   }

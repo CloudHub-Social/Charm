@@ -137,7 +137,10 @@ export async function persistOverrides(
     await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
     if (mutationId !== persistMutationId) return false;
     await store.save();
-    return mutationId === persistMutationId;
+    // Once save starts, this envelope may have reached disk even if a newer
+    // mutation arrives before the promise resolves. Treat it as persisted so
+    // the local mirror remains a valid rollback source if that write fails.
+    return true;
   });
   // Chain the next write onto this one regardless of outcome, so a failed
   // save doesn't wedge the queue.
