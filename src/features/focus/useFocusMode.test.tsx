@@ -7,13 +7,17 @@ import { useFocusMode } from "./useFocusMode";
 const getDndState = vi.fn();
 const setDndState = vi.fn();
 const onDndChanged = vi.fn();
-let dndChangedListener: ((state: { enabled: boolean; until: number | null }) => void) | null = null;
+let dndChangedListener:
+  | ((state: { enabled: boolean; until: number | null; revision: number }) => void)
+  | null = null;
 let inTauri = true;
 
 vi.mock("@/lib/matrix", () => ({
   getDndState: (...args: unknown[]) => getDndState(...args),
   setDndState: (...args: unknown[]) => setDndState(...args),
-  onDndChanged: (callback: (state: { enabled: boolean; until: number | null }) => void) => {
+  onDndChanged: (
+    callback: (state: { enabled: boolean; until: number | null; revision: number }) => void,
+  ) => {
     onDndChanged(callback);
     dndChangedListener = callback;
     return Promise.resolve(() => {});
@@ -32,11 +36,11 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 beforeEach(() => {
-  getDndState.mockReset().mockResolvedValue({ enabled: false, until: null });
+  getDndState.mockReset().mockResolvedValue({ enabled: false, until: null, revision: 0 });
   setDndState
     .mockReset()
-    .mockImplementation((enabled: boolean, until: number | null) =>
-      Promise.resolve({ enabled, until }),
+    .mockImplementation((enabled: boolean, until: number | null, expectedRevision: number) =>
+      Promise.resolve({ enabled, until, revision: expectedRevision + 1 }),
     );
   onDndChanged.mockReset();
   dndChangedListener = null;
@@ -50,18 +54,18 @@ describe("useFocusMode", () => {
 
     act(() => result.current.enable());
 
-    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(true, null));
+    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(true, null, 0));
     await waitFor(() => expect(result.current.enabled).toBe(true));
   });
 
   it("toggle off: disable() sets enabled false and until null", async () => {
-    getDndState.mockResolvedValue({ enabled: true, until: null });
+    getDndState.mockResolvedValue({ enabled: true, until: null, revision: 0 });
     const { result } = renderHook(() => useFocusMode(), { wrapper });
     await waitFor(() => expect(result.current.enabled).toBe(true));
 
     act(() => result.current.disable());
 
-    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(false, null));
+    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(false, null, 0));
     await waitFor(() => expect(result.current.enabled).toBe(false));
   });
 
@@ -82,7 +86,7 @@ describe("useFocusMode", () => {
     await waitFor(() => expect(result.current.enabled).toBe(false));
     await waitFor(() => expect(dndChangedListener).not.toBeNull());
 
-    act(() => dndChangedListener?.({ enabled: true, until: null }));
+    act(() => dndChangedListener?.({ enabled: true, until: null, revision: 1 }));
 
     await waitFor(() => expect(result.current.enabled).toBe(true));
   });
@@ -91,14 +95,14 @@ describe("useFocusMode", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const until = Date.now() + 1000;
-      getDndState.mockResolvedValueOnce({ enabled: true, until });
+      getDndState.mockResolvedValueOnce({ enabled: true, until, revision: 0 });
       const { result } = renderHook(() => useFocusMode(), { wrapper });
       await vi.waitFor(() => expect(result.current.enabled).toBe(true));
 
       // Once the timer fires, Rust's `effective()` is the actual source of
       // truth for whether the period really expired — simulate it having
       // auto-cleared server-side by the time the re-query lands.
-      getDndState.mockResolvedValueOnce({ enabled: false, until: null });
+      getDndState.mockResolvedValueOnce({ enabled: false, until: null, revision: 0 });
 
       await vi.advanceTimersByTimeAsync(1100);
 
@@ -121,7 +125,7 @@ describe("useFocusMode", () => {
             resolveFirst = resolve;
           }),
       )
-      .mockResolvedValueOnce({ enabled: false, until: null });
+      .mockResolvedValueOnce({ enabled: false, until: null, revision: 2 });
 
     // Enable a preset, then immediately disable it. The second IPC must wait
     // for the first so Rust cannot persist the older enable last.
@@ -133,7 +137,7 @@ describe("useFocusMode", () => {
 
     act(() => resolveFirst({ enabled: true, until: Date.now() + 30 * 60_000 }));
     await waitFor(() => expect(setDndState).toHaveBeenCalledTimes(2));
-    expect(setDndState).toHaveBeenNthCalledWith(2, false, null);
+    expect(setDndState).toHaveBeenNthCalledWith(2, false, null, 1);
     await waitFor(() => expect(result.current.enabled).toBe(false));
   });
 
@@ -155,7 +159,7 @@ describe("useFocusMode", () => {
 
     // A newer tray action turns DND off while the Settings request remains
     // in flight. Its later confirmation must not restore the stale state.
-    act(() => dndChangedListener?.({ enabled: false, until: null }));
+    act(() => dndChangedListener?.({ enabled: false, until: null, revision: 1 }));
     await waitFor(() => expect(result.current.enabled).toBe(false));
 
     act(() => resolveSettings({ enabled: true, until: null }));

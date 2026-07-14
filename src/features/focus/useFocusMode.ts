@@ -52,6 +52,10 @@ export function useFocusMode() {
   // A tray event must supersede any Settings IPC confirmation still in
   // flight, just as a newer Settings request supersedes an older one.
   const latestRequestId = useRef(0);
+  // The next Rust revision a queued Settings action expects. Tray events
+  // advance this immediately; an older queued IPC then fails its compare in
+  // Rust instead of overwriting the newer tray transition.
+  const nextExpectedRevision = useRef(0);
   // Keep Settings writes in invocation order. Ignoring an older response is
   // not enough: both IPC commands mutate Rust's persisted state, so an older
   // enable that finishes last could otherwise overwrite a newer disable.
@@ -61,6 +65,7 @@ export function useFocusMode() {
     if (!inTauri) return undefined;
     const unlistenPromise = onDndChanged((state) => {
       latestRequestId.current += 1;
+      nextExpectedRevision.current = state.revision;
       queryClient.setQueryData(DND_QUERY_KEY, state);
     });
     return () => {
@@ -70,6 +75,12 @@ export function useFocusMode() {
 
   const enabled = data?.enabled ?? false;
   const until = data?.until ?? null;
+
+  useEffect(() => {
+    if (data?.revision != null) {
+      nextExpectedRevision.current = Math.max(nextExpectedRevision.current, data.revision);
+    }
+  }, [data?.revision]);
 
   // Rust auto-clears an expired timed DND lazily, only on its next read — it
   // never proactively pushes a `dnd:changed` event for an expiry with no
@@ -98,10 +109,14 @@ export function useFocusMode() {
   // optimistic state or tray event in the query cache.
   const apply = (nextEnabled: boolean, nextUntil: number | null) => {
     const requestId = ++latestRequestId.current;
+    const expectedRevision = nextExpectedRevision.current;
+    nextExpectedRevision.current += 1;
     // Optimistic: the tray-menu path already feels instant, so the panel
     // toggle should too rather than waiting a round trip.
     queryClient.setQueryData(DND_QUERY_KEY, { enabled: nextEnabled, until: nextUntil });
-    const write = writeQueue.current.then(() => setDndState(nextEnabled, nextUntil));
+    const write = writeQueue.current.then(() =>
+      setDndState(nextEnabled, nextUntil, expectedRevision),
+    );
     writeQueue.current = write.then(
       () => undefined,
       () => undefined,

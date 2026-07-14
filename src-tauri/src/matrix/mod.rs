@@ -174,7 +174,7 @@ pub struct MatrixState {
     /// command) and the tray menu's DND submenu, so both surfaces read the
     /// same single source of truth. See `dnd`'s module doc comment for why
     /// Rust (not the frontend) owns persistence here, unlike appearance.
-    pub(crate) dnd: std::sync::Mutex<dnd::DndState>,
+    pub(crate) dnd: std::sync::Mutex<dnd::DndRuntimeState>,
 }
 
 impl Default for MatrixState {

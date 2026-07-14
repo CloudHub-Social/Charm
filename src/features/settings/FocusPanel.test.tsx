@@ -50,7 +50,7 @@ describe("FocusPanel", () => {
 
     fireEvent.click(checkbox);
 
-    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(true, null));
+    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(true, null, 0));
   });
 
   it("a preset duration button calls setDndState with a future timestamp", async () => {
@@ -72,6 +72,6 @@ describe("FocusPanel", () => {
 
     fireEvent.click(checkbox);
 
-    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(false, null));
+    await waitFor(() => expect(setDndState).toHaveBeenCalledWith(false, null, 0));
   });
 });

@@ -41,6 +41,26 @@ pub struct DndState {
     pub until: Option<i64>,
 }
 
+/// DND state exposed over IPC/events, plus the Rust-owned transition revision
+/// used to reject a Settings command that was initiated before a newer tray
+/// action. The revision is process-local; no command survives an app restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+#[serde(rename_all = "camelCase")]
+pub struct DndSnapshot {
+    pub enabled: bool,
+    #[ts(type = "number | null")]
+    pub until: Option<i64>,
+    #[ts(type = "number")]
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DndRuntimeState {
+    state: DndState,
+    revision: u64,
+}
+
 impl DndState {
     /// Whether DND is actually in effect at `now_ms`, auto-clearing an
     /// expired timed period rather than trusting a stale `enabled: true`.
@@ -133,32 +153,62 @@ pub fn init(app: &AppHandle) {
     *app.state::<MatrixState>()
         .dnd
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) = persisted;
+        .unwrap_or_else(|e| e.into_inner()) = DndRuntimeState {
+        state: persisted,
+        revision: 0,
+    };
 }
 
-/// Applies a new DND state: updates in-memory state, persists to disk, and
-/// emits `dnd:changed` so whichever surface (Settings panel or tray menu)
-/// didn't trigger this change stays in sync.
+fn snapshot(runtime: DndRuntimeState) -> DndSnapshot {
+    let state = if runtime.state.is_active(now_ms()) {
+        runtime.state
+    } else {
+        DndState::default()
+    };
+    DndSnapshot {
+        enabled: state.enabled,
+        until: state.until,
+        revision: runtime.revision,
+    }
+}
+
+fn transition(
+    current: &mut DndRuntimeState,
+    next: DndState,
+    expected_revision: Option<u64>,
+) -> Option<DndSnapshot> {
+    if expected_revision.is_some_and(|expected| expected != current.revision) {
+        return None;
+    }
+    current.revision = current.revision.saturating_add(1);
+    current.state = next;
+    Some(snapshot(*current))
+}
+
+/// Applies a tray-originated DND state unconditionally, increments the shared
+/// transition revision, persists, and emits the versioned snapshot.
 pub fn apply(app: &AppHandle, next: DndState) {
-    *app.state::<MatrixState>()
-        .dnd
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = next;
+    let changed = {
+        let matrix_state = app.state::<MatrixState>();
+        let mut current = matrix_state.dnd.lock().unwrap_or_else(|e| e.into_inner());
+        transition(&mut current, next, None).expect("unconditional DND transition")
+    };
     if let Ok(dir) = app.path().app_data_dir() {
         write_persisted_at(&dir, next);
     }
-    let _ = app.emit("dnd:changed", next);
+    let _ = app.emit("dnd:changed", changed);
 }
 
 /// Reads the current effective in-memory state, auto-clearing an expired
 /// timed period (without persisting the clear — the next `effective`/
 /// `is_dnd_active` call just re-derives it the same way).
 pub fn effective(app: &AppHandle) -> DndState {
-    let current = *app
+    let current = app
         .state::<MatrixState>()
         .dnd
         .lock()
-        .unwrap_or_else(|e| e.into_inner());
+        .unwrap_or_else(|e| e.into_inner())
+        .state;
     if current.is_active(now_ms()) {
         current
     } else {
@@ -184,20 +234,63 @@ pub fn is_dnd_active(app: &AppHandle) -> bool {
 }
 
 #[tauri::command]
-pub fn get_dnd_state(app: AppHandle) -> DndState {
-    effective(&app)
+pub fn get_dnd_state(app: AppHandle) -> DndSnapshot {
+    snapshot(
+        *app.state::<MatrixState>()
+            .dnd
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()),
+    )
 }
 
 #[tauri::command]
-pub fn set_dnd_state(app: AppHandle, enabled: bool, until: Option<i64>) -> DndState {
+pub fn set_dnd_state(
+    app: AppHandle,
+    enabled: bool,
+    until: Option<i64>,
+    expected_revision: u64,
+) -> DndSnapshot {
     let next = DndState { enabled, until };
-    apply(&app, next);
-    next
+    let changed = {
+        let matrix_state = app.state::<MatrixState>();
+        let mut current = matrix_state.dnd.lock().unwrap_or_else(|e| e.into_inner());
+        match transition(&mut current, next, Some(expected_revision)) {
+            Some(changed) => changed,
+            None => return snapshot(*current),
+        }
+    };
+    if let Ok(dir) = app.path().app_data_dir() {
+        write_persisted_at(&dir, next);
+    }
+    let _ = app.emit("dnd:changed", changed);
+    changed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_revision_cannot_overwrite_a_newer_transition() {
+        let mut current = DndRuntimeState {
+            state: DndState {
+                enabled: false,
+                until: None,
+            },
+            revision: 4,
+        };
+        let stale = transition(
+            &mut current,
+            DndState {
+                enabled: true,
+                until: None,
+            },
+            Some(3),
+        );
+        assert_eq!(stale, None);
+        assert_eq!(current.revision, 4);
+        assert!(!current.state.enabled);
+    }
 
     #[test]
     fn inactive_when_disabled() {
