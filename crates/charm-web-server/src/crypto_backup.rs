@@ -266,8 +266,12 @@ impl CryptoBackupStore {
             return Ok(false);
         }
 
-        if destination_dir.exists() {
-            return Err("refusing to restore over an existing crypto store directory".to_string());
+        // Another request may have completed the same restore after the
+        // caller observed this directory as missing. A published directory
+        // only appears via the atomic staging rename below, so it is safe to
+        // use instead of treating the concurrent winner as an error.
+        if destination_dir.is_dir() {
+            return Ok(true);
         }
 
         let mut last_error = None;
@@ -278,10 +282,18 @@ impl CryptoBackupStore {
                 .await
             {
                 Ok(()) => {
-                    std::fs::rename(staging_dir.path(), destination_dir)
-                        .map_err(|error| error.to_string())?;
-                    staging_dir.disarm();
-                    return Ok(true);
+                    match std::fs::rename(staging_dir.path(), destination_dir) {
+                        Ok(()) => {
+                            staging_dir.disarm();
+                            return Ok(true);
+                        }
+                        Err(_) if destination_dir.is_dir() => {
+                            // A concurrent restore won the rename race. The
+                            // guard removes only this attempt's staging dir.
+                            return Ok(true);
+                        }
+                        Err(error) => return Err(error.to_string()),
+                    }
                 }
                 Err(error) => {
                     last_error = Some(error);
@@ -365,7 +377,7 @@ impl CryptoBackupStore {
     }
 
     pub async fn remove(&self, store_key: &str) -> Result<(), String> {
-        let prefix = ObjectPath::from(format!("crypto/{store_key}"));
+        let prefix = ObjectPath::from(format!("crypto/{store_key}/"));
         let mut objects = self.store.list(Some(&prefix));
         use futures_util::StreamExt;
         while let Some(object) = objects.next().await {
@@ -748,6 +760,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_restores_share_the_atomically_published_store() {
+        let source = scratch_dir("concurrent-source");
+        let database = source.join(DATABASE_FILES[0]);
+        rusqlite::Connection::open(&database)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('shared');",
+            )
+            .unwrap();
+
+        let store = CryptoBackupStore::new_for_test([41; 32]);
+        let session = dummy_session("@alice:example.invalid");
+        let binding = CryptoSnapshotBinding::new("opaque-token", &session, "concurrentstorekey");
+        store.snapshot(&binding, &source).await.unwrap();
+
+        let destination = scratch_dir("concurrent-destination");
+        std::fs::remove_dir_all(&destination).unwrap();
+        let (first, second) = tokio::join!(
+            store.restore(&binding, &destination),
+            store.restore(&binding, &destination)
+        );
+        assert!(first.unwrap());
+        assert!(second.unwrap());
+
+        let restored = rusqlite::Connection::open(destination.join(DATABASE_FILES[0])).unwrap();
+        let value: String = restored
+            .query_row("SELECT value FROM example", (), |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "shared");
+    }
+
+    #[tokio::test]
     async fn remove_deletes_every_committed_generation() {
         let source = scratch_dir("remove-source");
         let database = source.join(DATABASE_FILES[0]);
@@ -759,9 +803,15 @@ mod tests {
         let store = CryptoBackupStore::new_for_test([37; 32]);
         let session = dummy_session("@alice:example.invalid");
         let binding = CryptoSnapshotBinding::new("opaque-token", &session, "removestorekey");
+        let similarly_prefixed_binding =
+            CryptoSnapshotBinding::new("other-token", &session, "removestorekey2");
         for _ in 0..5 {
             store.snapshot(&binding, &source).await.unwrap();
         }
+        store
+            .snapshot(&similarly_prefixed_binding, &source)
+            .await
+            .unwrap();
         let prefix = ObjectPath::from("crypto/removestorekey/");
         let retained = store.store.list(Some(&prefix)).collect::<Vec<_>>().await;
         assert_eq!(retained.len(), RETAIN_COMMITTED_GENERATIONS * 2);
@@ -770,6 +820,13 @@ mod tests {
         let destination = scratch_dir("remove-destination");
         std::fs::remove_dir_all(&destination).unwrap();
         assert!(!store.restore(&binding, &destination).await.unwrap());
+
+        let other_destination = scratch_dir("remove-other-destination");
+        std::fs::remove_dir_all(&other_destination).unwrap();
+        assert!(store
+            .restore(&similarly_prefixed_binding, &other_destination)
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

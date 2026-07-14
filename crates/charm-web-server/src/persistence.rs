@@ -874,14 +874,12 @@ async fn build_client_for_restore(
             match backup.restore(&binding, &dir).await {
                 Ok(true) => dir,
                 Ok(false) => {
-                    let _ = std::fs::remove_dir_all(&dir);
                     return Err(
                         "crypto store directory is missing and no durable snapshot exists"
                             .to_string(),
                     );
                 }
                 Err(error) => {
-                    let _ = std::fs::remove_dir_all(&dir);
                     return Err(format!(
                         "failed to restore durable crypto snapshot: {error}"
                     ));
