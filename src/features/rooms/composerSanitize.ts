@@ -82,9 +82,12 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     }
   }
   if (data.attrName === "class") {
-    const isCodeLanguage =
-      node.nodeName.toLowerCase() === "code" && /^language-[a-z0-9_-]+$/i.test(data.attrValue);
-    if (!isCodeLanguage) data.keepAttr = false;
+    const languageToken =
+      node.nodeName.toLowerCase() === "code"
+        ? data.attrValue.split(/\s+/).find((token) => /^language-[a-z0-9_-]+$/i.test(token))
+        : undefined;
+    if (languageToken) data.attrValue = languageToken;
+    else data.keepAttr = false;
   }
 });
 
@@ -98,7 +101,9 @@ DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
  * Matrix-specific restriction). `class` survives only for a single
  * `language-*` token on `<code>` so the syntax highlighter can select a
  * grammar; the hook above strips it everywhere else, preventing remote HTML
- * from applying the app's own Tailwind utilities inside a message.
+ * from applying the app's own Tailwind utilities inside a message. When a
+ * code element supplies multiple classes, only its first safe `language-*`
+ * token survives.
  */
 export function sanitizeMatrixHtml(dirtyHtml: string): string {
   return DOMPurify.sanitize(dirtyHtml, {

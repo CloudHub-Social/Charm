@@ -23,12 +23,27 @@ describe("RichMessageContent", () => {
     );
 
     const spoiler = screen.getByRole("button", { name: "Reveal spoiler: plot twist" });
-    expect(spoiler).toHaveClass("text-transparent");
-    expect(spoiler).toHaveAttribute("aria-expanded", "false");
+    expect(spoiler.previousElementSibling).toHaveClass("text-transparent");
     fireEvent.click(spoiler);
-    expect(screen.getByRole("button", { name: "Hide spoiler" })).not.toHaveClass(
-      "text-transparent",
+    expect(screen.queryByRole("button", { name: "Reveal spoiler: plot twist" })).toBeNull();
+    expect(screen.getByText("classified")).not.toHaveClass("text-transparent");
+  });
+
+  it("forces rich spoiler descendants to stay concealed", () => {
+    render(
+      <RichMessageContent
+        body="@room"
+        formattedBody='<span data-mx-spoiler><a data-mx-pill href="https://matrix.to/#/%40alice%3Alocalhost">Alice</a> @room</span>'
+        currentUserId="@me:localhost"
+      />,
     );
+
+    const spoiler = screen.getByRole("button", { name: "Reveal spoiler" });
+    expect(spoiler.previousElementSibling).toHaveClass("[&_*]:!text-transparent");
+    expect(screen.queryByRole("button", { name: "Alice" })).toBeNull();
+    expect(screen.getByText("@room")).toBeInTheDocument();
+    fireEvent.click(spoiler);
+    expect(screen.getByRole("button", { name: "Alice" })).toBeInTheDocument();
   });
 
   it("renders a scrollable code block and copies its source", async () => {

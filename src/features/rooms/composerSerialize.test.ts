@@ -104,6 +104,15 @@ describe("sanitizeMatrixHtml", () => {
     expect(out).not.toContain("class");
   });
 
+  it("keeps only a safe language token from a multi-class code element", () => {
+    const out = sanitizeMatrixHtml(
+      '<pre><code class="hljs language-js fixed">const charm = true;</code></pre>',
+    );
+    expect(out).toContain('class="language-js"');
+    expect(out).not.toContain("hljs");
+    expect(out).not.toContain("fixed");
+  });
+
   it("keeps <s> strikethrough tags", () => {
     const out = sanitizeMatrixHtml("<s>struck</s>");
     expect(out).toContain("<s>struck</s>");

@@ -88,23 +88,28 @@ export function parseMatrixPillTarget(href: string | undefined): MatrixPillTarge
 function Spoiler({ reason, children }: { reason?: string; children: ReactNode }) {
   const [revealed, setRevealed] = useState(false);
   return (
-    <button
-      type="button"
-      aria-expanded={revealed}
-      aria-label={
-        revealed ? "Hide spoiler" : reason ? `Reveal spoiler: ${reason}` : "Reveal spoiler"
-      }
-      title={!revealed && reason ? reason : undefined}
-      onClick={() => setRevealed((value) => !value)}
-      className={cn(
-        "rounded px-1 text-left transition-colors",
-        revealed
-          ? "bg-muted text-foreground"
-          : "bg-foreground text-transparent select-none hover:bg-foreground/80",
+    <span className="relative inline-block rounded">
+      <span
+        aria-hidden={!revealed}
+        className={cn(
+          "rounded px-1",
+          revealed
+            ? "bg-muted text-foreground"
+            : "pointer-events-none bg-foreground text-transparent select-none [&_*]:!text-transparent",
+        )}
+      >
+        {children}
+      </span>
+      {!revealed && (
+        <button
+          type="button"
+          aria-label={reason ? `Reveal spoiler: ${reason}` : "Reveal spoiler"}
+          title={reason}
+          onClick={() => setRevealed(true)}
+          className="absolute inset-0 rounded bg-foreground transition-colors hover:bg-foreground/80"
+        />
       )}
-    >
-      <span aria-hidden={!revealed}>{children}</span>
-    </button>
+    </span>
   );
 }
 
