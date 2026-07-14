@@ -18,6 +18,11 @@ describe("observability scrubbers", () => {
     );
   });
 
+  it("redacts a secret value with an unterminated quote (no closing quote)", () => {
+    expect(scrubSensitiveText('access_token="abc123')).toBe('access_token="[redacted]');
+    expect(scrubSensitiveText("session_key='abc123")).toBe("session_key='[redacted]");
+  });
+
   it("reports the scrubbed (not original) length when truncating error text", () => {
     const value = `password="${"x".repeat(400)}"`;
     const result = summarizeErrorText(value);

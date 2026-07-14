@@ -1,11 +1,17 @@
 const MATRIX_ID_PATTERN = /([!@#$])[^ \t\r\n"'<>]+:[A-Za-z0-9.-]+(?::\d+)?/g;
 const MXC_URI_PATTERN = /mxc:\/\/[A-Za-z0-9.-]+\/[A-Za-z0-9._~-]+/g;
-// The value branch matches a fully-quoted string (including embedded spaces —
-// a multi-word passphrase like `password="correct horse battery"` must not
-// leak everything after the first space) or an unquoted run of non-delimiter
-// characters.
+// The value branch matches, in order: a fully-quoted string (including
+// embedded spaces — a multi-word passphrase like
+// `password="correct horse battery"` must not leak everything after the
+// first space), an unquoted run of non-delimiter characters, or — falling
+// back when neither matched — an *unterminated* quoted value (an opening
+// quote with no closing quote, e.g. a diagnostic string truncated
+// mid-value like `access_token="abc123`). Without that fallback, an
+// unterminated value matches neither the quoted branch (no closing quote)
+// nor the unquoted branch (the leading quote isn't a valid unquoted char),
+// and slips through unredacted.
 const SECRET_FIELD_PATTERN =
-  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey)["']?\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'\s,}\]]+))/gi;
+  /((?:access_token|accessToken|refresh_token|refreshToken|password|passphrase|recovery_key|recoveryKey|secret_storage_key|secretStorageKey|session_key|sessionKey)["']?\s*[:=]\s*)(?:"([^"]*)"|'([^']*)'|([^"'\s,}\]]+)|"([^"\s,}\]]*)|'([^'\s,}\]]*))/gi;
 // Suffix-matched (rather than exact) and case-insensitive so a field name
 // like `newPassword` or `oldPassword` redacts the same as `password`, and
 // camelCase names (`recoveryKey`, `accessToken`) redact the same as their
@@ -23,9 +29,19 @@ export function scrubMatrixIds(text: string): string {
 export function scrubSecrets(text: string): string {
   return text.replace(
     SECRET_FIELD_PATTERN,
-    (_match, prefix: string, doubleQuoted?: string, singleQuoted?: string) => {
+    (
+      _match,
+      prefix: string,
+      doubleQuoted?: string,
+      singleQuoted?: string,
+      _unquoted?: string,
+      unterminatedDoubleQuoted?: string,
+      unterminatedSingleQuoted?: string,
+    ) => {
       if (doubleQuoted !== undefined) return `${prefix}"[redacted]"`;
       if (singleQuoted !== undefined) return `${prefix}'[redacted]'`;
+      if (unterminatedDoubleQuoted !== undefined) return `${prefix}"[redacted]`;
+      if (unterminatedSingleQuoted !== undefined) return `${prefix}'[redacted]`;
       return `${prefix}[redacted]`;
     },
   );
