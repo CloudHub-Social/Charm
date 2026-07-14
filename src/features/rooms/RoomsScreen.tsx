@@ -74,6 +74,8 @@ export function RoomsScreen({
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
   const [roomsLoaded, setRoomsLoaded] = useState(false);
+  const [syncedRoomListReceived, setSyncedRoomListReceived] = useState(false);
+  const syncedRoomListReceivedRef = useRef(false);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   const [roomListMode, setRoomListMode] = useState<RoomListMode>("home");
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
@@ -191,7 +193,7 @@ export function RoomsScreen({
     let cancelled = false;
     listRooms()
       .then((nextRooms) => {
-        if (cancelled) return;
+        if (cancelled || syncedRoomListReceivedRef.current) return;
         setRooms(nextRooms);
       })
       .catch(logAndIgnore)
@@ -200,6 +202,8 @@ export function RoomsScreen({
       });
     const unlisten = onRoomListUpdate((nextRooms) => {
       if (cancelled) return;
+      syncedRoomListReceivedRef.current = true;
+      setSyncedRoomListReceived(true);
       setRooms(nextRooms);
       setRoomsLoaded(true);
     });
@@ -334,14 +338,27 @@ export function RoomsScreen({
       setSelectedSpaceId(null);
       setMobileView("list");
       autoSelectSuppressedRef.current = { kind: "invite", roomId: match.room_id };
+    } else if (!syncedRoomListReceived) {
+      // `listRooms()` can return the SDK's restored local snapshot before the
+      // first network sync has populated a room referenced by a launch-time
+      // deep link. Keep the target pending until a sync-driven room list has
+      // had a chance to include it.
+      return;
     }
-    // A resolved target absent from the completed snapshot is stale or not
+    // A resolved target absent from a sync-driven snapshot is stale or not
     // visible to this account. Consume it rather than letting it suppress
     // initial room selection forever.
     setResolvedDeepLinkTarget(null);
     onDeepLinkConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolvedDeepLinkTarget, rooms, roomsLoaded, onDeepLinkConsumed, roomInvitesEnabled]);
+  }, [
+    resolvedDeepLinkTarget,
+    rooms,
+    roomsLoaded,
+    syncedRoomListReceived,
+    onDeepLinkConsumed,
+    roomInvitesEnabled,
+  ]);
 
   useEffect(() => {
     const suppression = autoSelectSuppressedRef.current;

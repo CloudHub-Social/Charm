@@ -539,8 +539,35 @@ describe("RoomsScreen", () => {
     expect(await screen.findByText(`chat-content:${joined.room_id}`)).toBeInTheDocument();
   });
 
-  it("consumes a deep link to a room absent from the loaded snapshot", async () => {
+  it("keeps a deep link pending until the first sync-driven room list includes it", async () => {
     const onDeepLinkConsumed = vi.fn();
+    const target = room({ room_id: "!late:example.org" });
+    listRooms.mockResolvedValue([]);
+
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={target.room_id}
+        onDeepLinkConsumed={onDeepLinkConsumed}
+        onLoggedOut={() => {}}
+      />,
+    );
+
+    await screen.findByText("chat-content:none");
+    expect(onDeepLinkConsumed).not.toHaveBeenCalled();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([target]));
+
+    expect(await screen.findByText(`chat-content:${target.room_id}`)).toBeInTheDocument();
+    expect(onDeepLinkConsumed).toHaveBeenCalledOnce();
+  });
+
+  it("consumes a stale deep link after a sync-driven room list omits it", async () => {
+    const onDeepLinkConsumed = vi.fn();
+    listRooms.mockResolvedValue([]);
 
     render(
       <RoomsScreen
@@ -550,6 +577,14 @@ describe("RoomsScreen", () => {
         onLoggedOut={() => {}}
       />,
     );
+
+    await screen.findByText("chat-content:none");
+    expect(onDeepLinkConsumed).not.toHaveBeenCalled();
+
+    const roomListListener = onRoomListUpdate.mock.calls[0]?.[0] as
+      | ((rooms: RoomSummary[]) => void)
+      | undefined;
+    act(() => roomListListener?.([]));
 
     await waitFor(() => expect(onDeepLinkConsumed).toHaveBeenCalledOnce());
     expect(screen.getByText("chat-content:none")).toBeInTheDocument();
