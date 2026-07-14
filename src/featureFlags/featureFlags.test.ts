@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(() => false),
   addFeatureFlag: vi.fn(),
   getClient: vi.fn(),
+  load: vi.fn(),
 }));
 
 vi.mock("@/lib/platform", () => ({ isTauri: () => mocks.isTauri() }));
@@ -15,10 +16,15 @@ vi.mock("@sentry/react", () => ({
   getClient: () => mocks.getClient(),
 }));
 
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: (...args: unknown[]) => mocks.load(...args),
+}));
+
 beforeEach(() => {
   localStorage.clear();
   vi.resetModules();
   mocks.isTauri.mockReturnValue(false);
+  mocks.load.mockReset().mockRejectedValue(new Error("store unavailable"));
   mocks.addFeatureFlag.mockReset();
   mocks.getClient.mockReset().mockReturnValue({
     getIntegrationByName: (name: string) =>
@@ -95,6 +101,32 @@ describe("feature-flag client", () => {
     const mod = await import("./index");
     await mod.initializeFeatureFlags();
     expect(mod.getFeatureFlagOverrides()).toEqual({});
+  });
+
+  it("serializes durable writes so a superseded persist can't clobber a newer one", async () => {
+    // Durable Tauri path: a fake store records what actually gets written. Even
+    // with the first save artificially slow, the older (superseded) write must
+    // short-circuit rather than land last and leave stale overrides on disk.
+    mocks.isTauri.mockReturnValue(true);
+    const saved: Array<Record<string, boolean>> = [];
+    const store = {
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn((_key: string, value: { state: { overrides: Record<string, boolean> } }) => {
+        saved.push(value.state.overrides);
+        return Promise.resolve();
+      }),
+      save: vi.fn().mockResolvedValue(undefined),
+    };
+    mocks.load.mockResolvedValue(store);
+
+    const { persistOverrides } = await import("./store");
+    await Promise.all([
+      persistOverrides({ canary: false }, 1),
+      persistOverrides({ canary: true }, 2),
+    ]);
+
+    // Only the newest write reaches disk; the superseded one short-circuited.
+    expect(saved).toEqual([{ canary: true }]);
   });
 
   it("useFlag returns the default then re-renders when an override is set", async () => {

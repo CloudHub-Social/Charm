@@ -103,18 +103,40 @@ export async function readOverrides(): Promise<FeatureFlagOverrides> {
   return envelope?.state.overrides ?? {};
 }
 
+// Serializes durable writes, mirroring `observability/persistence.ts`. Without
+// this, two `persistOverrides` calls in flight at once (e.g. the Labs panel
+// toggling two flags quickly) each run their own `load`/`set`/`save`, and the
+// older save can land last — leaving `feature-flags.json` with stale overrides
+// that the Rust core (which reads only the durable file) then evaluates. The
+// mutation counter also lets a superseded write short-circuit instead of
+// racing to overwrite a newer one.
+let persistMutationId = 0;
+let durablePersistTail: Promise<void> = Promise.resolve();
+
 /** Persists overrides to the local mirror and (in Tauri) the durable store. */
 export async function persistOverrides(
   overrides: FeatureFlagOverrides,
   updatedAt: number = Date.now(),
 ): Promise<void> {
+  const mutationId = ++persistMutationId;
   const envelope: PersistedEnvelope = { state: { overrides }, updatedAt };
   writeLocalEnvelope(envelope);
   try {
-    const store = await getStore();
-    if (!store) return;
-    await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
-    await store.save();
+    const durablePersist = durablePersistTail.then(async () => {
+      if (mutationId !== persistMutationId) return;
+      const store = await getStore();
+      if (!store || mutationId !== persistMutationId) return;
+      await store.set(FEATURE_FLAGS_STORE_KEY, envelope);
+      if (mutationId !== persistMutationId) return;
+      await store.save();
+    });
+    // Chain the next write onto this one regardless of outcome, so a failed
+    // save doesn't wedge the queue.
+    durablePersistTail = durablePersist.then(
+      () => undefined,
+      () => undefined,
+    );
+    await durablePersist;
   } catch {
     // The local mirror already landed; dev/browser builds rely on it.
   }

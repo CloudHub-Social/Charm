@@ -29,7 +29,11 @@ name: PR checklist gate
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, ready_for_review]
+    # `labeled`/`unlabeled` matter because the checklist bypass keys off the
+    # `internal`/`documentation`/`docs` labels: without them, applying the label
+    # to a PR that already failed this gate wouldn't re-run it (and removing the
+    # label after a pass wouldn't re-enforce it).
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
   merge_group:
 
 permissions:

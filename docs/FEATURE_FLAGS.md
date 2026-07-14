@@ -22,7 +22,7 @@ document is the contributor guide; the design rationale lives in the vault spec
   of the IPC boundary for the same install.
 
 > **Next increment (not yet shipped): the remote layer.** A GO Feature Flag
-> (OFREP) endpoint slots in *between* override and default to provide the
+> (OFREP) endpoint slots in _between_ override and default to provide the
 > production **kill-switch** and **staged/percentage rollout**. It is deployed
 > as a relay-proxy container on DO App Platform reading a config published from
 > a PR-reviewed `charm-flags` repo to DO Spaces, with a break-glass path for
@@ -88,7 +88,7 @@ not appear in Sentry's flag context.
 ## Privacy
 
 Flag keys and values are app-internal config identifiers — never user or room
-identity. Nothing about flag *state* is sent to Sentry beyond the boolean, and
+identity. Nothing about flag _state_ is sent to Sentry beyond the boolean, and
 it flows through the same scrubbers as all other Sentry data (Spec 21).
 
 Once the remote layer ships, the client will send an **anonymized per-install
