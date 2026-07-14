@@ -1,0 +1,4 @@
+interface:
+  display_name: "Charm Issue to PR"
+  short_description: "Deliver a Charm issue as a safe draft PR"
+  default_prompt: "Use $charm-issue-to-pr to take a Charm issue through reproduction, validation, and a draft PR."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Research Note"
+  short_description: "Create evidence-based security notes"
+  default_prompt: "Use $security-research-note to turn this source into a provenance-preserving research note."

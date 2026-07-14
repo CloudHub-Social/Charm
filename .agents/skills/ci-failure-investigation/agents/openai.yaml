@@ -1,0 +1,4 @@
+interface:
+  display_name: "CI Failure Investigation"
+  short_description: "Diagnose CI failures from evidence first"
+  default_prompt: "Use $ci-failure-investigation to diagnose this Charm CI failure before proposing a fix."

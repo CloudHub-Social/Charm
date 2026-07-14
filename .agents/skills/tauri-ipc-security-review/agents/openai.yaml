@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tauri IPC Security Review"
+  short_description: "Review Charm Tauri IPC trust boundaries"
+  default_prompt: "Use $tauri-ipc-security-review to audit Charm IPC commands and report concrete findings."

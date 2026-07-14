@@ -1,0 +1,4 @@
+interface:
+  display_name: "Matrix Client Security Review"
+  short_description: "Audit Matrix client security and privacy"
+  default_prompt: "Use $matrix-client-security-and-privacy-review to review a Charm change for Matrix security and privacy risks."

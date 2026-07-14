@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upstream Import Audit"
+  short_description: "Assess provenance before importing code"
+  default_prompt: "Use $upstream-import-audit to assess an upstream implementation before adapting it into Charm."

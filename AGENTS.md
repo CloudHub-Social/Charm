@@ -40,6 +40,14 @@ pnpm build            # tsc && vite build — must succeed with no errors
 - Search related open/merged PRs and issues on `origin` before opening one; link
   related issues (`Closes #N` / `Related to #N`) after confirming with the user.
 
+## Reusable agent skills
+
+Project-specific workflows live under `.agents/skills/`. Load the matching
+`SKILL.md` before acting on an issue-to-PR request, CI failure, release review,
+upstream import, Tauri IPC review, Matrix security/privacy review, or security
+research note. These skills add task-specific guardrails; this file and
+`CLAUDE.md` remain authoritative for repository-wide workflow rules.
+
 ## Feature flags
 
 New user-facing features must ship **behind a feature flag** that defaults off, so

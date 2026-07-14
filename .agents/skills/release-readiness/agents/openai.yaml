@@ -1,0 +1,4 @@
+interface:
+  display_name: "Charm Release Readiness"
+  short_description: "Check Charm release security and integrity"
+  default_prompt: "Use $release-readiness to assess whether a Charm build is ready to release."
