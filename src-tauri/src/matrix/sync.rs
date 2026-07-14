@@ -320,6 +320,13 @@ async fn notify_new_room_invites(
         };
         let (title, body) =
             build_invite_notification(room_name.as_deref(), inviter_display_name, inviter_user_id);
+        // Invite mode/details/display-name lookups above may span a Focus
+        // toggle. Check again for every invite immediately before posting so
+        // the remainder of a multi-invite response is suppressed as soon as
+        // DND is enabled.
+        if super::dnd::is_dnd_active(app) {
+            continue;
+        }
         if let Err(error) = app.notification().builder().title(title).body(body).show() {
             tracing::warn!(%error, room_id = %room_id, "failed to show room-invite notification");
         }

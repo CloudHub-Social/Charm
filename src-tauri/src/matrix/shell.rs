@@ -427,6 +427,13 @@ pub async fn maybe_send_notification<F, Fut>(
 
     let (title, notif_body) =
         build_notification(room_name.as_deref(), sender_display_name, sender, body);
+    // The mode/mentions/dedupe/display-name work above is asynchronous. Focus
+    // may have been enabled after the early guard, so re-check at the final
+    // dispatch point and release the reservation if suppression now wins.
+    if super::dnd::is_dnd_active(app) {
+        app.state::<MatrixState>().forget_notified(event_id);
+        return;
+    }
     let show_result = app
         .notification()
         .builder()
