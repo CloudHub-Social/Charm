@@ -55,7 +55,7 @@ function highlightRoomMentions(text: string): ReactNode {
         return /^@(room|here)$/i.test(part) ? (
           <mark
             key={key}
-            className="rounded bg-warning/20 px-0.5 font-semibold text-warning-foreground"
+            className="rounded bg-warning px-0.5 font-semibold text-warning-foreground"
           >
             {part}
           </mark>

@@ -65,6 +65,8 @@ test("inserts an @ mention pill from the autocomplete menu", async ({ page }) =>
   await option.click();
   await composer.press("Enter");
 
-  await expect(page.getByText("hey @Alice", { exact: true })).toBeVisible();
+  const sentPill = page.getByRole("button", { name: "@Alice" });
+  await expect(sentPill).toBeVisible();
+  await expect(page.locator("p", { has: sentPill })).toContainText("hey");
   await captureSnapshot(page, "composer-mention-pill");
 });
