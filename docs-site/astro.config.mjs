@@ -2,6 +2,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightObsidian, { obsidianSidebarEntries } from 'starlight-obsidian';
@@ -32,13 +33,53 @@ const vaultPath =
 // we'd add here would be a fake version number. Add it back
 // (`pnpm add -D starlight-versions`) once a real release is tagged.
 
-// Reviewed 2026-07-14: the 79 spec files are public-safe (no PII, secrets,
-// cost figures, or infra credentials). The two `00 — Day-N spec index.md`
-// files are excluded below — they're written as internal planning logs
-// ("owner adjudication" decision tables) rather than reader-facing docs.
-// `**/00 *.md` also catches any future Johnny.Decimal-style index note
-// (`00 — ...`) added to the specs folder later.
+// Reviewed 2026-07-14: the 79 spec files listed in reviewed-specs.json are
+// public-safe (no PII, secrets, cost figures, or infra credentials). The two
+// `00 — Day-N spec index.md` files are excluded below — they're written as
+// internal planning logs ("owner adjudication" decision tables) rather than
+// reader-facing docs. Beyond that, publication is allowlisted against
+// reviewed-specs.json (see computeUnreviewedIgnorePatterns below) — any spec
+// added to the vault later stays unpublished until a PR here adds it to that
+// manifest, so a scheduled deploy can never publish unreviewed content.
 const publishSpecs = process.env.PUBLISH_SPECS === 'true';
+
+// Allowlist, not blocklist: only files listed in reviewed-specs.json (the 79
+// reviewed on 2026-07-14) are ever published. If someone adds a new spec to
+// the vault later, it's excluded by default until a PR here adds it to the
+// manifest — so a scheduled deploy can never publish unreviewed vault
+// content. Escapes glob metacharacters (several spec filenames contain
+// literal parentheses, which micromatch would otherwise treat as extglob
+// syntax — the same issue that broke a plain filename-based ignore earlier).
+function escapeGlob(value) {
+	return value.replace(/[()[\]{}!?*+@|^$.\\]/g, '\\$&');
+}
+
+function computeUnreviewedIgnorePatterns() {
+	const manifestPath = path.join(process.cwd(), 'reviewed-specs.json');
+	const reviewed = new Set(JSON.parse(fsSync.readFileSync(manifestPath, 'utf8')));
+
+	function walk(dir, relDir) {
+		let entries;
+		try {
+			entries = fsSync.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return [];
+		}
+		let unreviewed = [];
+		for (const entry of entries) {
+			if (entry.name.startsWith('.')) continue;
+			const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+			if (entry.isDirectory()) {
+				unreviewed = unreviewed.concat(walk(path.join(dir, entry.name), rel));
+			} else if (entry.name.endsWith('.md') && !reviewed.has(rel)) {
+				unreviewed.push(escapeGlob(rel));
+			}
+		}
+		return unreviewed;
+	}
+
+	return walk(vaultPath, '');
+}
 
 // starlight-obsidian's `copyFrontmatter: 'starlight'` is all-or-nothing: it
 // would pull in the vault's own `title` frontmatter alongside `sidebar`,
@@ -147,6 +188,10 @@ export default defineConfig({
 						// parentheses, which micromatch treats as extglob syntax rather
 						// than literal characters.
 						'**/Spec 25 — Persistent crypto state*',
+						// Allowlist gate: anything in the vault not in
+						// reviewed-specs.json, so a scheduled deploy can never
+						// publish a newly-added, unreviewed spec.
+						...(publishSpecs ? computeUnreviewedIgnorePatterns() : []),
 					],
 					skipGeneration: !publishSpecs,
 				}),
