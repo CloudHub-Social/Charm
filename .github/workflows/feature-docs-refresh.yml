@@ -98,11 +98,18 @@ jobs:
           git add docs-site/public/features
           git commit -m "docs: refresh feature screenshots"
           git push origin "$branch"
-          pr_url="$(gh pr create \
-            --base main \
-            --head "$branch" \
-            --title "docs: refresh feature screenshots" \
-            --body "Automated refresh from Sentry Snapshots run ${SNAPSHOT_RUN_ID}. The curated images changed relative to the committed feature gallery.\n\nThis PR only updates deterministic public screenshots; review the visual diff before merging.\n\n### AI disclosure\n\n- [x] Fully AI generated: CI selected the manifest-listed Playwright fixtures and copied their latest deterministic PNGs. No application code or feature metadata changed.")"
+          pr_url="$(
+            printf '%s\n\n%s\n\n%s\n\n%s\n' \
+              "Automated refresh from Sentry Snapshots run ${SNAPSHOT_RUN_ID}. The curated images changed relative to the committed feature gallery." \
+              "This PR only updates deterministic public screenshots; review the visual diff before merging." \
+              "### AI disclosure" \
+              "- [x] Fully AI generated: CI selected the manifest-listed Playwright fixtures and copied their latest deterministic PNGs. No application code or feature metadata changed." \
+              | gh pr create \
+                  --base main \
+                  --head "$branch" \
+                  --title "docs: refresh feature screenshots" \
+                  --body-file -
+          )"
           if ! gh pr edit "$pr_url" --add-label internal; then
             echo "::warning::Refresh PR opened, but the optional internal label could not be applied."
           fi
