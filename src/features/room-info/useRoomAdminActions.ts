@@ -1,10 +1,14 @@
 import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
 import {
+  addRoomAlias,
   banMember,
   enableRoomEncryption,
   inviteMember,
   kickMember,
+  removeAltAlias,
+  removeRoomAlias,
   removeRoomAvatar,
+  setCanonicalAlias,
   setMemberPowerLevel,
   setRoomAvatar,
   setRoomHistoryVisibility,
@@ -17,6 +21,7 @@ import {
   type JoinRuleKind,
   type PowerLevelThresholds,
 } from "@/lib/matrix";
+import { roomAliasesQueryKey } from "./useRoomAliases";
 import { roomDetailsQueryKey } from "./useRoomDetails";
 import { roomMembersQueryKey } from "./useRoomMembers";
 
@@ -75,5 +80,31 @@ export function useRoomAdminActions(roomId: string) {
     unban: useRoomAdminMutation(roomId, (vars: { userId: string; reason?: string }) =>
       unbanMember(roomId, vars.userId, vars.reason),
     ),
+    addAlias: useRoomAliasMutation(roomId, (alias: string) => addRoomAlias(roomId, alias)),
+    removeAlias: useRoomAliasMutation(roomId, (alias: string) => removeRoomAlias(alias)),
+    setCanonicalAlias: useRoomAdminMutation(roomId, (alias: string | null) =>
+      setCanonicalAlias(roomId, alias),
+    ),
+    removeAltAlias: useRoomAdminMutation(roomId, (alias: string) => removeAltAlias(roomId, alias)),
   };
+}
+
+/**
+ * Same as [`useRoomAdminMutation`], plus invalidating the aliases query —
+ * `addRoomAlias`/`removeRoomAlias` touch the room-directory alias list, which
+ * has no `room_details:update`-style push event (see `useRoomAliases`'s doc
+ * comment), so this invalidation is the only thing that refreshes it.
+ */
+function useRoomAliasMutation<TVariables>(
+  roomId: string,
+  mutationFn: (variables: TVariables) => Promise<void>,
+): UseMutationResult<void, Error, TVariables> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: roomDetailsQueryKey(roomId) });
+      queryClient.invalidateQueries({ queryKey: roomAliasesQueryKey(roomId) });
+    },
+  });
 }

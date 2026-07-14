@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeMatrix } from "./matrix";
+import { invokeMatrix, removeAltAlias } from "./matrix";
 
 const mocks = vi.hoisted(() => ({
   addBreadcrumb: vi.fn(),
@@ -175,5 +175,18 @@ describe("invokeMatrix", () => {
     await invokeMatrix("send_message", { roomId: "!room:matrix.example" });
 
     expect(mocks.addBreadcrumb).not.toHaveBeenCalled();
+  });
+});
+
+describe("removeAltAlias", () => {
+  it("invokes remove_alt_alias with the room id and alias", async () => {
+    mocks.invoke.mockResolvedValueOnce(undefined);
+
+    await removeAltAlias("!room:example.org", "#stale:example.org");
+
+    expect(mocks.invoke).toHaveBeenCalledWith("remove_alt_alias", {
+      roomId: "!room:example.org",
+      alias: "#stale:example.org",
+    });
   });
 });
