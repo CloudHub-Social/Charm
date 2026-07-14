@@ -52,7 +52,7 @@ export function AppShell({
   const { openSettings } = useSettingsNavigation();
 
   useEffect(() => {
-    if (activeRoomId) onMobileViewChange("detail");
+    onMobileViewChange(activeRoomId ? "detail" : "list");
     // Depends on `selectionRequestId` too, not just `activeRoomId`:
     // re-selecting the already-active room from the list bumps the request
     // id without changing `activeRoomId`, and that reselection must still
@@ -83,7 +83,7 @@ export function AppShell({
           </div>
         )}
       </div>
-      {mobileView === "list" && (
+      {(mobileView === "list" || !activeRoomId) && (
         <nav
           className="flex shrink-0 border-t bg-background pb-[env(safe-area-inset-bottom)]"
           aria-label="Primary"

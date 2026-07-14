@@ -82,6 +82,7 @@ export function RoomsScreen({
   // happened" when the id doesn't change (e.g. a `charm://room/<id>` deep
   // link for the room already selected while a list tab is showing).
   const [selectionRequestId, setSelectionRequestId] = useState(0);
+  const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
   function selectRoom(roomId: string) {
     spaceDeepLinkSelectedRef.current = false;
     setActiveRoomId(roomId);
@@ -188,7 +189,7 @@ export function RoomsScreen({
         !roomSettingsTarget &&
         document.hasFocus() &&
         (layout === "desktop" || mobileView === "detail");
-      setFocusedRoom(isShowingChat ? activeRoomId : null).catch(logAndIgnore);
+      setFocusedRoom(isShowingChat ? (activeRoom?.room_id ?? null) : null).catch(logAndIgnore);
     }
     syncFocusedRoom();
     window.addEventListener("focus", syncFocusedRoom);
@@ -197,7 +198,7 @@ export function RoomsScreen({
       window.removeEventListener("focus", syncFocusedRoom);
       window.removeEventListener("blur", syncFocusedRoom);
     };
-  }, [activeRoomId, settingsSection, roomSettingsTarget, layout, mobileView]);
+  }, [activeRoom, settingsSection, roomSettingsTarget, layout, mobileView]);
 
   // Clears focus only on unmount (e.g. sign-out) so a stale focused room
   // never survives past this screen — separate from the effect above so
@@ -253,7 +254,6 @@ export function RoomsScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, activeRoomId, deepLinkRoomId]);
 
-  const activeRoom = rooms.find((room) => room.room_id === activeRoomId) ?? null;
   const selectedSpace =
     roomListMode === "space"
       ? (rooms.find((room) => room.room_id === selectedSpaceId && room.is_space) ?? null)
@@ -303,7 +303,7 @@ export function RoomsScreen({
             onCreateJoin={() => setCreateJoinDialogOpen(true)}
           />
         }
-        activeRoomId={activeRoomId}
+        activeRoomId={activeRoom?.room_id ?? null}
         selectionRequestId={selectionRequestId}
         mobileView={mobileView}
         onMobileViewChange={setMobileView}

@@ -156,4 +156,23 @@ describe("AppShell", () => {
 
     expect(screen.getByText("chat-content")).toBeInTheDocument();
   });
+
+  it("returns to the mobile list when the active room disappears", () => {
+    mockUseAdaptiveLayout.mockReturnValue("mobile");
+    const store = createStore();
+    const wrapper = ({ children }: PropsWithChildren) =>
+      createElement(Provider, { store }, children);
+    const { rerender } = render(<Harness activeRoomId="!room:example.org" />, { wrapper });
+
+    expect(screen.getByText("chat-content")).toBeInTheDocument();
+
+    rerender(
+      <Provider store={store}>
+        <Harness activeRoomId={null} />
+      </Provider>,
+    );
+
+    expect(screen.getByText("room-list")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
+  });
 });
