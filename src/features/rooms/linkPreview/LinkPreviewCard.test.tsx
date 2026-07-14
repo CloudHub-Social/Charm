@@ -2,7 +2,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LinkPreviewCard } from "./LinkPreviewCard";
+import { LinkPreviewCard, linkPreviewStaleTime } from "./LinkPreviewCard";
+
+describe("linkPreviewStaleTime", () => {
+  it("caches real preview data for a full hour", () => {
+    expect(linkPreviewStaleTime({ title: "Example" })).toBe(60 * 60 * 1000);
+  });
+
+  it("only caches a null result (no data, or a swallowed transient failure) for 30s", () => {
+    expect(linkPreviewStaleTime(null)).toBe(30 * 1000);
+    expect(linkPreviewStaleTime(undefined)).toBe(30 * 1000);
+  });
+});
 
 const getUrlPreview = vi.fn();
 const resolveAvatar = vi.fn();

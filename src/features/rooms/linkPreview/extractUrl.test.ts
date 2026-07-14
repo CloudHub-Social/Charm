@@ -25,4 +25,14 @@ describe("firstUrlInText", () => {
   it("ignores non-http(s) links like mailto", () => {
     expect(firstUrlInText("email me at someone@example.com")).toBeNull();
   });
+
+  it("skips a leading non-http(s) URL in favor of a later http(s) one", () => {
+    expect(firstUrlInText("grab it via ftp://host/file.zip or https://example.com/file.zip")).toBe(
+      "https://example.com/file.zip",
+    );
+  });
+
+  it("returns null when the only URL present isn't http(s)", () => {
+    expect(firstUrlInText("see ftp://host/file.zip")).toBeNull();
+  });
 });

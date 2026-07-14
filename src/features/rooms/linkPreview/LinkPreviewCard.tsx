@@ -48,6 +48,22 @@ function hostnameOf(url: string): string | null {
 }
 
 /**
+ * `fetchUrlPreview` collapses every preview-fetch failure mode (404,
+ * malformed body, homeserver timeout) into `null` — by design, per
+ * `get_url_preview`'s Rust doc comment, so a slow/broken homeserver never
+ * surfaces an error state in the timeline. But that means a `null` from a
+ * transient hiccup (a timeout) is indistinguishable here from a `null` from
+ * a genuinely preview-less URL (no OG tags) — caching both for a full hour
+ * would silence a preview that'd succeed on retry a moment later. Give
+ * `null` a much shorter staleTime so a transient failure gets retried soon,
+ * while real preview data still enjoys the full hour (a URL's OG tags
+ * essentially never change minute-to-minute).
+ */
+export function linkPreviewStaleTime(data: unknown): number {
+  return data ? 60 * 60 * 1000 : 30 * 1000;
+}
+
+/**
  * Unfurled link-preview card (Spec 29), rendered under a message body when a
  * URL is detected and the `link_previews` feature flag is on. Renders
  * nothing when there's no preview data to show (fetch still pending isn't
@@ -58,7 +74,7 @@ export function LinkPreviewCard({ roomId, url }: LinkPreviewCardProps) {
   const { data: preview } = useQuery({
     queryKey: ["link-preview", roomId, url],
     queryFn: () => fetchUrlPreview(roomId, url),
-    staleTime: 60 * 60 * 1000,
+    staleTime: (query) => linkPreviewStaleTime(query.state.data),
     gcTime: 60 * 60 * 1000,
   });
 
