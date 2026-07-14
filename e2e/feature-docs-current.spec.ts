@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+// snapshot-exempt: compares artifacts produced by the capture suite; it does not render app state.
+
 type Feature = {
   slug: string;
   snapshot: { suite: "e2e"; name: string };
@@ -17,6 +19,8 @@ const manifest = JSON.parse(
 ) as { features: Feature[] };
 
 test.describe("committed feature documentation", () => {
+  test.skip(!process.env.FEATURE_DOCS_COMPARE, "runs only in the feature-doc drift job");
+
   for (const feature of manifest.features) {
     test(`${feature.slug} matches its E2E journey`, async () => {
       const actual = await readFile(path.join(snapshotRoot, `${feature.snapshot.name}.png`));
