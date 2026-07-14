@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const graphPath = path.join(siteRoot, 'dist/sitegraph/sitemap.json');
 const galleryPath = path.join(siteRoot, 'src/data/feature-gallery.json');
+const roadmapPath = path.join(siteRoot, 'src/data/roadmap.json');
 const errors = [];
 
 if (!fs.existsSync(graphPath)) {
@@ -14,6 +15,7 @@ if (!fs.existsSync(graphPath)) {
 
 const graph = JSON.parse(fs.readFileSync(graphPath, 'utf8'));
 const gallery = JSON.parse(fs.readFileSync(galleryPath, 'utf8'));
+const roadmap = JSON.parse(fs.readFileSync(roadmapPath, 'utf8'));
 const internalPath = (href) => href.replace(/^\//, '').split(/[?#]/)[0];
 
 for (const [route, node] of Object.entries(graph)) {
@@ -23,6 +25,7 @@ for (const [route, node] of Object.entries(graph)) {
 }
 
 const requiredBridges = new Map([
+	['product/roadmap/', roadmap.specs.map((spec) => internalPath(spec.route))],
 	[
 		'operations/sentry/',
 		[

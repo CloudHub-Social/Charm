@@ -38,6 +38,18 @@ The feature gallery is not a Storybook component catalog. It captures complete
 user journeys with deterministic state. See [Maintaining the feature
 gallery](/features/maintaining/) for its CI contract.
 
+## Roadmap status
+
+Name the governing roadmap item explicitly in an implementation pull request as
+`Day-1 Spec NN` or `Day-2 Spec NN`, and link the published spec route when
+practical. The [product roadmap](/product/roadmap/) refreshes from GitHub nightly
+and uses those exact references to connect open and merged work to the spec.
+
+The generated dashboard is a status projection, not a replacement for reviewed
+scope. Update the spec itself when implementation changes behavior, phases,
+dependencies, acceptance criteria, or verification requirements. Refresh the
+committed development cache with `pnpm roadmap:generate` from `docs-site/`.
+
 ## Content rules
 
 - Use normal Markdown links; Obsidian wikilinks are not supported.

@@ -10,6 +10,9 @@ name: Docs deploy
 # so pull requests validate the exact pages that production will publish.
 
 on:
+  schedule:
+    # Refresh the GitHub-backed roadmap every night even when main is quiet.
+    - cron: "17 06 * * *"
   push:
     branches: [main]
     paths:
@@ -56,6 +59,13 @@ jobs:
       - name: Install dependencies
         working-directory: docs-site
         run: pnpm install --frozen-lockfile
+
+      - name: Refresh roadmap from GitHub
+        if: github.event_name != 'pull_request'
+        working-directory: docs-site
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm roadmap:generate
 
       - name: Check content
         working-directory: docs-site
