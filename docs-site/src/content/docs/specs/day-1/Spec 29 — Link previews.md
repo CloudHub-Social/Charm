@@ -3,8 +3,25 @@ title: Charm 2.0 Spec — Link previews
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+**Desktop implementation shipped in
+[PR #250](https://github.com/CloudHub-Social/Charm/pull/250), behind the
+default-off `link_previews` flag; web support remains a follow-up.** The Tauri
+implementation uses the homeserver preview endpoint with legacy fallback,
+caches by room and URL, and renders the card in all three message layouts. The
+web transport currently returns `null` because the companion server has no
+`/preview_url` proxy route, so browser builds do not render previews. Unit and
+mocked-homeserver tests cover the desktop graceful-failure contract;
+live-homeserver manual verification was not recorded.
+
+:::note[Historical baseline]
+The proposal below is retained as the implementation design. Its present-tense
+gap statements describe the state before PR #250.
+:::
 
 **Workstream:** one PR / one agent. Small backend fetch/cache surface plus a
 `MessageRow` rendering addition.

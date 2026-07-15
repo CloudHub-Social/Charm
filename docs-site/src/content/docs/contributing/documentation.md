@@ -50,6 +50,12 @@ scope. Update the spec itself when implementation changes behavior, phases,
 dependencies, acceptance criteria, or verification requirements. Refresh the
 committed development cache with `pnpm roadmap:generate` from `docs-site/`.
 
+Use `draft`, `in-progress`, or `shipped` in canonical spec frontmatter. The index
+may display an `in-progress` spec as **Follow-up** when code is merged but a required
+external configuration or verification step remains. “Merged” is not automatically
+“shipped”: compare the pull request with the acceptance criteria and record any
+remaining manual or operator-owned step explicitly.
+
 ## Content rules
 
 - Use normal Markdown links; Obsidian wikilinks are not supported.
@@ -63,6 +69,8 @@ committed development cache with `pnpm roadmap:generate` from `docs-site/`.
 - Do not add links merely to increase the graph count. Every edge should answer
   why a reader of one page should continue to the other.
 - Keep frontmatter titles descriptive and statuses explicit.
+- Keep each canonical spec's frontmatter status consistent with its Day-1 or Day-2
+  index row; `pnpm check:content` rejects drift.
 - Treat an implementation/spec mismatch as documentation debt to fix in the
   same change, not a future vault-sync task.
 

@@ -4,21 +4,41 @@ title: Spec 25 — Persistent crypto state and recovery-key-sufficient
 type: spec
 project: Charm 2.0
 created: 2026-07-10
-status: draft
+status: shipped
 sidebar:
   label: "Persistent crypto state & recovery"
 ---
 
 ## Status
-Draft — high priority, no hard deadline. Written 2026-07-10 from the user's own testing.
 
-**Cross-reference:** **PR #149** ("Implement recovery-key restore (Matrix key backup / 4S)") **merged 2026-07-10 but does not resolve this spec's problem.** Confirmed by re-reading the current repo state: `crates/charm-web-server/src/persistence.rs:37-42` still carries the identical "Known gap: the Olm/Megolm crypto store is not persisted" doc comment, byte-for-byte unchanged. #149 added a manual, on-demand recovery-key restore flow (`recovery_status_impl`/`recover_from_key_impl` in `src-tauri/src/matrix/verification.rs:215-256`, exposed via `GET`/`POST /api/verification/recovery` and a "Recovery" card in Settings) — but it deliberately did not add server-side persistence of the crypto store itself, citing DO App Platform's Web Service tier having no persistent volume. So the underlying bug is unchanged: **every `charm-web-server` restart / page context loss still wipes Olm/Megolm state**, and the user must manually re-paste their recovery key each time — #149 just turned that into a supported UI flow instead of a dead end. This spec's Phase 1 (P0 #1/#2/#5/#6, actual crypto-store persistence) is therefore still fully open, not superseded by #149.
+**Shipped.** The complete persistence and verification path landed across:
 
-Also confirmed: `recover_from_key_impl` never calls `device.verify()` (verification.rs:244-256) — the only place `.verify()` is called is `bootstrap_cross_signing_impl` (verification.rs:125-138), which is the separate self-verification-during-bootstrap path, not the recovery-key path. So this spec's Phase 2 (recovery-key-alone should mark the device verified) is also still fully open — #149 didn't touch it.
+- [PR #172](https://github.com/CloudHub-Social/Charm/pull/172): per-session
+  encrypted SQLite crypto stores;
+- [PR #173](https://github.com/CloudHub-Social/Charm/pull/173): recovery-key
+  restore self-verifies the current device;
+- [PR #181](https://github.com/CloudHub-Social/Charm/pull/181): lifecycle,
+  cleanup, and persisted-vs-open-state correctness fixes;
+- [PR #247](https://github.com/CloudHub-Social/Charm/pull/247): encrypted
+  crypto-store snapshots in private object storage, so state survives App
+  Platform redeploys as well as ordinary restarts;
+- [PR #257](https://github.com/CloudHub-Social/Charm/pull/257): missing backed-up
+  room keys are downloaded after recovery, restoring historical decryption.
+
+Current evidence lives in `crates/charm-web-server/src/crypto_store.rs`,
+`crates/charm-web-server/src/crypto_backup.rs`, the restore paths in
+`crates/charm-web-server/src/persistence.rs`, and the `device.verify()` step in
+`src-tauri/src/matrix/verification.rs`.
 
 Also cross-reference: issue #143 (closed 2026-07-10) confirmed that `DeviceRow.tsx` hiding "Verify" for the current device is correct, working-as-intended behavior — a related but distinct UI fix already shipped (PR #167, 2026-07-10, hides the entire actions menu — not just the Verify item — for the current device row, since every other item was already gated the same way).
 
-## Problem Statement
+:::note[Historical baseline]
+The problem analysis below was written after PR #149 but before PRs #172–#257.
+Statements that persistence or recovery self-verification are absent describe
+that old baseline, not the current implementation.
+:::
+
+## Historical problem statement (2026-07-10)
 
 On the Charm web client, entering the 4S recovery key and completing device
 verification successfully decrypts messages — but neither survives a page

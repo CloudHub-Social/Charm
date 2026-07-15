@@ -3,8 +3,22 @@ title: Charm 2.0 Spec — Room alias management
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+**Desktop implementation shipped in
+[PR #251](https://github.com/CloudHub-Social/Charm/pull/251), behind the
+default-off `room_alias_management` flag; web support remains a follow-up.**
+Tauri room settings can list, add, and remove local aliases and set or clear the
+canonical alias, with power-level gates and typed Rust/frontend contracts. The
+web transport does not yet implement the alias commands, so browser builds fall
+through to `UnsupportedCommand`.
+
+:::note[Historical baseline]
+The proposal below predates PR #251 and is retained as design history.
+:::
 
 **Workstream:** one PR / one agent. Small addition to Spec 07/17's room settings.
 

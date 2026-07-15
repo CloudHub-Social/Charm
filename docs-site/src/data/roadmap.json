@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-14T22:54:53.031Z",
+  "generatedAt": "2026-07-15T00:39:23.092Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 33,
-    "follow-up": 1,
+    "shipped": 30,
+    "follow-up": 5,
     "in-progress": 0,
-    "planned": 41
+    "planned": 40
   },
   "attention": [
     {
@@ -53,8 +53,8 @@
         "day-1-27"
       ],
       "counts": {
-        "shipped": 26,
-        "follow-up": 1,
+        "shipped": 24,
+        "follow-up": 3,
         "in-progress": 0,
         "planned": 0
       }
@@ -101,10 +101,10 @@
         "day-1-62"
       ],
       "counts": {
-        "shipped": 7,
-        "follow-up": 0,
+        "shipped": 6,
+        "follow-up": 2,
         "in-progress": 0,
-        "planned": 28
+        "planned": 27
       }
     },
     {
@@ -379,7 +379,7 @@
       "number": 13,
       "title": "Voice-video platform spike",
       "route": "/specs/day-1/spec-13--voice-video-platform-spike/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 230,
@@ -678,7 +678,7 @@
       "number": 22,
       "title": "User feedback categorization and GitHub label mapping",
       "route": "/specs/day-1/spec-22--user-feedback-categorization-and-github-label-mapping/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 165,
@@ -753,6 +753,22 @@
       "route": "/specs/day-1/spec-25--persistent-crypto-state-and-recovery-key-sufficient-verification-web-client/",
       "status": "shipped",
       "pullRequests": [
+        {
+          "number": 257,
+          "title": "Fix recovery-key history decryption",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/257",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T16:32:55Z"
+        },
+        {
+          "number": 247,
+          "title": "Persist web crypto state across deployments",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/247",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T06:59:33Z"
+        },
         {
           "number": 181,
           "title": "Spec 25 Phase 1 follow-up: fix 3 leak bugs, split persisted-vs-open crypto state",
@@ -842,7 +858,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 250,
@@ -890,7 +906,7 @@
       "number": 32,
       "title": "Room alias management",
       "route": "/specs/day-1/spec-32--room-alias-management/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 251,
@@ -938,8 +954,41 @@
       "number": 35,
       "title": "Feature flags (OpenFeature + Sentry evaluation tracking)",
       "route": "/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "shipped",
+      "pullRequests": [
+        {
+          "number": 259,
+          "title": "fix: instrument remote feature-flag IPC",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/259",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T16:47:16Z"
+        },
+        {
+          "number": 256,
+          "title": "Activate remote feature flags: wire VITE_CHARM_OFREP_URL into builds",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/256",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T16:32:56Z"
+        },
+        {
+          "number": 255,
+          "title": "Add remote feature-flag layer (GO Feature Flag via OFREP)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/255",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T15:36:40Z"
+        },
+        {
+          "number": 241,
+          "title": "Feature flags: OpenFeature-shaped system + Sentry tracking + CI gate",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/241",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-14T02:54:34Z"
+        }
+      ],
       "issues": []
     },
     {

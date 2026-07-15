@@ -4,10 +4,25 @@ title: "Charm 2.0 Spec — Space hierarchy and room-list rebuild (match Charm 1.
 type: spec
 project: Charm 2.0
 created: "2026-07-07"
-status: in-progress
+status: shipped
 sidebar:
   label: "Space hierarchy & room-list rebuild"
 ---
+
+## Implementation status
+
+**Shipped.** All four phases merged in [PR #99](https://github.com/CloudHub-Social/Charm/pull/99),
+[PR #102](https://github.com/CloudHub-Social/Charm/pull/102),
+[PR #150](https://github.com/CloudHub-Social/Charm/pull/150), and
+[PR #153](https://github.com/CloudHub-Social/Charm/pull/153). The implementation
+includes the recursive hierarchy and badge foundations, the space rail and scoped
+navigation, room-list search, and space creation/join-by-address.
+
+:::note[Historical baseline]
+The “Current state” comparison below records the pre-implementation repository
+state from 2026-07-07. It explains why the work was commissioned; it is not a
+description of the current application.
+:::
 
 **Workstream:** likely multi-PR — recommend phasing (see Effort estimate).
 **Tier:** post-Day-1 UX rework.

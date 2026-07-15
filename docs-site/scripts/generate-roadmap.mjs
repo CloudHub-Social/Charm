@@ -68,7 +68,7 @@ function canonicalSpecs(tier) {
 function normalizeStatus(value) {
 	const status = value.toLowerCase().replaceAll('*', '');
 	if (/shipped|complete|merged|\bgo\b/.test(status)) return 'shipped';
-	if (/progress|partial|active|implement/.test(status)) return 'in-progress';
+	if (/follow-up|progress|partial|active|implement/.test(status)) return 'in-progress';
 	return 'planned';
 }
 
@@ -86,7 +86,7 @@ function indexMetadata(tier) {
 			.slice(1, -1)
 			.map((cell) => cell.trim());
 		const statusCell = cells.find((cell) =>
-			/shipped|complete|merged|\bgo\b|progress|partial|active|draft|unbuilt|not started/i.test(
+			/shipped|complete|merged|\bgo\b|follow-up|progress|partial|active|planned|draft|unbuilt|not started/i.test(
 				cell,
 			),
 		);
@@ -186,9 +186,15 @@ function publicIssue(issue) {
 function finalStatus(baseline, pullRequests, issues) {
 	const hasMerged = pullRequests.some((pullRequest) => pullRequest.state === 'merged');
 	const hasOpen = pullRequests.some((pullRequest) => pullRequest.state === 'open');
-	if (hasOpen) return hasMerged || baseline === 'shipped' ? 'follow-up' : 'in-progress';
-	if (issues.length > 0 && (hasMerged || baseline === 'shipped')) return 'follow-up';
-	if (hasMerged || baseline === 'shipped') return 'shipped';
+	if (baseline === 'shipped') {
+		return hasOpen || issues.length > 0 ? 'follow-up' : 'shipped';
+	}
+	if (hasOpen) return hasMerged ? 'follow-up' : 'in-progress';
+	// A merged PR is evidence of implementation, not proof that every acceptance
+	// criterion, manual check, or operator-owned step is complete. Keep the
+	// repository-reviewed spec status authoritative and surface this as follow-up
+	// until the spec/index is explicitly reconciled.
+	if (hasMerged) return 'follow-up';
 	return baseline;
 }
 

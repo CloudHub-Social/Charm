@@ -3,7 +3,7 @@ title: Spec 26 Phase 2 — Bottom-up timeline rendering (follow-up)
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 sidebar:
   label: "Phase 2: Bottom-up rendering"
 ---
@@ -15,7 +15,16 @@ practice" — this is that spec.
 
 ## Status
 
-Draft. Written 2026-07-13, two days after Phase 1 merged. **Revised same day**
+**Shipped in [PR #232](https://github.com/CloudHub-Social/Charm/pull/232).** The
+merged implementation uses the bottom-anchored, virtualized timeline model scoped
+here, including pagination and jump-to-present behavior.
+
+:::note[Historical baseline]
+The remainder of this section records how the proposal was revised before
+implementation. It is retained as design history.
+:::
+
+Written 2026-07-13, two days after Phase 1 merged. **Revised same day**
 after review: the first draft of this spec deferred virtualization pending
 telemetry that doesn't exist and isn't coming soon (Charm 2.0 has no
 production users yet). On reflection that was the wrong bar — Charm 1.0's own

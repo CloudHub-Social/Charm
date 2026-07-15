@@ -3,7 +3,7 @@ title: "Charm 2.0 Spec — Voice-video platform spike"
 type: spec
 project: Charm 2.0
 created: "2026-07-04"
-status: spike-mostly-resolved
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent. **Tier:** Day-1 launch-critical.
