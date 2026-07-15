@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-15T00:25:34.522Z",
+  "generatedAt": "2026-07-15T00:32:44.820Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 32,
@@ -590,12 +590,76 @@
       "status": "shipped",
       "pullRequests": [
         {
+          "number": 94,
+          "title": "Add Sentry user feedback UI",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/94",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T11:53:57Z"
+        },
+        {
+          "number": 96,
+          "title": "Add consent-gated Android Sentry runtime init",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/96",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-09T01:57:54Z"
+        },
+        {
           "number": 97,
           "title": "Add Rust Sentry tracing log bridge",
           "url": "https://github.com/CloudHub-Social/Charm/pull/97",
           "state": "merged",
           "draft": false,
           "updatedAt": "2026-07-08T23:39:07Z"
+        },
+        {
+          "number": 95,
+          "title": "Wire Sentry size analysis reports",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/95",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T22:14:51Z"
+        },
+        {
+          "number": 93,
+          "title": "Correlate attachment IPC breadcrumbs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/93",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T19:05:08Z"
+        },
+        {
+          "number": 91,
+          "title": "Add Sentry IPC breadcrumbs",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/91",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T18:00:52Z"
+        },
+        {
+          "number": 87,
+          "title": "Add Sentry Android artifact uploads",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/87",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T17:29:01Z"
+        },
+        {
+          "number": 85,
+          "title": "Add Sentry platform symbol uploads",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/85",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T16:40:11Z"
+        },
+        {
+          "number": 83,
+          "title": "Add Sentry release artifact upload workflow",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/83",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-08T16:04:58Z"
         },
         {
           "number": 81,
