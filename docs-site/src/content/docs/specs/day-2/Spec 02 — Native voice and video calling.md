@@ -6,20 +6,21 @@ created: 2026-07-13
 status: draft
 ---
 
-**Workstream:** multi-PR, likely the largest single Day-2 item. Needs a design
-spike/ADR before a full spec is finalized — this doc scopes the decision to be made
-and a rough phase breakdown, not a final implementation plan.
+**Workstream:** multi-PR, likely the largest single Day-2 item. The architecture
+decision is complete: embed Sable Call as a Matrix widget after Day-1 Spec 49
+establishes the generic widget lifecycle and trust boundary.
 
 ## Problem & why now
 
 Charm 1.0's calling is a third-party iframe embed (Element Call or similar),
 historically its most bug-churned area (19 of the last 100 commits touched calling,
 per the parity gap analysis) — flaky call setup, embed-boundary state bugs, and a
-poor native-app feel. Charm 2.0's Spec 13 (voice-video platform spike) confirmed
-WebRTC media-permission plumbing works across all 5 target platforms but is
-explicitly scoped as a **spike only** — no actual calling UI or signaling exists.
-This spec is the next step: decide the calling architecture and scope the first
-real implementation phase.
+poor native-app feel. Charm 2.0's Spec 13 (voice-video platform spike) landed
+code-level media-permission plumbing for all five target platforms, with macOS and
+Windows confirmed on real hardware and Android, iOS, and Linux still awaiting
+recorded runtime verification. It is explicitly scoped as a **spike only** — no
+actual calling UI or signaling exists. This spec applies the already-decided widget
+architecture to the first real calling implementation.
 
 > **Owner update, confirmed 2026-07-13: the calling architecture is decided.**
 > **Sable Call is a Matrix widget — same model as Element Call.** This spec's

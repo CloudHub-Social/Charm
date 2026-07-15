@@ -3,10 +3,26 @@ title: "Charm 2.0 Spec — Feature flags (OpenFeature + Sentry evaluation tracki
 type: spec
 project: "Charm 2.0"
 created: "2026-07-13"
-status: draft
+status: shipped
 sidebar:
   label: "Feature flags"
 ---
+
+## Implementation status
+
+**Shipped.** [PR #241](https://github.com/CloudHub-Social/Charm/pull/241)
+landed the typed Rust/TypeScript catalog, local overrides, Sentry evaluation
+tracking, contributor guidance, and CI gate. [PR #255](https://github.com/CloudHub-Social/Charm/pull/255)
+added the remote OFREP layer and shared last-known-good cache; [PR #256](https://github.com/CloudHub-Social/Charm/pull/256)
+activated the deployed GO Feature Flag proxy in web and production builds.
+[PR #259](https://github.com/CloudHub-Social/Charm/pull/259) completed IPC error
+instrumentation for remote evaluations. The Labs control surface is tracked by
+[Spec 34](/specs/day-1/spec-34--labs-and-experimental-settings-panel/).
+
+:::note[Historical baseline]
+The problem statement below describes the repository before PR #241. The detailed
+design remains useful, but claims that no flag system exists are no longer current.
+:::
 
 **Workstream:** single non-phased capability — remote flip, local override, and
 Sentry correlation are all Day-1 (see [Why not phased](#why-not-phased)). Likely ~2 PRs at

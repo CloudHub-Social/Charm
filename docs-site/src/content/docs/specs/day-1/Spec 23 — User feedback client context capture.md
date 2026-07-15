@@ -3,8 +3,20 @@ title: "Charm 2.0 Spec — User feedback client context capture"
 type: spec
 project: "Charm 2.0"
 created: "2026-07-10"
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+**Shipped in [PR #169](https://github.com/CloudHub-Social/Charm/pull/169).**
+Feedback events now carry the real per-OS `charm.platform` value and explicit
+`charm.build.version`; the existing `charm.build.id` and error association paths
+cover the remaining scoped context. The feedback form discloses the attached app
+version and platform.
+
+:::note[Historical baseline]
+The “Current state” section below is the pre-implementation audit from 2026-07-10.
+:::
 
 **Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
 

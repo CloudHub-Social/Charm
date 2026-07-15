@@ -21,6 +21,20 @@ function relative(file) {
 	return path.relative(siteRoot, file);
 }
 
+function routeFor(file) {
+	const parsed = path.parse(path.relative(contentRoot, file));
+	const parts = parsed.dir.split(path.sep).filter(Boolean);
+	if (parsed.name !== 'index') {
+		parts.push(
+			parsed.name
+				.toLowerCase()
+				.replace(/[^\p{Letter}\p{Number}\s-]/gu, '')
+				.replace(/\s/g, '-'),
+		);
+	}
+	return `/${parts.join('/')}${parts.length ? '/' : ''}`;
+}
+
 function frontmatter(source) {
 	const match = source.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
 	if (!match) return null;
@@ -37,20 +51,13 @@ function frontmatter(source) {
 const docs = markdownFiles(contentRoot);
 const specs = markdownFiles(specsRoot);
 const canonicalSpecCount = specs.filter((file) => /^Spec \d{2} —/.test(path.basename(file))).length;
+const reviewedSpecStatusByRoute = new Map(
+	specs
+		.filter((file) => /^Spec \d{2} —/.test(path.basename(file)))
+		.map((file) => [routeFor(file), frontmatter(fs.readFileSync(file, 'utf8'))?.get('status')]),
+);
 const routes = new Set(
-	docs.map((file) => {
-		const parsed = path.parse(path.relative(contentRoot, file));
-		const parts = parsed.dir.split(path.sep).filter(Boolean);
-		if (parsed.name !== 'index') {
-			parts.push(
-				parsed.name
-					.toLowerCase()
-					.replace(/[^\p{Letter}\p{Number}\s-]/gu, '')
-					.replace(/\s/g, '-'),
-			);
-		}
-		return `/${parts.join('/')}${parts.length ? '/' : ''}`;
-	}),
+	docs.map(routeFor),
 );
 routes.add('/changelog/');
 
@@ -94,6 +101,18 @@ if (!Array.isArray(roadmap.specs) || roadmap.specs.length !== canonicalSpecCount
 		if (!roadmapStatuses.has(spec.status)) {
 			errors.push(`roadmap spec ${spec.id} has unknown status ${spec.status}`);
 		}
+
+		const reviewedStatus = reviewedSpecStatusByRoute.get(spec.route);
+		const allowedProjection = {
+			shipped: new Set(['shipped', 'follow-up']),
+			'in-progress': new Set(['in-progress', 'follow-up']),
+			draft: new Set(['planned', 'in-progress', 'follow-up']),
+		}[reviewedStatus];
+		if (allowedProjection && !allowedProjection.has(spec.status)) {
+			errors.push(
+				`roadmap spec ${spec.id} status ${spec.status} contradicts reviewed status ${reviewedStatus}`,
+			);
+		}
 	}
 }
 const roadmapTotal = Object.values(roadmap.summary ?? {}).reduce((total, count) => total + count, 0);
@@ -135,6 +154,53 @@ for (const file of specs) {
 
 	for (const key of ['title', 'type', 'project', 'created', 'status']) {
 		if (!metadata.get(key)) errors.push(`${relative(file)} is missing frontmatter key ${key}`);
+	}
+
+	const allowedStatuses = path.basename(file) === 'index.md'
+		? new Set(['active'])
+		: new Set(['draft', 'in-progress', 'shipped']);
+	if (metadata.get('status') && !allowedStatuses.has(metadata.get('status'))) {
+		errors.push(
+			`${relative(file)} has unsupported status ${metadata.get('status')}; expected ${[...allowedStatuses].join(', ')}`,
+		);
+	}
+}
+
+function normalizedIndexStatus(row) {
+	const statusCell = row
+		.split('|')
+		.slice(1, -1)
+		.map((cell) => cell.trim())[2];
+	if (/\bshipped\b/i.test(statusCell)) return 'shipped';
+	if (/\bfollow-up\b|\bin progress\b/i.test(statusCell)) return 'in-progress';
+	if (/\bplanned\b|\bdraft\b/i.test(statusCell)) return 'draft';
+	return null;
+}
+
+for (const tier of ['day-1', 'day-2']) {
+	const indexFile = path.join(specsRoot, tier, 'index.md');
+	const indexLines = fs.readFileSync(indexFile, 'utf8').split('\n');
+	const canonical = specs.filter(
+		(file) => path.dirname(file) === path.dirname(indexFile) && /^Spec \d{2} —/.test(path.basename(file)),
+	);
+
+	for (const file of canonical) {
+		const route = routeFor(file);
+		const rows = indexLines.filter((line) => line.startsWith('|') && line.includes(`](${route})`));
+		if (rows.length !== 1) {
+			errors.push(`${relative(file)} must appear exactly once in ${tier}/index.md; found ${rows.length}`);
+			continue;
+		}
+
+		const indexedStatus = normalizedIndexStatus(rows[0]);
+		const metadataStatus = frontmatter(fs.readFileSync(file, 'utf8')).get('status');
+		if (!indexedStatus) {
+			errors.push(`${tier}/index.md has no recognized status for ${route}`);
+		} else if (indexedStatus !== metadataStatus) {
+			errors.push(
+				`${relative(file)} status ${metadataStatus} disagrees with ${tier}/index.md status ${indexedStatus}`,
+			);
+		}
 	}
 }
 

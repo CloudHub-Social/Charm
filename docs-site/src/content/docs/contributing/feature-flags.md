@@ -17,7 +17,7 @@ disabled, roll out in stages, and be turned off without a client release.
   compiled-in default, and its description live in
   [`src-tauri/src/feature_flags.rs`](https://github.com/CloudHub-Social/Charm/blob/main/src-tauri/src/feature_flags.rs).
   The key set is exported to the frontend as a `FeatureFlagKey` string-literal
-  union via ts-rs (`src/bindings/FeatureFlagKey.ts`), so a JS catalog that
+  union via ts-rs (`src-tauri/src/bindings/FeatureFlagKey.ts`), so a JS catalog that
   misspells or omits a key fails `tsc`.
 - The same key must also be added to `src/featureFlags/catalog.ts` on the
   frontend, defaulting to `false`.

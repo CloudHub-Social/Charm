@@ -8,6 +8,7 @@ talking to a React/TypeScript frontend (`src/`) over typed IPC.
 
 ## Prerequisites
 
+- Node.js 22 or newer (Node.js 24 is required for the Storybook test runner)
 - [pnpm](https://pnpm.io)
 - Rust (stable toolchain)
 - Platform build tools for [Tauri](https://tauri.app/start/prerequisites/)
@@ -28,9 +29,9 @@ pnpm dev          # Vite dev server
 pnpm build:web    # web build
 ```
 
-## Quality gate
+## Frontend quality gate
 
-Before committing, run the same checks CI enforces:
+Before committing, run the frontend checks CI enforces:
 
 ```sh
 pnpm lint
@@ -40,6 +41,10 @@ pnpm test:coverage
 pnpm knip
 pnpm build
 ```
+
+Rust changes also run formatting, clippy, and nextest in CI. Use the targeted
+commands documented in `CONTRIBUTING.md` for the crate or platform you changed;
+generated ts-rs bindings are refreshed by `cargo test --lib`.
 
 See [CI / release tiers](../../contributing/ci-tiers/) for how these fit into the
 overall pipeline, and the repository's `CLAUDE.md` for the full contributor

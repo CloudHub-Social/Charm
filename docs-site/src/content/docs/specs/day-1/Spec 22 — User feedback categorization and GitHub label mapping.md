@@ -3,10 +3,24 @@ title: "Charm 2.0 Spec — User feedback categorization and GitHub label mapping
 type: spec
 project: "Charm 2.0"
 created: "2026-07-10"
-status: draft
+status: in-progress
 sidebar:
   label: "User feedback categorization"
 ---
+
+## Implementation status
+
+**Follow-up required.** [PR #165](https://github.com/CloudHub-Social/Charm/pull/165)
+shipped the required Bug / Feature request selector and the
+`charm.feedback.category` Sentry tag. The acceptance criterion that maps those
+categories to GitHub labels is still an owner-operated Sentry organization change;
+the PR explicitly records that no end-to-end label mapping was configured or
+verified. This spec is therefore not complete yet.
+
+:::note[Historical baseline]
+The repository-state analysis below predates PR #165. Keep it as design history,
+not as a statement of current UI behavior.
+:::
 
 **Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10, prompted by [issue #162](https://github.com/CloudHub-Social/Charm/issues/162)).
 

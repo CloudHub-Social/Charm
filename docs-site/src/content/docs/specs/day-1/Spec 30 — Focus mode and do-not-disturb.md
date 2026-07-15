@@ -3,8 +3,20 @@ title: Charm 2.0 Spec — Focus mode and do-not-disturb
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+**Shipped in [PR #249](https://github.com/CloudHub-Social/Charm/pull/249), behind
+the default-off `focus_mode` flag.** Settings and the desktop tray can set timed
+or indefinite DND; native and push-decrypt notification paths suppress OS
+notifications while unread and badge state continue to update. Native tray
+behavior still lacks a recorded manual verification run.
+
+:::note[Historical baseline]
+The proposal below predates PR #249 and is retained as design history.
+:::
 
 **Workstream:** one PR / one agent. Client-local state plus a filter over Spec 11's
 existing push/notification pipeline.

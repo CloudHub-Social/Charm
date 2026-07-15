@@ -3,10 +3,23 @@ title: "Charm 2.0 Spec — Build and release identification (short SHA, PR previ
 type: spec
 project: "Charm 2.0"
 created: "2026-07-10"
-status: draft
+status: shipped
 sidebar:
   label: "Build and release identification"
 ---
+
+## Implementation status
+
+**Shipped in [PR #166](https://github.com/CloudHub-Social/Charm/pull/166), with
+follow-up fixes in [PR #182](https://github.com/CloudHub-Social/Charm/pull/182)
+and [PR #184](https://github.com/CloudHub-Social/Charm/pull/184).** The shared
+build-ID script now produces commit, PR-preview, and nightly identifiers; workflows
+pass the same identifier to the app and Sentry, and Settings exposes it for copy.
+
+:::note[Historical baseline]
+The “Current state” section below describes the fragmented pre-implementation
+release naming found on 2026-07-10.
+:::
 
 **Workstream:** single PR. **Tier:** fast-follow to [Spec 21 — Sentry observability](/specs/day-1/spec-21--sentry-observability-error-monitoring-tracing-replay-logs/) (owner request, 2026-07-10).
 

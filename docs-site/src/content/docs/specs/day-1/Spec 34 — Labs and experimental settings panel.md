@@ -3,8 +3,20 @@ title: Charm 2.0 Spec — Labs and experimental settings panel
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+**Shipped in [PR #253](https://github.com/CloudHub-Social/Charm/pull/253).** The
+non-production Settings → Labs panel lists the typed flag catalog, applies local
+overrides immediately, persists them per installation, and supports resetting each
+flag to its resolved default.
+
+:::note[Historical baseline]
+The proposal below predates the shared flag resolver and Labs panel. It is retained
+as design history; Spec 35 now owns the underlying local and remote flag layers.
+:::
 
 **Workstream:** one PR / one agent. Addendum to Spec 08/18 (global settings) —
 adds a settings section those specs didn't scope in.

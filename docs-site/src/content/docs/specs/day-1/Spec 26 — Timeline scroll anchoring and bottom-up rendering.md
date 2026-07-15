@@ -3,8 +3,21 @@ title: Charm 2.0 Spec — Timeline scroll anchoring and bottom-up rendering
 type: spec
 project: Charm 2.0
 created: 2026-07-11
-status: draft
+status: shipped
 ---
+
+## Implementation status
+
+**Shipped in two phases.** [PR #194](https://github.com/CloudHub-Social/Charm/pull/194)
+landed sticky-bottom anchoring, media-size reservation, and pagination anchor
+preservation. [PR #232](https://github.com/CloudHub-Social/Charm/pull/232)
+replaced the flat rendering path with the bottom-up virtualized timeline described
+by the Phase 2 follow-up.
+
+:::note[Historical baseline]
+The problem statement and phase sequencing below were written before either phase
+merged. They remain the design rationale, not a current implementation report.
+:::
 
 **Workstream:** one PR / one agent for Phase 1; Phase 2 is a larger architectural bet,
 likely its own follow-up spec once Phase 1 ships and is lived with for a bit.
