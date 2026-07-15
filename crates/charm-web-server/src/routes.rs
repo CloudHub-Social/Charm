@@ -1808,8 +1808,10 @@ struct PreviewUrlQuery {
 async fn preview_url(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Query(query): Query<PreviewUrlQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let preview = get_url_preview_impl(&session.client, query.url, query.event_ts_ms).await;
     Ok(Json(preview))
