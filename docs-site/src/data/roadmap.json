@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-15T00:32:44.820Z",
+  "generatedAt": "2026-07-15T00:39:23.092Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 32,
-    "follow-up": 3,
+    "shipped": 30,
+    "follow-up": 5,
     "in-progress": 0,
     "planned": 40
   },
@@ -101,8 +101,8 @@
         "day-1-62"
       ],
       "counts": {
-        "shipped": 8,
-        "follow-up": 0,
+        "shipped": 6,
+        "follow-up": 2,
         "in-progress": 0,
         "planned": 27
       }
@@ -858,7 +858,7 @@
       "number": 29,
       "title": "Link previews",
       "route": "/specs/day-1/spec-29--link-previews/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 250,
@@ -906,7 +906,7 @@
       "number": 32,
       "title": "Room alias management",
       "route": "/specs/day-1/spec-32--room-alias-management/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 251,
