@@ -32,8 +32,10 @@ use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
 use charm_lib::matrix::room_admin::{
-    ban_member_impl, build_room_details, enable_room_encryption_impl, get_room_member_list_impl,
-    invite_member_impl, kick_member_impl, remove_room_avatar_impl, set_member_power_level_impl,
+    add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
+    enable_room_encryption_impl, get_room_local_aliases_impl, get_room_member_list_impl,
+    invite_member_impl, kick_member_impl, remove_alt_alias_impl, remove_room_alias_impl,
+    remove_room_avatar_impl, set_canonical_alias_impl, set_member_power_level_impl,
     set_room_history_visibility_impl, set_room_join_rule_impl, set_room_name_impl,
     set_room_power_level_thresholds_impl, set_room_topic_impl, unban_member_impl,
     HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
@@ -155,6 +157,23 @@ pub fn router(state: AppState) -> Router {
             ),
         )
         .route("/api/rooms/{room_id}/join-rule", put(set_room_join_rule))
+        .route(
+            "/api/rooms/{room_id}/aliases",
+            get(get_room_local_aliases).put(add_room_alias),
+        )
+        .route(
+            "/api/rooms/aliases/check-availability",
+            post(check_room_alias_available),
+        )
+        .route("/api/rooms/aliases/{alias}", delete(remove_room_alias))
+        .route(
+            "/api/rooms/{room_id}/canonical-alias",
+            put(set_canonical_alias),
+        )
+        .route(
+            "/api/rooms/{room_id}/alt-aliases/{alias}",
+            delete(remove_alt_alias),
+        )
         .route(
             "/api/rooms/{room_id}/history-visibility",
             put(set_room_history_visibility),
@@ -1393,6 +1412,96 @@ async fn remove_room_avatar(
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     remove_room_avatar_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Server-published (room-directory) aliases for `room_id` — the web
+/// equivalent of desktop's `get_room_local_aliases`.
+async fn get_room_local_aliases(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let aliases = get_room_local_aliases_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(aliases))
+}
+
+/// Advisory pre-check before [`add_room_alias`] — not room-scoped, matching
+/// [`charm_lib::matrix::room_admin::check_room_alias_available`]'s own
+/// signature (a candidate alias is checked against the whole homeserver's
+/// directory, not a specific room).
+async fn check_room_alias_available(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(alias): Json<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let available = check_room_alias_available_impl(&session.client, &alias)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(available))
+}
+
+/// Publishes `alias` in the homeserver's room directory pointing at
+/// `room_id`. Does not touch `m.room.canonical_alias` — call
+/// [`set_canonical_alias`] separately to make it canonical.
+async fn add_room_alias(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Json(alias): Json<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    add_room_alias_impl(&session.client, &room_id, &alias)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Unpublishes `alias` from the homeserver's room directory. Not
+/// room-scoped, matching
+/// [`charm_lib::matrix::room_admin::remove_room_alias`]'s own signature.
+async fn remove_room_alias(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(alias): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    remove_room_alias_impl(&session.client, &alias)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sets or clears `m.room.canonical_alias`'s `alias` field. `None`/`null`
+/// clears it.
+async fn set_canonical_alias(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+    Json(alias): Json<Option<String>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    set_canonical_alias_impl(&session.client, &room_id, alias.as_deref())
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes `alias` from `m.room.canonical_alias`'s `alt_aliases` list
+/// without touching the canonical `alias` field.
+async fn remove_alt_alias(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, alias)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    remove_alt_alias_impl(&session.client, &room_id, &alias)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(StatusCode::NO_CONTENT)

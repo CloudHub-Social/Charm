@@ -421,6 +421,29 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       );
     case "remove_room_avatar":
       return requestJson<T>("DELETE", `/api/rooms/${encodeSegment(String(args.roomId))}/avatar`);
+    case "get_room_local_aliases":
+      return requestJson<T>("GET", `/api/rooms/${encodeSegment(String(args.roomId))}/aliases`);
+    case "check_room_alias_available":
+      return requestJson<T>("POST", "/api/rooms/aliases/check-availability", args.alias);
+    case "add_room_alias":
+      return requestJson<T>(
+        "PUT",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/aliases`,
+        args.alias,
+      );
+    case "remove_room_alias":
+      return requestJson<T>("DELETE", `/api/rooms/aliases/${encodeSegment(String(args.alias))}`);
+    case "set_canonical_alias":
+      return requestJson<T>(
+        "PUT",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/canonical-alias`,
+        args.alias,
+      );
+    case "remove_alt_alias":
+      return requestJson<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/alt-aliases/${encodeSegment(String(args.alias))}`,
+      );
     case "set_room_join_rule":
       return requestJson<T>(
         "PUT",

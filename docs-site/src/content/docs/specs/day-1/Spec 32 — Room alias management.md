@@ -10,11 +10,14 @@ status: in-progress
 
 **Desktop implementation shipped in
 [PR #251](https://github.com/CloudHub-Social/Charm/pull/251), behind the
-default-off `room_alias_management` flag; web support remains a follow-up.**
-Tauri room settings can list, add, and remove local aliases and set or clear the
-canonical alias, with power-level gates and typed Rust/frontend contracts. The
-web transport does not yet implement the alias commands, so browser builds fall
-through to `UnsupportedCommand`.
+default-off `room_alias_management` flag.** Tauri room settings can list, add,
+and remove local aliases and set or clear the canonical alias, with
+power-level gates and typed Rust/frontend contracts. The `charm-web-server`
+companion now proxies the same alias commands (`get_room_local_aliases`,
+`check_room_alias_available`, `add_room_alias`, `remove_room_alias`,
+`set_canonical_alias`, `remove_alt_alias`) through to the shared `_impl`
+functions in `room_admin.rs`, so browser builds under the same feature flag
+behave the same as desktop instead of falling through to `UnsupportedCommand`.
 
 :::note[Historical baseline]
 The proposal below predates PR #251 and is retained as design history.
