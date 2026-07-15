@@ -28,6 +28,7 @@ use charm_lib::matrix::devices::{
     list_devices_impl,
 };
 use charm_lib::matrix::ephemeral::{mark_room_read_impl, send_read_receipt_impl, send_typing_impl};
+use charm_lib::matrix::link_preview::get_url_preview_impl;
 use charm_lib::matrix::members::get_room_members_impl;
 use charm_lib::matrix::presence::{get_presence_impl, set_presence_impl, PresenceStateDto};
 use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
@@ -207,6 +208,7 @@ pub fn router(state: AppState) -> Router {
             get(resolve_message_media),
         )
         .route("/api/media/avatar", get(resolve_avatar))
+        .route("/api/media/preview_url", get(preview_url))
         .route(
             "/api/rooms/{room_id}/attachments",
             post(send_attachment).layer(axum::extract::DefaultBodyLimit::max(
@@ -1787,6 +1789,30 @@ async fn resolve_avatar(
         ],
         body,
     ))
+}
+
+/// Spec 29 (link previews): the web companion's counterpart to desktop's
+/// `get_url_preview` Tauri command, wrapping the same shared
+/// `get_url_preview_impl` (homeserver `/preview_url` call, with legacy-path
+/// fallback, mapped to a typed `UrlPreview`). `event_ts_ms` is optional and
+/// forwarded as-is; a missing/unmapped preview is reported as `null` in the
+/// JSON body rather than a 404 — matching desktop's "never a hard failure
+/// for anything preview-shaped" contract (see `link_preview`'s module doc).
+#[derive(Deserialize)]
+struct PreviewUrlQuery {
+    url: String,
+    #[serde(default)]
+    event_ts_ms: Option<i64>,
+}
+
+async fn preview_url(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<PreviewUrlQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let preview = get_url_preview_impl(&session.client, query.url, query.event_ts_ms).await;
+    Ok(Json(preview))
 }
 
 /// Resolves an image/video/audio/file `m.room.message`'s attached media and

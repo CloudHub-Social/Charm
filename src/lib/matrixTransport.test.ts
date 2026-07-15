@@ -435,14 +435,59 @@ describe("matrix web transport", () => {
     expect(fetchMock()).not.toHaveBeenCalled();
   });
 
-  it("resolves get_url_preview to null on the web transport instead of throwing (Spec 29)", async () => {
+  it("proxies get_url_preview to the companion server's preview_url route (Spec 29)", async () => {
+    fetchMock().mockResolvedValueOnce(
+      okJson({
+        title: "Example Domain",
+        description: "An example site.",
+        imageUrl: "mxc://example.org/abc123",
+        imageWidth: 800,
+        imageHeight: 600,
+        siteName: "Example",
+      }),
+    );
+
+    const preview = await invoke("get_url_preview", {
+      roomId: "!r:example.org",
+      url: "https://example.com",
+      eventTsMs: 1700000000000,
+    });
+
+    const [url, init] = lastFetch();
+    expect(url).toBe(
+      "https://api.example/api/media/preview_url?url=https%3A%2F%2Fexample.com&event_ts_ms=1700000000000",
+    );
+    expect(init.method).toBe("GET");
+    expect(preview).toEqual({
+      title: "Example Domain",
+      description: "An example site.",
+      imageUrl: "mxc://example.org/abc123",
+      imageWidth: 800,
+      imageHeight: 600,
+      siteName: "Example",
+    });
+  });
+
+  it("resolves get_url_preview to null on any failure instead of throwing (Spec 29)", async () => {
+    fetchMock().mockResolvedValueOnce(new Response("not found", { status: 404 }));
+
+    const preview = await invoke("get_url_preview", {
+      roomId: "!r:example.org",
+      url: "https://example.com/missing",
+    });
+
+    expect(preview).toBeNull();
+  });
+
+  it("resolves get_url_preview to null on a network error instead of throwing (Spec 29)", async () => {
+    fetchMock().mockRejectedValueOnce(new TypeError("network error"));
+
     const preview = await invoke("get_url_preview", {
       roomId: "!r:example.org",
       url: "https://example.com",
     });
 
     expect(preview).toBeNull();
-    expect(fetchMock()).not.toHaveBeenCalled();
   });
 
   it("uses same-origin HTTP and WebSocket routes when no API base URL is configured", async () => {

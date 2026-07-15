@@ -514,17 +514,24 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
       )}/media${query({ thumbnail: args.thumbnail as boolean })}` as T;
     case "resolve_avatar":
       return `${apiBase()}/api/media/avatar${query({ mxc: args.mxcUrl as string })}` as T;
-    // Spec 29: the web companion server has no `/preview_url` proxy route yet
-    // (unlike `resolve_media`/`resolve_avatar`, which compose a URL for an
-    // existing server route, there's nothing to compose here — this needs
-    // an actual JSON-returning endpoint, which is a separate follow-up).
-    // Resolve to `null` ("no preview available") rather than throwing
-    // `UnsupportedCommand`, matching the Rust command's own contract that a
-    // missing/unavailable preview is never a hard error — the `link_previews`
-    // feature flag already keeps this off by default, and a web build simply
-    // never shows a preview card rather than surfacing an error.
+    // Spec 29: proxies to the companion server's `/api/media/preview_url`,
+    // which wraps the same shared `get_url_preview_impl` desktop's Tauri
+    // command uses. `roomId` isn't sent — the route (like the desktop
+    // command) doesn't use it either, it's only accepted for IPC-contract
+    // parity in case a room-scoped policy is added later.
+    // Resolve to `null` ("no preview available") on any failure (404,
+    // network error, timeout, etc.) rather than throwing — matching the
+    // Rust command's own contract that a missing/unavailable preview is
+    // never a hard error. The `link_previews` feature flag already keeps
+    // this off by default.
     case "get_url_preview":
-      return null as T;
+      return requestJson<T>(
+        "GET",
+        `/api/media/preview_url${query({
+          url: args.url as string,
+          event_ts_ms: (args.eventTsMs as number | null | undefined) ?? undefined,
+        })}`,
+      ).catch(() => null as T);
     case "send_attachment": {
       const file = requireWebFile(command, args.filePath);
       const form = new FormData();
