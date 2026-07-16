@@ -26,13 +26,20 @@ import { captureSnapshot } from "./support/sentrySnapshot";
 const USER_ID = "@e2e:localhost";
 const MAIN_ROOM = { room_id: "!e2e-org-main:localhost", name: "Main Room", unread_count: 0 };
 const SECOND_ROOM = { room_id: "!e2e-org-second:localhost", name: "Second Room", unread_count: 2 };
+const AMBIENT_ROOM = {
+  room_id: "!e2e-org-ambient:localhost",
+  name: "Ambient Room",
+  unread_count: 0,
+  unread_messages: 7,
+  has_unread: true,
+};
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
     room: MAIN_ROOM,
-    extraRooms: [SECOND_ROOM],
+    extraRooms: [SECOND_ROOM, AMBIENT_ROOM],
   });
   await page.goto("/");
 });
@@ -163,4 +170,27 @@ test("filters to unread rooms and restores the persisted choice after reload", a
   );
   await expect(page.getByRole("button", { name: MAIN_ROOM.name })).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(SECOND_ROOM.name) })).toBeVisible();
+});
+
+test("shows ambient unread message totals when enabled in Appearance", async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_unread_filter: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+
+  const roomButton = page.getByRole("button", { name: new RegExp(AMBIENT_ROOM.name) });
+  await expect(roomButton.getByText("Unread", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Appearance" }).click();
+  await page.getByRole("switch", { name: "Show unread message counts" }).click();
+  await page.getByRole("button", { name: "Close settings" }).click();
+
+  await expect(roomButton.getByLabel("7 unread messages")).toHaveText("7");
 });

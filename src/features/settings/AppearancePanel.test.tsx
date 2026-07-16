@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppearancePanel } from "./AppearancePanel";
@@ -92,5 +92,21 @@ describe("AppearancePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /IRC/ }));
 
     expect(screen.getByText(/doesn't show read receipts/)).toBeInTheDocument();
+  });
+
+  it("persists the unread message count display preference", async () => {
+    renderPanel();
+    const toggle = screen.getByRole("switch", { name: "Show unread message counts" });
+    expect(toggle).not.toBeChecked();
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toBeChecked();
+    await waitFor(() =>
+      expect(storeSet).toHaveBeenCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ showUnreadCounts: true }) }),
+      ),
+    );
   });
 });

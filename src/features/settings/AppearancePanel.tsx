@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -165,6 +166,7 @@ function PickerControl<T extends string>({
  */
 export function AppearancePanel() {
   const richMessageRenderingEnabled = useFlag("rich_message_rendering");
+  const roomListEnrichmentEnabled = useFlag("room_list_unread_filter");
   const {
     theme,
     fontSize,
@@ -172,12 +174,14 @@ export function AppearancePanel() {
     reducedMotion,
     messageLayout,
     jumboEmojiSize,
+    showUnreadCounts,
     setTheme,
     setFontSize,
     setDensity,
     setReducedMotion,
     setMessageLayout,
     setJumboEmojiSize,
+    setShowUnreadCounts,
   } = useAppearance();
 
   return (
@@ -241,6 +245,19 @@ export function AppearancePanel() {
                 value={jumboEmojiSize}
                 labels={JUMBO_EMOJI_LABELS}
                 onChange={setJumboEmojiSize}
+              />
+            }
+          />
+        )}
+        {roomListEnrichmentEnabled && (
+          <SettingTile
+            title="Unread message counts"
+            description="Show ambient unread message totals in room rows when there are no notification badges."
+            control={
+              <Switch
+                aria-label="Show unread message counts"
+                checked={showUnreadCounts}
+                onCheckedChange={setShowUnreadCounts}
               />
             }
           />

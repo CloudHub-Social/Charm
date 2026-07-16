@@ -195,5 +195,9 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
     jumboEmojiSize: isValid<JumboEmojiSize>(partial.jumboEmojiSize, VALID_JUMBO_EMOJI_SIZES)
       ? partial.jumboEmojiSize
       : DEFAULT_APPEARANCE.jumboEmojiSize,
+    showUnreadCounts:
+      typeof partial.showUnreadCounts === "boolean"
+        ? partial.showUnreadCounts
+        : DEFAULT_APPEARANCE.showUnreadCounts,
   };
 }

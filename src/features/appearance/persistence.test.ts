@@ -39,6 +39,7 @@ describe("local mirror", () => {
       reducedMotion: "on",
       messageLayout: "discord",
       jumboEmojiSize: "lg",
+      showUnreadCounts: false,
     };
     writeLocalMirror(state, 1000);
     expect(JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY)!)).toEqual({
@@ -170,6 +171,7 @@ describe("mergeAppearance", () => {
       reducedMotion: "off",
       messageLayout: "irc",
       jumboEmojiSize: "md",
+      showUnreadCounts: true,
     };
     expect(mergeAppearance(full)).toEqual(full);
   });
@@ -215,6 +217,16 @@ describe("mergeAppearance", () => {
         density: DEFAULT_APPEARANCE.density,
       }),
     );
+  });
+
+  it("accepts only a boolean unread-count preference", () => {
+    expect(mergeAppearance({ showUnreadCounts: true })).toEqual({
+      ...DEFAULT_APPEARANCE,
+      showUnreadCounts: true,
+    });
+    expect(
+      mergeAppearance({ showUnreadCounts: "yes" } as unknown as Partial<AppearanceState>),
+    ).toEqual(DEFAULT_APPEARANCE);
   });
 
   it("validates each field independently — a valid theme survives an invalid density", () => {
