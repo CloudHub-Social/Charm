@@ -52,7 +52,8 @@ export function RoomListItem({
   const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
   const messagePreviewEnabled = useFlag("room_list_message_preview");
   const preview = room.last_message_preview;
-  const previewSenderLabel = preview?.sender_display_name ?? preview?.sender_id.split(":")[0];
+  const previewSenderLabel =
+    preview?.sender_display_name ?? preview?.sender_id.replace(/^@/, "").split(":")[0];
 
   const button = (
     <button

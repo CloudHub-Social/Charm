@@ -147,7 +147,7 @@ export function targetIndexFromMeasuredHeights(
   let remaining = my;
   if (my > 0) {
     while (target < sectionRooms.length - 1) {
-      const h = heightAt(target);
+      const h = heightAt(target + 1);
       if (remaining < h / 2) break;
       remaining -= h;
       target += 1;

@@ -1145,6 +1145,41 @@ mod tests {
     }
 
     #[test]
+    fn room_message_preview_of_an_edited_reply_keeps_the_quoted_fallback_in_the_replacement_text() {
+        // Documents a known limitation, rather than asserting a bug: after
+        // `apply_replacement` swaps in the edit's `new_content` msgtype, the
+        // top-level `relates_to` is still `Relation::Replacement` (unchanged
+        // by `apply_replacement`, which only touches msgtype/mentions/
+        // stream) — never `Relation::Reply`, even if the *original* message
+        // being edited was itself a reply. `sanitize`'s reply-fallback strip
+        // only fires for `Relation::Reply`, so a reply's edit previews with
+        // whatever quote-fallback text the edit's replacement body happens
+        // to carry, same as the rest of the client (there's no way to learn
+        // "the edited event was a reply" from the edit event alone, short of
+        // a further fetch of the original event this preview path doesn't
+        // do).
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .text_msg("* > <@bob:example.org> earlier message\n\nsee you at 7")
+            .sender(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$edit"))
+            .edit(
+                matrix_sdk::ruma::event_id!("$original"),
+                RoomMessageEventContentWithoutRelation::text_plain(
+                    "> <@bob:example.org> earlier message\n\nsee you at 7",
+                ),
+            )
+            .into_raw_sync();
+
+        let (_, text) = room_message_preview_from_raw(&raw).expect("an edited reply has a preview");
+        assert_eq!(text, "> <@bob:example.org> earlier message\n\nsee you at 7");
+    }
+
+    #[test]
     fn swap_registered_rooms_and_diff_reports_rooms_no_longer_wanted() {
         let room_a = matrix_sdk::ruma::room_id!("!a:example.org").to_owned();
         let room_b = matrix_sdk::ruma::room_id!("!b:example.org").to_owned();

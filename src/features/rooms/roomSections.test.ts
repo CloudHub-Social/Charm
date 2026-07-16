@@ -136,15 +136,16 @@ describe("targetIndexFromMeasuredHeights", () => {
     expect(targetIndexFromMeasuredHeights(rooms, 0, 20, new Map())).toBe(0);
   });
 
-  it("uses each row's own measured height instead of a fixed row height", () => {
+  it("uses the height of the row being crossed into for a downward drag, not the dragged row's own height", () => {
     const rooms = [
       makeRoomSummary({ room_id: "a" }),
       makeRoomSummary({ room_id: "b" }),
       makeRoomSummary({ room_id: "c" }),
     ];
-    // Row "a" (a preview row) is 70px tall — a fixed-46px assumption would
-    // wrongly cross into index 1 well before 70px of drag.
-    const heights = new Map([["a", 70]]);
+    // Row "b" (a preview row, the one being dragged over) is 70px tall — a
+    // fixed-46px assumption, or using the dragged row "a"'s own height,
+    // would wrongly cross into index 1 well before 70px of drag.
+    const heights = new Map([["b", 70]]);
     expect(targetIndexFromMeasuredHeights(rooms, 0, 34, heights)).toBe(0);
     expect(targetIndexFromMeasuredHeights(rooms, 0, 36, heights)).toBe(1);
   });

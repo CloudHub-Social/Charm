@@ -298,7 +298,7 @@ describe("RoomListItem", () => {
           text: "hi there",
         },
       });
-      expect(screen.getByText("@bob:", { exact: false })).toBeInTheDocument();
+      expect(screen.getByText("bob:", { exact: false })).toBeInTheDocument();
     });
 
     it("does not render a preview when there is none", () => {
