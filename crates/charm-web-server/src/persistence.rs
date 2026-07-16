@@ -804,6 +804,13 @@ impl PersistenceStore {
         token: &str,
         live_crypto: Option<(&str, &str)>,
     ) -> Result<(), String> {
+        // See `token_write_locks`'s doc comment — without holding this for
+        // the whole call, a `touch_last_seen` (or `save`) racing a logout
+        // can read the entry before this deletes it and `put` it right back
+        // afterward, resurrecting a session the browser was just told is
+        // logged out (Codex review finding on #280).
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
         let entry = self.read_one(token).await;
 
         match self.store.delete(&object_path_for_token(token)).await {
@@ -2177,6 +2184,33 @@ mod tests {
         assert!(
             entry.last_seen_unix.unwrap() > old,
             "touch_last_seen should have bumped last_seen_unix forward"
+        );
+    }
+
+    /// Regression test for the actual review finding: `remove` (logout) must
+    /// serialize against `touch_last_seen` via the same per-token lock, not
+    /// just `save` — otherwise a `touch_last_seen` task that read the entry
+    /// before a racing logout deletes it could `put` it right back
+    /// afterward, resurrecting a session the browser was just told is gone.
+    /// This drives them in the deterministic order the lock guarantees
+    /// (`remove` fully completes, including releasing the lock, before
+    /// `touch_last_seen` gets to acquire it) rather than trying to force an
+    /// actual race — the lock makes every interleaving collapse to one of
+    /// the two orderings this and the earlier `touch_last_seen_updates_*`
+    /// test already cover.
+    #[tokio::test]
+    async fn touch_last_seen_after_remove_does_not_resurrect_the_session() {
+        let dir = scratch_dir("touch-after-remove");
+        let store = Arc::new(PersistenceStore::new_for_test(&dir, [45u8; 32]));
+        save_with_last_seen(&store, "tok-removed", now_unix()).await;
+
+        store.remove("tok-removed", None).await.unwrap();
+        store.touch_last_seen("tok-removed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(
+            store.read_one("tok-removed").await.is_none(),
+            "a touch_last_seen racing a logout must not resurrect the removed session"
         );
     }
 
