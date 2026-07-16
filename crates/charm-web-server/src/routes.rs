@@ -439,6 +439,14 @@ async fn refresh_session_cookie(
         return response;
     }
     if let Some(session) = state.sessions.get(&token).await {
+        // This is the only place `Session::last_validated_active` gets
+        // bumped — deliberately gated on `has_transport_header_or_allowed_origin`
+        // already having passed above, so `SessionStore::is_genuinely_active`
+        // (which reads this, not the `get`-mutated `last_active`) can't be
+        // kept artificially fresh by the same untrusted same-site traffic
+        // this middleware already refuses to refresh a cookie for (Codex
+        // review finding on #280).
+        session.touch_validated();
         // Keep the server-side activity signal `PersistenceStore::sweep_expired`
         // relies on roughly in step with the cookie's own extended lifetime —
         // throttled, since this session being resident in `SessionStore` at

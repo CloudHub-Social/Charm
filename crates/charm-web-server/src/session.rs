@@ -351,6 +351,28 @@ pub struct Session {
     /// connection is tracked separately (`ws_connections` below) and always
     /// counts as active regardless of this timestamp.
     pub last_active: std::sync::Mutex<std::time::Instant>,
+    /// Separate from [`Self::last_active`] — the last time this session's
+    /// activity was *transport-validated*, not merely "a request with a
+    /// matching cookie reached `require_session`". `last_active` is bumped
+    /// by `SessionStore::get`'s own `touch()` on every such request, which
+    /// includes a same-site subdomain's untrusted "simple" (no-preflight,
+    /// no custom-header) request — `routes::refresh_session_cookie`
+    /// already refuses to slide the *cookie* for exactly that request shape
+    /// (see its own doc comment), but `last_active` alone can't make the
+    /// same distinction, since the touch happens deep inside
+    /// `require_session`, well before that middleware's transport-header/
+    /// `Origin` check ever runs. `SessionStore::is_genuinely_active` reads
+    /// this field instead of `last_active` for exactly that reason:
+    /// without it, an attacker who can get the browser to keep resending
+    /// the victim's cookie on such requests (the cookie is never refreshed,
+    /// but each request still reaches `require_session`'s fast path) could
+    /// keep a pinned-but-abandoned session artificially "genuinely active"
+    /// forever, bypassing `PersistenceStore::sweep_expired`'s revocation
+    /// the same way the cookie-refresh gap did (Codex review finding on
+    /// #280). Bumped only from `routes::refresh_session_cookie`, and only
+    /// once its transport-header-or-allowed-origin check has already
+    /// passed.
+    pub last_validated_active: std::sync::Mutex<std::time::Instant>,
     /// Unix timestamp of the last time `routes::refresh_session_cookie`
     /// fired `PersistenceStore::touch_last_seen` for this session — `0`
     /// (never) initially. Throttles that call to at most once per
@@ -464,6 +486,7 @@ impl Session {
             profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
             presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            last_validated_active: std::sync::Mutex::new(std::time::Instant::now()),
             last_persistence_touch_unix: std::sync::atomic::AtomicU64::new(0),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
@@ -482,6 +505,24 @@ impl Session {
     /// both.
     fn idle_for(&self) -> std::time::Duration {
         self.last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed()
+    }
+
+    /// Marks this session as *transport-validated* active right now — see
+    /// `last_validated_active`'s doc comment for who calls this and why.
+    pub fn touch_validated(&self) {
+        *self
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// [`Self::idle_for`]'s counterpart for [`Self::last_validated_active`]
+    /// — what `SessionStore::is_genuinely_active` actually reads.
+    fn idle_for_validated(&self) -> std::time::Duration {
+        self.last_validated_active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .elapsed()
@@ -884,19 +925,29 @@ impl SessionStore {
     /// evict on its own (Codex review finding on #280).
     ///
     /// "Genuinely active" here means either an open WebSocket connection —
-    /// safe to keep alive regardless of `last_active`, same as `sweep_idle`
-    /// itself, since revoking a token still backing a live connection would
-    /// break it out from under the browser mid-session — or `last_active`
-    /// within `max_age`. A session pinned by pending-verification/
-    /// unpersisted-room state alone, with no open connection and no request
-    /// in over `max_age`, is neither: it's eligible for revocation, exactly
-    /// as if it had already been idle-evicted.
+    /// safe to keep alive regardless of activity timestamps, same as
+    /// `sweep_idle` itself, since revoking a token still backing a live
+    /// connection would break it out from under the browser mid-session —
+    /// or [`Session::last_validated_active`] (not the plain `last_active`
+    /// `get`/`touch` maintain) within `max_age`. Using the validated
+    /// timestamp specifically, not `last_active`, matters for the same
+    /// reason `routes::refresh_session_cookie` gates the *cookie* refresh on
+    /// a transport-header/`Origin` check: an untrusted same-site subdomain's
+    /// request still reaches `require_session`'s fast path (bumping
+    /// `last_active` via `get`'s own `touch()`) even though that middleware
+    /// refuses to slide anything for it — using `last_active` here would
+    /// let exactly that untrusted traffic keep a pinned-but-abandoned
+    /// session artificially exempt from revocation forever (Codex review
+    /// finding on #280). A session pinned by pending-verification/
+    /// unpersisted-room state alone, with no open connection and no
+    /// *validated* request in over `max_age`, is neither: it's eligible for
+    /// revocation, exactly as if it had already been idle-evicted.
     pub async fn is_genuinely_active(&self, token: &str, max_age: std::time::Duration) -> bool {
         let inner = self.inner.read().await;
         let Some(session) = inner.get(token) else {
             return false;
         };
-        session.has_open_connection() || session.idle_for() < max_age
+        session.has_open_connection() || session.idle_for_validated() < max_age
     }
 
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
@@ -1086,10 +1137,19 @@ mod tests {
     /// Backdates a session's `last_active` so tests don't need to actually
     /// sleep past the idle timeout to exercise eviction.
     fn backdate(session: &Session, ago: std::time::Duration) {
+        let backdated = std::time::Instant::now() - ago;
         *session
             .last_active
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - ago;
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        // Also backdates `last_validated_active` — tests using this helper
+        // want "no recent activity at all" in the general sense, and
+        // `is_genuinely_active` specifically reads the validated field, not
+        // `last_active`.
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
     }
 
     #[tokio::test]
@@ -1255,6 +1315,34 @@ mod tests {
             .await;
 
         assert!(store.is_genuinely_active(&token, max_age).await);
+    }
+
+    /// Regression test for the actual review finding: `SessionStore::get`'s
+    /// own `touch()` (bumping `last_active`, not `last_validated_active`)
+    /// must never be enough on its own to make `is_genuinely_active` return
+    /// `true` for a session that's otherwise stale — that's exactly the
+    /// untrusted same-site request shape `routes::refresh_session_cookie`
+    /// already refuses to slide the cookie for, and it still reaches
+    /// `require_session`'s fast path regardless.
+    #[tokio::test]
+    async fn is_genuinely_active_ignores_a_plain_get_touch() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        let token = store
+            .create(dummy_session("@get-only:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+
+        // Simulates an untrusted request reaching `require_session`'s fast
+        // path — `get` touches `last_active`, but never
+        // `last_validated_active`.
+        store.get(&token).await;
+
+        assert!(
+            !store.is_genuinely_active(&token, max_age).await,
+            "a plain SessionStore::get touch must not count as genuine activity"
+        );
     }
 
     #[tokio::test]

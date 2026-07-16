@@ -1602,10 +1602,23 @@ async fn restore_one(
     // `PersistedSession::last_seen_unix`'s own doc comment.
     if let Some(last_seen_unix) = entry.last_seen_unix {
         let age = std::time::Duration::from_secs(now_unix().saturating_sub(last_seen_unix));
+        let backdated = std::time::Instant::now() - age;
         *session
             .last_active
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - age;
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        // Same reasoning, for the same reason — `last_seen_unix` is itself
+        // only ever bumped by validated activity (a fresh login/register,
+        // or `touch_last_seen`/`routes::refresh_session_cookie`'s own
+        // validated touch), so it's exactly the right backdating source for
+        // `last_validated_active` too. Left at `Instant::now()` here would
+        // reopen the same restart-resets-the-clock gap `last_active`'s
+        // backdating above closes, just for `is_genuinely_active` this time
+        // instead of `sweep_idle` (Codex review finding on #280).
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
     }
     if let Some(presence) = initial_presence {
         *session

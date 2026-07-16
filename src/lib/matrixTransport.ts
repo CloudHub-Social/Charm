@@ -708,6 +708,13 @@ export async function listen<T>(event: string, callback: EventCallback<T>): Prom
       reconnectAttempt = 0;
       webSocket?.close();
       webSocket = null;
+      // Nulling `webSocket` above means the `close` event's own
+      // `stopCookieKeepalive()` call (gated on `webSocket === socket`) never
+      // runs for this explicit teardown — without this, the daily
+      // keepalive would keep refreshing the session cookie for a tab that
+      // intentionally tore down its transport (Codex review finding on
+      // #280).
+      stopCookieKeepalive();
     }
   };
 }
