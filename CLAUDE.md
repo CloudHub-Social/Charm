@@ -137,11 +137,11 @@ pnpm build            # tsc && vite build — must succeed with no errors
 
 A separate `storybook-a11y` CI job builds Storybook and runs every story through
 axe in a real browser (Playwright); **any accessibility violation fails the build.**
-To reproduce locally: `pnpm build-storybook && pnpm test-storybook:ci`. The one rule
-scoped out is `color-contrast` (a design-token issue owned by Charm 2.0 Spec 09 —
-see the comment in `.storybook/preview.tsx`); re-enable it there when the tokens are
-fixed. Component stories live at `src/components/ui/*.stories.tsx`; `pnpm storybook`
-opens them locally.
+To reproduce locally: `pnpm build-storybook && pnpm test-storybook:ci`. All rules,
+including `color-contrast`, are enabled and passing (0 violations, 88/88 stories,
+all three themes) per Spec 09's acceptance criterion 9 — see the comment in
+`.storybook/preview.tsx`. Component stories live at `src/components/ui/*.stories.tsx`;
+`pnpm storybook` opens them locally.
 
 A separate `e2e` CI job runs Playwright end-to-end tests (`e2e/*.spec.ts`) against
 the plain Vite dev server — not the native Tauri app, and not a real homeserver.
