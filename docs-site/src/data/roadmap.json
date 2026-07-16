@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T14:59:18.773Z",
+  "generatedAt": "2026-07-16T15:23:47.039Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
@@ -10,13 +10,6 @@
     "planned": 38
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 278,
-      "title": "feat(rooms): show ambient unread counts",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/278",
-      "detail": "Day-1 Spec 54 · draft"
-    },
     {
       "type": "pull-request",
       "number": 277,
@@ -887,7 +880,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/273",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-15T15:29:32Z"
+          "updatedAt": "2026-07-16T15:18:43Z"
         },
         {
           "number": 250,
@@ -1044,7 +1037,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/277",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-16T14:58:13Z"
+          "updatedAt": "2026-07-16T15:23:20Z"
         },
         {
           "number": 275,
@@ -1246,9 +1239,9 @@
           "number": 278,
           "title": "feat(rooms): show ambient unread counts",
           "url": "https://github.com/CloudHub-Social/Charm/pull/278",
-          "state": "open",
-          "draft": true,
-          "updatedAt": "2026-07-16T14:59:11Z"
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-16T15:21:41Z"
         },
         {
           "number": 276,

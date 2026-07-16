@@ -133,6 +133,9 @@ test("send, react, edit, reply, and delete a message", async ({ page }) => {
   // --- delete ---
   await replyRow.getByRole("button", { name: "More actions" }).click();
   await page.getByRole("menuitem", { name: "Delete" }).click();
+  await expect(page.getByRole("heading", { name: "Delete message?" })).toBeVisible();
+  await page.getByLabel("Reason (optional)").fill("duplicate reply");
+  await page.getByRole("button", { name: "Delete message" }).click();
   await expect(page.getByText("Message deleted")).toBeVisible();
   await expect(page.getByText("replying now")).toHaveCount(0);
 });
