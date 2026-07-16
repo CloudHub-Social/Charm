@@ -254,12 +254,15 @@ pub struct PersistenceStore {
     /// one `save`/`touch_last_seen` call — never across the `Client`
     /// rebuild/homeserver round-trips in `restore_one` or
     /// `restore_client_for_revocation` — so this can't become a bottleneck
-    /// or a cross-await deadlock risk. Entries are never removed (a small,
-    /// bounded amount of memory per token ever seen, for the process
-    /// lifetime) — deliberately, since removing one on `remove()` would
-    /// reopen the exact same race against an in-flight `save`/
-    /// `touch_last_seen` for that same token that started just before
-    /// logout.
+    /// or a cross-await deadlock risk. Entries are never removed while
+    /// still in use (that would reopen the exact same race against an
+    /// in-flight `save`/`touch_last_seen` for that same token that started
+    /// just before logout) — but see
+    /// [`Self::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD`]: bare map growth is
+    /// bounded past that point, since an unauthenticated client can drive
+    /// unbounded growth here simply by sending `routes::logout` a stream of
+    /// forged cookie values before `require_session` ever gets a chance to
+    /// reject them (Codex review finding on #280).
     token_write_locks:
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
@@ -341,11 +344,37 @@ impl PersistenceStore {
 
     /// The per-token write lock backing [`Self::save`]/[`Self::touch_last_seen`]'s
     /// serialization — see [`Self::token_write_locks`]'s doc comment for why.
+    /// Above this many cached locks, [`Self::token_write_lock`] prunes
+    /// before inserting another — see that function's doc comment for why
+    /// pruning by reference count (not a real LRU/TTL) is both necessary
+    /// and safe here.
+    const TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD: usize = 10_000;
+
     fn token_write_lock(&self, token: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self
             .token_write_locks
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // `token_write_locks` is otherwise never pruned (see its own doc
+        // comment) — that's fine for real sessions, bounded by actual
+        // logged-in users, but `routes::logout` calls `remove()` (and so
+        // this) for *any* request carrying a `charm_session` cookie, valid
+        // or not, before `require_session` ever runs. An unauthenticated
+        // client sending a stream of forged cookie values could otherwise
+        // grow this map without bound (Codex review finding on #280).
+        // Retaining only entries with `Arc::strong_count > 1` is safe
+        // specifically because it only ever drops locks nobody is
+        // currently holding: every real holder (a `save`/`touch_last_seen`/
+        // `remove` call in flight) keeps its own clone of the `Arc` for the
+        // duration of that call, independent of whether this map still
+        // references it — dropping the map's clone can't invalidate an
+        // already-acquired guard, and a *future* call for that same token
+        // simply gets a freshly inserted lock, which still correctly
+        // serializes against every other call that reads the map from that
+        // point on.
+        if locks.len() >= Self::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
         Arc::clone(
             locks
                 .entry(token.to_string())
@@ -813,83 +842,123 @@ impl PersistenceStore {
         // stale entry out from under this write and clobber it back on top.
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        // Only the `bump_last_seen: false` path reads first — a fresh
-        // login/register (`bump_last_seen: true`) is meant to unconditionally
-        // win regardless of whatever's currently there, same as this
-        // function's behavior before `bump_last_seen` existed.
-        let (last_seen_unix, existing_version) = if bump_last_seen {
-            (Some(now_unix()), None)
-        } else {
-            match self.read_one_with_version(token).await {
-                Some((entry, version)) => (entry.last_seen_unix, Some(version)),
-                None => (None, None),
-            }
-        };
-        let (crypto_store_key, crypto_passphrase) = match crypto {
-            Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
-            None => (None, None),
-        };
-        let path = object_path_for_token(token);
-        let blob = self.encrypt(
-            &PersistedSession {
-                token: token.to_string(),
-                homeserver_url: homeserver_url.to_string(),
-                session: session.clone(),
-                crypto_store_key,
-                crypto_passphrase,
-                last_seen_unix,
-            },
-            &path,
-        )?;
-        let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-        // Conditional only when this call read an existing version to base
-        // its `last_seen_unix` preservation on — see `touch_last_seen_now`'s
-        // doc comment for the cross-process race this closes: a
-        // `bump_last_seen: false` re-save (idle eviction, token refresh)
-        // that read the object before a racing logout on another process
-        // deleted it must not `put` it back afterward, resurrecting an
-        // already-removed session (Sentry review finding on #280). Falls
-        // back to a plain `put` when there's no version to condition on
-        // (a fresh login, or a `bump_last_seen: false` call against a token
-        // that was never persisted — nothing to protect there either way)
-        // or when the backend doesn't support conditional writes
-        // (`LocalFileSystem`, used for local dev/every test in this module).
-        match existing_version {
-            Some(version) => {
-                let opts = object_store::PutOptions {
-                    mode: object_store::PutMode::Update(version),
-                    ..Default::default()
-                };
-                match self
-                    .store
-                    .put_opts(&path, PutPayload::from(json.clone()), opts)
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(object_store::Error::Precondition { .. }) => {
-                        tracing::info!(
-                            "skipped a re-save for a persisted session: object changed or was \
-                             removed since it was read (likely a racing logout on another \
-                             instance)"
-                        );
-                        Ok(())
+        // Bounded retry, not a single attempt: a `Precondition` conflict on
+        // the `bump_last_seen: false` path doesn't only mean a racing
+        // logout deleted the object (this write's payload can be the
+        // *new*, just-refreshed Matrix token pair from `sync_loop`'s
+        // repersist — unlike `touch_last_seen_now`, silently treating every
+        // conflict as a no-op here would drop that refresh on the floor,
+        // leaving the persisted session pointing at an already-invalidated
+        // token; Codex review finding on #280). Multi-instance
+        // `touch_last_seen_now` calls on *other* processes are exactly as
+        // likely a cause, and those are safe to retry past — only a
+        // conflict caused by the object genuinely being gone (a real
+        // logout) must not be retried into resurrection.
+        const MAX_SAVE_ATTEMPTS: u32 = 5;
+        let mut ever_saw_existing = false;
+        for attempt in 0..MAX_SAVE_ATTEMPTS {
+            // Only the `bump_last_seen: false` path reads first — a fresh
+            // login/register (`bump_last_seen: true`) is meant to
+            // unconditionally win regardless of whatever's currently there,
+            // same as this function's behavior before `bump_last_seen`
+            // existed.
+            let (last_seen_unix, existing_version) = if bump_last_seen {
+                (Some(now_unix()), None)
+            } else {
+                match self.read_one_with_version(token).await {
+                    Some((entry, version)) => {
+                        ever_saw_existing = true;
+                        (entry.last_seen_unix, Some(version))
                     }
-                    Err(object_store::Error::NotImplemented) => self
+                    None => (None, None),
+                }
+            };
+            let (crypto_store_key, crypto_passphrase) = match crypto {
+                Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
+                None => (None, None),
+            };
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(
+                &PersistedSession {
+                    token: token.to_string(),
+                    homeserver_url: homeserver_url.to_string(),
+                    session: session.clone(),
+                    crypto_store_key,
+                    crypto_passphrase,
+                    last_seen_unix,
+                },
+                &path,
+            )?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            // Conditional only when this attempt read an existing version to
+            // base its `last_seen_unix` preservation on — see
+            // `touch_last_seen_now`'s doc comment for the cross-process race
+            // this closes: a `bump_last_seen: false` re-save (idle eviction,
+            // token refresh) that read the object before a racing logout on
+            // another process deleted it must not `put` it back afterward,
+            // resurrecting an already-removed session (Sentry review finding
+            // on #280). Falls back to a plain `put` when there's no version
+            // to condition on and this call never saw one earlier in its own
+            // retry loop either — a fresh login, or a `bump_last_seen: false`
+            // call against a token that was never persisted, has nothing to
+            // protect either way — or when the backend doesn't support
+            // conditional writes (`LocalFileSystem`, used for local
+            // dev/every test in this module).
+            match existing_version {
+                Some(version) => {
+                    let opts = object_store::PutOptions {
+                        mode: object_store::PutMode::Update(version),
+                        ..Default::default()
+                    };
+                    match self
+                        .store
+                        .put_opts(&path, PutPayload::from(json.clone()), opts)
+                        .await
+                    {
+                        Ok(_) => return Ok(()),
+                        Err(object_store::Error::Precondition { .. }) => {
+                            if attempt + 1 == MAX_SAVE_ATTEMPTS {
+                                tracing::warn!(
+                                    "giving up re-saving a persisted session after \
+                                     {MAX_SAVE_ATTEMPTS} version conflicts"
+                                );
+                                return Ok(());
+                            }
+                            continue;
+                        }
+                        Err(object_store::Error::NotImplemented) => {
+                            return self
+                                .store
+                                .put(&path, PutPayload::from(json))
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| e.to_string());
+                        }
+                        Err(e) => return Err(e.to_string()),
+                    }
+                }
+                None => {
+                    if ever_saw_existing {
+                        // Existed at the start of an earlier attempt in this
+                        // same call but is gone now — a racing logout won;
+                        // don't resurrect it (same invariant as
+                        // `touch_last_seen_now`).
+                        tracing::info!(
+                            "skipped a re-save for a persisted session: removed by a racing \
+                             logout on another instance"
+                        );
+                        return Ok(());
+                    }
+                    return self
                         .store
                         .put(&path, PutPayload::from(json))
                         .await
                         .map(|_| ())
-                        .map_err(|e| e.to_string()),
-                    Err(e) => Err(e.to_string()),
+                        .map_err(|e| e.to_string());
                 }
             }
-            None => self
-                .store
-                .put(&path, PutPayload::from(json))
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
         }
+        unreachable!("the loop above always returns on its final attempt")
     }
 
     /// Removes `token`'s persisted session (logout) — a no-op, not an error,
@@ -2566,6 +2635,94 @@ mod tests {
             entry.last_seen_unix,
             Some(old),
             "save(bump_last_seen: false) must not reset last_seen_unix"
+        );
+    }
+
+    /// Regression test for the actual review finding: a `Precondition`
+    /// conflict on `save(bump_last_seen: false)` must not be treated as an
+    /// automatic no-op the way `touch_last_seen_now`'s is — this call's
+    /// payload can carry a genuinely new, just-refreshed Matrix token pair
+    /// (`sync_loop`'s repersist), and silently dropping that write on a
+    /// benign conflict (e.g. a concurrent `touch_last_seen` from another
+    /// instance, not a logout) would leave the persisted session pointing
+    /// at an already-invalidated token. Runs two real concurrent writers
+    /// against a shared `InMemory` backend (which supports conditional
+    /// writes, unlike `LocalFileSystem`) and asserts the token-carrying
+    /// `save` still lands somewhere in the final state rather than being
+    /// silently discarded by the race.
+    #[tokio::test]
+    async fn save_without_bump_retries_past_a_benign_concurrent_conflict() {
+        let key_bytes = [55u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-concurrent-conflict",
+                "https://example.invalid",
+                &dummy_session("@concurrent-conflict:example.invalid"),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let mut refreshed = dummy_session("@concurrent-conflict:example.invalid");
+        refreshed.tokens.access_token = "refreshed-access-token".to_string();
+
+        // Two independent `PersistenceStore`s (no shared in-process lock,
+        // same as two real instances) racing a write against the same
+        // token: process A carries a genuinely new token pair; process B
+        // is a plain activity touch. Neither should cause the other's
+        // write to vanish.
+        let (save_result, _) = tokio::join!(
+            process_a.save(
+                "tok-concurrent-conflict",
+                "https://example.invalid",
+                &refreshed,
+                None,
+                false,
+            ),
+            process_b.touch_last_seen_now("tok-concurrent-conflict"),
+        );
+        save_result.unwrap();
+
+        let entry = process_a.read_one("tok-concurrent-conflict").await.unwrap();
+        assert_eq!(
+            entry.session.tokens.access_token, "refreshed-access-token",
+            "a benign concurrent conflict must not cause save() to silently drop a genuinely \
+             refreshed token pair"
+        );
+    }
+
+    /// Regression test for the actual review finding: `token_write_locks`
+    /// must not grow without bound when `routes::logout` calls `remove()`
+    /// (via `token_write_lock`) for tokens that were never real sessions —
+    /// an unauthenticated client can drive that path with forged cookie
+    /// values before `require_session` ever runs. Once the map passes
+    /// [`PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD`], entries with
+    /// no other outstanding reference get pruned on the next insert.
+    #[test]
+    fn token_write_lock_prunes_unused_entries_past_the_threshold() {
+        let dir = scratch_dir("token-write-lock-prune-unused");
+        let store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        for i in 0..(PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD + 10) {
+            // Every returned `Arc` is dropped immediately — nothing holds a
+            // second reference, so every one of these is prunable.
+            let _ = store.token_write_lock(&format!("forged-token-{i}"));
+        }
+        let locks = store.token_write_locks.lock().unwrap();
+        assert!(
+            locks.len() <= PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD,
+            "the lock map must not keep growing past the prune threshold once entries are \
+             no longer in use: had {} entries",
+            locks.len()
         );
     }
 
