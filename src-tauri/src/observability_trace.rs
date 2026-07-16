@@ -124,22 +124,29 @@ async fn run_traced<T, E>(
     if !crate::runtime_observability_sentry_enabled() || sentry::Hub::current().client().is_none() {
         return fut.await;
     }
+    let generation_at_start = crate::runtime_observability_sentry_consent_generation();
 
     let transaction = sentry::start_transaction(ctx);
     let started_at = std::time::Instant::now();
 
     let result = fut.await;
 
-    // Re-check rather than trusting the check before `fut.await`: consent
-    // can be revoked mid-flight for a slow call (a slow login, a first
-    // timeline load) via the frontend's eager
-    // `update_observability_sentry_consent(false)` on opt-out (see
-    // `persistObservabilitySettings`). If it was, drop `transaction` here
-    // without calling `finish()` — sentry-rust only submits a transaction
-    // when `finish()` is called; letting this binding go out of scope
-    // un-finished discards it instead of reporting data captured after the
-    // user turned telemetry off mid-call.
-    if crate::runtime_observability_sentry_enabled() {
+    // Consent can change mid-flight for a slow call (a slow login, a first
+    // timeline load) via the frontend's `update_observability_sentry_consent`
+    // (see `persistObservabilitySettings`) — checking only the *current*
+    // consent value here isn't enough (Codex review on #289): an off→on flip
+    // during the call would leave the current value looking unchanged from
+    // before the call even though the transaction spans an interval where
+    // the user had opted out. Comparing the consent *generation* (bumped on
+    // every toggle, any direction) instead of just re-reading the boolean
+    // catches that case too — any change at all during the call means drop.
+    // If it did change, drop `transaction` here without calling `finish()`
+    // — sentry-rust only submits a transaction when `finish()` is called;
+    // letting this binding go out of scope un-finished discards it instead
+    // of reporting data captured across a telemetry-consent change mid-call.
+    if crate::runtime_observability_sentry_enabled()
+        && crate::runtime_observability_sentry_consent_generation() == generation_at_start
+    {
         transaction.set_data(
             "duration_ms",
             u64::try_from(started_at.elapsed().as_millis())

@@ -13,7 +13,7 @@ pub mod push;
 
 use std::borrow::Cow;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::Manager;
 use tracing_subscriber::prelude::*;
 
@@ -126,6 +126,17 @@ static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 /// `false` while the guard itself stays alive for the rest of the process
 /// (see `runtime_observability_sentry_enabled`'s doc comment).
 static RUNTIME_SENTRY_CONSENT: AtomicBool = AtomicBool::new(false);
+/// Bumped on every call to `update_runtime_observability_sentry_enabled`,
+/// regardless of direction (off→on, on→off, or even a same-value toggle).
+/// `observability_trace::run_traced` (Codex review on #289) captures this
+/// before awaiting the wrapped future and compares it again afterward: an
+/// off→on→off *or* off→on flip mid-flight leaves `RUNTIME_SENTRY_CONSENT`
+/// itself looking unchanged (or even re-enabled) by the time the future
+/// resolves, which a plain before/after boolean re-check can't tell apart
+/// from "consent never changed" — this generation counter is what actually
+/// answers "did consent change at any point during this call," not just
+/// "what does it read as right now."
+static RUNTIME_SENTRY_CONSENT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Consent-gated wrapper around `observability_scrub::scrub_log_in_place` —
 /// desktop is the one Sentry call site with a per-user runtime toggle (the
@@ -498,6 +509,12 @@ fn update_observability_log_consent<R: tauri::Runtime>(
 
 fn update_runtime_observability_sentry_enabled(sentry_enabled: bool) {
     RUNTIME_SENTRY_CONSENT.store(sentry_enabled, Ordering::SeqCst);
+    // Ordering doesn't need to be tied to the store above (a caller reading
+    // a stale consent value alongside a fresh generation, or vice versa, for
+    // one racing instant is harmless — `run_traced` only ever compares two
+    // generation reads against each other, never against the consent flag),
+    // so a separate, unsynchronized increment is fine here.
+    RUNTIME_SENTRY_CONSENT_GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
 /// Frontend counterpart: `persistObservabilitySettings` calls this whenever
@@ -653,6 +670,12 @@ fn runtime_observability_logs_enabled() -> bool {
 /// here).
 pub(crate) fn runtime_observability_sentry_enabled() -> bool {
     RUNTIME_SENTRY_CONSENT.load(Ordering::SeqCst)
+}
+
+/// `pub(crate)`: read by `observability_trace::run_traced` — see
+/// `RUNTIME_SENTRY_CONSENT_GENERATION`'s doc comment.
+pub(crate) fn runtime_observability_sentry_consent_generation() -> u64 {
+    RUNTIME_SENTRY_CONSENT_GENERATION.load(Ordering::SeqCst)
 }
 
 /// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):
@@ -1509,6 +1532,31 @@ mod observability_tests {
         assert!(!runtime_observability_sentry_enabled());
     }
 
+    #[test]
+    fn runtime_sentry_consent_generation_bumps_on_every_toggle_direction() {
+        // Codex review on #289 (P2): comparing only the final consent
+        // boolean before/after an await can't tell an off→on→off (or
+        // off→on) flip mid-call apart from "consent never changed" — the
+        // final read can land back on the same value it started at. The
+        // generation counter answers "did it change at all," which is what
+        // `observability_trace::run_traced` actually needs.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(false);
+        let generation_before = runtime_observability_sentry_consent_generation();
+
+        update_runtime_observability_sentry_enabled(true);
+        let generation_after_on = runtime_observability_sentry_consent_generation();
+        assert_ne!(generation_before, generation_after_on);
+
+        update_runtime_observability_sentry_enabled(false);
+        let generation_after_off = runtime_observability_sentry_consent_generation();
+        assert_ne!(generation_after_on, generation_after_off);
+        // Back to the same boolean value it started at, but the generation
+        // still recorded that two changes happened — this is the exact
+        // property a plain before/after boolean comparison would miss.
+        assert!(!runtime_observability_sentry_enabled());
+    }
+
     #[tokio::test]
     async fn traced_drops_a_transaction_whose_consent_is_revoked_mid_flight() {
         // Codex review on #289 (P2): consent was only checked *before*
@@ -1545,6 +1593,34 @@ mod observability_tests {
             .await;
 
         assert_eq!(result, Ok(7));
+    }
+
+    #[tokio::test]
+    async fn traced_drops_a_transaction_toggled_off_then_back_on_mid_flight() {
+        // Codex review on #289 (P2), the follow-up to the test above: an
+        // off→on flip (not just a plain off) mid-call leaves
+        // `runtime_observability_sentry_enabled()` reading `true` again by
+        // the time `fut` resolves — a re-check of the boolean alone would
+        // wrongly conclude "consent never changed" and finish the
+        // transaction, even though it spans an interval where the user had
+        // opted out. This doesn't assert what Sentry actually receives (no
+        // test double for the client here) — it asserts `traced` doesn't
+        // panic or deadlock taking this path, and that the wrapped future's
+        // own result still comes through untouched regardless of whether
+        // the transaction ends up finished or dropped.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.lock().await;
+        let _reset = set_runtime_sentry_consent_for_test(true);
+        let _sentry_client = sentry::init(());
+
+        let result: Result<u8, &str> =
+            crate::observability_trace::traced("test.off_then_on_mid_flight", "test", async {
+                update_runtime_observability_sentry_enabled(false);
+                update_runtime_observability_sentry_enabled(true);
+                Ok(9)
+            })
+            .await;
+
+        assert_eq!(result, Ok(9));
     }
 
     #[test]
