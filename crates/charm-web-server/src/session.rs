@@ -230,6 +230,15 @@ pub struct Session {
     /// room that's actually still open.
     pub room_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, (u64, ServerEvent)>>>,
+    /// Mirrors desktop's `MatrixState::preview_registered_rooms` — the set of
+    /// rooms currently subscribed to `LatestEvents` for `last_message_preview`
+    /// (Spec 54), so `rooms::snapshot_rooms` can forget a room's subscription
+    /// once it stops appearing in a snapshot pass. `Arc` (not a plain field)
+    /// because both `routes::list_rooms` (via `&Session`) and the background
+    /// `sync_loop::spawn` task (via `SyncSnapshots`, which owns its own
+    /// clone) call `snapshot_rooms` and must share the same registration set.
+    pub preview_registered_rooms:
+        Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
     /// The latest `room_details:update` per room, the `room_details:update`
     /// counterpart to `room_snapshots` above — `sync_loop::emit_room_updates`
     /// updates this whenever a synced state event changes a room's details,
@@ -328,6 +337,8 @@ pub struct SyncSnapshots {
     >,
     pub typing_snapshots:
         Arc<std::sync::Mutex<HashMap<matrix_sdk::ruma::OwnedRoomId, ServerEvent>>>,
+    pub preview_registered_rooms:
+        Arc<std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>>,
 }
 
 impl Session {
@@ -337,6 +348,7 @@ impl Session {
             room_details_snapshots: self.room_details_snapshots.clone(),
             receipt_snapshots: self.receipt_snapshots.clone(),
             typing_snapshots: self.typing_snapshots.clone(),
+            preview_registered_rooms: self.preview_registered_rooms.clone(),
         }
     }
 }
@@ -390,6 +402,9 @@ impl Session {
             pending_verification_events: Arc::new(std::sync::Mutex::new(Vec::new())),
             last_snapshot: Arc::new(std::sync::Mutex::new(Vec::new())),
             room_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            preview_registered_rooms: Arc::new(std::sync::Mutex::new(
+                std::collections::HashSet::new(),
+            )),
             room_details_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             receipt_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             typing_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),

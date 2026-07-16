@@ -264,12 +264,47 @@ pub fn read_overrides(app_data_dir: &Path) -> BTreeMap<String, bool> {
     read_state(app_data_dir).0
 }
 
+type FlagState = (BTreeMap<String, bool>, BTreeMap<String, bool>);
+
+/// Cache for [`read_state`], keyed by the store file's last-modified time so a
+/// Labs override or remote refresh (which rewrites the file) is picked up on
+/// the next read without a restart. Needed because `flag()`/`evaluate()` are
+/// now called on every sync-loop iteration (room-list + invite gating) and
+/// every `list_rooms` IPC call, not just at occasional branch points as the
+/// module originally assumed — an uncached `read_to_string` + JSON parse on
+/// that path added synchronous disk I/O to every `/sync` response.
+static STATE_CACHE: Mutex<Option<(std::time::SystemTime, FlagState)>> = Mutex::new(None);
+
 /// Reads both the local overrides and the remote (OFREP) cache from the file in
 /// a single parse. Tolerant of a missing/corrupt file (returns empties) and of
 /// both the plugin-store envelope and bare `{ state }` / `{ overrides }` shapes,
 /// so a format tweak on the JS side can't hard-fail Rust evaluation.
-pub fn read_state(app_data_dir: &Path) -> (BTreeMap<String, bool>, BTreeMap<String, bool>) {
-    let Ok(raw) = std::fs::read_to_string(app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME)) else {
+pub fn read_state(app_data_dir: &Path) -> FlagState {
+    let path = app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return (BTreeMap::new(), BTreeMap::new());
+    };
+    let Ok(modified) = metadata.modified() else {
+        return read_state_uncached(&path);
+    };
+
+    if let Ok(cache) = STATE_CACHE.lock() {
+        if let Some((cached_modified, state)) = cache.as_ref() {
+            if *cached_modified == modified {
+                return state.clone();
+            }
+        }
+    }
+
+    let state = read_state_uncached(&path);
+    if let Ok(mut cache) = STATE_CACHE.lock() {
+        *cache = Some((modified, state.clone()));
+    }
+    state
+}
+
+fn read_state_uncached(path: &Path) -> FlagState {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return (BTreeMap::new(), BTreeMap::new());
     };
     let Ok(value) = serde_json::from_str::<Value>(&raw) else {
@@ -302,9 +337,9 @@ fn flag_map_from_value(value: &Value, store_key: &str, inner: &str) -> BTreeMap<
         .collect()
 }
 
-/// Resolves a flag from the file fresh each call — flags are checked at branch
-/// points, not in hot loops, and reading fresh means a Labs override or a
-/// remote refresh takes effect without a restart or cache-invalidation dance.
+/// Resolves a flag from the file, via [`read_state`]'s mtime-keyed cache — a
+/// Labs override or remote refresh still takes effect on the next call (no
+/// restart or manual invalidation needed) since it rewrites the file's mtime.
 pub fn evaluate(app_data_dir: &Path, key: FeatureFlagKey) -> bool {
     let (overrides, remote) = read_state(app_data_dir);
     resolve(key, &overrides, &remote)

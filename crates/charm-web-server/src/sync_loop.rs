@@ -311,7 +311,13 @@ pub fn spawn(
             last_snapshot,
             ServerEvent::SyncState(SyncStateEvent::Idle),
         );
-        emit_room_list_and_badge(&client, &events, last_snapshot).await;
+        emit_room_list_and_badge(
+            &client,
+            &events,
+            last_snapshot,
+            &snapshots.preview_registered_rooms,
+        )
+        .await;
         emit_room_updates(&client, &events, &initial_response, &snapshots).await;
 
         // Seeded from `PersistHandle::initial_access_token` — what's
@@ -350,7 +356,13 @@ pub fn spawn(
             match client.sync_once(settings).await {
                 Ok(response) => {
                     consecutive_failures = 0;
-                    emit_room_list_and_badge(&client, &events, last_snapshot).await;
+                    emit_room_list_and_badge(
+                        &client,
+                        &events,
+                        last_snapshot,
+                        &snapshots.preview_registered_rooms,
+                    )
+                    .await;
                     emit_room_updates(&client, &events, &response, &snapshots).await;
                     if let Some(persist) = &persist {
                         last_saved_access_token =
@@ -414,11 +426,16 @@ async fn emit_room_list_and_badge(
     client: &Client,
     events: &broadcast::Sender<ServerEvent>,
     last_snapshot: &std::sync::Arc<std::sync::Mutex<Vec<ServerEvent>>>,
+    preview_registered_rooms: &std::sync::Mutex<
+        std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    >,
 ) {
     // No media cache in this crate yet (matches sub-PR A's `snapshot_rooms`
     // calls in `routes.rs`) — room avatars carry their bare `mxc://` url but
-    // no locally resolved thumbnail path.
-    let snapshot = rooms::snapshot_rooms(client, None).await;
+    // no locally resolved thumbnail path. `include_message_preview` is
+    // `false` — `RoomListMessagePreview` isn't wired up for the web build
+    // yet (no feature-flag store here, unlike desktop's `feature_flags::flag`).
+    let snapshot = rooms::snapshot_rooms(client, None, false, preview_registered_rooms).await;
     let badge = shell::compute_badge_state(&snapshot);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
