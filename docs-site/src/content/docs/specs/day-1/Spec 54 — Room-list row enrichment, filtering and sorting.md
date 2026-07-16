@@ -16,11 +16,15 @@ explicit All / Unread control. The choice persists independently for each list
 mode, uses `RoomSummary.has_unread` as the authoritative signal, retains the open
 room, never filters pending invitations, and preserves nested-space ancestors that
 lead to an unread or open room. Manual row reordering is disabled while the
-filtered subset is visible so hidden rows cannot corrupt the full ordering.
+filtered subset is visible so hidden rows cannot corrupt the full ordering. The
+Appearance panel also offers a persisted, default-off **Unread message counts**
+preference. When enabled, room rows replace the plain ambient-unread dot with the
+existing `RoomSummary.unread_messages` total while retaining notification badges
+as the higher-priority signal.
 
-Sorting controls, last-message previews, typing indicators, ambient unread-count
-display settings, topic previews, and sidebar resizing remain follow-up work. This
-spec is therefore not shipped or complete.
+Sorting controls, last-message previews, typing indicators, topic previews, and
+sidebar resizing remain follow-up work. This spec is therefore not shipped or
+complete.
 
 :::note[Historical baseline]
 The proposal below is retained as the full design. Statements that Charm has no
@@ -83,9 +87,10 @@ filtering or sorting control:
   over the summaries; pick per where `roomSections.ts` currently orders.
 - Persist the chosen filter/sort (local or synced per Spec 50).
 
-The first implementation slice persists All / Unread locally per top-level list
-mode (Home, Direct messages, Spaces). Cross-device synchronization remains part of
-Spec 50 rather than a prerequisite for this local filter.
+The first implementation slices persist All / Unread locally per top-level list
+mode (Home, Direct messages, Spaces) and the ambient unread-count preference in the
+existing per-device appearance store. Cross-device synchronization remains part of
+Spec 50 rather than a prerequisite for these local controls.
 
 ### Row enrichment
 

@@ -90,6 +90,7 @@ describe("applyAppearanceToDom", () => {
       reducedMotion: "on",
       messageLayout: "bubble",
       jumboEmojiSize: "lg",
+      showUnreadCounts: false,
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");

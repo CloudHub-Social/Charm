@@ -1,4 +1,5 @@
 import { BellOff } from "lucide-react";
+import { useAtomValue } from "jotai";
 import type { CSSProperties } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -9,6 +10,8 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { PresenceDot } from "@/features/presence/PresenceDot";
+import { showUnreadCountsAtom } from "@/features/appearance/atoms";
+import { useFlag } from "@/featureFlags";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import type { RoomSummary } from "@/lib/matrix";
@@ -41,6 +44,11 @@ export function RoomListItem({
   style,
 }: RoomListItemProps) {
   const unread = room.has_unread;
+  const showUnreadCounts = useAtomValue(showUnreadCountsAtom);
+  const ambientUnreadCountEnabled = useFlag("room_list_unread_filter") && showUnreadCounts;
+  const showNotificationCount = room.unread_count > 0;
+  const showAmbientUnreadCount =
+    !showNotificationCount && unread && ambientUnreadCountEnabled && room.unread_messages > 0;
   const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
 
   const button = (
@@ -93,9 +101,19 @@ export function RoomListItem({
             case (see `has_unread` in rooms.rs), and the name-prefix "Marked
             unread" dot above already covers it — without this guard both
             dots would render for the same room. */}
-        {room.unread_count > 0 ? (
-          <span className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground">
+        {showNotificationCount ? (
+          <span
+            aria-label={`${room.unread_count} notifications`}
+            className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground"
+          >
             {room.unread_count}
+          </span>
+        ) : showAmbientUnreadCount ? (
+          <span
+            aria-label={`${room.unread_messages} unread messages`}
+            className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-secondary px-1 text-[11px] font-bold text-secondary-foreground"
+          >
+            {room.unread_messages}
           </span>
         ) : (
           !room.is_marked_unread &&
