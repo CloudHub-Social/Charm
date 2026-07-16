@@ -1501,6 +1501,35 @@ mod observability_tests {
         assert!(!runtime_observability_sentry_enabled());
     }
 
+    #[tokio::test]
+    async fn traced_drops_a_transaction_whose_consent_is_revoked_mid_flight() {
+        // Codex review on #289 (P2): consent was only checked *before*
+        // `fut.await`, so a slow call (a slow login, a first timeline load)
+        // could still submit through the live Sentry guard if the user
+        // opted out while it was in flight. This doesn't assert anything
+        // about what Sentry actually receives (no test double for the
+        // client here) — it asserts `traced` doesn't panic or deadlock
+        // taking the revoked-mid-flight path, and that the wrapped future's
+        // own result still comes through untouched regardless of whether
+        // the transaction ends up finished or dropped.
+        let _guard = SENTRY_CONSENT_TEST_LOCK
+            .lock()
+            .expect("sentry consent test lock");
+        let _reset = set_runtime_sentry_consent_for_test(true);
+
+        let result: Result<u8, &str> =
+            crate::observability_trace::traced("test.mid_flight_revoke", "test", async {
+                // Consent flips *during* the traced call, not before it —
+                // exercises the post-await re-check rather than the
+                // before-await early return.
+                update_runtime_observability_sentry_enabled(false);
+                Ok(7)
+            })
+            .await;
+
+        assert_eq!(result, Ok(7));
+    }
+
     #[test]
     fn runtime_log_consent_updates_after_notification() {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");

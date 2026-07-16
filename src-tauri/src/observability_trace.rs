@@ -101,18 +101,29 @@ pub async fn traced<T, E>(
 
     let result = fut.await;
 
-    transaction.set_data(
-        "duration_ms",
-        u64::try_from(started_at.elapsed().as_millis())
-            .unwrap_or(u64::MAX)
-            .into(),
-    );
-    transaction.set_status(if result.is_ok() {
-        sentry::protocol::SpanStatus::Ok
-    } else {
-        sentry::protocol::SpanStatus::UnknownError
-    });
-    transaction.finish();
+    // Re-check rather than trusting the check before `fut.await`: consent
+    // can be revoked mid-flight for a slow call (a slow login, a first
+    // timeline load) via the frontend's eager
+    // `update_observability_sentry_consent(false)` on opt-out (see
+    // `persistObservabilitySettings`). If it was, drop `transaction` here
+    // without calling `finish()` — sentry-rust only submits a transaction
+    // when `finish()` is called; letting this binding go out of scope
+    // un-finished discards it instead of reporting data captured after the
+    // user turned telemetry off mid-call.
+    if crate::runtime_observability_sentry_enabled() {
+        transaction.set_data(
+            "duration_ms",
+            u64::try_from(started_at.elapsed().as_millis())
+                .unwrap_or(u64::MAX)
+                .into(),
+        );
+        transaction.set_status(if result.is_ok() {
+            sentry::protocol::SpanStatus::Ok
+        } else {
+            sentry::protocol::SpanStatus::UnknownError
+        });
+        transaction.finish();
+    }
 
     result
 }
