@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoomListItem } from "./RoomListItem";
 import { makeRoomSummary } from "./testFixtures";
+import { showUnreadCountsAtom } from "@/features/appearance/atoms";
+import { featureFlagTestHooks } from "@/featureFlags";
 
 vi.mock("@tauri-apps/api/core", () => ({
   convertFileSrc: (path: string) => `asset://localhost/${path}`,
@@ -18,6 +21,7 @@ vi.mock("@/lib/matrix", () => ({
 afterEach(() => {
   getPresence.mockClear();
   onPresenceUpdate.mockClear();
+  featureFlagTestHooks.reset();
   // Unconditional, not just at the end of the one test that stubs `Image`
   // below: if an assertion in that test throws before it reaches its own
   // cleanup, the stub would otherwise leak into every later test in this
@@ -27,6 +31,17 @@ afterEach(() => {
 });
 
 const room = makeRoomSummary();
+
+function renderWithAmbientUnreadCount(unreadRoom = room) {
+  featureFlagTestHooks.setCache({ room_list_unread_filter: true });
+  const store = createStore();
+  store.set(showUnreadCountsAtom, true);
+  return render(
+    <Provider store={store}>
+      <RoomListItem room={unreadRoom} active={false} onSelect={() => {}} />
+    </Provider>,
+  );
+}
 
 /**
  * jsdom's real `Image` never fires `load`/`error` (no network stack), so
@@ -114,6 +129,38 @@ describe("RoomListItem", () => {
     );
     expect(screen.getByText("Unread")).toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
+  });
+
+  it("shows the ambient unread message total when the display preference is enabled", () => {
+    renderWithAmbientUnreadCount(
+      makeRoomSummary({ has_unread: true, unread_count: 0, unread_messages: 12 }),
+    );
+
+    expect(screen.getByLabelText("12 unread messages")).toHaveTextContent("12");
+    expect(screen.queryByText("Unread")).not.toBeInTheDocument();
+  });
+
+  it("keeps notification counts visually primary when ambient counts are enabled", () => {
+    renderWithAmbientUnreadCount(
+      makeRoomSummary({ has_unread: true, unread_count: 2, unread_messages: 12 }),
+    );
+
+    expect(screen.getByLabelText("2 notifications")).toHaveTextContent("2");
+    expect(screen.queryByLabelText("12 unread messages")).not.toBeInTheDocument();
+  });
+
+  it("honors the authoritative unread suppression for muted ambient messages", () => {
+    renderWithAmbientUnreadCount(
+      makeRoomSummary({
+        has_unread: false,
+        is_muted: true,
+        unread_count: 0,
+        unread_messages: 12,
+      }),
+    );
+
+    expect(screen.queryByLabelText("12 unread messages")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unread")).not.toBeInTheDocument();
   });
 
   it("shows neither the numeric badge nor the plain dot when has_unread is false", () => {

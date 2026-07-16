@@ -19,6 +19,7 @@ export interface AppearanceState {
   reducedMotion: ReducedMotion;
   messageLayout: MessageLayout;
   jumboEmojiSize: JumboEmojiSize;
+  showUnreadCounts: boolean;
 }
 
 /**
@@ -52,6 +53,7 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
   reducedMotion: "system",
   messageLayout: "bubble",
   jumboEmojiSize: "lg",
+  showUnreadCounts: false,
 };
 
 /**
@@ -66,3 +68,4 @@ export const densityAtom = atom<Density>(DEFAULT_APPEARANCE.density);
 export const reducedMotionAtom = atom<ReducedMotion>(DEFAULT_APPEARANCE.reducedMotion);
 export const messageLayoutAtom = atom<MessageLayout>(DEFAULT_APPEARANCE.messageLayout);
 export const jumboEmojiSizeAtom = atom<JumboEmojiSize>(DEFAULT_APPEARANCE.jumboEmojiSize);
+export const showUnreadCountsAtom = atom<boolean>(DEFAULT_APPEARANCE.showUnreadCounts);

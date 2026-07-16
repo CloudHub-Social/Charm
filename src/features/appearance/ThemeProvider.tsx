@@ -6,6 +6,7 @@ import {
   jumboEmojiSizeAtom,
   messageLayoutAtom,
   reducedMotionAtom,
+  showUnreadCountsAtom,
   themeAtom,
 } from "./atoms";
 import { applyAppearanceToDom, resolveEffectiveTheme } from "./dom";
@@ -40,6 +41,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setReducedMotion = useSetAtom(reducedMotionAtom);
   const setMessageLayout = useSetAtom(messageLayoutAtom);
   const setJumboEmojiSize = useSetAtom(jumboEmojiSizeAtom);
+  const setShowUnreadCounts = useSetAtom(showUnreadCountsAtom);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,6 +63,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       setReducedMotion(state.reducedMotion);
       setMessageLayout(state.messageLayout);
       setJumboEmojiSize(state.jumboEmojiSize);
+      setShowUnreadCounts(state.showUnreadCounts);
       applyAppearanceToDom(state);
     }
 
@@ -68,7 +71,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [setDensity, setFontSize, setJumboEmojiSize, setMessageLayout, setReducedMotion, setTheme]);
+  }, [
+    setDensity,
+    setFontSize,
+    setJumboEmojiSize,
+    setMessageLayout,
+    setReducedMotion,
+    setShowUnreadCounts,
+    setTheme,
+  ]);
 
   useEffect(() => {
     if (theme !== "system") return undefined;

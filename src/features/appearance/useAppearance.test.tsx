@@ -87,6 +87,20 @@ describe("useAppearance", () => {
     );
   });
 
+  it("persists the ambient unread-count preference", async () => {
+    const { result } = renderHook(() => useAppearance(), { wrapper });
+    act(() => {
+      result.current.setShowUnreadCounts(true);
+    });
+    expect(result.current.showUnreadCounts).toBe(true);
+    await vi.waitFor(() =>
+      expect(storeSet).toHaveBeenCalledWith(
+        "appearance",
+        expect.objectContaining({ state: expect.objectContaining({ showUnreadCounts: true }) }),
+      ),
+    );
+  });
+
   it("write-throughs to the localStorage mirror", () => {
     const { result } = renderHook(() => useAppearance(), { wrapper });
     act(() => {
