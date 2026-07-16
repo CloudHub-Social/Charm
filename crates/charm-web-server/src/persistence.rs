@@ -874,10 +874,23 @@ impl PersistenceStore {
                 continue;
             }
             if let Some(client) = self.restore_client_for_revocation(&entry.token).await {
-                if let Err(e) = client.matrix_auth().logout().await {
-                    tracing::warn!(
+                // Bounded, unlike `routes::logout`'s equivalent call (which
+                // can afford to `tokio::spawn` it fire-and-forget because
+                // there's a live HTTP response to send regardless): this
+                // runs serially in a background sweep with nothing else
+                // racing it, so an unbounded `await` here would let one
+                // slow/unresponsive homeserver stall every other expired
+                // session behind it in the same sweep (Codex review finding
+                // on #280).
+                match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
+                    Ok(Err(e)) => tracing::warn!(
                         "failed to revoke access token for an expired persisted session: {e}"
-                    );
+                    ),
+                    Err(_) => tracing::warn!(
+                        "timed out revoking access token for an expired persisted session \
+                         after {RESTORE_TIMEOUT:?}"
+                    ),
+                    Ok(Ok(_)) => {}
                 }
             }
             if let Err(e) = self.remove(&entry.token, None).await {
