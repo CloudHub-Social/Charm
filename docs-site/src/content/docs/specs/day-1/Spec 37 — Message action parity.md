@@ -11,11 +11,13 @@ Extends Spec 03 (message actions), which shipped a deliberately minimal action m
 
 ## Implementation status
 
-**In progress.** The first independently releasable slice adds a default-off
-`message_action_parity` flag and a **Copy link** action for server-backed,
-decrypted events. It produces the fully percent-encoded room/event form required
-by the [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation).
-The remaining actions in this document are still planned.
+**In progress.** Independently releasable slices behind the default-off
+`message_action_parity` flag now provide a **Copy link** action for server-backed,
+decrypted events and a confirmation dialog with an optional reason before message
+redaction. The permalink produces the fully percent-encoded room/event form required
+by the [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
+and the redaction reason uses the existing desktop and web transport support. The
+remaining actions in this document are still planned.
 
 ## Problem & why now
 
@@ -61,9 +63,9 @@ Each maps to a confirmed Charm 1.0 modal/handler and a confirmed Charm 2.0 absen
    retry/abort rather than re-composing.
 8. **Redact with reason + confirmation** — Charm 1.0
    `message/modals/MessageDelete.tsx:75` (reason input). Charm 2.0's
-   `useMessageActions.ts:24` `redactEvent(roomId, eventId)` takes no reason and has
-   no confirm dialog (one-click destructive) — add an optional reason and a confirm
-   step.
+   transport already accepts an optional reason, but the message action had no
+   confirm dialog and invoked it without that reason (one-click destructive). This
+   slice adds the shared confirm-with-reason primitive and wires it to redaction.
 
 ## Data flow
 
@@ -76,14 +78,14 @@ Most reuse existing send/redact plumbing with small additions:
 - Report: new `report_event(room_id, event_id, reason, score?)` IPC command.
 - Resend/discard: wire to the SDK send-queue's retry/cancel for the local echo's
   transaction, not a re-send of new content.
-- Redact-with-reason: extend `redactEvent` signature with an optional `reason`.
+- Redact-with-reason: reuse `redactEvent`'s existing optional `reason` argument.
 
 ## API/contract changes
 
-New IPC: `report_event`, `get_event_source`, `get_edit_history`; extend
-`redactEvent` with `reason`; a forward command or reuse of send targeting another
-room. Send-queue retry/cancel wrappers surfaced to the frontend. ts-rs bindings as
-usual.
+New IPC: `report_event`, `get_event_source`, `get_edit_history`; a forward command
+or reuse of send targeting another room. Send-queue retry/cancel wrappers surfaced
+to the frontend. The existing redact transport already carries an optional reason.
+ts-rs bindings as usual.
 
 ## Testing strategy
 

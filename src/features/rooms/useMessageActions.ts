@@ -21,12 +21,14 @@ export function useMessageActions({
     }
   }
 
-  async function handleDelete(eventId: string) {
-    if (!roomId) return;
+  async function handleDelete(eventId: string, reason?: string | null): Promise<boolean> {
+    if (!roomId) return false;
     try {
-      await redactEvent(roomId, eventId);
+      await redactEvent(roomId, eventId, reason ?? undefined);
+      return true;
     } catch (err) {
       console.error(err);
+      return false;
     }
   }
 

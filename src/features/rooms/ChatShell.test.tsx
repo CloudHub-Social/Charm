@@ -328,6 +328,7 @@ describe("ChatShell", () => {
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
+    redactEvent.mockReset().mockResolvedValue(undefined);
     toggleReaction.mockReset();
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
@@ -2835,6 +2836,60 @@ describe("ChatShell", () => {
     });
 
     expect(await screen.findByText("Delete")).toBeInTheDocument();
+  });
+
+  it("confirms redaction and sends the optional reason when message-action parity is enabled", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$mine", sender: "@me:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Delete"));
+
+    expect(await screen.findByRole("heading", { name: "Delete message?" })).toBeInTheDocument();
+    expect(redactEvent).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Reason (optional)"), {
+      target: { value: "  accidental duplicate  " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete message" }));
+
+    await waitFor(() =>
+      expect(redactEvent).toHaveBeenCalledWith(
+        "!abc123:localhost",
+        "$mine",
+        "accidental duplicate",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Delete message?" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("preserves immediate redaction while message-action parity is disabled", async () => {
+    mockUseFlag.mockReturnValue(false);
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$mine", sender: "@me:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Delete"));
+
+    await waitFor(() =>
+      expect(redactEvent).toHaveBeenCalledWith("!abc123:localhost", "$mine", undefined),
+    );
+    expect(screen.queryByRole("heading", { name: "Delete message?" })).not.toBeInTheDocument();
   });
 
   it("copies a fully encoded matrix.to permalink for a server-backed message", async () => {

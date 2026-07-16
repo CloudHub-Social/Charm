@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { ConfirmWithReasonDialog } from "@/components/ui/confirm-with-reason-dialog";
 import { PresenceDot } from "@/features/presence/PresenceDot";
 import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
@@ -157,6 +158,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
+  const messageActionParityEnabled = useFlag("message_action_parity");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -167,6 +169,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const [isComposerEmpty, setIsComposerEmpty] = useState(true);
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
+  const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -178,6 +181,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const permalinkViaServer = userIdServerName(currentUserId);
   useEffect(() => {
     setShowMobileFormatting(false);
+    setRedactionTargetEventId(null);
   }, [activeRoomId]);
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
@@ -875,7 +879,13 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     onReply={() => handleReply(message)}
                     onReact={(emoji) => handleToggleReaction(message.event_id, emoji)}
                     onEdit={() => handleEdit(message.event_id)}
-                    onDelete={() => handleDelete(message.event_id)}
+                    onDelete={() => {
+                      if (messageActionParityEnabled) {
+                        setRedactionTargetEventId(message.event_id);
+                      } else {
+                        void handleDelete(message.event_id);
+                      }
+                    }}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
                     onCopyLink={() => {
                       if (!navigator.clipboard?.writeText || !permalinkViaServer) return;
@@ -909,6 +919,21 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
           </button>
         )}
       </div>
+
+      <ConfirmWithReasonDialog
+        open={redactionTargetEventId !== null}
+        title="Delete message?"
+        description="This removes the message for everyone in the room and cannot be undone."
+        confirmLabel="Delete message"
+        onOpenChange={(open) => {
+          if (!open) setRedactionTargetEventId(null);
+        }}
+        onConfirm={(reason) =>
+          redactionTargetEventId
+            ? handleDelete(redactionTargetEventId, reason)
+            : Promise.resolve(false)
+        }
+      />
 
       {typingText && (
         <output className="flex items-center gap-2 px-4 pb-1 text-xs font-medium text-muted-foreground">
