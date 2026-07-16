@@ -1586,6 +1586,27 @@ async fn restore_one(
         persisted_crypto,
         crypto_store_opened,
     );
+    // `Session::new` seeds `last_active` at `Instant::now()` — fine for a
+    // fresh login, wrong for a restore: without this, a session that stays
+    // resident only via `sweep_idle`'s pending-verification/unpersisted-room
+    // exemptions would look freshly active to
+    // `SessionStore::is_genuinely_active` on every single restart,
+    // regardless of how stale `entry.last_seen_unix` actually is — a
+    // redeploy could keep resetting that clock indefinitely, letting an
+    // already-expired session dodge `sweep_expired` forever (Codex review
+    // finding on #280). Backdating from `entry.last_seen_unix` (the same
+    // timestamp that expiry decision is actually based on) instead keeps
+    // `idle_for()` meaningful across a restart. Left at `Instant::now()`
+    // only for a legacy entry with no `last_seen_unix` yet — same
+    // "backfill to now, not to the epoch" reasoning as
+    // `PersistedSession::last_seen_unix`'s own doc comment.
+    if let Some(last_seen_unix) = entry.last_seen_unix {
+        let age = std::time::Duration::from_secs(now_unix().saturating_sub(last_seen_unix));
+        *session
+            .last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - age;
+    }
     if let Some(presence) = initial_presence {
         *session
             .sync_presence
