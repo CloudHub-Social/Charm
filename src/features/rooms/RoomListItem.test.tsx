@@ -149,6 +149,20 @@ describe("RoomListItem", () => {
     expect(screen.queryByLabelText("12 unread messages")).not.toBeInTheDocument();
   });
 
+  it("honors the authoritative unread suppression for muted ambient messages", () => {
+    renderWithAmbientUnreadCount(
+      makeRoomSummary({
+        has_unread: false,
+        is_muted: true,
+        unread_count: 0,
+        unread_messages: 12,
+      }),
+    );
+
+    expect(screen.queryByLabelText("12 unread messages")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unread")).not.toBeInTheDocument();
+  });
+
   it("shows neither the numeric badge nor the plain dot when has_unread is false", () => {
     render(
       <RoomListItem

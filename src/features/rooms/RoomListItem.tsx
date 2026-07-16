@@ -48,7 +48,7 @@ export function RoomListItem({
   const ambientUnreadCountEnabled = useFlag("room_list_unread_filter") && showUnreadCounts;
   const showNotificationCount = room.unread_count > 0;
   const showAmbientUnreadCount =
-    !showNotificationCount && ambientUnreadCountEnabled && room.unread_messages > 0;
+    !showNotificationCount && unread && ambientUnreadCountEnabled && room.unread_messages > 0;
   const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
 
   const button = (
