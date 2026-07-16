@@ -28,11 +28,28 @@ let durablePersistTail = Promise.resolve();
  * kinds (log and sentry) rather than one counter each — they don't need to
  * interleave meaningfully against each other, but a single always-
  * increasing source is simpler than keeping two in sync with no benefit.
+ *
+ * Seeded from `Date.now()`, not a plain `0`-based counter (Codex review on
+ * #289, P1 follow-up): the Rust process can outlive a webview reload (the
+ * Tauri window navigating/reloading without the native process restarting),
+ * which would reset a plain module-scoped counter back to small values
+ * while Rust's `RUNTIME_*_CONSENT` watermark keeps whatever it was before
+ * the reload — the first post-reload call would then look "stale" and get
+ * silently ignored until enough further calls happened to exceed the old
+ * watermark. Wall-clock time has no such reset: it only ever moves forward,
+ * so a fresh `Date.now()` after reload is guaranteed to already exceed
+ * whatever sequence value (also `Date.now()`-derived) was last sent before
+ * the reload. `Math.max(now, lastIssued + 1)` on top of that guarantees
+ * strict monotonicity even for multiple calls issued within the same
+ * millisecond, which a bare `Date.now()` read alone wouldn't (two calls in
+ * the same ms would otherwise produce an equal, not strictly greater, value
+ * — and the Rust side treats an equal sequence as stale, not as "also
+ * applies").
  */
-let consentSyncSequence = 0;
+let lastConsentSyncSequence = 0;
 function nextConsentSyncSequence(): number {
-  consentSyncSequence += 1;
-  return consentSyncSequence;
+  lastConsentSyncSequence = Math.max(Date.now(), lastConsentSyncSequence + 1);
+  return lastConsentSyncSequence;
 }
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
