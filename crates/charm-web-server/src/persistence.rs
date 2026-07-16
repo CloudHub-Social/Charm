@@ -1080,17 +1080,19 @@ impl PersistenceStore {
     /// #280).
     ///
     /// `sessions` (`SessionStore`) is consulted *fresh, per entry* — not a
-    /// single snapshot taken once before the loop starts — and any token
-    /// resident there is skipped outright rather than checked against
-    /// `last_seen_unix`: a session continuously live in memory for the
-    /// entire `max_age` window (e.g. a tab left open for weeks against a
+    /// single snapshot taken once before the loop starts, and via
+    /// [`session::SessionStore::is_genuinely_active`], not bare map
+    /// presence: a session continuously live in memory for the entire
+    /// `max_age` window (e.g. a tab left open for weeks against a
     /// homeserver that never rotates its access token) would otherwise never
     /// have a reason to re-trigger [`Self::save`] or [`Self::touch_last_seen`],
     /// and so would look just as stale on disk as one nobody has opened in
-    /// months. Being resident in `SessionStore` at all is itself the
-    /// stronger, provably-current signal: `session::SessionStore::sweep_idle`
-    /// would already have evicted it from memory (though not from
-    /// persistence) had it truly gone idle. Rechecking per entry, right
+    /// months — but `sweep_idle`'s own pending-verification/unpersisted-room
+    /// exemptions keep a session resident in that map *indefinitely*, with
+    /// no idle timeout at all, so bare presence alone isn't the
+    /// provably-current signal it looks like (Codex review finding on
+    /// #280); `is_genuinely_active` also requires an open connection or a
+    /// genuinely recent `last_active`. Rechecking per entry, right
     /// before revocation rather than once up front, matters because
     /// `read_all` and this loop both take real time (network round-trips to
     /// decrypt/list every object, then per-entry homeserver revocation
@@ -1141,8 +1143,9 @@ impl PersistenceStore {
                 continue;
             }
             // Rechecked fresh here, not from a snapshot taken before this
-            // loop started — see this function's doc comment.
-            if sessions.get(&entry.token).await.is_some() {
+            // loop started, and via `is_genuinely_active` rather than bare
+            // presence — see this function's doc comment.
+            if sessions.is_genuinely_active(&entry.token, max_age).await {
                 continue;
             }
             // Removal only happens after a *confirmed* revocation — never

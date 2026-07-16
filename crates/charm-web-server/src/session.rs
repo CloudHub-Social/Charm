@@ -868,6 +868,37 @@ impl SessionStore {
         Some(Arc::clone(session))
     }
 
+    /// Whether `token`'s session is *genuinely* active right now — not
+    /// merely resident in this map. `persistence::PersistenceStore::sweep_expired`
+    /// uses this (never [`Self::get`]) to decide whether to skip revoking an
+    /// expired session: `get` both mutates (`touch()`s `last_active`, which
+    /// would itself silently reset the very idle clock this check needs to
+    /// read) and treats bare map presence as proof of activity, which
+    /// [`Self::sweep_idle`]'s own exemptions make false — a session with a
+    /// pending verification event or an unpersisted encrypted room stays in
+    /// this map *indefinitely*, with no idle timeout at all, regardless of
+    /// whether a browser has touched it in months. Without this distinction,
+    /// such a session would be permanently exempt from `sweep_expired`'s
+    /// revocation the moment it entered one of those states, bypassing the
+    /// whole retention model for exactly the sessions `sweep_idle` can never
+    /// evict on its own (Codex review finding on #280).
+    ///
+    /// "Genuinely active" here means either an open WebSocket connection —
+    /// safe to keep alive regardless of `last_active`, same as `sweep_idle`
+    /// itself, since revoking a token still backing a live connection would
+    /// break it out from under the browser mid-session — or `last_active`
+    /// within `max_age`. A session pinned by pending-verification/
+    /// unpersisted-room state alone, with no open connection and no request
+    /// in over `max_age`, is neither: it's eligible for revocation, exactly
+    /// as if it had already been idle-evicted.
+    pub async fn is_genuinely_active(&self, token: &str, max_age: std::time::Duration) -> bool {
+        let inner = self.inner.read().await;
+        let Some(session) = inner.get(token) else {
+            return false;
+        };
+        session.has_open_connection() || session.idle_for() < max_age
+    }
+
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
         self.inner.write().await.remove(token)
     }
@@ -1157,6 +1188,83 @@ mod tests {
              would be nothing left to ever deliver it"
         );
         assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test for the actual review finding: a session pinned in
+    /// this map *only* by a pending verification event (never evicted by
+    /// `sweep_idle`, no timeout at all) but with no open connection and no
+    /// real activity in ages must not be reported as "genuinely active" —
+    /// `persistence::PersistenceStore::sweep_expired` relies on this
+    /// distinction to still revoke exactly this kind of stuck-forever
+    /// session once it's past the retention window, instead of treating
+    /// bare map presence as proof of activity forever.
+    #[tokio::test]
+    async fn is_genuinely_active_is_false_for_a_session_only_pinned_by_verification() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+        let token = store
+            .create(dummy_session("@stuck-verifying:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+        session.pending_verification_events.lock().unwrap().push(
+            crate::events::ServerEvent::VerificationRequest(
+                charm_lib::matrix::verification::VerificationRequestSummary {
+                    flow_id: "flow-1".to_string(),
+                    other_user_id: "@other:example.org".to_string(),
+                    other_device_id: "DEVICE".to_string(),
+                },
+            ),
+        );
+
+        assert!(
+            !store.is_genuinely_active(&token, max_age).await,
+            "a session with no open connection, idle well past max_age, must not count as \
+             genuinely active just because a pending verification event keeps it in the map"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_true_for_an_open_connection_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+        let token = store
+            .create(dummy_session("@connected:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        assert!(
+            store.is_genuinely_active(&token, max_age).await,
+            "an open connection must count as active regardless of idle time — revoking its \
+             token would break the live connection out from under the browser"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_true_for_recent_activity() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        let token = store
+            .create(dummy_session("@recently-active:example.org").await)
+            .await;
+
+        assert!(store.is_genuinely_active(&token, max_age).await);
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_false_for_an_unknown_token() {
+        let store = SessionStore::new();
+        assert!(
+            !store
+                .is_genuinely_active("no-such-token", std::time::Duration::from_secs(60))
+                .await
+        );
     }
 
     /// Regression test: `sweep_idle` must capture a session's presence
