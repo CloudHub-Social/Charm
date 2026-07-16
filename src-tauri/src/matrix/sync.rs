@@ -59,7 +59,13 @@ pub enum SyncStateEvent {
 async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
     let state = app.state::<MatrixState>();
     let media_cache = state.require_media_cache(app).await.ok();
-    let snapshot = rooms::snapshot_rooms(client, media_cache).await;
+    let include_message_preview = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
+        )
+    });
+    let snapshot = rooms::snapshot_rooms(client, media_cache, include_message_preview).await;
     let badge = shell::compute_badge_state(&snapshot);
     let _ = app.emit("room_list:update", snapshot);
     let _ = app.emit("badge:update", &badge);

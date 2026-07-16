@@ -12,7 +12,7 @@ use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
 use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
 use super::notifications::set_room_notification_mode;
@@ -403,6 +403,7 @@ async fn resolve_room_identity(
 pub async fn snapshot_rooms(
     client: &Client,
     media_cache: Option<&media::MediaCache>,
+    include_message_preview: bool,
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
 
@@ -450,11 +451,15 @@ pub async fn snapshot_rooms(
             (None, None)
         };
         // Pending invites have no readable message history to preview yet.
-        let last_message_preview = if membership == RoomMembershipKind::Join {
-            last_message_preview(client, &room).await
-        } else {
-            None
-        };
+        // Skip the `LatestEvents` subscription + member lookup entirely when
+        // the feature is off, rather than computing a value the frontend
+        // will just discard.
+        let last_message_preview =
+            if include_message_preview && membership == RoomMembershipKind::Join {
+                last_message_preview(client, &room).await
+            } else {
+                None
+            };
 
         summaries.push((
             membership_rank(membership),
@@ -542,7 +547,13 @@ pub async fn list_rooms(
 ) -> Result<Vec<RoomSummary>, String> {
     let client = state.require_client().await?;
     let media_cache = state.require_media_cache(&app).await.ok();
-    Ok(snapshot_rooms(&client, media_cache).await)
+    let include_message_preview = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
+        )
+    });
+    Ok(snapshot_rooms(&client, media_cache, include_message_preview).await)
 }
 
 /// Resolves a room alias (e.g. `#general:localhost`) to its room id, so
