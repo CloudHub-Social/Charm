@@ -126,8 +126,14 @@ static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 /// `false` while the guard itself stays alive for the rest of the process
 /// (see `runtime_observability_sentry_enabled`'s doc comment).
 static RUNTIME_SENTRY_CONSENT: AtomicBool = AtomicBool::new(false);
-/// Bumped on every call to `update_runtime_observability_sentry_enabled`,
-/// regardless of direction (off→on, on→off, or even a same-value toggle).
+/// Bumped on every *actual value change* passed to
+/// `update_runtime_observability_sentry_enabled` (off→on or on→off) — not on
+/// a same-value call, which the frontend's `persistObservabilitySettings`
+/// makes unconditionally whenever `sentryEnabled` is `true` in the saved
+/// settings, including a save that only touched an unrelated toggle (logs,
+/// replay, profiling) while Sentry consent itself never changed; bumping on
+/// those too would spuriously drop an unrelated in-flight transaction (see
+/// `update_runtime_observability_sentry_enabled`'s own doc comment).
 /// `observability_trace::run_traced` (Codex review on #289) captures this
 /// before awaiting the wrapped future and compares it again afterward: an
 /// off→on→off *or* off→on flip mid-flight leaves `RUNTIME_SENTRY_CONSENT`
@@ -508,13 +514,27 @@ fn update_observability_log_consent<R: tauri::Runtime>(
 }
 
 fn update_runtime_observability_sentry_enabled(sentry_enabled: bool) {
-    RUNTIME_SENTRY_CONSENT.store(sentry_enabled, Ordering::SeqCst);
-    // Ordering doesn't need to be tied to the store above (a caller reading
-    // a stale consent value alongside a fresh generation, or vice versa, for
+    let previous = RUNTIME_SENTRY_CONSENT.swap(sentry_enabled, Ordering::SeqCst);
+    // Only bump on an actual value change (Codex review on #289, P3):
+    // persistObservabilitySettings' post-persist-success sync calls this
+    // unconditionally whenever `sentryEnabled` is `true` in the saved
+    // settings — including saves that only touched an unrelated toggle
+    // (logs, replay, profiling) while Sentry consent itself stayed
+    // unchanged. Bumping on every call regardless would make any such save
+    // spuriously drop an in-flight login/timeline transaction `run_traced`
+    // happened to be mid-await on, even though consent never actually
+    // changed. A same-value call is exactly the "already resynced,
+    // redundant no-op" case this guards against; a real toggle still bumps
+    // it via the plain not-equal check.
+    //
+    // Ordering doesn't need to be tied to the swap above (a caller reading a
+    // stale consent value alongside a fresh generation, or vice versa, for
     // one racing instant is harmless — `run_traced` only ever compares two
     // generation reads against each other, never against the consent flag),
     // so a separate, unsynchronized increment is fine here.
-    RUNTIME_SENTRY_CONSENT_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if previous != sentry_enabled {
+        RUNTIME_SENTRY_CONSENT_GENERATION.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 /// Frontend counterpart: `persistObservabilitySettings` calls this whenever
@@ -1555,6 +1575,26 @@ mod observability_tests {
         // still recorded that two changes happened — this is the exact
         // property a plain before/after boolean comparison would miss.
         assert!(!runtime_observability_sentry_enabled());
+    }
+
+    #[test]
+    fn runtime_sentry_consent_generation_does_not_bump_on_a_same_value_call() {
+        // Codex review on #289 (P3): persistObservabilitySettings' post-
+        // persist-success sync calls update_observability_sentry_consent(true)
+        // unconditionally whenever sentryEnabled is true in the saved
+        // settings — including a save that only touched an unrelated toggle
+        // (logs, replay, profiling). Bumping the generation on that
+        // already-true→true no-op would spuriously drop an unrelated
+        // in-flight login/timeline transaction run_traced happened to be
+        // mid-await on, even though Sentry consent itself never changed.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(true);
+
+        let generation_before = runtime_observability_sentry_consent_generation();
+        update_runtime_observability_sentry_enabled(true);
+        let generation_after = runtime_observability_sentry_consent_generation();
+
+        assert_eq!(generation_before, generation_after);
     }
 
     #[tokio::test]
