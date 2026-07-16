@@ -810,7 +810,7 @@ async fn finish_login(
     let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         match persistence
-            .save(&token, homeserver_url, matrix_session, crypto)
+            .save(&token, homeserver_url, matrix_session, crypto, true)
             .await
         {
             Ok(()) => {
@@ -1157,7 +1157,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // indefinitely, since a successful restore's own `touch_last_seen`
     // would reset its clock right back to "now" every time.
     if persistence
-        .is_expired(&token, session::session_cookie_max_age())
+        .is_expired(&token, session::session_revocation_grace())
         .await
     {
         return Err(ApiError::unauthorized("unknown or expired session"));

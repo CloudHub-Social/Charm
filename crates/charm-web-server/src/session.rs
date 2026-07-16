@@ -66,13 +66,35 @@ pub const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 /// hour rather than one per request.
 pub const PERSISTENCE_TOUCH_THROTTLE_SECS: u64 = 60 * 60;
 
-/// [`SESSION_COOKIE_MAX_AGE_SECS`] as a [`std::time::Duration`] — the
-/// retention window `main.rs`'s startup restore and daily expiry sweep both
-/// need, kept in one place so they can't drift apart. `.max(0)` guards the
-/// `i64`→`u64` cast even though the constant is a positive literal, the same
-/// defensive habit the two call sites had before this helper existed.
+/// [`SESSION_COOKIE_MAX_AGE_SECS`] as a [`std::time::Duration`] — the exact
+/// window `routes::session_cookie`'s `Max-Age` header uses. `.max(0)` guards
+/// the `i64`→`u64` cast even though the constant is a positive literal, the
+/// same defensive habit the call sites had before this helper existed. Only
+/// `session_cookie` itself should use this one directly — every
+/// server-side *revocation* decision (`PersistenceStore::is_expired`,
+/// `sweep_expired`, `restore_all`) needs [`session_revocation_grace`]
+/// instead.
 pub fn session_cookie_max_age() -> std::time::Duration {
     std::time::Duration::from_secs(SESSION_COOKIE_MAX_AGE_SECS.max(0) as u64)
+}
+
+/// [`session_cookie_max_age`] plus [`PERSISTENCE_TOUCH_THROTTLE_SECS`] — the
+/// window every server-side revocation check (`PersistenceStore::is_expired`,
+/// `sweep_expired`, `restore_all`) uses instead of the bare cookie `Max-Age`.
+/// `routes::refresh_session_cookie` extends the browser's cookie by a fresh
+/// `SESSION_COOKIE_MAX_AGE_SECS` on every authenticated request, but only
+/// bumps the server-side `last_seen_unix` at most once per
+/// `PERSISTENCE_TOUCH_THROTTLE_SECS` (to avoid an object-store write on
+/// every single request) — so right before that throttle next allows a
+/// bump, `last_seen_unix` can lag the cookie's own actual freshness by up
+/// to that same window. Checking expiry against the bare `Max-Age` window
+/// would then let a server-side revocation reject or revoke a session the
+/// browser's cookie is still genuinely valid for, forcing an avoidable
+/// re-login (and, since e2ee verification doesn't survive that, a fresh
+/// recovery-key prompt too) purely from the throttle's own bookkeeping lag,
+/// not real inactivity (Codex review finding on #280).
+pub fn session_revocation_grace() -> std::time::Duration {
+    session_cookie_max_age() + std::time::Duration::from_secs(PERSISTENCE_TOUCH_THROTTLE_SECS)
 }
 
 /// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
@@ -1007,6 +1029,16 @@ impl SessionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_revocation_grace_exceeds_the_bare_cookie_max_age_by_the_touch_throttle() {
+        assert_eq!(
+            session_revocation_grace(),
+            session_cookie_max_age()
+                + std::time::Duration::from_secs(PERSISTENCE_TOUCH_THROTTLE_SECS)
+        );
+        assert!(session_revocation_grace() > session_cookie_max_age());
+    }
 
     async fn dummy_session(user_id: &str) -> Session {
         let client = Client::builder()

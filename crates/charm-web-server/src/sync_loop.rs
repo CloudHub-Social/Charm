@@ -112,7 +112,13 @@ async fn repersist_if_token_changed(
         .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
     if let Err(e) = persist
         .store
-        .save(&persist.token, &persist.homeserver_url, &session, crypto)
+        .save(
+            &persist.token,
+            &persist.homeserver_url,
+            &session,
+            crypto,
+            false,
+        )
         .await
     {
         tracing::warn!("failed to re-persist refreshed session: {e}");

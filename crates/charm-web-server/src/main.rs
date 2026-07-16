@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(persistence) = &persistence {
         let restored = persistence
-            .restore_all(charm_web_server::session::session_cookie_max_age())
+            .restore_all(charm_web_server::session::session_revocation_grace())
             .await;
         tracing::info!("restored {} persisted session(s)", restored.len());
         for (token, homeserver_url, session, initial_response, initial_access_token) in restored {
@@ -264,7 +264,7 @@ fn spawn_idle_session_sweeper(
                     tracing::warn!("failed to snapshot crypto store before idle eviction: {e}");
                 }
                 if let Err(e) = persistence
-                    .save(&token, &homeserver_url, &matrix_session, crypto)
+                    .save(&token, &homeserver_url, &matrix_session, crypto, false)
                     .await
                 {
                     // Evicted anyway — an earlier version of this tried to
@@ -315,7 +315,7 @@ fn spawn_expired_session_sweeper(
     sessions: charm_web_server::session::SessionStore,
     persistence: Arc<PersistenceStore>,
 ) {
-    let max_age = charm_web_server::session::session_cookie_max_age();
+    let max_age = charm_web_server::session::session_revocation_grace();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(EXPIRED_SESSION_SWEEP_INTERVAL);
         // Deliberately does *not* skip the first tick the way

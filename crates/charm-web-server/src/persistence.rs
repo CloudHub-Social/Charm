@@ -786,18 +786,38 @@ impl PersistenceStore {
     /// created once, at login, and its durable snapshots must keep pointing
     /// at that same identity. Persisting a different pair later would orphan
     /// both the original local store and its remote snapshots.
+    ///
+    /// `bump_last_seen` — `true` only for a fresh login/register, where a
+    /// browser request genuinely just happened. `main.rs`'s idle-eviction
+    /// re-save and `sync_loop`'s token-refresh repersist both call this too,
+    /// but neither is a sign the browser actually did anything just now —
+    /// resetting `last_seen_unix` to "now" for either would silently grant
+    /// an otherwise-abandoned session another full `SESSION_COOKIE_MAX_AGE_SECS`
+    /// of server-side retention on every idle eviction or token rotation,
+    /// with no corresponding refresh of the browser's own cookie
+    /// (`routes::refresh_session_cookie` only fires from an actual
+    /// authenticated request). `false` preserves whatever `last_seen_unix`
+    /// was already on disk instead — read fresh under the same lock this
+    /// whole call already holds, same pattern [`Self::touch_last_seen_now`]
+    /// uses (Codex review finding on #280).
     pub async fn save(
         &self,
         token: &str,
         homeserver_url: &str,
         session: &MatrixSession,
         crypto: Option<(&str, &str)>,
+        bump_last_seen: bool,
     ) -> Result<(), String> {
         // See `token_write_locks`'s doc comment — held for this whole call so
         // a concurrent `touch_last_seen` for the same token can't read a
         // stale entry out from under this write and clobber it back on top.
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
+        let last_seen_unix = if bump_last_seen {
+            Some(now_unix())
+        } else {
+            self.read_one(token).await.and_then(|e| e.last_seen_unix)
+        };
         let (crypto_store_key, crypto_passphrase) = match crypto {
             Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
             None => (None, None),
@@ -810,7 +830,7 @@ impl PersistenceStore {
                 session: session.clone(),
                 crypto_store_key,
                 crypto_passphrase,
-                last_seen_unix: Some(now_unix()),
+                last_seen_unix,
             },
             &path,
         )?;
@@ -1471,6 +1491,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1495,6 +1516,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1526,6 +1548,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@restart:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1601,6 +1624,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@bob:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1622,6 +1646,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@carol:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1640,6 +1665,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@dave:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1649,6 +1675,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@erin:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1670,6 +1697,7 @@ mod tests {
                 "https://old.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1679,6 +1707,7 @@ mod tests {
                 "https://new.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1702,6 +1731,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@grace:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1745,6 +1775,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1773,6 +1804,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@iris:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -1805,6 +1837,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@judy:example.invalid"),
                 Some(("store-key-abc", "passphrase-xyz")),
+                true,
             )
             .await
             .unwrap();
@@ -1898,6 +1931,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@kevin:example.invalid"),
                 Some(("storeKeyLogout", "passphrase-logout")),
+                true,
             )
             .await
             .unwrap();
@@ -2121,6 +2155,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
@@ -2148,6 +2183,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@nadia:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
+                true,
             )
             .await
             .unwrap();
@@ -2191,6 +2227,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@mallory:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
+                true,
             )
             .await
             .unwrap();
@@ -2326,6 +2363,67 @@ mod tests {
         );
     }
 
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` — the shape `main.rs`'s idle-eviction re-save and
+    /// `sync_loop`'s token-refresh repersist both use — must preserve
+    /// whatever `last_seen_unix` was already on disk, not silently reset it
+    /// to "now". Resetting it there would grant an otherwise-abandoned
+    /// session another full retention window on every idle eviction or
+    /// token rotation, with no corresponding browser cookie refresh to
+    /// match.
+    #[tokio::test]
+    async fn save_without_bump_preserves_the_existing_last_seen() {
+        let dir = scratch_dir("save-no-bump");
+        let store = PersistenceStore::new_for_test(&dir, [49u8; 32]);
+        let old = now_unix().saturating_sub(29 * 24 * 60 * 60);
+        save_with_last_seen(&store, "tok-idle-resave", old).await;
+
+        store
+            .save(
+                "tok-idle-resave",
+                "https://example.invalid",
+                &dummy_session("@idle-resave:example.invalid"),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.read_one("tok-idle-resave").await.unwrap();
+        assert_eq!(
+            entry.last_seen_unix,
+            Some(old),
+            "save(bump_last_seen: false) must not reset last_seen_unix"
+        );
+    }
+
+    /// Counterpart to the above: `save(bump_last_seen: true)` — the shape
+    /// a fresh login/register uses — must set `last_seen_unix` to "now",
+    /// same as before this parameter existed.
+    #[tokio::test]
+    async fn save_with_bump_sets_last_seen_to_now() {
+        let dir = scratch_dir("save-with-bump");
+        let store = PersistenceStore::new_for_test(&dir, [51u8; 32]);
+        let before = now_unix();
+
+        store
+            .save(
+                "tok-fresh-login",
+                "https://example.invalid",
+                &dummy_session("@fresh-login:example.invalid"),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.read_one("tok-fresh-login").await.unwrap();
+        assert!(
+            entry.last_seen_unix.unwrap() >= before,
+            "save(bump_last_seen: true) must set last_seen_unix to now"
+        );
+    }
+
     #[tokio::test]
     async fn touch_last_seen_updates_the_persisted_timestamp() {
         let dir = scratch_dir("touch-last-seen");
@@ -2399,6 +2497,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@cross-process:example.invalid"),
                 None,
+                true,
             )
             .await
             .unwrap();
