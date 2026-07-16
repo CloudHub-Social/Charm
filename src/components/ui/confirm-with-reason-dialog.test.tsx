@@ -2,11 +2,11 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ConfirmWithReasonDialog } from "./confirm-with-reason-dialog";
 
-function renderDialog(onConfirm = vi.fn().mockResolvedValue(true)) {
+function renderDialog(onConfirm = vi.fn().mockResolvedValue(true), open = true) {
   const onOpenChange = vi.fn();
-  render(
+  const result = render(
     <ConfirmWithReasonDialog
-      open
+      open={open}
       title="Delete message?"
       description="This cannot be undone."
       confirmLabel="Delete message"
@@ -14,7 +14,7 @@ function renderDialog(onConfirm = vi.fn().mockResolvedValue(true)) {
       onConfirm={onConfirm}
     />,
   );
-  return { onConfirm, onOpenChange };
+  return { ...result, onConfirm, onOpenChange };
 }
 
 describe("ConfirmWithReasonDialog", () => {
@@ -61,5 +61,42 @@ describe("ConfirmWithReasonDialog", () => {
 
     resolveConfirmation?.(true);
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("drops a late failure after the parent closes the dialog", async () => {
+    let resolveConfirmation: ((value: boolean) => void) | undefined;
+    const onConfirm = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveConfirmation = resolve;
+        }),
+    );
+    const { rerender, onOpenChange } = renderDialog(onConfirm);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete message" }));
+    rerender(
+      <ConfirmWithReasonDialog
+        open={false}
+        title="Delete message?"
+        description="This cannot be undone."
+        confirmLabel="Delete message"
+        onOpenChange={onOpenChange}
+        onConfirm={onConfirm}
+      />,
+    );
+    resolveConfirmation?.(false);
+    rerender(
+      <ConfirmWithReasonDialog
+        open
+        title="Delete message?"
+        description="This cannot be undone."
+        confirmLabel="Delete message"
+        onOpenChange={onOpenChange}
+        onConfirm={onConfirm}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

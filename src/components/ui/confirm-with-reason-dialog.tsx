@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,6 +16,7 @@ interface ConfirmWithReasonDialogProps {
   description: string;
   confirmLabel: string;
   reasonLabel?: string;
+  reasonDescription?: string;
   onOpenChange: (open: boolean) => void;
   onConfirm: (reason: string | null) => Promise<boolean>;
 }
@@ -27,17 +28,22 @@ export function ConfirmWithReasonDialog({
   description,
   confirmLabel,
   reasonLabel = "Reason (optional)",
+  reasonDescription,
   onOpenChange,
   onConfirm,
 }: ConfirmWithReasonDialogProps) {
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [failed, setFailed] = useState(false);
+  const requestSequenceRef = useRef(0);
 
   useEffect(() => {
     if (!open) {
+      requestSequenceRef.current += 1;
       setReason("");
       setSubmitting(false);
+      setFailed(false);
+    } else {
       setFailed(false);
     }
   }, [open]);
@@ -46,7 +52,9 @@ export function ConfirmWithReasonDialog({
     setSubmitting(true);
     setFailed(false);
     const trimmedReason = reason.trim();
+    const requestSequence = ++requestSequenceRef.current;
     const succeeded = await onConfirm(trimmedReason === "" ? null : trimmedReason);
+    if (requestSequence !== requestSequenceRef.current) return;
     setSubmitting(false);
     if (succeeded) onOpenChange(false);
     else setFailed(true);
@@ -66,9 +74,15 @@ export function ConfirmWithReasonDialog({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             disabled={submitting}
+            aria-describedby={reasonDescription ? "confirmation-reason-description" : undefined}
             rows={3}
             className="min-h-20 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
           />
+          {reasonDescription && (
+            <p id="confirmation-reason-description" className="text-xs text-muted-foreground">
+              {reasonDescription}
+            </p>
+          )}
           {failed && (
             <p role="alert" className="text-sm text-destructive-foreground">
               The action could not be completed. Please try again.

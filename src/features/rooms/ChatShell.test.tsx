@@ -2853,6 +2853,7 @@ describe("ChatShell", () => {
     fireEvent.click(await screen.findByText("Delete"));
 
     expect(await screen.findByRole("heading", { name: "Delete message?" })).toBeInTheDocument();
+    expect(screen.getByText(/reason is sent to your homeserver/)).toBeInTheDocument();
     expect(redactEvent).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Reason (optional)"), {
       target: { value: "  accidental duplicate  " },
