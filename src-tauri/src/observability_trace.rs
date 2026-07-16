@@ -121,10 +121,14 @@ async fn run_traced<T, E>(
     ctx: sentry::TransactionContext,
     fut: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    if !crate::runtime_observability_sentry_enabled() || sentry::Hub::current().client().is_none() {
+    // One lock acquisition for both reads, not two separate ones — pairs
+    // with the atomic decision-and-finish in `with_current_sentry_consent`
+    // below rather than reintroducing the same class of gap at the start.
+    let (enabled_at_start, generation_at_start) =
+        crate::with_current_sentry_consent(|enabled, generation| (enabled, generation));
+    if !enabled_at_start || sentry::Hub::current().client().is_none() {
         return fut.await;
     }
-    let generation_at_start = crate::runtime_observability_sentry_consent_generation();
 
     let transaction = sentry::start_transaction(ctx);
     let started_at = std::time::Instant::now();
@@ -140,26 +144,32 @@ async fn run_traced<T, E>(
     // the user had opted out. Comparing the consent *generation* (bumped on
     // every toggle, any direction) instead of just re-reading the boolean
     // catches that case too — any change at all during the call means drop.
-    // If it did change, drop `transaction` here without calling `finish()`
-    // — sentry-rust only submits a transaction when `finish()` is called;
+    //
+    // The decision and the `finish()` call both happen inside
+    // `with_current_sentry_consent`'s closure, under its lock (Codex review
+    // on #289, P2 follow-up) — checking consent and then calling `finish()`
+    // as two separate steps left a window where a consent update landing in
+    // between would still let a since-revoked transaction submit. If
+    // consent changed, drop `transaction` here without calling `finish()` —
+    // sentry-rust only submits a transaction when `finish()` is called;
     // letting this binding go out of scope un-finished discards it instead
     // of reporting data captured across a telemetry-consent change mid-call.
-    if crate::runtime_observability_sentry_enabled()
-        && crate::runtime_observability_sentry_consent_generation() == generation_at_start
-    {
-        transaction.set_data(
-            "duration_ms",
-            u64::try_from(started_at.elapsed().as_millis())
-                .unwrap_or(u64::MAX)
-                .into(),
-        );
-        transaction.set_status(if result.is_ok() {
-            sentry::protocol::SpanStatus::Ok
-        } else {
-            sentry::protocol::SpanStatus::UnknownError
-        });
-        transaction.finish();
-    }
+    crate::with_current_sentry_consent(|enabled, generation| {
+        if enabled && generation == generation_at_start {
+            transaction.set_data(
+                "duration_ms",
+                u64::try_from(started_at.elapsed().as_millis())
+                    .unwrap_or(u64::MAX)
+                    .into(),
+            );
+            transaction.set_status(if result.is_ok() {
+                sentry::protocol::SpanStatus::Ok
+            } else {
+                sentry::protocol::SpanStatus::UnknownError
+            });
+            transaction.finish();
+        }
+    });
 
     result
 }

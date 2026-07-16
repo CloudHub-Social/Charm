@@ -750,7 +750,13 @@ fn runtime_observability_logs_enabled() -> bool {
 /// Pure flag read — deliberately doesn't also check whether a native Sentry
 /// client actually exists (see `observability_trace::traced`'s doc comment
 /// for that separate check and why it lives at the call site instead of
-/// here).
+/// here). Production code reads `enabled`/`generation` together through
+/// [`with_current_sentry_consent`] (so the two are never torn apart by a
+/// concurrent update — see that function's doc comment); this and
+/// [`runtime_observability_sentry_consent_generation`] exist as plain,
+/// separately-callable getters for tests that only care about one field at
+/// a time and don't need the atomicity guarantee for their own assertions.
+#[allow(dead_code, reason = "test-only convenience getter, see doc comment")]
 pub(crate) fn runtime_observability_sentry_enabled() -> bool {
     RUNTIME_SENTRY_CONSENT
         .lock()
@@ -758,13 +764,36 @@ pub(crate) fn runtime_observability_sentry_enabled() -> bool {
         .enabled
 }
 
-/// `pub(crate)`: read by `observability_trace::run_traced` — see
-/// `RUNTIME_SENTRY_CONSENT`'s doc comment on `generation`.
+/// See [`runtime_observability_sentry_enabled`]'s doc comment.
+#[allow(dead_code, reason = "test-only convenience getter, see doc comment")]
 pub(crate) fn runtime_observability_sentry_consent_generation() -> u64 {
     RUNTIME_SENTRY_CONSENT
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .generation
+}
+
+/// `pub(crate)`: read by `observability_trace::run_traced` to close the
+/// remaining check-then-finish race (Codex review on #289, P2) — reading
+/// `runtime_observability_sentry_enabled()` and
+/// `runtime_observability_sentry_consent_generation()` as two separate lock
+/// acquisitions, then calling `Transaction::finish()` afterward, still left
+/// a window where a consent update could land *between* that check and the
+/// `finish()` call, submitting a transaction after Rust had already applied
+/// a revocation. `f` runs while this lock is held, so a call to
+/// `update_runtime_observability_sentry_enabled` on another thread — which
+/// also needs this same lock — cannot interleave between the decision and
+/// the `finish()` a caller performs inside `f`; the whole "is this still
+/// consented" + "actually submit" sequence is atomic with respect to
+/// consent changes. Safe to call `Transaction::finish()` from inside `f`:
+/// it hands the built event off to the client's transport queue rather than
+/// blocking on network I/O itself, and sentry-rust's internals have no
+/// reentrant path back into this lock.
+pub(crate) fn with_current_sentry_consent<T>(f: impl FnOnce(bool, u64) -> T) -> T {
+    let state = RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(state.enabled, state.generation)
 }
 
 /// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):

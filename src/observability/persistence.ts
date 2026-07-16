@@ -18,6 +18,12 @@ let persistMutationId = 0;
 let durablePersistTail = Promise.resolve();
 
 /**
+ * `sessionStorage` key backing {@link nextConsentSyncSequence}'s counter —
+ * exported only for that function's own use, not a public API.
+ */
+const CONSENT_SYNC_SEQUENCE_STORAGE_KEY = "charm:consentSyncSequence";
+
+/**
  * Assigned at send time to every `update_observability_log_consent`/
  * `update_observability_sentry_consent` IPC call, so the Rust side can tell
  * which of two overlapping calls is actually newer regardless of which one
@@ -29,27 +35,42 @@ let durablePersistTail = Promise.resolve();
  * interleave meaningfully against each other, but a single always-
  * increasing source is simpler than keeping two in sync with no benefit.
  *
- * Seeded from `Date.now()`, not a plain `0`-based counter (Codex review on
- * #289, P1 follow-up): the Rust process can outlive a webview reload (the
- * Tauri window navigating/reloading without the native process restarting),
- * which would reset a plain module-scoped counter back to small values
- * while Rust's `RUNTIME_*_CONSENT` watermark keeps whatever it was before
- * the reload — the first post-reload call would then look "stale" and get
- * silently ignored until enough further calls happened to exceed the old
- * watermark. Wall-clock time has no such reset: it only ever moves forward,
- * so a fresh `Date.now()` after reload is guaranteed to already exceed
- * whatever sequence value (also `Date.now()`-derived) was last sent before
- * the reload. `Math.max(now, lastIssued + 1)` on top of that guarantees
- * strict monotonicity even for multiple calls issued within the same
- * millisecond, which a bare `Date.now()` read alone wouldn't (two calls in
- * the same ms would otherwise produce an equal, not strictly greater, value
- * — and the Rust side treats an equal sequence as stale, not as "also
- * applies").
+ * Backed by `sessionStorage`, not a plain module-scoped variable (Codex
+ * review on #289, P1 follow-up to the first fix): the Rust process can
+ * outlive a webview reload (the Tauri window navigating/reloading without
+ * the native process restarting), which would reset a plain in-memory
+ * counter back to `0` while Rust's `RUNTIME_*_CONSENT` watermark keeps
+ * whatever it was before the reload — the first post-reload call would then
+ * look "stale" and get silently ignored. An earlier version of this used
+ * `Date.now()` instead, reasoning that wall-clock time only moves forward —
+ * true in the common case, but wrong if the system clock is corrected
+ * backward (NTP, manual change) between issuing a sequence and the next
+ * reload, which would reproduce the exact same staleness bug via a
+ * different path. `sessionStorage` sidesteps wall-clock entirely: it
+ * persists across a reload/navigation within the same tab/window (matching
+ * "must survive webview reload") and is cleared when that tab/window
+ * actually closes (matching Rust's own watermark reset on process restart —
+ * the two resets stay aligned since both are tied to the same underlying
+ * app-lifetime boundary, not to independent clocks).
  */
-let lastConsentSyncSequence = 0;
+let inMemoryConsentSyncSequenceFallback = 0;
 function nextConsentSyncSequence(): number {
-  lastConsentSyncSequence = Math.max(Date.now(), lastConsentSyncSequence + 1);
-  return lastConsentSyncSequence;
+  try {
+    const current = Number(sessionStorage.getItem(CONSENT_SYNC_SEQUENCE_STORAGE_KEY) ?? "0");
+    const next = current + 1;
+    sessionStorage.setItem(CONSENT_SYNC_SEQUENCE_STORAGE_KEY, String(next));
+    return next;
+  } catch {
+    // sessionStorage can throw (private-browsing/storage-restricted
+    // contexts) — same defensive posture as readLocalEnvelope/
+    // writeLocalEnvelope above. Falls back to a plain in-memory counter,
+    // which reintroduces the reload-reset gap this function exists to
+    // close, but only in the already-degraded case where sessionStorage
+    // itself isn't available — strictly increasing within this module
+    // instance's lifetime is still better than nothing.
+    inMemoryConsentSyncSequenceFallback += 1;
+    return inMemoryConsentSyncSequenceFallback;
+  }
 }
 
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
