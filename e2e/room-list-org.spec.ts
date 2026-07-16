@@ -28,15 +28,6 @@ const MAIN_ROOM = { room_id: "!e2e-org-main:localhost", name: "Main Room", unrea
 const SECOND_ROOM = { room_id: "!e2e-org-second:localhost", name: "Second Room", unread_count: 2 };
 
 test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "charm:featureFlags",
-      JSON.stringify({
-        state: { overrides: { room_list_unread_filter: true } },
-        updatedAt: Date.now(),
-      }),
-    );
-  });
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
@@ -135,6 +126,17 @@ test("marking a room with an unread badge as read clears the badge", async ({ pa
 });
 
 test("filters to unread rooms and restores the persisted choice after reload", async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_unread_filter: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+
   const filter = page.getByRole("group", { name: "Room filter" });
   const unreadButton = filter.getByRole("button", { name: "Unread", exact: true });
   const secondRoomButton = page.getByRole("button", { name: new RegExp(SECOND_ROOM.name) });
