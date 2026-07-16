@@ -162,6 +162,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "can_redact_others",
+      { roomId: "!r:example.org" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/can-redact-others",
+      undefined,
+    ],
+    [
       "toggle_reaction",
       { roomId: "!r:example.org", targetEventId: "$e", key: "👍" },
       "POST",

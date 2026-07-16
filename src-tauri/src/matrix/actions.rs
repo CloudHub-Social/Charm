@@ -163,6 +163,17 @@ pub async fn redact_event_impl(
 /// Preferred over attempt-and-handle-error so the frontend can correctly
 /// gate the delete affordance in the action menu rather than showing it and
 /// failing later.
+///
+/// Deprecated in favor of [`can_redact_others`]: the redact-power check below
+/// depends only on the room's power levels and the *current* user's own
+/// level, never on `target_sender` (redacting someone else's message just
+/// requires meeting the room's `redact` threshold — Matrix's power-level
+/// model has no per-target-user redact override). Calling this once per
+/// unique message sender in a room (as the frontend originally did) was
+/// therefore a pure N+1: every extra sender repeated an identical query.
+/// Kept for now so any external callers relying on the per-sender shape
+/// don't break; new frontend code should call [`can_redact_others`] once per
+/// room instead.
 #[tauri::command]
 pub async fn can_redact(
     state: State<'_, MatrixState>,
@@ -186,6 +197,33 @@ pub async fn can_redact_impl(
     if target_sender == own_user_id.as_str() {
         return Ok(true);
     }
+
+    can_redact_others_impl(client, room_id).await
+}
+
+/// Whether the current user has the room's `redact` power level, i.e.
+/// whether they're allowed to redact *any other* member's message in this
+/// room (redacting one's own message is always allowed and doesn't need this
+/// check — see [`can_redact_impl`]'s early return). Unlike `can_redact`, this
+/// takes no `target_sender`: the answer is the same for every other sender in
+/// the room, so the frontend fetches it once per room instead of once per
+/// unique sender (see [`can_redact`]'s doc comment for why the per-sender
+/// shape was redundant, and Sentry issue CHARM-3 for the N+1 this replaces).
+#[tauri::command]
+pub async fn can_redact_others(
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    can_redact_others_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`can_redact_others`] (and the non-self path of
+/// [`can_redact_impl`]).
+pub async fn can_redact_others_impl(client: &Client, room_id: &str) -> Result<bool, String> {
+    let own_user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
 
     let room = get_room(client, room_id)?;
 

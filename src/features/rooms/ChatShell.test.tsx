@@ -57,7 +57,7 @@ const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
-const canRedact = vi.fn().mockResolvedValue(true);
+const canRedactOthers = vi.fn().mockResolvedValue(true);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
@@ -175,7 +175,7 @@ vi.mock("@/lib/matrix", () => ({
   editMessage: (...args: unknown[]) => editMessage(...args),
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
-  canRedact: (...args: unknown[]) => canRedact(...args),
+  canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
@@ -2818,11 +2818,11 @@ describe("ChatShell", () => {
     expect(screen.getAllByText("Alice")).toHaveLength(2);
   });
 
-  it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
-    // canRedact is only ever queried for *other* senders' messages — an own
-    // message must be immediately deletable, not flash hidden until this
-    // (never-resolving, here) promise settles.
-    canRedact.mockImplementation(() => new Promise(() => {}));
+  it("allows deleting an own message without waiting on the async can_redact_others resolution", async () => {
+    // An own message is always immediately deletable regardless of the
+    // room-scoped canRedactOthers result — it must not flash hidden until
+    // this (never-resolving, here) promise settles.
+    canRedactOthers.mockImplementation(() => new Promise(() => {}));
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$mine", sender: "@me:localhost", body: "hi" })],
       next_cursor: null,
@@ -3127,11 +3127,11 @@ describe("ChatShell", () => {
     expect(await screen.findByText("Reply")).toBeInTheDocument();
   });
 
-  it("ignores a stale can_redact response for a room the user has since navigated away from", async () => {
+  it("ignores a stale can_redact_others response for a room the user has since navigated away from", async () => {
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
     let resolveRoomACheck: ((allowed: boolean) => void) | undefined;
     let calls = 0;
-    canRedact.mockImplementation(
+    canRedactOthers.mockImplementation(
       () =>
         new Promise((resolve) => {
           // Only capture the *first* call's resolver (room A's) — room B's
@@ -3159,11 +3159,9 @@ describe("ChatShell", () => {
       </JotaiProvider>,
     );
     await screen.findByText("in room A");
-    await vi.waitFor(() =>
-      expect(canRedact).toHaveBeenCalledWith(room.room_id, "@alice:localhost"),
-    );
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledWith(room.room_id));
 
-    // Navigate to room B before room A's canRedact call resolves.
+    // Navigate to room B before room A's canRedactOthers call resolves.
     rerender(
       <JotaiProvider store={store}>
         <ChatShell room={roomB} currentUserId="@me:localhost" />
@@ -3171,9 +3169,8 @@ describe("ChatShell", () => {
     );
     await screen.findByText("in room B");
 
-    // Room A's (stale) response arrives late, saying @alice can be
-    // redacted there — it must not leak into room B's state for the same
-    // sender.
+    // Room A's (stale) response arrives late, saying other senders can be
+    // redacted there — it must not leak into room B's state.
     resolveRoomACheck?.(true);
     await Promise.resolve();
 
@@ -3182,9 +3179,9 @@ describe("ChatShell", () => {
       ctrlKey: false,
       pointerType: "mouse",
     });
-    // canRedact was only ever mocked to resolve for room A's call; room B's
-    // own call is still pending (never resolved in this test), so Delete
-    // must not be shown yet.
+    // canRedactOthers was only ever mocked to resolve for room A's call;
+    // room B's own call is still pending (never resolved in this test), so
+    // Delete must not be shown yet.
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
   });
 

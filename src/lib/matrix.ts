@@ -373,6 +373,19 @@ export function canRedact(roomId: string, targetSender: string): Promise<boolean
   return invoke("can_redact", { roomId, targetSender });
 }
 
+/**
+ * Whether the current user can redact *any other* member's message in this
+ * room. Room-scoped, not sender-scoped: a redact check on someone else's
+ * message only ever depends on the room's power levels and the current
+ * user's own level, never on who sent it — so callers should fetch this once
+ * per room instead of calling {@link canRedact} once per unique sender (see
+ * that function's Rust counterpart, `can_redact_others_impl`, and Sentry
+ * issue CHARM-3 for the N+1 this replaces).
+ */
+export function canRedactOthers(roomId: string): Promise<boolean> {
+  return invoke("can_redact_others", { roomId });
+}
+
 export function toggleReaction(
   roomId: string,
   targetEventId: string,

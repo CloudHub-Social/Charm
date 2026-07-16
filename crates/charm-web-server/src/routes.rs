@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
-    can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
+    can_redact_impl, can_redact_others_impl, edit_message_impl, redact_event_impl, send_reply_impl,
+    toggle_reaction_impl,
 };
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
@@ -125,6 +126,10 @@ pub fn router(state: AppState) -> Router {
             post(redact_event),
         )
         .route("/api/rooms/{room_id}/can-redact", get(can_redact))
+        .route(
+            "/api/rooms/{room_id}/can-redact-others",
+            get(can_redact_others),
+        )
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
@@ -1179,6 +1184,21 @@ async fn can_redact(
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
     let can = can_redact_impl(&session.client, &room_id, &query.target_sender)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(can))
+}
+
+/// Room-scoped counterpart of [`can_redact`] — see `can_redact_others_impl`'s
+/// doc comment (Sentry issue CHARM-3) for why the frontend now calls this
+/// once per room instead of `can_redact` once per unique message sender.
+async fn can_redact_others(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let can = can_redact_others_impl(&session.client, &room_id)
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(can))

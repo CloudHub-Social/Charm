@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
-import { canRedact, type RoomSummary } from "@/lib/matrix";
+import { canRedactOthers, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -98,65 +98,44 @@ function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
 /**
  * Per-message affordance state: whether the current user sent it, and
  * whether they're allowed to redact it (own messages always; others gated
- * by the room's redact power level via `can_redact`). Fetched lazily per
- * sender the first time that sender appears in `senders`, since power
- * levels don't change often and this avoids an IPC round-trip per message.
+ * by the room's redact power level). A redact check on someone else's
+ * message depends only on the room's power levels and the current user's
+ * own level — never on who actually sent it (see `can_redact_others_impl`'s
+ * doc comment) — so this fetches `canRedactOthers` once per room rather than
+ * once per unique sender. The prior per-sender `canRedact` version was a
+ * pure N+1: every additional sender in a room repeated an identical query
+ * (Sentry issue CHARM-3, Seer-confirmed root cause in this hook).
  * Resolution happens in an effect (not during render) so it can safely call
  * `setState` without triggering React's render-loop guard.
  */
 function useCanRedactMap(roomId: string, currentUserId: string, senders: readonly string[]) {
-  const [canRedactBySender, setCanRedactBySender] = useState<Record<string, boolean>>({});
-  // Stable across renders that don't actually change the sender set, so the
-  // effect below only re-runs when a genuinely new sender shows up.
-  const uniqueSenderKey = [...new Set(senders)].toSorted().join(",");
-  // Tracks the room a `canRedact` call was actually issued for, so its
+  const [canRedactOthersInRoom, setCanRedactOthersInRoom] = useState(false);
+  // Tracks the room a `canRedactOthers` call was actually issued for, so its
   // resolution can be checked against whatever room is current by the time
   // it lands — without this, a slow response for a room the user has since
   // navigated away from can overwrite a *different*, already-current room's
-  // permission result for the same sender (redact power levels are
-  // per-room, so a shared sender across two rooms would otherwise get one
-  // room's answer applied to the other).
+  // permission result.
   const requestedRoomIdRef = useRef(roomId);
   requestedRoomIdRef.current = roomId;
-  // Tracks "room_id\0sender" keys already requested (or answered), as a
-  // plain ref rather than reading `canRedactBySender` from inside the
-  // `setState` updater below — StrictMode double-invokes updater functions
-  // to surface exactly this kind of side effect, and `canRedact(...)` being
-  // called from inside one meant the `if (sender in prev)` guard couldn't
-  // actually prevent the resulting duplicate IPC call.
-  const requestedRef = useRef<Set<string>>(new Set());
 
-  // Redact power levels are per-room, but this cache is keyed only by
-  // sender — so switching to a different room must clear it, or a sender
-  // who appeared in the previous room keeps that room's cached permission
-  // instead of being re-queried for the new one.
   useEffect(() => {
-    setCanRedactBySender({});
-    requestedRef.current = new Set();
+    setCanRedactOthersInRoom(false);
+    const requestedForRoomId = roomId;
+    canRedactOthers(roomId)
+      .then((allowed) => {
+        if (requestedRoomIdRef.current !== requestedForRoomId) return;
+        setCanRedactOthersInRoom(allowed);
+      })
+      .catch(logAndIgnore);
   }, [roomId]);
 
-  useEffect(() => {
-    const unresolved = uniqueSenderKey === "" ? [] : uniqueSenderKey.split(",");
-    const requestedForRoomId = roomId;
-
-    for (const sender of unresolved) {
-      if (sender === currentUserId) {
-        setCanRedactBySender((prev) => (prev[sender] ? prev : { ...prev, [sender]: true }));
-        continue;
-      }
-      const requestKey = `${roomId}\0${sender}`;
-      if (requestedRef.current.has(requestKey)) continue;
-      requestedRef.current.add(requestKey);
-      canRedact(roomId, sender)
-        .then((allowed) => {
-          if (requestedRoomIdRef.current !== requestedForRoomId) return;
-          setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
-        })
-        .catch(logAndIgnore);
+  return useMemo(() => {
+    const bySender: Record<string, boolean> = {};
+    for (const sender of senders) {
+      bySender[sender] = sender === currentUserId || canRedactOthersInRoom;
     }
-  }, [roomId, currentUserId, uniqueSenderKey]);
-
-  return canRedactBySender;
+    return bySender;
+  }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
 export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
