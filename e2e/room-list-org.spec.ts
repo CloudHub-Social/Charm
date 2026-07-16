@@ -124,3 +124,43 @@ test("marking a room with an unread badge as read clears the badge", async ({ pa
   await expect(roomButton.getByText("2", { exact: true })).toHaveCount(0);
   await captureSnapshot(page, "room-list-org-marked-read");
 });
+
+test("filters to unread rooms and restores the persisted choice after reload", async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_unread_filter: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+
+  const filter = page.getByRole("group", { name: "Room filter" });
+  const unreadButton = filter.getByRole("button", { name: "Unread", exact: true });
+  const secondRoomButton = page.getByRole("button", { name: new RegExp(SECOND_ROOM.name) });
+
+  // Move the active-room exception to Second Room. Opening it marks its
+  // numeric unread count read, so its continued visibility below proves the
+  // active-room retention rule independently of the unread predicate.
+  await secondRoomButton.click();
+  await expect(page.getByPlaceholder(`Message ${SECOND_ROOM.name}`)).toBeVisible();
+
+  await unreadButton.click();
+
+  await expect(unreadButton).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: MAIN_ROOM.name })).toHaveCount(0);
+  await expect(secondRoomButton).toBeVisible();
+  await captureSnapshot(page, "room-list-org-unread-filter");
+
+  await page.reload();
+
+  const reloadedFilter = page.getByRole("group", { name: "Room filter" });
+  await expect(reloadedFilter.getByRole("button", { name: "Unread", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.getByRole("button", { name: MAIN_ROOM.name })).toBeVisible();
+  await expect(page.getByRole("button", { name: new RegExp(SECOND_ROOM.name) })).toBeVisible();
+});

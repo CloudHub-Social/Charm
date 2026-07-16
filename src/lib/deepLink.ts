@@ -22,11 +22,16 @@ export function parseRoomTarget(url: string): string | null {
     // `url.match(/matrix\.to\/#\//)` would previously have matched too.
     const parsed = new URL(url);
     if (parsed.protocol === "https:" && parsed.hostname.toLowerCase() === "matrix.to") {
-      const fragment = parsed.hash.replace(/^#/, "");
-      const matrixToMatch = fragment.match(/^\/([^?]+)/);
-      if (matrixToMatch) {
-        return decodeURIComponent(matrixToMatch[1]);
-      }
+      const fragmentPath = parsed.hash.replace(/^#\/?/, "").split("?", 1)[0];
+      // Event permalinks add a second path component. Room navigation does
+      // not consume the event yet, but it must still pass only the room id or
+      // alias downstream rather than treating `<room>/<event>` as a room id.
+      // Only an event-id component is a separator: historical matrix.to
+      // links may contain an unencoded slash in a room alias localpart.
+      const eventSeparator = fragmentPath.search(/\/(?=(?:\$|%24))/i);
+      const roomTarget =
+        eventSeparator === -1 ? fragmentPath : fragmentPath.slice(0, eventSeparator);
+      if (roomTarget) return decodeURIComponent(roomTarget);
     }
   } catch {
     return null;

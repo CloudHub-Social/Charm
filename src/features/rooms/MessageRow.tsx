@@ -34,6 +34,7 @@ interface MessageRowProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  onCopyLink: () => void;
   /** See `MessageRowLayoutProps.onJumpToMessage`. */
   onJumpToMessage: (eventId: string) => void;
   onUserPillClick?: (userId: string, label: string) => void;

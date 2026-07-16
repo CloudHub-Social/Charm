@@ -109,6 +109,12 @@ define_feature_flag_keys!(
         /// the canonical alias, and add alternative aliases from room
         /// settings.
         RoomAliasManagement,
+        /// Spec 54 room-list filtering: switch Home, DMs, and space room
+        /// lists between all joined rooms and rooms needing attention.
+        RoomListUnreadFilter,
+        /// Spec 37 message-action parity. The first slice adds a canonical
+        /// matrix.to permalink action for server-backed timeline events.
+        MessageActionParity,
     }
 );
 
@@ -124,6 +130,8 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => false,
             FeatureFlagKey::LinkPreviews => false,
             FeatureFlagKey::RoomAliasManagement => false,
+            FeatureFlagKey::RoomListUnreadFilter => false,
+            FeatureFlagKey::MessageActionParity => false,
         }
     }
 
@@ -152,6 +160,12 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => {
                 "Manage room aliases and the canonical alias from room settings."
             }
+            FeatureFlagKey::RoomListUnreadFilter => {
+                "Filter Home, direct-message, and space room lists to rooms needing attention."
+            }
+            FeatureFlagKey::MessageActionParity => {
+                "Add the next set of message actions, beginning with copying a canonical message permalink."
+            }
         }
     }
 
@@ -166,6 +180,8 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "Spec 30 (focus mode / do-not-disturb)",
             FeatureFlagKey::LinkPreviews => "Spec 29 (link previews)",
             FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
+            FeatureFlagKey::RoomListUnreadFilter => "Spec 54 (room-list enrichment and filtering)",
+            FeatureFlagKey::MessageActionParity => "Spec 37 (message action parity)",
         }
     }
 
@@ -180,6 +196,8 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "focus_mode",
             FeatureFlagKey::LinkPreviews => "link_previews",
             FeatureFlagKey::RoomAliasManagement => "room_alias_management",
+            FeatureFlagKey::RoomListUnreadFilter => "room_list_unread_filter",
+            FeatureFlagKey::MessageActionParity => "message_action_parity",
         }
     }
 }

@@ -51,6 +51,7 @@ export interface MessageRowLayoutProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  onCopyLink: () => void;
   /** Scrolls the timeline to a given loaded message by event id — used by the
    * reply-preview "jump to the replied-to message" click. Routed through the
    * Virtuoso instance (not a plain `document.getElementById(...)`

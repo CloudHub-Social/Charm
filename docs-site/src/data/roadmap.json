@@ -1,15 +1,29 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-15T00:39:23.092Z",
+  "generatedAt": "2026-07-16T14:15:58.119Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
-    "follow-up": 5,
-    "in-progress": 0,
-    "planned": 40
+    "follow-up": 6,
+    "in-progress": 1,
+    "planned": 38
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 276,
+      "title": "Spec 54: add unread room-list filters",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/276",
+      "detail": "Day-1 Spec 54 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 273,
+      "title": "feat(web): proxy link previews through the companion server (Spec 29)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/273",
+      "detail": "Day-1 Spec 29 · ready for review"
+    },
     {
       "type": "issue",
       "number": 48,
@@ -102,9 +116,9 @@
       ],
       "counts": {
         "shipped": 6,
-        "follow-up": 2,
-        "in-progress": 0,
-        "planned": 27
+        "follow-up": 3,
+        "in-progress": 1,
+        "planned": 25
       }
     },
     {
@@ -861,6 +875,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 273,
+          "title": "feat(web): proxy link previews through the companion server (Spec 29)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/273",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-15T15:29:32Z"
+        },
+        {
           "number": 250,
           "title": "Spec 29: Link previews",
           "url": "https://github.com/CloudHub-Social/Charm/pull/250",
@@ -1007,8 +1029,17 @@
       "number": 37,
       "title": "Message action parity",
       "route": "/specs/day-1/spec-37--message-action-parity/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "follow-up",
+      "pullRequests": [
+        {
+          "number": 275,
+          "title": "feat: copy Matrix message permalinks (Spec 37)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/275",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-16T14:13:56Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1194,8 +1225,17 @@
       "number": 54,
       "title": "Room-list row enrichment, filtering and sorting",
       "route": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 276,
+          "title": "Spec 54: add unread room-list filters",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/276",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-16T14:14:53Z"
+        }
+      ],
       "issues": []
     },
     {
