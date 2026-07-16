@@ -17,6 +17,24 @@ interface PersistedEnvelope {
 let persistMutationId = 0;
 let durablePersistTail = Promise.resolve();
 
+/**
+ * Assigned at send time to every `update_observability_log_consent`/
+ * `update_observability_sentry_consent` IPC call, so the Rust side can tell
+ * which of two overlapping calls is actually newer regardless of which one
+ * happens to arrive first. Tauri gives no ordering guarantee between two
+ * independent `invoke`s — an eager opt-out racing a still-in-flight earlier
+ * opt-in could otherwise have the *older* call land second and silently
+ * undo the newer one (Codex review on #289, P1). Shared across both consent
+ * kinds (log and sentry) rather than one counter each — they don't need to
+ * interleave meaningfully against each other, but a single always-
+ * increasing source is simpler than keeping two in sync with no benefit.
+ */
+let consentSyncSequence = 0;
+function nextConsentSyncSequence(): number {
+  consentSyncSequence += 1;
+  return consentSyncSequence;
+}
+
 function isPersistedEnvelope(value: unknown): value is PersistedEnvelope {
   return (
     typeof value === "object" &&
@@ -71,9 +89,10 @@ async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
   if (!isTauri()) {
     return;
   }
+  const sequence = nextConsentSyncSequence();
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("update_observability_log_consent", { logsEnabled });
+    await invoke("update_observability_log_consent", { logsEnabled, sequence });
   } catch (error) {
     console.warn("Failed to sync Rust observability log consent", error);
     // Rust reads the persisted store on the next app start if same-session IPC is unavailable.
@@ -93,9 +112,10 @@ async function syncRustSentryConsent(sentryEnabled: boolean): Promise<void> {
   if (!isTauri()) {
     return;
   }
+  const sequence = nextConsentSyncSequence();
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("update_observability_sentry_consent", { sentryEnabled });
+    await invoke("update_observability_sentry_consent", { sentryEnabled, sequence });
   } catch (error) {
     console.warn("Failed to sync Rust observability Sentry consent", error);
     // Rust reads the persisted store on the next app start if same-session IPC is unavailable.

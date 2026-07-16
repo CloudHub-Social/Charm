@@ -501,7 +501,29 @@ fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool)
     }
 }
 
-fn update_runtime_observability_logs_enabled(logs_enabled: bool) {
+/// Watermark for the highest `sequence` any `update_observability_log_consent`
+/// call has claimed so far — see `update_runtime_observability_logs_enabled`'s
+/// doc comment.
+static RUNTIME_LOG_CONSENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// `sequence` guards against Tauri IPC calls landing out of send-order
+/// (Codex review on #289, P1): `persistObservabilitySettings` can fire two
+/// overlapping `update_observability_log_consent` calls (an eager opt-out
+/// racing a still-in-flight earlier opt-in, say), and Tauri gives no
+/// ordering guarantee between two independent `invoke`s — the *older* call
+/// completing *after* the newer one would silently undo it. The frontend
+/// hands each call a strictly increasing sequence number at send time (not
+/// something Rust could reconstruct from arrival order, which is exactly
+/// what's unreliable here); `fetch_max` atomically claims the highest
+/// sequence seen so far and reports whether *this* call actually won that
+/// claim — a call whose sequence is at or below the current watermark lost
+/// to a newer one (already applied, or about to be) and is ignored outright,
+/// regardless of which one happened to reach this line first.
+fn update_runtime_observability_logs_enabled(logs_enabled: bool, sequence: u64) {
+    let previous_max_sequence = RUNTIME_LOG_CONSENT_SEQUENCE.fetch_max(sequence, Ordering::SeqCst);
+    if sequence <= previous_max_sequence {
+        return;
+    }
     RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
 }
 
@@ -509,11 +531,24 @@ fn update_runtime_observability_logs_enabled(logs_enabled: bool) {
 fn update_observability_log_consent<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
     logs_enabled: bool,
+    sequence: u64,
 ) {
-    update_runtime_observability_logs_enabled(logs_enabled);
+    update_runtime_observability_logs_enabled(logs_enabled, sequence);
 }
 
-fn update_runtime_observability_sentry_enabled(sentry_enabled: bool) {
+/// Watermark for the highest `sequence` any `update_observability_sentry_consent`
+/// call has claimed so far — see `update_runtime_observability_logs_enabled`'s
+/// doc comment for the identical out-of-order-IPC rationale, which applies
+/// here too.
+static RUNTIME_SENTRY_CONSENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn update_runtime_observability_sentry_enabled(sentry_enabled: bool, sequence: u64) {
+    let previous_max_sequence =
+        RUNTIME_SENTRY_CONSENT_SEQUENCE.fetch_max(sequence, Ordering::SeqCst);
+    if sequence <= previous_max_sequence {
+        return;
+    }
+
     let previous = RUNTIME_SENTRY_CONSENT.swap(sentry_enabled, Ordering::SeqCst);
     // Only bump on an actual value change (Codex review on #289, P3):
     // persistObservabilitySettings' post-persist-success sync calls this
@@ -546,8 +581,9 @@ fn update_runtime_observability_sentry_enabled(sentry_enabled: bool) {
 fn update_observability_sentry_consent<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
     sentry_enabled: bool,
+    sequence: u64,
 ) {
-    update_runtime_observability_sentry_enabled(sentry_enabled);
+    update_runtime_observability_sentry_enabled(sentry_enabled, sequence);
 }
 
 /// Returns every catalog flag resolved to a boolean for this install
@@ -739,14 +775,23 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
     let dsn = resolve_sentry_dsn()?;
     let app_data_dir = app.path().app_data_dir().ok()?;
 
+    // Direct stores, not through the sequence-guarded update_runtime_*
+    // functions: those treat an incoming sequence at or below the current
+    // watermark (0 at this point, before any real IPC call has landed) as
+    // stale and ignore it — a sequence of 0 here would be discarded by that
+    // same `<=` check instead of seeding the flags. There's no concurrency
+    // to guard against yet at this single synchronous point in `.setup()`
+    // anyway; the frontend's own sequence counter starts at 1, so its first
+    // real call is guaranteed to correctly supersede this seed once IPC
+    // starts flowing.
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
-    update_runtime_observability_logs_enabled(logs_enabled);
+    RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
     // `sentry_enabled` is already known `true` here (the early return above
     // covers `false`), so this seeds the flag to match the state a
     // `SentryGuard` is about to exist for — the panel's live toggle
     // (`update_observability_sentry_consent`) takes over from here for any
     // change during this same session.
-    update_runtime_observability_sentry_enabled(true);
+    RUNTIME_SENTRY_CONSENT.store(true, Ordering::SeqCst);
     let environment = resolve_sentry_environment().map(Cow::Owned);
     // Priority: an explicit runtime SENTRY_RELEASE override, then the
     // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
@@ -1347,6 +1392,19 @@ pub fn run() {
 mod observability_tests {
     use super::*;
 
+    // A dedicated, always-incrementing counter for tests to pass as the new
+    // `sequence` param — not the production `RUNTIME_*_CONSENT_SEQUENCE`
+    // watermarks, which these tests exercise directly. Shared across every
+    // test in this module (not reset between tests) so sequence values keep
+    // increasing no matter which test runs, or in what order, in the same
+    // process — a hardcoded literal like `1` in more than one test would
+    // eventually get treated as stale against a watermark an earlier test
+    // already raised.
+    static TEST_SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(1);
+    fn next_test_sequence() -> u64 {
+        TEST_SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    }
+
     static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
@@ -1533,7 +1591,7 @@ mod observability_tests {
         let _log_reset = set_runtime_log_consent_for_test(false);
         let _sentry_reset = set_runtime_sentry_consent_for_test(false);
 
-        update_runtime_observability_sentry_enabled(true);
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
 
         assert!(runtime_observability_sentry_enabled());
         assert!(!runtime_observability_logs_enabled());
@@ -1544,10 +1602,10 @@ mod observability_tests {
         let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
         let _reset = set_runtime_sentry_consent_for_test(false);
 
-        update_runtime_observability_sentry_enabled(true);
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
         assert!(runtime_observability_sentry_enabled());
 
-        update_runtime_observability_sentry_enabled(false);
+        update_runtime_observability_sentry_enabled(false, next_test_sequence());
 
         assert!(!runtime_observability_sentry_enabled());
     }
@@ -1564,11 +1622,11 @@ mod observability_tests {
         let _reset = set_runtime_sentry_consent_for_test(false);
         let generation_before = runtime_observability_sentry_consent_generation();
 
-        update_runtime_observability_sentry_enabled(true);
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
         let generation_after_on = runtime_observability_sentry_consent_generation();
         assert_ne!(generation_before, generation_after_on);
 
-        update_runtime_observability_sentry_enabled(false);
+        update_runtime_observability_sentry_enabled(false, next_test_sequence());
         let generation_after_off = runtime_observability_sentry_consent_generation();
         assert_ne!(generation_after_on, generation_after_off);
         // Back to the same boolean value it started at, but the generation
@@ -1591,10 +1649,36 @@ mod observability_tests {
         let _reset = set_runtime_sentry_consent_for_test(true);
 
         let generation_before = runtime_observability_sentry_consent_generation();
-        update_runtime_observability_sentry_enabled(true);
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
         let generation_after = runtime_observability_sentry_consent_generation();
 
         assert_eq!(generation_before, generation_after);
+    }
+
+    #[test]
+    fn stale_out_of_order_sentry_consent_update_is_ignored() {
+        // Codex review on #289 (P1): Tauri gives no ordering guarantee
+        // between two independent `invoke`s, so an older
+        // update_observability_sentry_consent(true) call can complete
+        // *after* a newer update_observability_sentry_consent(false) one —
+        // e.g. an eager opt-out racing a still-in-flight earlier opt-in. The
+        // `sequence` param (assigned at send time on the frontend, not
+        // reconstructable from arrival order on this side) is what lets
+        // Rust tell which call is actually newer regardless of which one
+        // reaches this function first.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(false);
+
+        let older_sequence = next_test_sequence();
+        let newer_sequence = next_test_sequence();
+
+        // Newer call ("opt-out") lands first.
+        update_runtime_observability_sentry_enabled(false, newer_sequence);
+        assert!(!runtime_observability_sentry_enabled());
+
+        // Older call ("opt-in") arrives late — must not undo the opt-out.
+        update_runtime_observability_sentry_enabled(true, older_sequence);
+        assert!(!runtime_observability_sentry_enabled());
     }
 
     #[tokio::test]
@@ -1627,7 +1711,7 @@ mod observability_tests {
                 // Consent flips *during* the traced call, not before it —
                 // exercises the post-await re-check rather than the
                 // before-await early return.
-                update_runtime_observability_sentry_enabled(false);
+                update_runtime_observability_sentry_enabled(false, next_test_sequence());
                 Ok(7)
             })
             .await;
@@ -1654,8 +1738,8 @@ mod observability_tests {
 
         let result: Result<u8, &str> =
             crate::observability_trace::traced("test.off_then_on_mid_flight", "test", async {
-                update_runtime_observability_sentry_enabled(false);
-                update_runtime_observability_sentry_enabled(true);
+                update_runtime_observability_sentry_enabled(false, next_test_sequence());
+                update_runtime_observability_sentry_enabled(true, next_test_sequence());
                 Ok(9)
             })
             .await;
@@ -1668,10 +1752,10 @@ mod observability_tests {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
         let _reset = set_runtime_log_consent_for_test(false);
 
-        update_runtime_observability_logs_enabled(true);
+        update_runtime_observability_logs_enabled(true, next_test_sequence());
         assert!(runtime_observability_logs_enabled());
 
-        update_runtime_observability_logs_enabled(false);
+        update_runtime_observability_logs_enabled(false, next_test_sequence());
 
         assert!(!runtime_observability_logs_enabled());
     }

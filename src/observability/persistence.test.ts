@@ -174,6 +174,7 @@ describe("observability persistence", () => {
     await vi.waitFor(() => {
       expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
         logsEnabled: false,
+        sequence: expect.any(Number),
       });
     });
     expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
@@ -236,9 +237,11 @@ describe("observability persistence", () => {
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
       logsEnabled: false,
+      sequence: expect.any(Number),
     });
     expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
       sentryEnabled: true,
+      sequence: expect.any(Number),
     });
   });
 
@@ -262,6 +265,7 @@ describe("observability persistence", () => {
     await vi.waitFor(() => {
       expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
         sentryEnabled: false,
+        sequence: expect.any(Number),
       });
     });
     expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
@@ -283,6 +287,7 @@ describe("observability persistence", () => {
 
     expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
       sentryEnabled: true,
+      sequence: expect.any(Number),
     });
   });
 });
