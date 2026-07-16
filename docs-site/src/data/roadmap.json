@@ -1,29 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T15:23:47.039Z",
+  "generatedAt": "2026-07-16T15:32:34.231Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
     "follow-up": 7,
-    "in-progress": 0,
-    "planned": 38
+    "in-progress": 1,
+    "planned": 37
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 277,
-      "title": "feat(rooms): confirm message redaction",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/277",
-      "detail": "Day-1 Spec 37 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 273,
-      "title": "feat(web): proxy link previews through the companion server (Spec 29)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/273",
-      "detail": "Day-1 Spec 29 · ready for review"
-    },
     {
       "type": "issue",
       "number": 48,
@@ -117,8 +103,8 @@
       "counts": {
         "shipped": 6,
         "follow-up": 4,
-        "in-progress": 0,
-        "planned": 25
+        "in-progress": 1,
+        "planned": 24
       }
     },
     {
@@ -878,9 +864,9 @@
           "number": 273,
           "title": "feat(web): proxy link previews through the companion server (Spec 29)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/273",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-16T15:18:43Z"
+          "updatedAt": "2026-07-16T15:28:31Z"
         },
         {
           "number": 250,
@@ -1035,9 +1021,9 @@
           "number": 277,
           "title": "feat(rooms): confirm message redaction",
           "url": "https://github.com/CloudHub-Social/Charm/pull/277",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-16T15:23:20Z"
+          "updatedAt": "2026-07-16T15:32:15Z"
         },
         {
           "number": 275,
@@ -1096,7 +1082,7 @@
       "number": 42,
       "title": "Media send polish",
       "route": "/specs/day-1/spec-42--media-send-polish/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": []
     },
