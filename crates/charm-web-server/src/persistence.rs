@@ -1193,6 +1193,28 @@ impl PersistenceStore {
                 tracing::warn!("failed to remove an expired persisted session: {e}");
                 continue;
             }
+            // A token that reached here was resident in `SessionStore` but
+            // `is_genuinely_active` said it wasn't — the only way that
+            // happens is `sweep_idle`'s pending-verification/unpersisted-
+            // room exemptions, which pin a session in memory indefinitely
+            // regardless of activity. Without also dropping it here, the
+            // very next request would still resolve through
+            // `require_session`'s fast path (`state.sessions.get`, checked
+            // *before* `PersistenceStore::is_expired`) against a session
+            // whose access token this loop just revoked — degrading to
+            // Matrix API calls silently failing against a live-looking but
+            // dead session, instead of a clean re-login (Codex review
+            // finding on #280).
+            if let Some(session) = sessions.remove(&entry.token).await {
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+            }
             swept += 1;
         }
         swept
@@ -2474,6 +2496,42 @@ mod tests {
             store.read_one("tok-stale").await.is_some(),
             "a stale session must stay persisted until its revocation is confirmed, not \
              deleted on a best-effort basis"
+        );
+    }
+
+    /// Regression test for the actual review finding: a stale session
+    /// resident in `SessionStore` (not genuinely active — see
+    /// `is_genuinely_active`'s own tests) must not be dropped from that
+    /// live map on a failed/unconfirmed revocation attempt either — only on
+    /// a *successful* one (untestable here without a real homeserver; this
+    /// proves the ordering doesn't jump the gun on the live-map cleanup
+    /// before persistence's own removal has actually happened).
+    #[tokio::test]
+    async fn sweep_expired_does_not_drop_a_stale_session_from_the_live_store_on_failed_revocation()
+    {
+        let dir = scratch_dir("sweep-expired-pinned-revocation-fails");
+        let store = PersistenceStore::new_for_test(&dir, [54u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(&store, "tok-pinned", now.saturating_sub(sixty_days)).await;
+
+        let sessions = crate::session::SessionStore::new();
+        let session = dummy_live_session("@pinned:example.invalid").await;
+        *session.last_active.lock().unwrap() =
+            std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        sessions.insert("tok-pinned".to_string(), session).await;
+
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        assert!(
+            sessions.get("tok-pinned").await.is_some(),
+            "a session must stay in the live store when its revocation could not be confirmed"
+        );
+        assert!(
+            store.read_one("tok-pinned").await.is_some(),
+            "and its persisted record must stay too, for the same reason"
         );
     }
 
