@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
-    can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
+    can_redact_impl, discard_failed_message_impl, edit_message_impl, redact_event_impl,
+    resend_message_impl, send_reply_impl, toggle_reaction_impl,
 };
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
@@ -128,6 +129,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/resend",
+            post(resend_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/discard",
+            post(discard_failed_message),
         )
         .route("/api/rooms/{room_id}/command", post(run_command))
         // -- ephemeral (receipts/typing/read) --
@@ -1200,6 +1209,30 @@ async fn toggle_reaction(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(result))
+}
+
+async fn resend_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    resend_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn discard_failed_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let removed = discard_failed_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(removed))
 }
 
 #[derive(Debug, Deserialize)]

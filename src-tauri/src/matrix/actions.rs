@@ -389,22 +389,27 @@ pub async fn send_reply_impl(
 /// `subscribe()`/`local_echoes()`, so this walks the current local echoes
 /// (typically very few — this is per-room, human-paced compose activity, not
 /// a hot path) to find the one matching `transaction_id`.
+///
+/// Returns `Ok(None)` — not an error — when nothing matches: the local echo
+/// having already disappeared (already discarded, already resolved by a
+/// previous resend/discard call, or it just finished sending) is a normal
+/// race for callers to treat as a no-op, not a failure. `Err` is reserved
+/// for an actual problem talking to the send queue.
 async fn find_local_echo_send_handle(
     room: &matrix_sdk::Room,
     transaction_id: &str,
-) -> Result<SendHandle, String> {
+) -> Result<Option<SendHandle>, String> {
     let queue = room.send_queue();
     let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
     let target_transaction_id: OwnedTransactionId = transaction_id.into();
 
-    local_echoes
+    Ok(local_echoes
         .into_iter()
         .find(|echo| echo.transaction_id == target_transaction_id)
         .and_then(|echo| match echo.content {
             LocalEchoContent::Event { send_handle, .. } => Some(send_handle),
             LocalEchoContent::React { .. } | LocalEchoContent::Redaction { .. } => None,
-        })
-        .ok_or_else(|| format!("no pending local echo found for transaction id {transaction_id}"))
+        }))
 }
 
 /// Retries sending a message local echo that's parked in a failed
@@ -432,7 +437,17 @@ pub async fn resend_message_impl(
     transaction_id: &str,
 ) -> Result<(), String> {
     let room = get_room(client, room_id)?;
-    let send_handle = find_local_echo_send_handle(&room, transaction_id).await?;
+    let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
+        return Ok(());
+    };
+    // The SDK's send-queue loop disables a room's queue after *any* send
+    // error (recoverable or not — see its own "Disable the queue for this
+    // room after any kind of error happened" comment), which is what wedged
+    // this echo in the first place. `unwedge` only marks this one local
+    // echo retryable; it doesn't re-enable the queue the background task
+    // actually reads from, so without this Resend would silently do
+    // nothing.
+    room.send_queue().set_enabled(true);
     send_handle.unwedge().await.map_err(|e| e.to_string())
 }
 
@@ -463,7 +478,9 @@ pub async fn discard_failed_message_impl(
     transaction_id: &str,
 ) -> Result<bool, String> {
     let room = get_room(client, room_id)?;
-    let send_handle = find_local_echo_send_handle(&room, transaction_id).await?;
+    let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
+        return Ok(false);
+    };
     send_handle.abort().await.map_err(|e| e.to_string())
 }
 
@@ -628,12 +645,13 @@ mod resend_discard_tests {
 
         // A second discard of the same (now-gone) transaction id must not
         // succeed a second time — it's the "already gone" case the doc
-        // comment calls out, not an error.
+        // comment calls out, resolving to `false` rather than an error.
         let result =
             discard_failed_message_impl(&client, room_id.as_str(), transaction_id.as_str()).await;
-        assert!(
-            result.is_err(),
-            "discarding an already-discarded echo has nothing to find"
+        assert_eq!(
+            result,
+            Ok(false),
+            "discarding an already-discarded echo has nothing to find, but isn't an error"
         );
     }
 
@@ -655,10 +673,12 @@ mod resend_discard_tests {
 
         let transaction_id = queue_and_wedge_a_message(&client, &room).await;
 
-        // Re-enable the room queue (an unrecoverable error disables it,
-        // matching `test_unwedge_unrecoverable_errors` in the vendored SDK's
-        // own integration tests) and mock a successful retry.
-        room.send_queue().set_enabled(true);
+        // `resend_message_impl` re-enables the room queue itself now (the
+        // send error above disabled it, matching
+        // `test_unwedge_unrecoverable_errors` in the vendored SDK's own
+        // integration tests) — deliberately not doing that here, so this
+        // test also covers that fix rather than masking its absence. Mock a
+        // successful retry.
         server
             .mock_room_send()
             .ok(event_id!("$resent"))
@@ -699,7 +719,7 @@ mod resend_discard_tests {
     }
 
     #[tokio::test]
-    async fn resend_and_discard_error_on_unknown_transaction_id() {
+    async fn resend_and_discard_are_no_ops_for_an_unknown_transaction_id() {
         let room_id = room_id!("!test:example.org");
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
@@ -709,13 +729,17 @@ mod resend_discard_tests {
 
         let bogus_txn_id = "not-a-real-transaction-id";
 
-        assert!(resend_message_impl(&client, room_id.as_str(), bogus_txn_id)
-            .await
-            .is_err());
-        assert!(
-            discard_failed_message_impl(&client, room_id.as_str(), bogus_txn_id)
-                .await
-                .is_err()
+        // No local echo to find isn't an error for either — a stale/
+        // duplicate call racing an already-resolved local echo is a normal
+        // outcome the frontend treats as "no longer shown as failed", not a
+        // failure to surface.
+        assert_eq!(
+            resend_message_impl(&client, room_id.as_str(), bogus_txn_id).await,
+            Ok(())
+        );
+        assert_eq!(
+            discard_failed_message_impl(&client, room_id.as_str(), bogus_txn_id).await,
+            Ok(false)
         );
     }
 }
