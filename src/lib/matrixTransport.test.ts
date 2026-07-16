@@ -503,10 +503,13 @@ describe("matrix web transport", () => {
     });
 
     const [url, init] = lastFetch();
-    expect(url).toBe(
-      "https://api.example/api/media/preview_url?url=https%3A%2F%2Fexample.com&event_ts_ms=1700000000000",
-    );
-    expect(init.method).toBe("GET");
+    expect(url).toBe("https://api.example/api/media/preview_url");
+    expect(init.method).toBe("POST");
+    expect(new Headers(init.headers).get(IPC_OPERATION_ID_HEADER)).toMatch(/^ipc-/);
+    expect(JSON.parse(init.body as string)).toEqual({
+      url: "https://example.com",
+      event_ts_ms: 1700000000000,
+    });
     expect(preview).toEqual({
       title: "Example Domain",
       description: "An example site.",

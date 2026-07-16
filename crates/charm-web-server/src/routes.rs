@@ -227,7 +227,7 @@ pub fn router(state: AppState) -> Router {
             get(resolve_message_media),
         )
         .route("/api/media/avatar", get(resolve_avatar))
-        .route("/api/media/preview_url", get(preview_url))
+        .route("/api/media/preview_url", post(preview_url))
         .route(
             "/api/rooms/{room_id}/attachments",
             post(send_attachment).layer(axum::extract::DefaultBodyLimit::max(
@@ -1918,8 +1918,9 @@ async fn preview_url(
     State(state): State<AppState>,
     jar: CookieJar,
     headers: axum::http::HeaderMap,
-    Query(query): Query<PreviewUrlQuery>,
+    Json(query): Json<PreviewUrlQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
+    require_web_transport_header(&headers)?;
     require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let preview = get_url_preview_impl(&session.client, query.url, query.event_ts_ms).await;
@@ -2882,6 +2883,24 @@ fn require_allowed_origin(headers: &axum::http::HeaderMap) -> Result<(), ApiErro
     }
 }
 
+/// Requires the non-simple header that Charm's web transport adds to API
+/// requests. A browser cannot attach this header to an `<img>` or other
+/// no-CORS subresource request, while cross-origin script requests that do
+/// attach it must first pass the allowlisted CORS preflight. This is request
+/// shape validation, not authentication; handlers must still require the
+/// session cookie separately.
+fn require_web_transport_header(headers: &axum::http::HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key("x-charm-operation-id") {
+        Ok(())
+    } else {
+        Err(ApiError {
+            status: StatusCode::FORBIDDEN,
+            message: "web transport header required".to_string(),
+            kind: None,
+        })
+    }
+}
+
 /// `Cross-Origin-Resource-Policy` value for the media/avatar routes below.
 /// A blanket `same-origin` (what both routes originally sent unconditionally)
 /// is what protects sender-controlled media from being embedded by an
@@ -3507,6 +3526,31 @@ mod origin_allowlist_tests {
             "https://pr-**-preview.example.workers.dev",
             "https://pr-112-preview.example.workers.dev"
         ));
+    }
+}
+
+#[cfg(test)]
+mod web_transport_header_tests {
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+
+    use super::require_web_transport_header;
+
+    #[test]
+    fn rejects_requests_without_the_non_simple_transport_header() {
+        let error = require_web_transport_header(&HeaderMap::new()).unwrap_err();
+
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn accepts_requests_with_the_non_simple_transport_header() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-charm-operation-id",
+            HeaderValue::from_static("ipc-test-1"),
+        );
+
+        assert!(require_web_transport_header(&headers).is_ok());
     }
 }
 

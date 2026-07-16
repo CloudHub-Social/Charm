@@ -14,15 +14,16 @@ default-off `link_previews` flag.** The Tauri implementation uses the
 homeserver preview endpoint with legacy fallback, caches by room and URL, and
 renders the card in all three message layouts.
 
-**Web support now shares the same path.** The companion server exposes
-`GET /api/media/preview_url`, which wraps the identical
+**Web support now shares the same path.** The companion server exposes an
+authenticated JSON `POST /api/media/preview_url`, which wraps the identical
 `get_url_preview_impl` desktop's Tauri command uses, so both platforms get the
 same homeserver-preview-with-legacy-fallback behavior. The web transport calls
-that route and still resolves to `null` on any failure (404, timeout,
-malformed response) rather than throwing — matching the desktop contract.
-Both platforms remain gated behind the default-off `link_previews` flag. Unit
-and mocked-homeserver tests cover the desktop graceful-failure contract;
-live-homeserver manual verification was not recorded.
+that preflighted, custom-header-guarded route and still resolves to `null` on
+any failure (404, timeout, malformed response) rather than throwing — matching
+the desktop contract. Both platforms remain gated behind the default-off
+`link_previews` flag. Unit and mocked-homeserver tests cover the desktop
+graceful-failure contract; live-homeserver manual verification was not
+recorded.
 
 :::note[Historical baseline]
 The proposal below is retained as the implementation design. Its present-tense

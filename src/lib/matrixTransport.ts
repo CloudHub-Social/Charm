@@ -548,13 +548,10 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
     // never a hard error. The `link_previews` feature flag already keeps
     // this off by default.
     case "get_url_preview":
-      return requestJson<T>(
-        "GET",
-        `/api/media/preview_url${query({
-          url: args.url as string,
-          event_ts_ms: (args.eventTsMs as number | null | undefined) ?? undefined,
-        })}`,
-      ).catch(() => null as T);
+      return requestJson<T>("POST", "/api/media/preview_url", {
+        url: args.url as string,
+        event_ts_ms: (args.eventTsMs as number | null | undefined) ?? undefined,
+      }).catch(() => null as T);
     case "send_attachment": {
       const file = requireWebFile(command, args.filePath);
       const form = new FormData();
