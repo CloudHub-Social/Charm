@@ -65,14 +65,21 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
         )
     });
-    // Self-contained Sentry transaction (see `observability_trace::traced`'s
-    // doc comment) — this call was the single largest measured contributor
-    // to login/steady-state latency before its per-room loop was
-    // parallelized; tracing it lets that fix (and any future regression) show
-    // up as real duration data instead of only being visible via profiling.
-    let snapshot = crate::observability_trace::traced_infallible(
+    // Self-contained, *downsampled* Sentry transaction (see
+    // `observability_trace::traced_infallible_sampled`'s doc comment) — this
+    // call was the single largest measured contributor to login/steady-state
+    // latency before its per-room loop was parallelized; tracing it lets
+    // that fix (and any future regression) show up as real duration data
+    // instead of only being visible via profiling. Sampled well below the
+    // client-wide rate (Codex review on #289) because this runs on every
+    // `/sync` long-poll response — including ordinary empty ones — for as
+    // long as the app is open, unlike login or a cold timeline open, which
+    // happen a handful of times per session at most.
+    const SNAPSHOT_ROOMS_TRACE_SAMPLE_RATE: f64 = 0.05;
+    let snapshot = crate::observability_trace::traced_infallible_sampled(
         "sync.snapshot_rooms",
         "matrix.sync",
+        SNAPSHOT_ROOMS_TRACE_SAMPLE_RATE,
         rooms::snapshot_rooms(
             client,
             media_cache,

@@ -110,11 +110,22 @@ pub async fn traced<T, E>(
     op: &str,
     fut: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
+    run_traced(sentry::TransactionContext::new(name, op), fut).await
+}
+
+/// Shared core behind [`traced`] and [`traced_infallible_sampled`], taking an
+/// already-built `TransactionContext` so the latter can attach a custom
+/// sampling decision (`TransactionContext::set_sampled`) without duplicating
+/// the consent-gating/finish/re-check logic below.
+async fn run_traced<T, E>(
+    ctx: sentry::TransactionContext,
+    fut: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
     if !crate::runtime_observability_sentry_enabled() || sentry::Hub::current().client().is_none() {
         return fut.await;
     }
 
-    let transaction = sentry::start_transaction(sentry::TransactionContext::new(name, op));
+    let transaction = sentry::start_transaction(ctx);
     let started_at = std::time::Instant::now();
 
     let result = fut.await;
@@ -154,11 +165,36 @@ pub async fn traced_infallible<T>(
     op: &str,
     fut: impl std::future::Future<Output = T>,
 ) -> T {
-    match traced(name, op, async {
+    match run_traced(sentry::TransactionContext::new(name, op), async {
         Ok::<T, std::convert::Infallible>(fut.await)
     })
     .await
     {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
+/// [`traced_infallible`], but samples at `sample_rate` (0.0–1.0) instead of
+/// deferring to the client-wide `traces_sample_rate` config. For a call site
+/// invoked far more often than the events it's meant to help diagnose
+/// deserve a full share of trace quota — `sync::emit_room_list_and_badge`'s
+/// call, the motivating case, runs on every `/sync` long-poll response
+/// (including ordinary empty ones) for as long as the app is open, so at the
+/// global rate it would keep submitting a standalone transaction
+/// continuously and crowd out comparatively rare login/cold-timeline traces
+/// (Codex review on #289). `TransactionContext::set_sampled` overrides the
+/// global rate's own random decision with this one, per-transaction.
+pub async fn traced_infallible_sampled<T>(
+    name: &str,
+    op: &str,
+    sample_rate: f64,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    let sampled = rand::random::<f64>() < sample_rate;
+    let mut ctx = sentry::TransactionContext::new(name, op);
+    ctx.set_sampled(Some(sampled));
+    match run_traced(ctx, async { Ok::<T, std::convert::Infallible>(fut.await) }).await {
         Ok(value) => value,
         Err(never) => match never {},
     }

@@ -226,6 +226,26 @@ impl MatrixState {
             .ok_or_else(|| "not logged in".to_string())
     }
 
+    /// Whether `room_id` already has a live `Timeline` cached — a cheap peek
+    /// (`LruCache::contains`, which doesn't touch recency order) for callers
+    /// that want to tell a cold open (this returns `false`, then
+    /// `get_or_create_timeline` does the real work: `Room::timeline()` plus
+    /// spawning the listener) apart from a request against an already-open
+    /// room (this returns `true`, `get_or_create_timeline` is just a cache
+    /// hit) — e.g. `timeline::get_timeline_page` uses this to pick a
+    /// distinct Sentry transaction name so cold-open latency and
+    /// steady-state pagination latency don't get averaged together under
+    /// one metric (Codex review on #289).
+    ///
+    /// Racing this against a concurrent `get_or_create_timeline` for the
+    /// same room can misclassify (a `false` here immediately followed by
+    /// another caller creating the entry first) — acceptable for a
+    /// best-effort trace label, not something any caller should treat as a
+    /// correctness guarantee.
+    pub(crate) async fn has_cached_timeline(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
+        self.timelines.lock().await.contains(room_id)
+    }
+
     /// Returns the live `Timeline` for `room_id`, building (and spawning its
     /// `timeline:update`-emitting listener task) on first use if it isn't
     /// already held. Bounded LRU: opening more than [`MAX_LIVE_TIMELINES`]

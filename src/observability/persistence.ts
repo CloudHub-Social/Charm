@@ -132,12 +132,16 @@ export async function persistObservabilitySettings(
     updatedAt,
   };
   writeLocalEnvelope(envelope);
-  if (!envelope.state.logsEnabled) {
-    await syncRustLogConsent(false);
-  }
-  if (!envelope.state.sentryEnabled) {
-    await syncRustSentryConsent(false);
-  }
+  // Concurrent, not sequential (Codex review on #289): these are two
+  // independent Tauri commands with no ordering dependency between them, so
+  // awaiting the log-consent IPC first would let a delayed or hung
+  // update_observability_log_consent call block the primary Sentry
+  // revocation behind it — the opposite of "eager" for the one that gates
+  // whether login/sync/timeline performance transactions keep starting.
+  await Promise.all([
+    !envelope.state.sentryEnabled ? syncRustSentryConsent(false) : Promise.resolve(),
+    !envelope.state.logsEnabled ? syncRustLogConsent(false) : Promise.resolve(),
+  ]);
   let persisted = false;
   try {
     const durablePersist = durablePersistTail.then(async () => {
@@ -166,10 +170,10 @@ export async function persistObservabilitySettings(
     }
     // The local mirror already landed; plain-browser tests and dev previews use it.
   }
-  if (persisted && mutationId === persistMutationId && envelope.state.logsEnabled) {
-    await syncRustLogConsent(true);
-  }
-  if (persisted && mutationId === persistMutationId && envelope.state.sentryEnabled) {
-    await syncRustSentryConsent(true);
+  if (persisted && mutationId === persistMutationId) {
+    await Promise.all([
+      envelope.state.sentryEnabled ? syncRustSentryConsent(true) : Promise.resolve(),
+      envelope.state.logsEnabled ? syncRustLogConsent(true) : Promise.resolve(),
+    ]);
   }
 }
