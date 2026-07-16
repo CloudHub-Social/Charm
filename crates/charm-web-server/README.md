@@ -180,14 +180,24 @@ actually expired. `routes::refresh_session_cookie` re-issues the cookie with
 a fresh 30-day window on every authenticated request that resolves to a
 still-active session, so a browser in continuous daily use never runs out the
 clock; only real inactivity for the full window does.
-`persistence::PersistenceStore::sweep_expired` runs once a day and is the
-server-side half of that same window: it revokes the Matrix access token and
-deletes the persisted session and crypto store for any session whose last
-known activity (`PersistedSession::last_seen_unix`, bumped by `save` at
-login/token-refresh and by `touch_last_seen` on an on-demand restore) is
-older than 30 days — a session still resident in `SessionStore` is skipped
-outright rather than judged by that timestamp, since idle eviction would
-already have dropped it from memory if it had actually gone stale.
+`persistence::PersistenceStore::sweep_expired` runs at startup and then once
+a day thereafter, and is the server-side half of that same window: it
+revokes the Matrix access token and deletes the persisted session and crypto
+store for any session whose last known genuine activity is older than 30
+days (`session::session_revocation_grace`, not the bare `Max-Age`, to absorb
+the touch throttle described below). `PersistedSession::last_seen_unix` is
+bumped only by an actual authenticated request — `save(bump_last_seen: true)`
+at login/register, and `touch_last_seen` (throttled to at most once/hour per
+session) on an on-demand restore or a live-session cookie refresh — not by
+`save(bump_last_seen: false)`'s idle-eviction re-save or token-refresh
+repersist, which deliberately preserve whatever `last_seen_unix` was already
+there. A session still resident in `SessionStore` is skipped only when
+`session::SessionStore::is_genuinely_active` says so (an open connection, or
+`last_active` within that same window) — `sweep_idle`'s own
+pending-verification/unpersisted-room exemptions can otherwise keep a
+session in memory indefinitely with no idle timeout at all, so bare
+residency alone isn't proof of activity. Revoking a still-resident session
+also removes it from `SessionStore` and aborts its sync loop.
 
 ### Session persistence env vars
 
