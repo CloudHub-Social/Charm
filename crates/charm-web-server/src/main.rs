@@ -60,7 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(persistence) = &persistence {
-        let restored = persistence.restore_all().await;
+        let restored = persistence
+            .restore_all(charm_web_server::session::session_cookie_max_age())
+            .await;
         tracing::info!("restored {} persisted session(s)", restored.len());
         for (token, homeserver_url, session, initial_response, initial_access_token) in restored {
             let persist = Some(sync_loop::PersistHandle {
@@ -313,9 +315,7 @@ fn spawn_expired_session_sweeper(
     sessions: charm_web_server::session::SessionStore,
     persistence: Arc<PersistenceStore>,
 ) {
-    let max_age = std::time::Duration::from_secs(
-        charm_web_server::session::SESSION_COOKIE_MAX_AGE_SECS.max(0) as u64,
-    );
+    let max_age = charm_web_server::session::session_cookie_max_age();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(EXPIRED_SESSION_SWEEP_INTERVAL);
         // Same reasoning as `spawn_idle_session_sweeper`'s first `tick()`

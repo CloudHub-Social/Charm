@@ -148,6 +148,23 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Whether a persisted entry's recorded activity is old enough that
+/// [`PersistenceStore::sweep_expired`] and [`PersistenceStore::restore_all`]
+/// should both treat it as expired. Shared between them so they can never
+/// disagree on the definition — the bug this fixed (Codex review finding on
+/// #280) was exactly that disagreement: `restore_all` used to restore *any*
+/// persisted entry unconditionally, so an already-expired one got loaded
+/// into `SessionStore` at startup, which made `sweep_expired`'s live-session
+/// skip treat it as current and exempt it from that day's sweep. `None`
+/// (not yet backfilled — see `sweep_expired`'s doc comment) is never
+/// expired: that entry hasn't had a chance to age normally yet.
+fn entry_is_expired(last_seen_unix: Option<u64>, now: u64, max_age_secs: u64) -> bool {
+    match last_seen_unix {
+        Some(last_seen_unix) => now.saturating_sub(last_seen_unix) >= max_age_secs,
+        None => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedBlob {
     /// Version 0 is the legacy format without associated data. Version 1
@@ -1022,8 +1039,23 @@ impl PersistenceStore {
     /// since that `sync_once` can itself trigger a token refresh; see
     /// `sync_loop::PersistHandle::initial_access_token`'s doc comment for
     /// why that distinction matters.
+    ///
+    /// `max_age` (pass [`crate::session::session_cookie_max_age`]) skips
+    /// restoring — not just building a live `Client` for, but even
+    /// attempting — any entry already past [`Self::sweep_expired`]'s
+    /// retention window. Without this, a session already expired *before* a
+    /// deploy/restart would still get loaded into `SessionStore` here,
+    /// which makes `sweep_expired`'s live-session skip treat it as
+    /// provably-current and exempt it from that day's sweep; the next idle
+    /// eviction would then re-`save` it with a fresh `last_seen_unix`,
+    /// silently granting an already-abandoned session another full 30-day
+    /// grace period on every restart instead of ever actually being revoked
+    /// (Codex review finding on #280). An entry with `last_seen_unix: None`
+    /// (not yet backfilled — see [`Self::sweep_expired`]'s doc comment) is
+    /// restored as normal, same as any other legacy entry.
     pub async fn restore_all(
         &self,
+        max_age: std::time::Duration,
     ) -> Vec<(
         String,
         String,
@@ -1040,8 +1072,20 @@ impl PersistenceStore {
         // accepting connections. `RESTORE_TIMEOUT` bounds how long any
         // single entry can hold up the rest: a homeserver that never
         // responds at all can't block startup indefinitely either.
-        let entries = self.read_all().await;
-        let attempts = entries.into_iter().map(|entry| async move {
+        let now = now_unix();
+        let max_age_secs = max_age.as_secs();
+        let entries = self.read_all().await.into_iter().filter(|entry| {
+            let expired = entry_is_expired(entry.last_seen_unix, now, max_age_secs);
+            if expired {
+                tracing::info!(
+                    "dropping persisted session for {}: already past the retention window \
+                     at startup",
+                    entry.session.meta.user_id
+                );
+            }
+            !expired
+        });
+        let attempts = entries.map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             // `restore_all` only ever runs at startup, right after a
             // process restart — there's no in-memory `evicted_presence` to
@@ -2244,6 +2288,77 @@ mod tests {
         assert!(
             store.read_one("tok-removed").await.is_none(),
             "a touch_last_seen racing a logout must not resurrect the removed session"
+        );
+    }
+
+    #[test]
+    fn entry_is_expired_is_true_only_once_last_seen_reaches_max_age() {
+        let max_age_secs: u64 = 30 * 24 * 60 * 60;
+        let now = max_age_secs * 10;
+        assert!(!entry_is_expired(
+            Some(now - max_age_secs + 1),
+            now,
+            max_age_secs
+        ));
+        assert!(entry_is_expired(
+            Some(now - max_age_secs),
+            now,
+            max_age_secs
+        ));
+        assert!(entry_is_expired(
+            Some(now - max_age_secs - 1),
+            now,
+            max_age_secs
+        ));
+    }
+
+    #[test]
+    fn entry_is_expired_is_false_for_a_not_yet_backfilled_entry() {
+        assert!(!entry_is_expired(None, now_unix(), 0));
+    }
+
+    /// Regression test for the actual review finding: `restore_all` must not
+    /// even attempt to restore an entry that was already past the retention
+    /// window before this process started, or restoring it into
+    /// `SessionStore` would make `sweep_expired`'s live-session skip treat
+    /// it as current — silently granting an already-abandoned session
+    /// another full grace period on every restart. Both entries here use an
+    /// unreachable homeserver so a restore attempt (if one happened) would
+    /// fail fast and be dropped either way — the assertion that matters is
+    /// on `read_all` afterward, proving the expired entry was never
+    /// filtered *out of persistence entirely*, just out of this restore
+    /// pass (it's still `sweep_expired`'s job to actually revoke it later).
+    #[tokio::test]
+    async fn restore_all_skips_an_already_expired_entry_without_attempting_it() {
+        let dir = scratch_dir("restore-all-skips-expired");
+        let store = PersistenceStore::new_for_test(&dir, [46u8; 32]);
+        let now = now_unix();
+        let thirty_days = 30 * 24 * 60 * 60;
+
+        save_with_last_seen(&store, "tok-expired", now.saturating_sub(thirty_days + 1)).await;
+        save_with_last_seen(&store, "tok-fresh", now.saturating_sub(60)).await;
+
+        let restored = store
+            .restore_all(std::time::Duration::from_secs(thirty_days))
+            .await;
+
+        assert!(
+            restored.iter().all(|(token, ..)| token != "tok-expired"),
+            "an already-expired entry must never appear in restore_all's output"
+        );
+        // Neither entry actually restores (unreachable homeserver in both
+        // cases), so `tok-fresh` isn't in `restored` either — this just
+        // confirms `restore_all` didn't delete anything from persistence
+        // itself; that's `sweep_expired`'s job, not this function's.
+        let remaining: HashSet<String> = store
+            .read_all()
+            .await
+            .into_iter()
+            .map(|entry| entry.token)
+            .collect();
+        assert_eq!(
+            remaining,
+            HashSet::from(["tok-expired".to_string(), "tok-fresh".to_string()])
         );
     }
 

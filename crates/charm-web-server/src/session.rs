@@ -66,6 +66,15 @@ pub const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 /// hour rather than one per request.
 pub const PERSISTENCE_TOUCH_THROTTLE_SECS: u64 = 60 * 60;
 
+/// [`SESSION_COOKIE_MAX_AGE_SECS`] as a [`std::time::Duration`] — the
+/// retention window `main.rs`'s startup restore and daily expiry sweep both
+/// need, kept in one place so they can't drift apart. `.max(0)` guards the
+/// `i64`→`u64` cast even though the constant is a positive literal, the same
+/// defensive habit the two call sites had before this helper existed.
+pub fn session_cookie_max_age() -> std::time::Duration {
+    std::time::Duration::from_secs(SESSION_COOKIE_MAX_AGE_SECS.max(0) as u64)
+}
+
 /// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
 /// Shorter than the idle timeout itself so an idle session isn't kept around
 /// much longer than the timeout implies, but long enough not to churn a
