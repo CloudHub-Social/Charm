@@ -9,22 +9,53 @@ import { captureSnapshot } from "./support/sentrySnapshot";
  * download chip — against the real app UI with Tauri IPC faked in-browser
  * (see `support/mockTauri.ts`).
  *
- * Scoping note (drag-and-drop / clipboard-paste): `ChatShell.tsx`'s own
- * `handleDrop`/`handlePaste` comments explain why these aren't exercised
- * here — a plain browser's `File` objects (what Playwright's DataTransfer
- * simulation would produce) have no `.path`, and both handlers only trigger
- * a send when `file.path` is present (that's a Tauri-webview-only File
- * extension). Simulating a `.path`-bearing File would mean faking the exact
- * shape of a webview implementation detail rather than testing real code —
- * not meaningfully more trustworthy than a unit test stubbing the same
- * thing, and this suite already covers the send path (attach button ->
- * `sendAttachment` -> render) that drag/paste both funnel into anyway.
- * Covered instead via the attach-button flow, which exercises the same
- * `handleAttachFile` -> `sendAttachment` -> timeline-render path.
+ * Scoping note: the drop-zone overlay is exercised here with a real browser
+ * DataTransfer. The actual desktop send still uses the attach-button flow below,
+ * because browser `File` objects do not expose Tauri's native `.path` extension.
  */
 
 const ROOM = { room_id: "!e2e-media:localhost", name: "Media E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
+
+test("shows a visible drop target only while files are dragged over the chat", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { media_send_polish: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+
+  await page.getByTestId("chat-shell").dispatchEvent("dragenter", {
+    dataTransfer: await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["hello"], "photo.png", { type: "image/png" }));
+      return transfer;
+    }),
+  });
+
+  await expect(page.getByRole("status")).toContainText(`Drop files in ${ROOM.name}`);
+
+  await page.getByTestId("chat-shell").dispatchEvent("dragleave", {
+    dataTransfer: await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["hello"], "photo.png", { type: "image/png" }));
+      return transfer;
+    }),
+  });
+  await expect(page.getByRole("status")).toHaveCount(0);
+  // snapshot-exempt: this transient overlay is asserted by exact role, copy,
+  // and lifecycle; a screenshot would add a synthetic drag-state baseline.
+});
 
 test("attaching an image via the picker renders an inline thumbnail and opens in a lightbox", async ({
   page,

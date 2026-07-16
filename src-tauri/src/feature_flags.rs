@@ -115,6 +115,9 @@ define_feature_flag_keys!(
         /// Spec 37 message-action parity. The first slice adds a canonical
         /// matrix.to permalink action for server-backed timeline events.
         MessageActionParity,
+        /// Spec 42 media-send polish: progressive attachment-send UX such as
+        /// a visible file drag-and-drop target.
+        MediaSendPolish,
     }
 );
 
@@ -132,6 +135,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => false,
             FeatureFlagKey::RoomListUnreadFilter => false,
             FeatureFlagKey::MessageActionParity => false,
+            FeatureFlagKey::MediaSendPolish => false,
         }
     }
 
@@ -166,6 +170,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessageActionParity => {
                 "Add the next set of message actions, beginning with copying a canonical message permalink."
             }
+            FeatureFlagKey::MediaSendPolish => {
+                "Improve attachment sending with a visible file drag-and-drop target and later media-send controls."
+            }
         }
     }
 
@@ -182,6 +189,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
             FeatureFlagKey::RoomListUnreadFilter => "Spec 54 (room-list enrichment and filtering)",
             FeatureFlagKey::MessageActionParity => "Spec 37 (message action parity)",
+            FeatureFlagKey::MediaSendPolish => "Spec 42 (media send polish)",
         }
     }
 
@@ -198,6 +206,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => "room_alias_management",
             FeatureFlagKey::RoomListUnreadFilter => "room_list_unread_filter",
             FeatureFlagKey::MessageActionParity => "message_action_parity",
+            FeatureFlagKey::MediaSendPolish => "media_send_polish",
         }
     }
 }

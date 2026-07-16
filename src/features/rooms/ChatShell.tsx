@@ -91,6 +91,10 @@ function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean; has
   return null;
 }
 
+function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
+  return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
+}
+
 /**
  * Per-message affordance state: whether the current user sent it, and
  * whether they're allowed to redact it (own messages always; others gated
@@ -159,10 +163,12 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
+  const mediaSendPolishEnabled = useFlag("media_send_polish");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const fileDragDepthRef = useRef(0);
   // Drives the Send button's `disabled` state — there's no attachment
   // concept in the composer today (files upload and send independently via
   // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
@@ -170,6 +176,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
   const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
+  const [fileDragActive, setFileDragActive] = useState(false);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -182,6 +189,8 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
+    fileDragDepthRef.current = 0;
+    setFileDragActive(false);
   }, [activeRoomId]);
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
@@ -637,12 +646,37 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    fileDragDepthRef.current = 0;
+    setFileDragActive(false);
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
     const upload = file ? attachmentUploadPayload(file) : null;
     if (upload) {
       handleAttachFile(upload);
     }
+  }
+
+  function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    if (!mediaSendPolishEnabled || !hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    fileDragDepthRef.current += 1;
+    setFileDragActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (!hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    // Some browser/webview implementations clear `dataTransfer.types` before
+    // `dragleave`; the positive drag-depth is the reliable proof that this
+    // leave belongs to a file drag we accepted in `handleDragEnter`.
+    if (!mediaSendPolishEnabled || fileDragDepthRef.current === 0) return;
+    event.preventDefault();
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) setFileDragActive(false);
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
@@ -657,10 +691,27 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
 
   return (
     <div
-      className="flex min-w-0 flex-1 flex-col"
-      onDragOver={(e) => e.preventDefault()}
+      data-testid="chat-shell"
+      className="relative flex min-w-0 flex-1 flex-col"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {mediaSendPolishEnabled && fileDragActive && (
+        <output
+          aria-live="polite"
+          className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-solid bg-background/90 text-center shadow-lg backdrop-blur-sm"
+        >
+          <div className="flex flex-col items-center gap-2 px-6 text-foreground">
+            <Paperclip className="size-8 text-primary" />
+            <span className="text-base font-semibold">
+              Drop files in {displayName(room.room_id, room.name)}
+            </span>
+            <span className="text-sm text-muted-foreground">Release to upload</span>
+          </div>
+        </output>
+      )}
       <div
         className={cn(
           "flex items-center justify-between border-b border-border",
