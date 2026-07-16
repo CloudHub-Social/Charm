@@ -122,14 +122,20 @@ struct PersistedSession {
     /// [`PersistenceStore::sweep_expired`] to decide whether a session's
     /// browser cookie has almost certainly already expired
     /// (`SESSION_COOKIE_MAX_AGE_SECS`) and so nothing server-side should go
-    /// on trusting it either. `#[serde(default = "now_unix")]`, not
-    /// `Option`/`0`: a session persisted before this field existed getting
-    /// backfilled with "now" (not "the epoch") on first read after
-    /// deploying this change is the only choice that doesn't immediately
-    /// treat every pre-existing session as already-expired and revoke them
-    /// all on the very next sweep.
-    #[serde(default = "now_unix")]
-    last_seen_unix: u64,
+    /// on trusting it either.
+    ///
+    /// `Option<u64>`, not a bare `u64` defaulting to "now" at deserialize
+    /// time — a session persisted before this field existed has `None` here
+    /// on disk, and every *read* of that same object (this crate decrypts
+    /// the whole blob fresh each time; there's no in-memory cache to make a
+    /// computed default "stick") would otherwise look freshly seen again on
+    /// every single sweep forever, never actually aging into
+    /// `sweep_expired`'s revoke-and-remove path (Codex review finding on
+    /// #280). `sweep_expired` backfills `None` to a concrete `Some(now)` the
+    /// first time it encounters one — see that function's doc comment — so
+    /// this only ever needs interpreting as "now" once, not on every read.
+    #[serde(default)]
+    last_seen_unix: Option<u64>,
 }
 
 /// Current wall-clock time as a Unix timestamp — clamped to 0 rather than
@@ -744,7 +750,7 @@ impl PersistenceStore {
                 session: session.clone(),
                 crypto_store_key,
                 crypto_passphrase,
-                last_seen_unix: now_unix(),
+                last_seen_unix: Some(now_unix()),
             },
             &path,
         )?;
@@ -861,7 +867,7 @@ impl PersistenceStore {
             let Some(mut entry) = this.read_one(&token).await else {
                 return;
             };
-            entry.last_seen_unix = now_unix();
+            entry.last_seen_unix = Some(now_unix());
             let path = object_path_for_token(&entry.token);
             let blob = match this.encrypt(&entry, &path) {
                 Ok(blob) => blob,
@@ -908,6 +914,16 @@ impl PersistenceStore {
     /// current signal: `session::SessionStore::sweep_idle` would already
     /// have evicted it from memory (though not from persistence) had it
     /// truly gone idle.
+    ///
+    /// An entry with `last_seen_unix: None` (persisted before that field
+    /// existed) is backfilled to `Some(now)` and written back to disk on the
+    /// spot, then skipped for this round — not treated as already-expired,
+    /// and not left as `None` for the *next* sweep to reinterpret as "now"
+    /// all over again (seeing `None` and calling `now_unix()` inline here,
+    /// the way [`PersistedSession::last_seen_unix`]'s old always-`now`
+    /// serde default used to, would never actually persist a concrete
+    /// timestamp, so a legacy session that's never separately re-saved would
+    /// look freshly seen on every sweep forever and never reach expiry).
     pub async fn sweep_expired(
         &self,
         max_age: std::time::Duration,
@@ -920,7 +936,26 @@ impl PersistenceStore {
             if live_tokens.contains(&entry.token) {
                 continue;
             }
-            if now.saturating_sub(entry.last_seen_unix) < max_age_secs {
+            let Some(last_seen_unix) = entry.last_seen_unix else {
+                if let Err(e) = self
+                    .save(
+                        &entry.token,
+                        &entry.homeserver_url,
+                        &entry.session,
+                        persisted_crypto_from_entry(&entry)
+                            .as_ref()
+                            .map(|c| (c.store_key.as_str(), c.passphrase.as_str())),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        "failed to backfill last-seen timestamp for a legacy persisted \
+                         session: {e}"
+                    );
+                }
+                continue;
+            };
+            if now.saturating_sub(last_seen_unix) < max_age_secs {
                 continue;
             }
             if let Some(client) = self.restore_client_for_revocation(&entry.token).await {
@@ -2045,7 +2080,7 @@ mod tests {
             session: dummy_session("@laura:example.invalid"),
             crypto_store_key: Some("nonexistentstorekey".to_string()),
             crypto_passphrase: Some("some-passphrase".to_string()),
-            last_seen_unix: now_unix(),
+            last_seen_unix: Some(now_unix()),
         };
 
         let crypto = persisted_crypto_from_entry(&entry).expect(
@@ -2064,7 +2099,7 @@ mod tests {
             session: dummy_session("@mallory:example.invalid"),
             crypto_store_key: None,
             crypto_passphrase: None,
-            last_seen_unix: now_unix(),
+            last_seen_unix: Some(now_unix()),
         };
 
         assert!(persisted_crypto_from_entry(&entry).is_none());
@@ -2081,7 +2116,7 @@ mod tests {
             session: dummy_session("@sweep-target:example.invalid"),
             crypto_store_key: None,
             crypto_passphrase: None,
-            last_seen_unix,
+            last_seen_unix: Some(last_seen_unix),
         };
         let path = object_path_for_token(token);
         let blob = store.encrypt(&entry, &path).unwrap();
@@ -2140,8 +2175,48 @@ mod tests {
 
         let entry = store.read_one("tok-touch").await.unwrap();
         assert!(
-            entry.last_seen_unix > old,
+            entry.last_seen_unix.unwrap() > old,
             "touch_last_seen should have bumped last_seen_unix forward"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_backfills_a_legacy_entry_instead_of_removing_it() {
+        let dir = scratch_dir("sweep-expired-legacy-backfill");
+        let store = PersistenceStore::new_for_test(&dir, [44u8; 32]);
+        let entry = PersistedSession {
+            token: "tok-legacy-no-timestamp".to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@legacy:example.invalid"),
+            crypto_store_key: None,
+            crypto_passphrase: None,
+            last_seen_unix: None,
+        };
+        let path = object_path_for_token(&entry.token);
+        let blob = store.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .store
+            .put(&path, PutPayload::from(json))
+            .await
+            .unwrap();
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &HashSet::new(),
+            )
+            .await;
+
+        assert_eq!(
+            swept, 0,
+            "a freshly-backfilled entry must not be swept in the same pass"
+        );
+        let reloaded = store.read_one("tok-legacy-no-timestamp").await.unwrap();
+        assert!(
+            reloaded.last_seen_unix.is_some(),
+            "sweep_expired must persist a concrete timestamp, not leave it None to be \
+             reinterpreted as \"now\" again on the next sweep"
         );
     }
 }

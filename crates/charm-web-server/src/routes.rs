@@ -361,7 +361,29 @@ async fn refresh_session_cookie(
     if response_already_sets_session_cookie(&response) {
         return response;
     }
-    if state.sessions.get(&token).await.is_some() {
+    if let Some(session) = state.sessions.get(&token).await {
+        // Keep the server-side activity signal `PersistenceStore::sweep_expired`
+        // relies on roughly in step with the cookie's own extended lifetime —
+        // throttled, since this session being resident in `SessionStore` at
+        // all already exempts it from that sweep regardless (see
+        // `sweep_expired`'s doc comment); this is a belt-and-suspenders bump
+        // for the rare case that exemption is ever narrowed later, not
+        // something every request needs to pay an object-store write for.
+        if let Some(persistence) = &state.persistence {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last_touch = session
+                .last_persistence_touch_unix
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
+                session
+                    .last_persistence_touch_unix
+                    .store(now, std::sync::atomic::Ordering::Relaxed);
+                persistence.touch_last_seen(&token);
+            }
+        }
         if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string()) {
             response
                 .headers_mut()

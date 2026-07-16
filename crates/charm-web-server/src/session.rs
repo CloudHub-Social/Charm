@@ -56,6 +56,16 @@ pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 /// comfortably past `EVICTED_PRESENCE_MAX_AGE`'s week-long vacation case.
 pub const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// Minimum gap `routes::refresh_session_cookie` leaves between two
+/// `PersistenceStore::touch_last_seen` calls for the same continuously-live
+/// session — see [`Session::last_persistence_touch_unix`]'s doc comment for
+/// why this exists at all. An hour comfortably keeps `last_seen_unix` within
+/// `SESSION_COOKIE_MAX_AGE_SECS`'s 30-day window for any session seeing at
+/// least one request per day, while capping the write-amplification cost of
+/// a session under continuous heavy traffic to one object-store write an
+/// hour rather than one per request.
+pub const PERSISTENCE_TOUCH_THROTTLE_SECS: u64 = 60 * 60;
+
 /// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
 /// Shorter than the idle timeout itself so an idle session isn't kept around
 /// much longer than the timeout implies, but long enough not to churn a
@@ -310,6 +320,20 @@ pub struct Session {
     /// connection is tracked separately (`ws_connections` below) and always
     /// counts as active regardless of this timestamp.
     pub last_active: std::sync::Mutex<std::time::Instant>,
+    /// Unix timestamp of the last time `routes::refresh_session_cookie`
+    /// fired `PersistenceStore::touch_last_seen` for this session — `0`
+    /// (never) initially. Throttles that call to at most once per
+    /// `PERSISTENCE_TOUCH_THROTTLE_SECS`: without it, every single
+    /// authenticated request on a continuously-live session (one that never
+    /// idle-evicts, and so never otherwise revisits `PersistenceStore`)
+    /// would write to the object store, purely to keep `last_seen_unix`
+    /// fresh for a check (`PersistenceStore::sweep_expired`) that already
+    /// skips anything resident in `SessionStore` regardless of that
+    /// timestamp — closing a Sentry-flagged edge case
+    /// (`refresh_session_cookie` extending the *cookie's* lifetime with no
+    /// corresponding server-side signal) without paying a write on every
+    /// request to do it.
+    pub last_persistence_touch_unix: std::sync::atomic::AtomicU64,
     /// Count of this session's currently-connected WebSocket clients (zero,
     /// one, or more — the same "zero or more tabs" shape as `events`
     /// above). `crate::routes::handle_socket` increments this on connect and
@@ -409,6 +433,7 @@ impl Session {
             profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
             presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            last_persistence_touch_unix: std::sync::atomic::AtomicU64::new(0),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }
