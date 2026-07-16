@@ -65,7 +65,13 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
         )
     });
-    let snapshot = rooms::snapshot_rooms(client, media_cache, include_message_preview).await;
+    let snapshot = rooms::snapshot_rooms(
+        client,
+        media_cache,
+        include_message_preview,
+        &state.preview_registered_rooms,
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     let _ = app.emit("room_list:update", snapshot);
     let _ = app.emit("badge:update", &badge);

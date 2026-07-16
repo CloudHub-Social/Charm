@@ -126,13 +126,26 @@ async fn last_message_preview(client: &Client, room: &Room) -> Option<LastMessag
         return None;
     };
     let (sender_id, text) = room_message_preview_from_raw(timeline_event.raw())?;
+    // Disambiguate the same way the open timeline does
+    // (`timeline::sender_profile_fields`): a display name shared by another
+    // member of the room could otherwise be used to impersonate them in the
+    // room list, so append the sender's own id whenever `name_ambiguous()`
+    // says it collides with someone else's.
     let sender_display_name = match matrix_sdk::ruma::UserId::parse(sender_id.as_str()) {
         Ok(user_id) => room
             .get_member_no_sync(&user_id)
             .await
             .ok()
             .flatten()
-            .and_then(|member| member.display_name().map(ToOwned::to_owned)),
+            .and_then(|member| {
+                member.display_name().map(|name| {
+                    if member.name_ambiguous() {
+                        format!("{name} ({sender_id})")
+                    } else {
+                        name.to_owned()
+                    }
+                })
+            }),
         Err(_) => None,
     };
 
@@ -141,6 +154,50 @@ async fn last_message_preview(client: &Client, room: &Room) -> Option<LastMessag
         sender_display_name,
         text: truncate_preview(&text, LAST_MESSAGE_PREVIEW_MAX_CHARS),
     })
+}
+
+/// Forgets any room registered with `LatestEvents` in a prior
+/// `snapshot_rooms` pass but not `still_registered` this pass — either the
+/// `room_list_message_preview` flag just turned off (so `still_registered`
+/// is empty), or a room left/was removed (so it's simply absent from this
+/// pass's iteration). Without this, `LatestEvents` — which keeps listening
+/// to a room until explicitly told to forget it — would carry on doing that
+/// background work regardless of the flag or room membership, undermining
+/// the flag as a kill switch.
+async fn forget_stale_preview_registrations(
+    client: &Client,
+    preview_registered_rooms: &std::sync::Mutex<
+        std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    >,
+    still_registered: std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+) {
+    let stale = swap_registered_rooms_and_diff(preview_registered_rooms, still_registered);
+    if stale.is_empty() {
+        return;
+    }
+    let latest_events = client.latest_events().await;
+    for room_id in stale {
+        latest_events.forget_room(&room_id).await;
+    }
+}
+
+/// The synchronous half of [`forget_stale_preview_registrations`]: replaces
+/// the tracked set with `still_registered` and returns whatever was in it
+/// before that `still_registered` doesn't account for (i.e. needs
+/// forgetting). Split out from the `async fn` above so this diff-and-swap
+/// logic is unit-testable without a live `Client`.
+fn swap_registered_rooms_and_diff(
+    preview_registered_rooms: &std::sync::Mutex<
+        std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    >,
+    still_registered: std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+) -> Vec<matrix_sdk::ruma::OwnedRoomId> {
+    let mut registered = preview_registered_rooms
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let stale = registered.difference(&still_registered).cloned().collect();
+    *registered = still_registered;
+    stale
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -414,10 +471,18 @@ pub async fn snapshot_rooms(
     client: &Client,
     media_cache: Option<&media::MediaCache>,
     include_message_preview: bool,
+    preview_registered_rooms: &std::sync::Mutex<
+        std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>,
+    >,
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
 
     let mut summaries = Vec::new();
+    // Rooms actually registered with `LatestEvents` this pass — anything
+    // previously registered but missing here (the flag just turned off, or
+    // the room was left/removed) gets forgotten below instead of leaving
+    // `LatestEvents` listening for it indefinitely.
+    let mut still_registered = std::collections::HashSet::new();
     let rooms = client
         .joined_rooms()
         .into_iter()
@@ -466,6 +531,10 @@ pub async fn snapshot_rooms(
         // will just discard.
         let last_message_preview =
             if include_message_preview && membership == RoomMembershipKind::Join {
+                // Registers with `LatestEvents` as a side effect regardless
+                // of whether a preview value is available yet — track it as
+                // "still wanted" either way, so it isn't forgotten below.
+                still_registered.insert(room.room_id().to_owned());
                 last_message_preview(client, &room).await
             } else {
                 None
@@ -501,6 +570,8 @@ pub async fn snapshot_rooms(
             },
         ));
     }
+
+    forget_stale_preview_registrations(client, preview_registered_rooms, still_registered).await;
 
     summaries.sort_by(|a, b| {
         a.0.cmp(&b.0)
@@ -563,7 +634,13 @@ pub async fn list_rooms(
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
         )
     });
-    Ok(snapshot_rooms(&client, media_cache, include_message_preview).await)
+    Ok(snapshot_rooms(
+        &client,
+        media_cache,
+        include_message_preview,
+        &state.preview_registered_rooms,
+    )
+    .await)
 }
 
 /// Resolves a room alias (e.g. `#general:localhost`) to its room id, so
@@ -1065,5 +1142,46 @@ mod tests {
             room_message_preview_from_raw(&raw).expect("an edited message has a preview");
         // Not the top-level `* <fallback>` body — the replacement's real text.
         assert_eq!(text, "see you at 7");
+    }
+
+    #[test]
+    fn swap_registered_rooms_and_diff_reports_rooms_no_longer_wanted() {
+        let room_a = matrix_sdk::ruma::room_id!("!a:example.org").to_owned();
+        let room_b = matrix_sdk::ruma::room_id!("!b:example.org").to_owned();
+        let room_c = matrix_sdk::ruma::room_id!("!c:example.org").to_owned();
+        let registered = std::sync::Mutex::new(
+            [room_a.clone(), room_b.clone()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        );
+
+        // `b` dropped out (room left), `c` is newly registered.
+        let still_registered: std::collections::HashSet<_> =
+            [room_a.clone(), room_c.clone()].into_iter().collect();
+        let stale = swap_registered_rooms_and_diff(&registered, still_registered.clone());
+
+        assert_eq!(stale, vec![room_b]);
+        assert_eq!(*registered.lock().unwrap(), still_registered);
+    }
+
+    #[test]
+    fn swap_registered_rooms_and_diff_forgets_everything_when_nothing_is_still_registered() {
+        let room_a = matrix_sdk::ruma::room_id!("!a:example.org").to_owned();
+        let room_b = matrix_sdk::ruma::room_id!("!b:example.org").to_owned();
+        let registered = std::sync::Mutex::new(
+            [room_a.clone(), room_b.clone()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        );
+
+        // The preview flag just turned off — nothing is still wanted.
+        let mut stale =
+            swap_registered_rooms_and_diff(&registered, std::collections::HashSet::new());
+        stale.sort();
+        let mut expected = vec![room_a, room_b];
+        expected.sort();
+
+        assert_eq!(stale, expected);
+        assert!(registered.lock().unwrap().is_empty());
     }
 }

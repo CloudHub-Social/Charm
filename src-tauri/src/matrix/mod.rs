@@ -175,6 +175,16 @@ pub struct MatrixState {
     /// same single source of truth. See `dnd`'s module doc comment for why
     /// Rust (not the frontend) owns persistence here, unlike appearance.
     pub(crate) dnd: std::sync::Mutex<dnd::DndRuntimeState>,
+    /// Room ids currently registered with `matrix-sdk`'s `LatestEvents`
+    /// tracker for Spec 54's message-preview slice
+    /// (`rooms::last_message_preview`). Tracked so `rooms::snapshot_rooms`
+    /// can `forget_room` a registration once the `room_list_message_preview`
+    /// flag is turned off or a room is no longer joined — `LatestEvents`
+    /// keeps listening for a room until explicitly forgotten, so without
+    /// this the background work (and the flag's kill-switch) would outlive
+    /// both of those conditions.
+    pub(crate) preview_registered_rooms:
+        std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
 }
 
 impl Default for MatrixState {
@@ -202,6 +212,7 @@ impl Default for MatrixState {
             push_transport: std::sync::Mutex::default(),
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
             dnd: std::sync::Mutex::default(),
+            preview_registered_rooms: std::sync::Mutex::default(),
         }
     }
 }
