@@ -1258,22 +1258,28 @@ impl PersistenceStore {
                     continue;
                 }
             }
-            if let Err(e) = self.remove(&entry.token, None).await {
-                tracing::warn!("failed to remove an expired persisted session: {e}");
-                continue;
-            }
             // A token that reached here was resident in `SessionStore` but
             // `is_genuinely_active` said it wasn't — the only way that
             // happens is `sweep_idle`'s pending-verification/unpersisted-
             // room exemptions, which pin a session in memory indefinitely
-            // regardless of activity. Without also dropping it here, the
-            // very next request would still resolve through
-            // `require_session`'s fast path (`state.sessions.get`, checked
-            // *before* `PersistenceStore::is_expired`) against a session
-            // whose access token this loop just revoked — degrading to
-            // Matrix API calls silently failing against a live-looking but
-            // dead session, instead of a clean re-login (Codex review
-            // finding on #280).
+            // regardless of activity. Aborted and dropped *before* the
+            // persisted removal below, not after — same ordering
+            // `routes::logout` uses, and for the same reason: that
+            // session's sync loop is still running until this abort lands,
+            // and a token-refresh repersist landing in the window between
+            // deleting the persisted object and aborting the loop would
+            // call `save(bump_last_seen: false)` against an object that no
+            // longer exists — which, having never itself seen an existing
+            // version in *that* call, would take the "never persisted"
+            // branch and write a brand new one, silently recreating the
+            // session this sweep just revoked (Codex review finding on
+            // #280). Without dropping it at all, the very next request
+            // would also still resolve through `require_session`'s fast
+            // path (`state.sessions.get`, checked *before*
+            // `PersistenceStore::is_expired`) against a session whose
+            // access token this loop just revoked — degrading to Matrix
+            // API calls silently failing against a live-looking but dead
+            // session, instead of a clean re-login.
             if let Some(session) = sessions.remove(&entry.token).await {
                 if let Some(handle) = session
                     .sync_handle
@@ -1283,6 +1289,10 @@ impl PersistenceStore {
                 {
                     handle.abort();
                 }
+            }
+            if let Err(e) = self.remove(&entry.token, None).await {
+                tracing::warn!("failed to remove an expired persisted session: {e}");
+                continue;
             }
             swept += 1;
         }
