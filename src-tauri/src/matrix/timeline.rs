@@ -912,7 +912,17 @@ pub async fn get_timeline_page(
         .await?;
     let media_cache = state.require_media_cache(&app).await.ok();
 
-    get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+    // Self-contained Sentry transaction (see `observability_trace::traced`'s
+    // doc comment). No dedicated decrypt hook exists to time directly — the
+    // SDK's own crypto plumbing decrypts as part of building/paginating the
+    // `Timeline` internally — so this is the closest proxy for "how long did
+    // it take to see this room's (decrypted) messages," covering both
+    // `paginate_backwards` (which triggers decryption of newly-loaded
+    // history) and the summary conversion that reads the result.
+    crate::observability_trace::traced("timeline.get_page", "matrix.timeline", async {
+        get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+    })
+    .await
 }
 
 /// Core logic behind [`get_timeline_page`], taking an already-resolved

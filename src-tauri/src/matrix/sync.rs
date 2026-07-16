@@ -65,11 +65,20 @@ async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
             crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
         )
     });
-    let snapshot = rooms::snapshot_rooms(
-        client,
-        media_cache,
-        include_message_preview,
-        &state.preview_registered_rooms,
+    // Self-contained Sentry transaction (see `observability_trace::traced`'s
+    // doc comment) — this call was the single largest measured contributor
+    // to login/steady-state latency before its per-room loop was
+    // parallelized; tracing it lets that fix (and any future regression) show
+    // up as real duration data instead of only being visible via profiling.
+    let snapshot = crate::observability_trace::traced_infallible(
+        "sync.snapshot_rooms",
+        "matrix.sync",
+        rooms::snapshot_rooms(
+            client,
+            media_cache,
+            include_message_preview,
+            &state.preview_registered_rooms,
+        ),
     )
     .await;
     let badge = shell::compute_badge_state(&snapshot);

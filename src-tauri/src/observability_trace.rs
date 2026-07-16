@@ -47,6 +47,65 @@ pub fn continue_ipc_trace(
     ))
 }
 
+/// Runs `fut` inside a self-contained Sentry performance transaction named
+/// `name`/`op` — self-contained meaning it doesn't continue any existing
+/// trace (unlike [`continue_ipc_trace`]) and isn't published onto the
+/// ambient/current scope (unlike `sentry::configure_scope`), for the same
+/// "two overlapping calls racing to set/clear the current span would corrupt
+/// each other" reason `send_attachment`'s trace handling calls out.
+///
+/// For hot paths this project's performance investigations flagged as slow
+/// (login, the room-list snapshot loop, opening a room's timeline) but that
+/// have no natural way to continue a frontend-originated trace — a plain
+/// typed `#[tauri::command]` has no `sentry-trace` header to read, and a
+/// background sync-loop tick isn't triggered by any single user action to
+/// begin with. Reports `duration_ms` as span data and `Ok`/`UnknownError` as
+/// the span status (based on `Result::is_ok`), matching the shape
+/// `send_attachment` already reports by hand.
+pub async fn traced<T, E>(
+    name: &str,
+    op: &str,
+    fut: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let transaction = sentry::start_transaction(sentry::TransactionContext::new(name, op));
+    let started_at = std::time::Instant::now();
+
+    let result = fut.await;
+
+    transaction.set_data(
+        "duration_ms",
+        u64::try_from(started_at.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .into(),
+    );
+    transaction.set_status(if result.is_ok() {
+        sentry::protocol::SpanStatus::Ok
+    } else {
+        sentry::protocol::SpanStatus::UnknownError
+    });
+    transaction.finish();
+
+    result
+}
+
+/// [`traced`] for a future that can't fail — `snapshot_rooms` has no
+/// `Result` to report a status from, so this always finishes the
+/// transaction as `Ok`.
+pub async fn traced_infallible<T>(
+    name: &str,
+    op: &str,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    match traced(name, op, async {
+        Ok::<T, std::convert::Infallible>(fut.await)
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(never) => match never {},
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
