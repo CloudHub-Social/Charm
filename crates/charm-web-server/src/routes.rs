@@ -377,18 +377,26 @@ tokio::task_local! {
 /// #280).
 ///
 /// And requires [`require_web_transport_header`] to pass on the *incoming*
-/// request, checked before `next.run` even starts (its own doc comment
+/// request (checked before `next.run` even starts — its own doc comment
 /// explains why the header itself is unforgeable by a same-site subresource
-/// request). `REQUEST_AUTHENTICATED` alone still isn't enough: a same-site
-/// subdomain attacker can't reach `/api/health`, but *can* still get
-/// `SameSite=Strict` to attach the victim's cookie to a "simple" (no
-/// preflight) cross-site `<img>`/no-CORS `fetch` at a route that genuinely
-/// does call `require_session` — `GET /api/auth/me` or `GET /api/rooms`,
-/// say — and a real 200 from either would set `REQUEST_AUTHENTICATED`
-/// without the app's own transport layer (which always attaches this
-/// header) ever being involved. Regular CORS preflight/origin checks don't
-/// apply to that request shape at all, which is exactly the gap this closes
-/// (Codex review finding on #280).
+/// request), *or* the request's `Origin` to already be
+/// [`origin_is_allowed`]. `REQUEST_AUTHENTICATED` alone still isn't enough:
+/// a same-site subdomain attacker can't reach `/api/health`, but *can*
+/// still get `SameSite=Strict` to attach the victim's cookie to a "simple"
+/// (no preflight) cross-site `<img>`/no-CORS `fetch` at a route that
+/// genuinely does call `require_session` — `GET /api/auth/me` or
+/// `GET /api/rooms`, say — and a real 200 from either would set
+/// `REQUEST_AUTHENTICATED` without the app's own transport layer (which
+/// always attaches this header) ever being involved. Regular CORS
+/// preflight/origin checks don't apply to that request shape at all, which
+/// is exactly the gap this closes (Codex review finding on #280). The
+/// `Origin` alternative exists because `GET /api/ws` is opened via the
+/// browser's `new WebSocket(...)`, which can't attach custom headers at
+/// all — `ws_handler` already enforces the exact same defense by rejecting
+/// the handshake outright unless `Origin` matches
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN`, so a WebSocket that got this far has
+/// already proven what the transport header would have (Codex review
+/// finding on #280).
 async fn refresh_session_cookie(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -396,7 +404,24 @@ async fn refresh_session_cookie(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
-    let has_transport_header = require_web_transport_header(request.headers()).is_ok();
+    // A `GET /api/ws` handshake can't attach `x-charm-operation-id` — it's
+    // opened via the browser's `new WebSocket(...)`, not `matrixTransport.ts`'s
+    // `fetch`-based dispatch — so `require_web_transport_header` alone would
+    // permanently exclude it from ever refreshing the cookie, even though
+    // `ws_handler` already enforces the exact same same-site-subdomain
+    // defense this middleware needs: it rejects the handshake outright
+    // unless `Origin` matches `CHARM_WEB_SERVER_ALLOWED_ORIGIN` (see
+    // `origin_is_allowed`'s doc comment). Accepting either signal here
+    // keeps a Charm tab that's primarily kept alive by its WebSocket, not
+    // repeated `fetch` calls, sliding its cookie the same as any other
+    // authenticated use (Codex review finding on #280).
+    let request_origin = request
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok().map(str::to_string));
+    let has_transport_header_or_allowed_origin = require_web_transport_header(request.headers())
+        .is_ok()
+        || origin_is_allowed(request_origin.as_deref());
     let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut response = REQUEST_AUTHENTICATED
         .scope(Arc::clone(&authenticated), next.run(request))
@@ -404,7 +429,7 @@ async fn refresh_session_cookie(
     let Some(token) = token else {
         return response;
     };
-    if !has_transport_header {
+    if !has_transport_header_or_allowed_origin {
         return response;
     }
     if response_already_sets_session_cookie(&response) {

@@ -813,10 +813,17 @@ impl PersistenceStore {
         // stale entry out from under this write and clobber it back on top.
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        let last_seen_unix = if bump_last_seen {
-            Some(now_unix())
+        // Only the `bump_last_seen: false` path reads first — a fresh
+        // login/register (`bump_last_seen: true`) is meant to unconditionally
+        // win regardless of whatever's currently there, same as this
+        // function's behavior before `bump_last_seen` existed.
+        let (last_seen_unix, existing_version) = if bump_last_seen {
+            (Some(now_unix()), None)
         } else {
-            self.read_one(token).await.and_then(|e| e.last_seen_unix)
+            match self.read_one_with_version(token).await {
+                Some((entry, version)) => (entry.last_seen_unix, Some(version)),
+                None => (None, None),
+            }
         };
         let (crypto_store_key, crypto_passphrase) = match crypto {
             Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
@@ -835,11 +842,54 @@ impl PersistenceStore {
             &path,
         )?;
         let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-        self.store
-            .put(&path, PutPayload::from(json))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        // Conditional only when this call read an existing version to base
+        // its `last_seen_unix` preservation on — see `touch_last_seen_now`'s
+        // doc comment for the cross-process race this closes: a
+        // `bump_last_seen: false` re-save (idle eviction, token refresh)
+        // that read the object before a racing logout on another process
+        // deleted it must not `put` it back afterward, resurrecting an
+        // already-removed session (Sentry review finding on #280). Falls
+        // back to a plain `put` when there's no version to condition on
+        // (a fresh login, or a `bump_last_seen: false` call against a token
+        // that was never persisted — nothing to protect there either way)
+        // or when the backend doesn't support conditional writes
+        // (`LocalFileSystem`, used for local dev/every test in this module).
+        match existing_version {
+            Some(version) => {
+                let opts = object_store::PutOptions {
+                    mode: object_store::PutMode::Update(version),
+                    ..Default::default()
+                };
+                match self
+                    .store
+                    .put_opts(&path, PutPayload::from(json.clone()), opts)
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(object_store::Error::Precondition { .. }) => {
+                        tracing::info!(
+                            "skipped a re-save for a persisted session: object changed or was \
+                             removed since it was read (likely a racing logout on another \
+                             instance)"
+                        );
+                        Ok(())
+                    }
+                    Err(object_store::Error::NotImplemented) => self
+                        .store
+                        .put(&path, PutPayload::from(json))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            }
+            None => self
+                .store
+                .put(&path, PutPayload::from(json))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        }
     }
 
     /// Removes `token`'s persisted session (logout) — a no-op, not an error,
@@ -2535,6 +2585,82 @@ mod tests {
         assert!(
             process_a.read_one("tok-cross-process").await.is_none(),
             "the session must stay removed, not get resurrected by the losing write"
+        );
+    }
+
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` — main.rs's idle-eviction re-save, sync_loop's token-refresh
+    /// repersist — reads the existing entry before writing (to preserve
+    /// `last_seen_unix`), which reopened the same cross-process resurrection
+    /// risk `touch_last_seen_now` already closes. `save` itself does its
+    /// read and write atomically within one call, so — same as
+    /// `touch_last_seen_does_not_resurrect_a_session_removed_by_another_process`
+    /// — this reads the version manually first (simulating the read half of
+    /// process A's in-flight `save`), lets process B's logout land, then
+    /// replicates `save`'s own conditional-write logic to confirm it
+    /// declines to resurrect rather than blindly overwriting.
+    #[tokio::test]
+    async fn save_without_bump_does_not_resurrect_a_session_removed_by_another_process() {
+        let key_bytes = [52u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-cross-process-resave",
+                "https://example.invalid",
+                &dummy_session("@cross-process-resave:example.invalid"),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        // process A's in-flight idle-eviction re-save reads the version
+        // first, the same as `save(bump_last_seen: false)` does internally.
+        let (entry, version) = process_a
+            .read_one_with_version("tok-cross-process-resave")
+            .await
+            .unwrap();
+
+        // process B's logout removes the object before process A's write
+        // lands.
+        process_b
+            .remove("tok-cross-process-resave", None)
+            .await
+            .unwrap();
+
+        // process A's already-in-flight conditional write must fail, not
+        // resurrect the object process B just removed.
+        let path = object_path_for_token("tok-cross-process-resave");
+        let blob = process_a.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        let opts = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        let result = process_a
+            .store
+            .put_opts(&path, PutPayload::from(json), opts)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a conditional write against an object removed since it was read must fail"
+        );
+        assert!(
+            process_a
+                .read_one("tok-cross-process-resave")
+                .await
+                .is_none(),
+            "the session must stay removed, not get resurrected by a bump_last_seen: false \
+             re-save"
         );
     }
 
