@@ -485,16 +485,36 @@ impl PersistenceStore {
     /// folded into `None` — same fail-open tolerance `read_all` gives a
     /// single bad entry, just scoped to the one object a caller asked for.
     async fn read_one(&self, token: &str) -> Option<PersistedSession> {
+        self.read_one_with_version(token)
+            .await
+            .map(|(entry, _)| entry)
+    }
+
+    /// [`Self::read_one`], additionally returning the object's
+    /// [`object_store::UpdateVersion`] (ETag/version at the moment of this
+    /// read) — for [`Self::touch_last_seen_now`]'s conditional write, which
+    /// needs to know it's overwriting the *same* object version it read,
+    /// not a different one written or deleted since (see that function's
+    /// doc comment for why).
+    async fn read_one_with_version(
+        &self,
+        token: &str,
+    ) -> Option<(PersistedSession, object_store::UpdateVersion)> {
         let path = object_path_for_token(token);
-        let bytes = match self.store.get(&path).await {
-            Ok(result) => match result.bytes().await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    tracing::warn!("failed to read persisted session object {path}: {e}");
-                    return None;
-                }
-            },
+        let result = match self.store.get(&path).await {
+            Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => return None,
+            Err(e) => {
+                tracing::warn!("failed to read persisted session object {path}: {e}");
+                return None;
+            }
+        };
+        let version = object_store::UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let bytes = match result.bytes().await {
+            Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!("failed to read persisted session object {path}: {e}");
                 return None;
@@ -511,7 +531,7 @@ impl PersistenceStore {
             Ok(session)
                 if session.token == token && object_path_for_token(&session.token) == path =>
             {
-                Some(session)
+                Some((session, version))
             }
             Ok(_) => {
                 tracing::warn!(
@@ -889,33 +909,74 @@ impl PersistenceStore {
 
     /// Core of [`Self::touch_last_seen`] (and [`Self::sweep_expired`]'s
     /// legacy-entry backfill) — lock, *re-read fresh under that lock*, bump
-    /// only `last_seen_unix`, write back. Awaitable directly rather than
-    /// fire-and-forget: `sweep_expired`'s backfill needs to know whether the
-    /// write actually happened before deciding whether to log a failure,
-    /// and re-reading here (rather than reusing an entry the caller read
-    /// earlier, e.g. from a `read_all` snapshot) is exactly what closes the
-    /// race `token_write_locks` exists to prevent — a caller writing back a
-    /// stale snapshot's token pair, racing a concurrent `save` (e.g.
-    /// `sync_loop`'s post-refresh repersist) that landed in between, would
-    /// silently resurrect an already-invalidated access/refresh token
-    /// (Codex review finding on #280). `Ok(())`, not an error, if the entry
-    /// was removed by a racing logout before this could acquire the lock —
-    /// same tolerance `read_one`/`read_all` already give a missing entry.
+    /// only `last_seen_unix`, write back conditionally on the version just
+    /// read. Awaitable directly rather than fire-and-forget: `sweep_expired`'s
+    /// backfill needs to know whether the write actually happened before
+    /// deciding whether to log a failure, and re-reading here (rather than
+    /// reusing an entry the caller read earlier, e.g. from a `read_all`
+    /// snapshot) is exactly what closes the *in-process* half of the race
+    /// `token_write_locks` exists to prevent — a caller writing back a stale
+    /// snapshot's token pair, racing a concurrent `save` (e.g. `sync_loop`'s
+    /// post-refresh repersist) that landed in between, would silently
+    /// resurrect an already-invalidated access/refresh token (Codex review
+    /// finding on #280).
+    ///
+    /// `token_write_locks` alone only serializes writers *within this one
+    /// process* — DO App Platform can briefly run the old and new instance
+    /// of a rolling deploy side by side, and a `touch_last_seen` in flight on
+    /// one instance has no way to see a `logout` that lands on the other in
+    /// that window. The conditional [`object_store::PutMode::Update`] below
+    /// closes that cross-process gap: the write only lands if the object is
+    /// still exactly the version this call read, so a logout's `delete`
+    /// (from any process) landing in between makes this write fail with
+    /// `Precondition` instead of resurrecting the just-removed session with
+    /// its now-invalid tokens — logged and treated as a no-op, the same
+    /// outcome as if this call had lost the race to acquire the in-process
+    /// lock in the first place. Falls back to a plain unconditional `put`
+    /// only when the backend reports `NotImplemented` for conditional
+    /// writes (`LocalFileSystem`, used for local dev and every test in this
+    /// module — DO Spaces, the only backend this crate actually deploys
+    /// with multiple instances against, does support it), preserving
+    /// today's in-process-only protection there rather than failing outright.
+    ///
+    /// `Ok(())`, not an error, if the entry was removed by a racing logout
+    /// before this could even acquire the lock or read it — same tolerance
+    /// `read_one`/`read_all` already give a missing entry.
     async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        let Some(mut entry) = self.read_one(token).await else {
+        let Some((mut entry, version)) = self.read_one_with_version(token).await else {
             return Ok(());
         };
         entry.last_seen_unix = Some(now_unix());
         let path = object_path_for_token(&entry.token);
         let blob = self.encrypt(&entry, &path)?;
         let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-        self.store
-            .put(&path, PutPayload::from(json))
+        let opts = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        match self
+            .store
+            .put_opts(&path, PutPayload::from(json.clone()), opts)
             .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        {
+            Ok(_) => Ok(()),
+            Err(object_store::Error::Precondition { .. }) => {
+                tracing::info!(
+                    "skipped last-seen touch for a persisted session: object changed or was \
+                     removed since it was read (likely a racing logout on another instance)"
+                );
+                Ok(())
+            }
+            Err(object_store::Error::NotImplemented) => self
+                .store
+                .put(&path, PutPayload::from(json))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Best-effort activity-timestamp bump for `token`'s persisted session —
@@ -2308,6 +2369,73 @@ mod tests {
         assert!(
             store.read_one("tok-removed").await.is_none(),
             "a touch_last_seen racing a logout must not resurrect the removed session"
+        );
+    }
+
+    /// Regression test for the actual review finding: `token_write_locks`
+    /// only serializes writers *within one process* — two independent
+    /// `PersistenceStore`s sharing the same backend (simulating two DO App
+    /// Platform instances briefly overlapping during a rolling deploy) have
+    /// no shared lock at all. `LocalFileSystem` (`new_for_test`, used by
+    /// every other test in this module) doesn't implement conditional
+    /// writes, so this uses `object_store::memory::InMemory` directly,
+    /// which does — the same backend family (S3-compatible) as the DO
+    /// Spaces bucket this crate actually deploys against.
+    #[tokio::test]
+    async fn touch_last_seen_does_not_resurrect_a_session_removed_by_another_process() {
+        let key_bytes = [50u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-cross-process",
+                "https://example.invalid",
+                &dummy_session("@cross-process:example.invalid"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // process A's touch reads the object's current version...
+        let (mut entry, version) = process_a
+            .read_one_with_version("tok-cross-process")
+            .await
+            .unwrap();
+
+        // ...then process B's logout removes it before process A's write
+        // lands — the same interleaving `token_write_locks` prevents
+        // in-process but can't prevent across two real processes.
+        process_b.remove("tok-cross-process", None).await.unwrap();
+
+        // process A's already-in-flight conditional write must fail, not
+        // resurrect the object process B just removed.
+        entry.last_seen_unix = Some(now_unix());
+        let path = object_path_for_token("tok-cross-process");
+        let blob = process_a.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        let opts = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        let result = process_a
+            .store
+            .put_opts(&path, PutPayload::from(json), opts)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a conditional write against an object removed since it was read must fail"
+        );
+        assert!(
+            process_a.read_one("tok-cross-process").await.is_none(),
+            "the session must stay removed, not get resurrected by the losing write"
         );
     }
 

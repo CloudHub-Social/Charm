@@ -318,10 +318,19 @@ fn spawn_expired_session_sweeper(
     let max_age = charm_web_server::session::session_cookie_max_age();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(EXPIRED_SESSION_SWEEP_INTERVAL);
-        // Same reasoning as `spawn_idle_session_sweeper`'s first `tick()`
-        // skip: nothing has had 30 days to go stale the instant the process
-        // starts.
-        interval.tick().await;
+        // Deliberately does *not* skip the first tick the way
+        // `spawn_idle_session_sweeper` does — that skip is safe there
+        // because nothing can have gone idle in the instant the process
+        // starts, but a session can already be past `max_age` *before* this
+        // process even started (e.g. a redeploy after downtime, or a
+        // frequently-redeployed instance). `restore_all` only filters
+        // already-expired entries out of memory; it never revokes or
+        // removes them, so without an immediate sweep here they'd sit with
+        // a valid access token and crypto store for up to a full
+        // `EXPIRED_SESSION_SWEEP_INTERVAL` after every single restart
+        // (Codex review finding on #280). `tokio::time::interval`'s first
+        // `tick()` already resolves immediately by default — this loop
+        // relies on that, rather than sleeping once before the first sweep.
         loop {
             interval.tick().await;
             let swept = persistence.sweep_expired(max_age, &sessions).await;
