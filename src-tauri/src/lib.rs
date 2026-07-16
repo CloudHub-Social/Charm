@@ -599,7 +599,19 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn runtime_observability_logs_enabled() -> bool {
+/// `pub(crate)`, not private: also read by `observability_trace::traced`/
+/// `traced_infallible` to gate the Sentry performance transactions they
+/// start. Despite the name (kept as-is to avoid touching every existing call
+/// site for a rename), this is the one live, in-process consent toggle for
+/// *all* Sentry reporting on desktop, not logs specifically — see this
+/// static's own doc comment. Native transactions from a background task
+/// (the sync loop, an open room's timeline) have no per-call opportunity to
+/// re-check `observability_enabled_from_store` on disk the way an IPC
+/// command handler might, and `SentryGuard` itself stays alive for the rest
+/// of the process after a same-session opt-out (only the frontend client and
+/// this flag update live) — so without this check, a transaction started
+/// after in-session opt-out would still report.
+pub(crate) fn runtime_observability_logs_enabled() -> bool {
     RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
 }
 
