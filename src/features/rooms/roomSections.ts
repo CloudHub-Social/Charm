@@ -121,3 +121,44 @@ export function planManualReorder(
 
   return [{ room_id: draggedRoomId, order: computeManualOrder(others, targetIndex) }];
 }
+
+// Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
+// spacing — the fallback used below for a row not measured yet (e.g. one
+// that just mounted).
+const ROW_HEIGHT_PX = 46;
+
+/**
+ * Walks from `index` toward the drag's direction, summing each row's actual
+ * measured height (falling back to `ROW_HEIGHT_PX`) until half of the *next*
+ * row's height has been crossed — i.e. snaps to whichever row boundary the
+ * drag has passed the midpoint of. Rows aren't all the same height (the
+ * message-preview flag grows some rows a second text line), so a fixed-
+ * height division would round to the wrong row; this measures each row
+ * instead.
+ */
+export function targetIndexFromMeasuredHeights(
+  sectionRooms: RoomSummary[],
+  index: number,
+  my: number,
+  rowHeights: Map<string, number>,
+): number {
+  const heightAt = (i: number) => rowHeights.get(sectionRooms[i]?.room_id ?? "") ?? ROW_HEIGHT_PX;
+  let target = index;
+  let remaining = my;
+  if (my > 0) {
+    while (target < sectionRooms.length - 1) {
+      const h = heightAt(target);
+      if (remaining < h / 2) break;
+      remaining -= h;
+      target += 1;
+    }
+  } else if (my < 0) {
+    while (target > 0) {
+      const h = heightAt(target - 1);
+      if (-remaining < h / 2) break;
+      remaining += h;
+      target -= 1;
+    }
+  }
+  return target;
+}

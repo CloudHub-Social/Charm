@@ -39,7 +39,11 @@ import {
   readRoomListFilters,
   type RoomListFilter,
 } from "./roomListFilter";
-import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
+import {
+  groupRoomsIntoSections,
+  planManualReorder,
+  targetIndexFromMeasuredHeights,
+} from "./roomSections";
 import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { logAndIgnore } from "@/lib/logAndIgnore";
@@ -78,9 +82,6 @@ interface RoomListProps {
   onDeclineInvite?: (roomId: string) => Promise<void>;
 }
 
-// Matches RoomListItem's `min-h-11` (2.75rem) row height plus its `gap-0.5`
-// spacing — used to translate a drag's pixel delta into a target index.
-const ROW_HEIGHT_PX = 46;
 const noopInviteAction = (): Promise<void> => Promise.resolve();
 
 function unreadBadgeLabel(totalUnread: number, totalHighlight: number): string {
@@ -136,6 +137,11 @@ export function RoomList({
   const [inviteError, setInviteError] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
+  // Rows aren't a fixed height (the message-preview flag grows some rows a
+  // second text line) — drag-reorder measures each row's actual rendered
+  // height (keyed by room id, set by `DraggableRoomRow`) instead of assuming
+  // `ROW_HEIGHT_PX`, so manual reordering still works correctly regardless.
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
   const { data: ownProfile } = useOwnProfile();
   const { openSettings } = useSettingsNavigation();
   const badge = useAtomValue(badgeAtom);
@@ -146,11 +152,6 @@ export function RoomList({
   // by DND (see `shell::compute_badge_state`'s own doc comment).
   const focusModeFlagEnabled = useFlag("focus_mode");
   const roomListUnreadFilterFlagEnabled = useFlag("room_list_unread_filter");
-  // `ROW_HEIGHT_PX` below assumes every row is the same fixed height, which
-  // the message-preview flag breaks (rows with a preview grow a second text
-  // line) — same "would silently corrupt order" reasoning `unreadOnly`
-  // already disables reordering for below, not a new precedent.
-  const roomListMessagePreviewFlagEnabled = useFlag("room_list_message_preview");
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
@@ -299,12 +300,7 @@ export function RoomList({
   function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
     // Reordering a filtered subset would compute positions against missing
     // rows and silently corrupt the full section order once "All" is restored.
-    // Message-preview rows aren't `ROW_HEIGHT_PX` tall either, so disable
-    // reordering there too rather than rounding a drag to the wrong index.
-    const canReorder =
-      !unreadOnly &&
-      !roomListMessagePreviewFlagEnabled &&
-      hasSameRoomOrder(sectionRooms, fullSectionRooms);
+    const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => (
       <DraggableRoomRow
         key={room.room_id}
@@ -312,6 +308,7 @@ export function RoomList({
         index={index}
         sectionRooms={sectionRooms}
         canReorder={canReorder}
+        rowHeights={rowHeightsRef.current}
         active={room.room_id === activeRoomId}
         onSelect={() => onSelectRoom(room.room_id)}
         onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
@@ -918,6 +915,8 @@ interface DraggableRoomRowProps {
   index: number;
   sectionRooms: RoomSummary[];
   canReorder: boolean;
+  /** Measured row heights by room id — see `rowHeightsRef`'s doc comment. */
+  rowHeights: Map<string, number>;
   active: boolean;
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
@@ -928,6 +927,7 @@ function DraggableRoomRow({
   index,
   sectionRooms,
   canReorder,
+  rowHeights,
   active,
   onSelect,
   onReorder,
@@ -941,7 +941,7 @@ function DraggableRoomRow({
       setDragging(down);
       setDragOffset(down ? my : 0);
       if (!down) {
-        const targetIndex = Math.round(index + my / ROW_HEIGHT_PX);
+        const targetIndex = targetIndexFromMeasuredHeights(sectionRooms, index, my, rowHeights);
         const clamped = Math.max(0, Math.min(targetIndex, sectionRooms.length - 1));
         if (clamped !== index) {
           onReorder(clamped);
@@ -954,6 +954,10 @@ function DraggableRoomRow({
       enabled: canReorder,
     },
   );
+
+  const measureRow = (node: HTMLElement | null) => {
+    if (node) rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+  };
 
   return (
     <RoomListItem
@@ -973,7 +977,7 @@ function DraggableRoomRow({
       }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
-      dragHandleProps={bind()}
+      dragHandleProps={{ ...bind(), ref: measureRow }}
       style={{
         transform: dragging ? `translateY(${dragOffset}px)` : undefined,
         position: dragging ? "relative" : undefined,

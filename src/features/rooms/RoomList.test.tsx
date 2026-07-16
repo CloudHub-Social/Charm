@@ -868,14 +868,14 @@ describe("RoomList", () => {
     expect(screen.queryByText("Read DM")).not.toBeInTheDocument();
   });
 
-  it("disables reordering when the message-preview flag is on, since preview rows aren't a fixed row height", () => {
+  it("keeps reordering enabled when the message-preview flag is on (rows measure their own height instead)", () => {
     featureFlagMocks.roomListMessagePreview = true;
     const room = makeRoomSummary({ room_id: "!room:localhost", name: "Room" });
     renderRoomList(<RoomList {...roomListProps({ rooms: [room] })} />);
 
     expect(screen.getByText("Room").closest("button")).toHaveAttribute(
       "data-reorder-enabled",
-      "false",
+      "true",
     );
   });
 
