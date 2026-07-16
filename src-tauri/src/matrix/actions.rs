@@ -1,8 +1,12 @@
-//! Message-action commands: edit, redact, react, reply.
+//! Message-action commands: edit, redact, react, reply, resend/discard a
+//! failed send.
 //!
 //! Edit/react/reply all route through the room's send queue, same as
 //! `send::send_message`, for consistent local-echo/retry/offline behavior.
 //! Redact does not — see the doc comment on `redact_event` for why.
+//! Resend/discard operate on the send queue's own local-echo handles
+//! (`SendHandle::unwedge`/`abort`) rather than composing a new send — see
+//! `resend_message`/`discard_failed_message`.
 
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
@@ -11,7 +15,8 @@ use matrix_sdk::ruma::events::room::message::{
 };
 use matrix_sdk::ruma::events::room::power_levels::RoomPowerLevelsEventContent;
 use matrix_sdk::ruma::events::{AnyMessageLikeEventContent, AnySyncMessageLikeEvent};
-use matrix_sdk::ruma::{EventId, OwnedEventId, RoomId};
+use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedTransactionId, RoomId};
+use matrix_sdk::send_queue::{LocalEchoContent, SendHandle};
 use matrix_sdk::Client;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -374,6 +379,94 @@ pub async fn send_reply_impl(
     .await
 }
 
+/// Finds the send-queue [`SendHandle`] for the local echo identified by
+/// `transaction_id` in `room`, if it's still a pending/failed event (not yet
+/// sent, not a reaction/redaction echo — those use their own handle types
+/// and aren't reachable from the "· failed to send" affordance this backs).
+///
+/// `RoomSendQueue` doesn't expose a "get handle by transaction id" lookup
+/// directly; the handle only comes attached to a [`LocalEcho`] yielded by
+/// `subscribe()`/`local_echoes()`, so this walks the current local echoes
+/// (typically very few — this is per-room, human-paced compose activity, not
+/// a hot path) to find the one matching `transaction_id`.
+async fn find_local_echo_send_handle(
+    room: &matrix_sdk::Room,
+    transaction_id: &str,
+) -> Result<SendHandle, String> {
+    let queue = room.send_queue();
+    let (local_echoes, _updates) = queue.subscribe().await.map_err(|e| e.to_string())?;
+    let target_transaction_id: OwnedTransactionId = transaction_id.into();
+
+    local_echoes
+        .into_iter()
+        .find(|echo| echo.transaction_id == target_transaction_id)
+        .and_then(|echo| match echo.content {
+            LocalEchoContent::Event { send_handle, .. } => Some(send_handle),
+            LocalEchoContent::React { .. } | LocalEchoContent::Redaction { .. } => None,
+        })
+        .ok_or_else(|| format!("no pending local echo found for transaction id {transaction_id}"))
+}
+
+/// Retries sending a message local echo that's parked in a failed
+/// ("wedged") state — Charm 1.0's `onResend` (`message/Message.tsx:666-713`)
+/// equivalent. Uses matrix-rust-sdk's own send-queue retry primitive
+/// (`SendHandle::unwedge`) rather than re-composing and re-sending new
+/// content, so this is the same local echo retried in place, not a
+/// duplicate. A no-op from the caller's perspective if the transaction id no
+/// longer has a pending local echo (e.g. it was already discarded, or a
+/// stale/duplicate `resend` fired after a previous one already succeeded).
+#[tauri::command]
+pub async fn resend_message(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    transaction_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    resend_message_impl(&client, &room_id, &transaction_id).await
+}
+
+/// Core logic behind [`resend_message`].
+pub async fn resend_message_impl(
+    client: &Client,
+    room_id: &str,
+    transaction_id: &str,
+) -> Result<(), String> {
+    let room = get_room(client, room_id)?;
+    let send_handle = find_local_echo_send_handle(&room, transaction_id).await?;
+    send_handle.unwedge().await.map_err(|e| e.to_string())
+}
+
+/// Discards a failed message local echo — Charm 1.0's `onDeleteFailedSend`
+/// (`message/Message.tsx:666-713`) equivalent. Uses
+/// `SendHandle::abort`, which cancels the queued send outright (as opposed
+/// to `redact_event`, which deletes an already-sent event) since a failed
+/// send was never accepted by the homeserver in the first place — there is
+/// nothing to redact. Returns whether the local echo was actually removed;
+/// `false` means it was already gone (e.g. it just succeeded, or was
+/// already discarded by a previous call) — the frontend treats either
+/// outcome as "no longer shown as failed" rather than surfacing an error for
+/// the harmless race.
+#[tauri::command]
+pub async fn discard_failed_message(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    transaction_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    discard_failed_message_impl(&client, &room_id, &transaction_id).await
+}
+
+/// Core logic behind [`discard_failed_message`].
+pub async fn discard_failed_message_impl(
+    client: &Client,
+    room_id: &str,
+    transaction_id: &str,
+) -> Result<bool, String> {
+    let room = get_room(client, room_id)?;
+    let send_handle = find_local_echo_send_handle(&room, transaction_id).await?;
+    send_handle.abort().await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod relation_shape_tests {
     use matrix_sdk::ruma::events::reaction::ReactionEventContent;
@@ -450,5 +543,179 @@ mod relation_shape_tests {
         let content = RoomMessageEventContent::text_plain("edited").make_replacement(metadata);
         let json = to_value(&content).unwrap();
         assert_eq!(json["m.relates_to"]["event_id"], "$original:example.org");
+    }
+}
+
+/// Exercises `resend_message`/`discard_failed_message` against a genuinely
+/// wedged (failed, unrecoverable-error) local echo, using
+/// `matrix-sdk-test`'s `MatrixMockServer` — same pattern as
+/// `send::concurrency_tests`. `error_too_large()` is used (rather than
+/// `error500()`) because it's reported as an *unrecoverable* error with no
+/// built-in retry delay, so the local echo reaches its wedged state
+/// deterministically and immediately, without the test needing to wait out
+/// a real retry/backoff schedule.
+#[cfg(test)]
+mod resend_discard_tests {
+    use matrix_sdk::ruma::{event_id, room_id};
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+
+    use super::super::send::build_message_content;
+    use super::*;
+
+    /// Queues a message, mocks an unrecoverable `/send` failure, and waits
+    /// for the send queue to report the resulting error — leaving the
+    /// message's local echo wedged. Returns the transaction id of that echo.
+    async fn queue_and_wedge_a_message(
+        client: &Client,
+        room: &matrix_sdk::Room,
+    ) -> OwnedTransactionId {
+        let mut errors = client.send_queue().subscribe_errors();
+
+        let content = AnyMessageLikeEventContent::RoomMessage(
+            build_message_content("this will fail".to_string(), None, None).unwrap(),
+        );
+        let transaction_id = send_and_capture_transaction_id_for_test(client, room, content).await;
+
+        // Wait for the send queue to report (and wedge on) the unrecoverable
+        // error before touching the local echo — otherwise resend/discard
+        // could race the in-flight request.
+        let report = tokio::time::timeout(std::time::Duration::from_secs(5), errors.recv())
+            .await
+            .expect("timed out waiting for the send-queue error report")
+            .expect("send-queue error channel closed unexpectedly");
+        assert_eq!(report.room_id, room.room_id());
+        assert!(!report.is_recoverable);
+
+        transaction_id
+    }
+
+    /// Thin wrapper so this test module doesn't need `super::send` in scope
+    /// just for its one helper.
+    async fn send_and_capture_transaction_id_for_test(
+        client: &Client,
+        room: &matrix_sdk::Room,
+        content: AnyMessageLikeEventContent,
+    ) -> OwnedTransactionId {
+        let id = super::super::send::send_and_capture_transaction_id(client, room, content)
+            .await
+            .expect("queuing the message should succeed even though sending it will fail");
+        id.into()
+    }
+
+    #[tokio::test]
+    async fn discard_failed_message_removes_the_wedged_local_echo() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+
+        server
+            .mock_room_send()
+            .error_too_large()
+            .mock_once()
+            .mount()
+            .await;
+
+        let transaction_id = queue_and_wedge_a_message(&client, &room).await;
+
+        let removed =
+            discard_failed_message_impl(&client, room_id.as_str(), transaction_id.as_str())
+                .await
+                .expect("discarding a wedged local echo should succeed");
+        assert!(removed, "the wedged local echo should have been removed");
+
+        // A second discard of the same (now-gone) transaction id must not
+        // succeed a second time — it's the "already gone" case the doc
+        // comment calls out, not an error.
+        let result =
+            discard_failed_message_impl(&client, room_id.as_str(), transaction_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "discarding an already-discarded echo has nothing to find"
+        );
+    }
+
+    #[tokio::test]
+    async fn resend_message_unwedges_and_retries_the_local_echo() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let room = server.sync_joined_room(&client, room_id).await;
+
+        server
+            .mock_room_send()
+            .error_too_large()
+            .mock_once()
+            .mount()
+            .await;
+
+        let transaction_id = queue_and_wedge_a_message(&client, &room).await;
+
+        // Re-enable the room queue (an unrecoverable error disables it,
+        // matching `test_unwedge_unrecoverable_errors` in the vendored SDK's
+        // own integration tests) and mock a successful retry.
+        room.send_queue().set_enabled(true);
+        server
+            .mock_room_send()
+            .ok(event_id!("$resent"))
+            .mock_once()
+            .mount()
+            .await;
+
+        let mut updates = client.send_queue().subscribe();
+
+        resend_message_impl(&client, room_id.as_str(), transaction_id.as_str())
+            .await
+            .expect("unwedging a failed local echo should succeed");
+
+        // Confirm the retried send actually reaches the mocked "sent" outcome
+        // for the same transaction id, not just that `unwedge()` returned Ok.
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match updates.recv().await {
+                    Ok(update) if update.room_id == *room_id => {
+                        if let matrix_sdk::send_queue::RoomSendQueueUpdate::SentEvent {
+                            transaction_id: txn,
+                            ..
+                        } = update.update
+                        {
+                            if txn == transaction_id {
+                                break true;
+                            }
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the resent message to be sent");
+        assert!(sent);
+    }
+
+    #[tokio::test]
+    async fn resend_and_discard_error_on_unknown_transaction_id() {
+        let room_id = room_id!("!test:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let bogus_txn_id = "not-a-real-transaction-id";
+
+        assert!(resend_message_impl(&client, room_id.as_str(), bogus_txn_id)
+            .await
+            .is_err());
+        assert!(
+            discard_failed_message_impl(&client, room_id.as_str(), bogus_txn_id)
+                .await
+                .is_err()
+        );
     }
 }
