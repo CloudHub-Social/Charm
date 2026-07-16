@@ -842,36 +842,70 @@ impl PersistenceStore {
         // stale entry out from under this write and clobber it back on top.
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        // Bounded retry, not a single attempt: a `Precondition` conflict on
-        // the `bump_last_seen: false` path doesn't only mean a racing
-        // logout deleted the object (this write's payload can be the
-        // *new*, just-refreshed Matrix token pair from `sync_loop`'s
-        // repersist — unlike `touch_last_seen_now`, silently treating every
-        // conflict as a no-op here would drop that refresh on the floor,
-        // leaving the persisted session pointing at an already-invalidated
-        // token; Codex review finding on #280). Multi-instance
-        // `touch_last_seen_now` calls on *other* processes are exactly as
-        // likely a cause, and those are safe to retry past — only a
-        // conflict caused by the object genuinely being gone (a real
-        // logout) must not be retried into resurrection.
+
+        if bump_last_seen {
+            // A fresh login/register is meant to unconditionally win
+            // regardless of whatever's currently there — same as this
+            // function's behavior before `bump_last_seen` existed. No read,
+            // no conflict possible, nothing to retry.
+            let (crypto_store_key, crypto_passphrase) = match crypto {
+                Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
+                None => (None, None),
+            };
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(
+                &PersistedSession {
+                    token: token.to_string(),
+                    homeserver_url: homeserver_url.to_string(),
+                    session: session.clone(),
+                    crypto_store_key,
+                    crypto_passphrase,
+                    last_seen_unix: Some(now_unix()),
+                },
+                &path,
+            )?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            return self
+                .store
+                .put(&path, PutPayload::from(json))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+
+        // `bump_last_seen: false` — `main.rs`'s idle-eviction re-save and
+        // `sync_loop`'s token-refresh repersist. Both only ever fire for a
+        // token that was already live in `SessionStore`, which itself is
+        // only ever populated from a token that already has a persisted
+        // record (a prior `save(bump_last_seen: true)`, or `restore_one`
+        // reading one back) — so, unlike the `bump_last_seen: true` case,
+        // there is no legitimate "never persisted yet" scenario for this
+        // path to create fresh. A missing object here — on the very first
+        // read, not just mid-retry — is indistinguishable from "another
+        // process's logout just deleted it", and treating *any* `None` read
+        // as license to `put` a brand new object would recreate a session
+        // that was just correctly revoked and removed, exactly the
+        // resurrection every other fix on this PR closes (Codex review
+        // finding on #280 — this was the one remaining gap: the earlier
+        // `ever_saw_existing` tracking only caught the object vanishing
+        // *during* this call's own retries, not it already being gone on
+        // the very first read). So: `None`, at any attempt, always means
+        // "don't write, don't resurrect" — never "create".
+        //
+        // Bounded retry on a `Precondition` conflict against an object that
+        // *does* still exist, though, is still correct and necessary: this
+        // write's payload can be the new, just-refreshed Matrix token pair
+        // from `sync_loop`'s repersist, and a benign conflict (e.g. a
+        // `touch_last_seen_now` from another instance, not a logout)
+        // silently treated as a no-op would drop that refresh on the floor.
         const MAX_SAVE_ATTEMPTS: u32 = 5;
-        let mut ever_saw_existing = false;
         for attempt in 0..MAX_SAVE_ATTEMPTS {
-            // Only the `bump_last_seen: false` path reads first — a fresh
-            // login/register (`bump_last_seen: true`) is meant to
-            // unconditionally win regardless of whatever's currently there,
-            // same as this function's behavior before `bump_last_seen`
-            // existed.
-            let (last_seen_unix, existing_version) = if bump_last_seen {
-                (Some(now_unix()), None)
-            } else {
-                match self.read_one_with_version(token).await {
-                    Some((entry, version)) => {
-                        ever_saw_existing = true;
-                        (entry.last_seen_unix, Some(version))
-                    }
-                    None => (None, None),
-                }
+            let Some((entry, version)) = self.read_one_with_version(token).await else {
+                tracing::info!(
+                    "skipped a re-save for a persisted session: removed by a racing logout \
+                     on another instance"
+                );
+                return Ok(());
             };
             let (crypto_store_key, crypto_passphrase) = match crypto {
                 Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
@@ -885,70 +919,46 @@ impl PersistenceStore {
                     session: session.clone(),
                     crypto_store_key,
                     crypto_passphrase,
-                    last_seen_unix,
+                    last_seen_unix: entry.last_seen_unix,
                 },
                 &path,
             )?;
             let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-            // Conditional only when this attempt read an existing version to
-            // base its `last_seen_unix` preservation on — see
-            // `touch_last_seen_now`'s doc comment for the cross-process race
-            // this closes: a `bump_last_seen: false` re-save (idle eviction,
-            // token refresh) that read the object before a racing logout on
-            // another process deleted it must not `put` it back afterward,
-            // resurrecting an already-removed session (Sentry review finding
-            // on #280). Falls back to a plain `put` when there's no version
-            // to condition on and this call never saw one earlier in its own
-            // retry loop either — a fresh login, or a `bump_last_seen: false`
-            // call against a token that was never persisted, has nothing to
-            // protect either way — or when the backend doesn't support
-            // conditional writes (`LocalFileSystem`, used for local
-            // dev/every test in this module).
-            match existing_version {
-                Some(version) => {
-                    let opts = object_store::PutOptions {
-                        mode: object_store::PutMode::Update(version),
-                        ..Default::default()
-                    };
-                    match self
-                        .store
-                        .put_opts(&path, PutPayload::from(json.clone()), opts)
-                        .await
-                    {
-                        Ok(_) => return Ok(()),
-                        Err(object_store::Error::Precondition { .. }) => {
-                            if attempt + 1 == MAX_SAVE_ATTEMPTS {
-                                tracing::warn!(
-                                    "giving up re-saving a persisted session after \
-                                     {MAX_SAVE_ATTEMPTS} version conflicts"
-                                );
-                                return Ok(());
-                            }
-                            continue;
-                        }
-                        Err(object_store::Error::NotImplemented) => {
-                            return self
-                                .store
-                                .put(&path, PutPayload::from(json))
-                                .await
-                                .map(|_| ())
-                                .map_err(|e| e.to_string());
-                        }
-                        Err(e) => return Err(e.to_string()),
+            let opts = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json.clone()), opts)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => {
+                    if attempt + 1 == MAX_SAVE_ATTEMPTS {
+                        // Must be an error, not `Ok(())`: `sync_loop::
+                        // repersist_if_token_changed` treats `Ok` as proof
+                        // the refreshed token actually landed on disk and
+                        // advances its own `last_saved_access_token`
+                        // tracking accordingly — silently swallowing
+                        // exhausted retries here would mean a refreshed
+                        // token that never got persisted is never retried
+                        // either, until the *next* rotation happens to
+                        // trigger another repersist attempt (Codex review
+                        // finding on #280).
+                        return Err(format!(
+                            "giving up re-saving a persisted session after \
+                             {MAX_SAVE_ATTEMPTS} version conflicts"
+                        ));
                     }
+                    continue;
                 }
-                None => {
-                    if ever_saw_existing {
-                        // Existed at the start of an earlier attempt in this
-                        // same call but is gone now — a racing logout won;
-                        // don't resurrect it (same invariant as
-                        // `touch_last_seen_now`).
-                        tracing::info!(
-                            "skipped a re-save for a persisted session: removed by a racing \
-                             logout on another instance"
-                        );
-                        return Ok(());
-                    }
+                Err(object_store::Error::NotImplemented) => {
+                    // The read above already confirmed the object exists,
+                    // so an unconditional overwrite here is a same-object
+                    // update, not a resurrection — safe even without
+                    // conditional-write support (`LocalFileSystem`, used
+                    // for local dev/every test in this module).
                     return self
                         .store
                         .put(&path, PutPayload::from(json))
@@ -956,6 +966,7 @@ impl PersistenceStore {
                         .map(|_| ())
                         .map_err(|e| e.to_string());
                 }
+                Err(e) => return Err(e.to_string()),
             }
         }
         unreachable!("the loop above always returns on its final attempt")
@@ -2984,6 +2995,38 @@ mod tests {
                 .is_none(),
             "the session must stay removed, not get resurrected by a bump_last_seen: false \
              re-save"
+        );
+    }
+
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` must not create a fresh object when its *very first* read
+    /// already finds nothing — not just when the object vanishes mid-retry
+    /// (the case the test above covers). The two are indistinguishable
+    /// from inside this call (an object gone before the call started looks
+    /// identical to one gone during it), and `main.rs`/`sync_loop`'s
+    /// call sites only ever fire for a token that was already live in
+    /// `SessionStore`, which itself only ever came from an already-persisted
+    /// record — so there's no legitimate "never persisted yet" case for
+    /// this call shape to fall back to creating.
+    #[tokio::test]
+    async fn save_without_bump_does_not_create_when_nothing_was_ever_there() {
+        let dir = scratch_dir("save-no-bump-nothing-there");
+        let store = PersistenceStore::new_for_test(&dir, [57u8; 32]);
+
+        store
+            .save(
+                "tok-never-persisted",
+                "https://example.invalid",
+                &dummy_session("@never-persisted:example.invalid"),
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store.read_one("tok-never-persisted").await.is_none(),
+            "a bump_last_seen: false save must never create a new persisted session"
         );
     }
 
