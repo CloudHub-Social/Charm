@@ -1338,8 +1338,42 @@ impl PersistenceStore {
                     handle.abort();
                 }
             }
-            if let Err(e) = self.remove(&entry.token, None).await {
-                tracing::warn!("failed to remove an expired persisted session: {e}");
+            // The access token was just revoked above — a subsequent sweep
+            // can no longer retry that step (`restore_client_for_revocation`
+            // will correctly fail to rebuild a client from a now-dead
+            // token, so this entry would otherwise be stuck forever, never
+            // reaching this `remove` call again). Retry the local delete a
+            // few times in-place before giving up, so only a persistently
+            // failing store (not one transient error) leaves an orphaned
+            // record behind (Codex review finding on #280, "remember
+            // successful revocation across delete retries").
+            const MAX_REMOVE_ATTEMPTS: u32 = 3;
+            let mut removed = false;
+            for attempt in 0..MAX_REMOVE_ATTEMPTS {
+                match self.remove(&entry.token, None).await {
+                    Ok(()) => {
+                        removed = true;
+                        break;
+                    }
+                    Err(e) if attempt + 1 < MAX_REMOVE_ATTEMPTS => {
+                        tracing::warn!(
+                            "failed to remove an expired persisted session after revoking \
+                             its access token (attempt {}/{MAX_REMOVE_ATTEMPTS}), retrying: {e}",
+                            attempt + 1
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "failed to remove an expired persisted session after revoking \
+                             its access token; its Matrix session is dead but the local \
+                             record could not be cleaned up and will not be retried by a \
+                             later sweep (the token can no longer be re-revoked) — manual \
+                             cleanup may be needed: {e}"
+                        );
+                    }
+                }
+            }
+            if !removed {
                 continue;
             }
             swept += 1;
