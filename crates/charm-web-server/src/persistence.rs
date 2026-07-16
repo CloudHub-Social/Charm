@@ -1145,24 +1145,45 @@ impl PersistenceStore {
             if sessions.get(&entry.token).await.is_some() {
                 continue;
             }
-            if let Some(client) = self.restore_client_for_revocation(&entry.token).await {
-                // Bounded, unlike `routes::logout`'s equivalent call (which
-                // can afford to `tokio::spawn` it fire-and-forget because
-                // there's a live HTTP response to send regardless): this
-                // runs serially in a background sweep with nothing else
-                // racing it, so an unbounded `await` here would let one
-                // slow/unresponsive homeserver stall every other expired
-                // session behind it in the same sweep (Codex review finding
-                // on #280).
-                match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
-                    Ok(Err(e)) => tracing::warn!(
-                        "failed to revoke access token for an expired persisted session: {e}"
-                    ),
-                    Err(_) => tracing::warn!(
+            // Removal only happens after a *confirmed* revocation — never
+            // on a best-effort basis. Deleting the local record before the
+            // homeserver has actually invalidated the access token would
+            // leave that token valid indefinitely with no persisted copy
+            // left for a later sweep to retry revoking (Codex review
+            // finding on #280): a temporarily unreachable homeserver or a
+            // failed `logout()` call must leave this entry exactly as it
+            // was, not silently treat "couldn't revoke" the same as
+            // "revoked".
+            let Some(client) = self.restore_client_for_revocation(&entry.token).await else {
+                tracing::warn!(
+                    "could not rebuild a client to revoke an expired persisted session's \
+                     access token; leaving it for the next sweep to retry"
+                );
+                continue;
+            };
+            // Bounded, unlike `routes::logout`'s equivalent call (which
+            // can afford to `tokio::spawn` it fire-and-forget because
+            // there's a live HTTP response to send regardless): this
+            // runs serially in a background sweep with nothing else
+            // racing it, so an unbounded `await` here would let one
+            // slow/unresponsive homeserver stall every other expired
+            // session behind it in the same sweep (Codex review finding
+            // on #280).
+            match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "failed to revoke access token for an expired persisted session, \
+                         leaving it for the next sweep to retry: {e}"
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    tracing::warn!(
                         "timed out revoking access token for an expired persisted session \
-                         after {RESTORE_TIMEOUT:?}"
-                    ),
-                    Ok(Ok(_)) => {}
+                         after {RESTORE_TIMEOUT:?}, leaving it for the next sweep to retry"
+                    );
+                    continue;
                 }
             }
             if let Err(e) = self.remove(&entry.token, None).await {
@@ -2377,15 +2398,21 @@ mod tests {
         crate::session::Session::new(client, user_id.to_string(), None, false)
     }
 
+    /// A stale-but-`live_tokens`-exempt session is never even considered for
+    /// revocation, regardless of whether revocation could succeed — proven
+    /// here against an unreachable homeserver where revocation itself is
+    /// impossible in this test environment (see the sibling
+    /// `sweep_expired_does_not_remove_a_stale_session_when_revocation_fails`
+    /// test for why `swept == 0` and nothing gets deleted is now the
+    /// *correct* outcome for `tok-stale`, not a gap in this test).
     #[tokio::test]
-    async fn sweep_expired_removes_only_stale_sessions_not_in_live_tokens() {
-        let dir = scratch_dir("sweep-expired");
+    async fn sweep_expired_never_touches_a_stale_but_live_session() {
+        let dir = scratch_dir("sweep-expired-live-skip");
         let store = PersistenceStore::new_for_test(&dir, [42u8; 32]);
         let now = now_unix();
         let one_hour = 60 * 60;
         let sixty_days = 60 * 24 * 60 * 60;
 
-        save_with_last_seen(&store, "tok-stale", now.saturating_sub(sixty_days)).await;
         save_with_last_seen(&store, "tok-fresh", now.saturating_sub(one_hour)).await;
         save_with_last_seen(&store, "tok-stale-but-live", now.saturating_sub(sixty_days)).await;
 
@@ -2396,11 +2423,10 @@ mod tests {
                 dummy_live_session("@stale-but-live:example.invalid").await,
             )
             .await;
-        let swept = store
+        store
             .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
             .await;
 
-        assert_eq!(swept, 1);
         let remaining: HashSet<String> = store
             .read_all()
             .await
@@ -2409,7 +2435,42 @@ mod tests {
             .collect();
         assert_eq!(
             remaining,
-            HashSet::from(["tok-fresh".to_string(), "tok-stale-but-live".to_string()])
+            HashSet::from(["tok-fresh".to_string(), "tok-stale-but-live".to_string()]),
+            "a stale session still resident in SessionStore must never be touched by the sweep"
+        );
+    }
+
+    /// Regression test for the actual review finding: `sweep_expired` must
+    /// only delete a persisted session after a *confirmed* revocation — a
+    /// homeserver that can't be reached (here: every test in this module
+    /// uses `https://example.invalid`, which fails DNS resolution) must
+    /// leave the entry exactly as it was, not silently delete it and lose
+    /// the only local record of a still-valid access token. Previously this
+    /// deleted the entry regardless of whether revocation actually
+    /// succeeded.
+    #[tokio::test]
+    async fn sweep_expired_does_not_remove_a_stale_session_when_revocation_fails() {
+        let dir = scratch_dir("sweep-expired-revocation-fails");
+        let store = PersistenceStore::new_for_test(&dir, [53u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(&store, "tok-stale", now.saturating_sub(sixty_days)).await;
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &crate::session::SessionStore::new(),
+            )
+            .await;
+
+        assert_eq!(
+            swept, 0,
+            "nothing should be reported swept when revocation could not be confirmed"
+        );
+        assert!(
+            store.read_one("tok-stale").await.is_some(),
+            "a stale session must stay persisted until its revocation is confirmed, not \
+             deleted on a best-effort basis"
         );
     }
 
