@@ -23,6 +23,7 @@ function room(overrides: Partial<RoomSummary> & { room_id: string }): RoomSummar
     membership: "join",
     inviter_user_id: null,
     inviter_display_name: null,
+    last_message_preview: null,
     ...overrides,
   };
 }

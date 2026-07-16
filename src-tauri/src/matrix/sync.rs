@@ -59,7 +59,19 @@ pub enum SyncStateEvent {
 async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
     let state = app.state::<MatrixState>();
     let media_cache = state.require_media_cache(app).await.ok();
-    let snapshot = rooms::snapshot_rooms(client, media_cache).await;
+    let include_message_preview = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
+        )
+    });
+    let snapshot = rooms::snapshot_rooms(
+        client,
+        media_cache,
+        include_message_preview,
+        &state.preview_registered_rooms,
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     let _ = app.emit("room_list:update", snapshot);
     let _ = app.emit("badge:update", &badge);
@@ -427,6 +439,20 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+
+        // Subscribing spawns the task that listens to
+        // `client.subscribe_to_all_room_updates()` — the event cache (and
+        // `LatestEvents`, which `rooms::last_message_preview` reads for
+        // Spec 54's message preview) only sees a room's events from the
+        // point this subscription starts. Doing it before the initial
+        // `sync_once` below, rather than only later in
+        // `emit_room_list_and_badge`'s `last_message_preview` call, means
+        // existing rooms' latest messages are already known by the time the
+        // first `room_list:update` is emitted, instead of showing no preview
+        // until the next message arrives. Cheap/idempotent per its own doc
+        // comment, so unconditional here regardless of whether the preview
+        // flag ends up enabled.
+        let _ = client.event_cache().subscribe();
 
         // Establish initial sync state before entering the long-running loop below.
         let initial_response = match client.sync_once(SyncSettings::default()).await {

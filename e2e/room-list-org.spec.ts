@@ -33,11 +33,23 @@ const AMBIENT_ROOM = {
   unread_messages: 7,
   has_unread: true,
 };
+const PREVIEW_ROOM = {
+  room_id: "!e2e-org-preview:localhost",
+  name: "Preview Room",
+  unread_count: 0,
+  last_message_preview: {
+    sender_id: "@alex:localhost",
+    sender_display_name: "Alex",
+    text: "Sounds good, see you at the coffee shop tomorrow!",
+  },
+};
 
 test.beforeEach(async ({ page }, testInfo) => {
   const extraRooms = testInfo.title.includes("ambient unread message totals")
     ? [SECOND_ROOM, AMBIENT_ROOM]
-    : [SECOND_ROOM];
+    : testInfo.title.includes("last-message preview")
+      ? [SECOND_ROOM, PREVIEW_ROOM]
+      : [SECOND_ROOM];
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
@@ -196,4 +208,24 @@ test("shows ambient unread message totals when enabled in Appearance", async ({ 
   await page.getByRole("button", { name: "Close settings" }).click();
 
   await expect(roomButton.getByLabel("7 unread messages")).toHaveText("7");
+});
+
+test("shows the last-message preview with sender label when enabled", async ({ page }) => {
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { room_list_message_preview: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+  await page.reload();
+
+  const roomButton = page.getByRole("button", { name: new RegExp(PREVIEW_ROOM.name) });
+  await expect(roomButton.getByText("Alex:", { exact: false })).toBeVisible();
+  await expect(
+    roomButton.getByText("Sounds good, see you at the coffee shop tomorrow!"),
+  ).toBeVisible();
+  await captureSnapshot(page, "room-list-org-message-preview");
 });

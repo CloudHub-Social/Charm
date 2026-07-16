@@ -865,7 +865,14 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    Ok(Json(snapshot_rooms(&session.client, None).await))
+    // The `room_list_message_preview` flag isn't wired into web sessions yet
+    // (no feature-flag evaluation exists in this crate at all), so this is
+    // always `false` — a fresh, never-populated `Mutex` per call is
+    // therefore correct: nothing ever registers with `LatestEvents` from
+    // this path, so there's nothing to track across calls or forget.
+    Ok(Json(
+        snapshot_rooms(&session.client, None, false, &std::sync::Mutex::default()).await,
+    ))
 }
 
 async fn accept_invite(
