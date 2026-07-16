@@ -50,6 +50,10 @@ export function RoomListItem({
   const showAmbientUnreadCount =
     !showNotificationCount && unread && ambientUnreadCountEnabled && room.unread_messages > 0;
   const presence = usePresence(room.is_direct ? room.dm_peer_user_id : null);
+  const messagePreviewEnabled = useFlag("room_list_message_preview");
+  const preview = room.last_message_preview;
+  const previewSenderLabel =
+    preview?.sender_display_name ?? preview?.sender_id.replace(/^@/, "").split(":")[0];
 
   const button = (
     <button
@@ -71,58 +75,66 @@ export function RoomListItem({
         </AvatarFallback>
         {room.is_direct && <PresenceDot presence={presence?.presence} />}
       </Avatar>
-      <div className="flex min-w-0 flex-1 items-baseline justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-1.5">
-          {room.is_marked_unread && (
-            <span className="flex shrink-0 items-center">
-              <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
-              <span className="sr-only">Marked unread</span>
-            </span>
-          )}
-          <span
-            className={cn(
-              "truncate text-sm",
-              unread ? "font-bold text-foreground" : "font-medium text-secondary-foreground",
+      <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+        <div className="flex min-w-0 items-baseline justify-between gap-2">
+          <span className="flex min-w-0 items-center gap-1.5">
+            {room.is_marked_unread && (
+              <span className="flex shrink-0 items-center">
+                <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
+                <span className="sr-only">Marked unread</span>
+              </span>
             )}
-          >
-            {displayName(room.room_id, room.name)}
-          </span>
-          {room.is_muted && (
-            <BellOff aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-        </span>
-        {/* `bg-primary-solid` (not `bg-primary`): solid fill under
-            near-white text — see button.tsx's comment / tokens.css.
-            Precedence: numeric badge (unread_count > 0) > plain unread dot
-            (has_unread but nothing counts as a notification) > bold
-            room-name text alone. The dot is additive — bold text still
-            applies whenever `unread` is true. Suppressed when
-            `is_marked_unread` is true: `has_unread` is already true in that
-            case (see `has_unread` in rooms.rs), and the name-prefix "Marked
-            unread" dot above already covers it — without this guard both
-            dots would render for the same room. */}
-        {showNotificationCount ? (
-          <span
-            aria-label={`${room.unread_count} notifications`}
-            className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground"
-          >
-            {room.unread_count}
-          </span>
-        ) : showAmbientUnreadCount ? (
-          <span
-            aria-label={`${room.unread_messages} unread messages`}
-            className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-secondary px-1 text-[11px] font-bold text-secondary-foreground"
-          >
-            {room.unread_messages}
-          </span>
-        ) : (
-          !room.is_marked_unread &&
-          room.has_unread && (
-            <span className="flex shrink-0 items-center">
-              <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
-              <span className="sr-only">Unread</span>
+            <span
+              className={cn(
+                "truncate text-sm",
+                unread ? "font-bold text-foreground" : "font-medium text-secondary-foreground",
+              )}
+            >
+              {displayName(room.room_id, room.name)}
             </span>
-          )
+            {room.is_muted && (
+              <BellOff aria-label="Muted" className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+          </span>
+          {/* `bg-primary-solid` (not `bg-primary`): solid fill under
+              near-white text — see button.tsx's comment / tokens.css.
+              Precedence: numeric badge (unread_count > 0) > plain unread dot
+              (has_unread but nothing counts as a notification) > bold
+              room-name text alone. The dot is additive — bold text still
+              applies whenever `unread` is true. Suppressed when
+              `is_marked_unread` is true: `has_unread` is already true in that
+              case (see `has_unread` in rooms.rs), and the name-prefix "Marked
+              unread" dot above already covers it — without this guard both
+              dots would render for the same room. */}
+          {showNotificationCount ? (
+            <span
+              aria-label={`${room.unread_count} notifications`}
+              className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-primary-solid px-1 text-[11px] font-bold text-primary-foreground"
+            >
+              {room.unread_count}
+            </span>
+          ) : showAmbientUnreadCount ? (
+            <span
+              aria-label={`${room.unread_messages} unread messages`}
+              className="flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full bg-secondary px-1 text-[11px] font-bold text-secondary-foreground"
+            >
+              {room.unread_messages}
+            </span>
+          ) : (
+            !room.is_marked_unread &&
+            room.has_unread && (
+              <span className="flex shrink-0 items-center">
+                <span aria-hidden="true" className="size-2 rounded-full bg-primary" />
+                <span className="sr-only">Unread</span>
+              </span>
+            )
+          )}
+        </div>
+        {messagePreviewEnabled && preview && (
+          <p className="min-w-0 truncate text-xs text-muted-foreground">
+            {previewSenderLabel && <span className="font-medium">{previewSenderLabel}: </span>}
+            {preview.text}
+          </p>
         )}
       </div>
     </button>

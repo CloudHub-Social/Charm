@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { computeManualOrder, groupRoomsIntoSections, planManualReorder } from "./roomSections";
+import {
+  computeManualOrder,
+  groupRoomsIntoSections,
+  planManualReorder,
+  targetIndexFromMeasuredHeights,
+} from "./roomSections";
 import { makeRoomSummary } from "./testFixtures";
 
 describe("groupRoomsIntoSections", () => {
@@ -114,5 +119,56 @@ describe("planManualReorder", () => {
   it("returns no updates when the dragged room isn't found in the section", () => {
     const a = makeRoomSummary({ room_id: "a" });
     expect(planManualReorder([a], "missing", 0)).toEqual([]);
+  });
+});
+
+describe("targetIndexFromMeasuredHeights", () => {
+  it("falls back to the default row height and rounds like a fixed-height drag when nothing has been measured", () => {
+    const rooms = [
+      makeRoomSummary({ room_id: "a" }),
+      makeRoomSummary({ room_id: "b" }),
+      makeRoomSummary({ room_id: "c" }),
+    ];
+    // Default row height is 46px — a 50px downward drag from index 0 should
+    // land on index 1 (past the first row's midpoint).
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 50, new Map())).toBe(1);
+    // 20px isn't past the midpoint of a 46px row.
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 20, new Map())).toBe(0);
+  });
+
+  it("uses the height of the row being crossed into for a downward drag, not the dragged row's own height", () => {
+    const rooms = [
+      makeRoomSummary({ room_id: "a" }),
+      makeRoomSummary({ room_id: "b" }),
+      makeRoomSummary({ room_id: "c" }),
+    ];
+    // Row "b" (a preview row, the one being dragged over) is 70px tall — a
+    // fixed-46px assumption, or using the dragged row "a"'s own height,
+    // would wrongly cross into index 1 well before 70px of drag.
+    const heights = new Map([["b", 70]]);
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 34, heights)).toBe(0);
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 36, heights)).toBe(1);
+  });
+
+  it("walks upward through measured heights for an upward drag", () => {
+    const rooms = [
+      makeRoomSummary({ room_id: "a" }),
+      makeRoomSummary({ room_id: "b" }),
+      makeRoomSummary({ room_id: "c" }),
+    ];
+    const heights = new Map([["b", 70]]);
+    expect(targetIndexFromMeasuredHeights(rooms, 2, -34, heights)).toBe(2);
+    expect(targetIndexFromMeasuredHeights(rooms, 2, -36, heights)).toBe(1);
+  });
+
+  it("clamps at the section boundaries instead of walking past them", () => {
+    const rooms = [makeRoomSummary({ room_id: "a" }), makeRoomSummary({ room_id: "b" })];
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 10_000, new Map())).toBe(1);
+    expect(targetIndexFromMeasuredHeights(rooms, 1, -10_000, new Map())).toBe(0);
+  });
+
+  it("returns the same index for zero movement", () => {
+    const rooms = [makeRoomSummary({ room_id: "a" }), makeRoomSummary({ room_id: "b" })];
+    expect(targetIndexFromMeasuredHeights(rooms, 0, 0, new Map())).toBe(0);
   });
 });

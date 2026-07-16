@@ -229,6 +229,26 @@
       }
     },
     {
+      "slug": "room-list-message-preview",
+      "title": "Room-list message preview",
+      "summary": "Show a compact last-message preview with sender label under each room name.",
+      "status": "preview",
+      "spec": "Spec 54",
+      "specLinks": [
+        {
+          "label": "Spec 54",
+          "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
+        }
+      ],
+      "flag": "room_list_message_preview",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "room-list-org-message-preview",
+        "alt": "Charm room list row showing a sender-labeled last-message preview",
+        "caption": "The E2E fixture verifies the preview line renders the sender label and message text."
+      }
+    },
+    {
       "slug": "room-settings",
       "title": "Room administration",
       "summary": "Manage room profile, members, permissions, history visibility, join rules, avatars, and encryption from one modal.",

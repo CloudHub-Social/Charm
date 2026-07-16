@@ -58,5 +58,11 @@
     "default": false,
     "description": "Improve attachment sending with a visible file drag-and-drop target and later media-send controls.",
     "owner": "Spec 42 (media send polish)"
+  },
+  {
+    "key": "room_list_message_preview",
+    "default": false,
+    "description": "Show a compact last-message preview with sender label under each room-list row.",
+    "owner": "Spec 54 (room-list enrichment and filtering)"
   }
 ]

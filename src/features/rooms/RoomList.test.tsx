@@ -7,11 +7,17 @@ import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
 
-const featureFlagMocks = vi.hoisted(() => ({ roomListUnreadFilter: false }));
+const featureFlagMocks = vi.hoisted(() => ({
+  roomListUnreadFilter: false,
+  roomListMessagePreview: false,
+}));
 
 vi.mock("@/featureFlags", () => ({
-  useFlag: (key: string) =>
-    key === "room_list_unread_filter" ? featureFlagMocks.roomListUnreadFilter : false,
+  useFlag: (key: string) => {
+    if (key === "room_list_unread_filter") return featureFlagMocks.roomListUnreadFilter;
+    if (key === "room_list_message_preview") return featureFlagMocks.roomListMessagePreview;
+    return false;
+  },
 }));
 
 // Radix's Tooltip.Content measures itself via ResizeObserver, which jsdom
@@ -125,6 +131,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   localStorage.clear();
   featureFlagMocks.roomListUnreadFilter = false;
+  featureFlagMocks.roomListMessagePreview = false;
 });
 
 describe("RoomList", () => {
@@ -859,6 +866,17 @@ describe("RoomList", () => {
     renderRoomList(<RoomList {...roomListProps({ rooms: [unreadDm, readDm], mode: "dms" })} />);
     expect(screen.getByRole("button", { name: "Unread" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("Read DM")).not.toBeInTheDocument();
+  });
+
+  it("keeps reordering enabled when the message-preview flag is on (rows measure their own height instead)", () => {
+    featureFlagMocks.roomListMessagePreview = true;
+    const room = makeRoomSummary({ room_id: "!room:localhost", name: "Room" });
+    renderRoomList(<RoomList {...roomListProps({ rooms: [room] })} />);
+
+    expect(screen.getByText("Room").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "true",
+    );
   });
 
   it("prunes read space descendants but keeps unread and active rooms with their hierarchy ancestors", async () => {
