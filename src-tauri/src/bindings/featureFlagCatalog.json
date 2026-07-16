@@ -40,5 +40,11 @@
     "default": false,
     "description": "Manage room aliases and the canonical alias from room settings.",
     "owner": "Spec 32 (room alias management)"
+  },
+  {
+    "key": "message_action_parity",
+    "default": false,
+    "description": "Add the next set of message actions, beginning with copying a canonical message permalink.",
+    "owner": "Spec 37 (message action parity)"
   }
 ]

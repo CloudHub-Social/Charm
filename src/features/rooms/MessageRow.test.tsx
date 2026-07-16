@@ -64,6 +64,7 @@ function renderRow(messageLayout: MessageLayout, body = "hello", edited = false)
           onEdit={vi.fn()}
           onDelete={vi.fn()}
           onCopy={vi.fn()}
+          onCopyLink={vi.fn()}
           onJumpToMessage={vi.fn()}
         />
       </Provider>

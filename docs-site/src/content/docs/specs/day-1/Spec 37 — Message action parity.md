@@ -3,11 +3,19 @@ title: Charm 2.0 Spec — Message action parity
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
 
 **Workstream:** one PR / one agent (or split forward-message out if it grows).
 Extends Spec 03 (message actions), which shipped a deliberately minimal action menu.
+
+## Implementation status
+
+**In progress.** The first independently releasable slice adds a default-off
+`message_action_parity` flag and a **Copy link** action for server-backed,
+decrypted events. It produces the fully percent-encoded room/event form required
+by the [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation).
+The remaining actions in this document are still planned.
 
 ## Problem & why now
 

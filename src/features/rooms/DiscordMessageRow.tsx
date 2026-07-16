@@ -34,6 +34,7 @@ export function DiscordMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onCopyLink,
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
@@ -136,6 +137,7 @@ export function DiscordMessageRow({
               onEdit={onEdit}
               onDelete={onDelete}
               onCopy={onCopy}
+              onCopyLink={onCopyLink}
             />
           )}
         </div>

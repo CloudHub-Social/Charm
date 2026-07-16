@@ -32,6 +32,7 @@ export function BubbleMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onCopyLink,
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
@@ -129,6 +130,7 @@ export function BubbleMessageRow({
               onEdit={onEdit}
               onDelete={onDelete}
               onCopy={onCopy}
+              onCopyLink={onCopyLink}
             />
           )}
         </div>

@@ -32,6 +32,7 @@ function baseProps(overrides: Partial<MessageRowLayoutProps> = {}): MessageRowLa
     onEdit: vi.fn(),
     onDelete: vi.fn(),
     onCopy: vi.fn(),
+    onCopyLink: vi.fn(),
     onJumpToMessage: vi.fn(),
     isPending: false,
     isError: false,
