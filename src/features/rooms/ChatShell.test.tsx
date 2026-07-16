@@ -3321,14 +3321,16 @@ describe("ChatShell", () => {
       dropEffect: "none",
     };
 
-    fireEvent.dragEnter(shell, { dataTransfer });
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+
     fireEvent.dragEnter(composer, { dataTransfer });
-    fireEvent.dragLeave(composer, { dataTransfer });
+    fireEvent.dragLeave(composer, { dataTransfer, relatedTarget: attachButton });
+    fireEvent.dragEnter(attachButton, { dataTransfer, relatedTarget: composer });
 
     expect(screen.getByRole("status")).toHaveTextContent("Drop files in general");
 
     fireEvent.dragLeave(shell, { dataTransfer });
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
   });
 
   it("does not show the file drop target for text drags or while the flag is disabled", async () => {
@@ -3351,6 +3353,24 @@ describe("ChatShell", () => {
       },
     });
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("prevents native text drags and drops without showing the file target", async () => {
+    renderChatShell();
+    const shell = await screen.findByTestId("chat-shell");
+    const dataTransfer = { files: [], types: ["text/plain"], dropEffect: "none" };
+
+    const dragOver = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, "dataTransfer", { value: dataTransfer });
+    fireEvent(shell, dragOver);
+    expect(dragOver.defaultPrevented).toBe(true);
+
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: dataTransfer });
+    fireEvent(shell, drop);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
   });
 
   it("clears the drop target after a file is dropped", async () => {

@@ -168,7 +168,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
-  const fileDragDepthRef = useRef(0);
+  const fileDragLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Drives the Send button's `disabled` state — there's no attachment
   // concept in the composer today (files upload and send independently via
   // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
@@ -189,8 +189,17 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
-    fileDragDepthRef.current = 0;
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
     setFileDragActive(false);
+    return () => {
+      if (fileDragLeaveTimerRef.current !== null) {
+        clearTimeout(fileDragLeaveTimerRef.current);
+        fileDragLeaveTimerRef.current = null;
+      }
+    };
   }, [activeRoomId]);
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
@@ -646,7 +655,10 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    fileDragDepthRef.current = 0;
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
     setFileDragActive(false);
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
@@ -659,24 +671,34 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
     if (!mediaSendPolishEnabled || !hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
-    fileDragDepthRef.current += 1;
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
     setFileDragActive(true);
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
-    if (!hasDraggedFiles(event.dataTransfer)) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
+    if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
   }
 
   function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
-    // Some browser/webview implementations clear `dataTransfer.types` before
-    // `dragleave`; the positive drag-depth is the reliable proof that this
-    // leave belongs to a file drag we accepted in `handleDragEnter`.
-    if (!mediaSendPolishEnabled || fileDragDepthRef.current === 0) return;
+    if (!mediaSendPolishEnabled) return;
     event.preventDefault();
-    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
-    if (fileDragDepthRef.current === 0) setFileDragActive(false);
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+
+    // A few webviews omit `relatedTarget` for child-to-child transitions. Delay
+    // clearing by one task so the matching `dragenter` can cancel it without a
+    // one-frame overlay flicker.
+    if (fileDragLeaveTimerRef.current !== null) clearTimeout(fileDragLeaveTimerRef.current);
+    fileDragLeaveTimerRef.current = setTimeout(() => {
+      fileDragLeaveTimerRef.current = null;
+      setFileDragActive(false);
+    }, 0);
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
