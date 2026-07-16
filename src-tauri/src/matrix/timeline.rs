@@ -907,19 +907,23 @@ pub async fn get_timeline_page(
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
 
-    let timeline = state
-        .get_or_create_timeline(&app, &client, &parsed_room_id)
-        .await?;
-    let media_cache = state.require_media_cache(&app).await.ok();
-
     // Self-contained Sentry transaction (see `observability_trace::traced`'s
     // doc comment). No dedicated decrypt hook exists to time directly — the
     // SDK's own crypto plumbing decrypts as part of building/paginating the
     // `Timeline` internally — so this is the closest proxy for "how long did
-    // it take to see this room's (decrypted) messages," covering both
-    // `paginate_backwards` (which triggers decryption of newly-loaded
-    // history) and the summary conversion that reads the result.
+    // it take to see this room's (decrypted) messages." Wraps
+    // `get_or_create_timeline` too, not just `get_timeline_page_impl`: on a
+    // room's first open (or after LRU eviction), that call itself does the
+    // cold-open work — `Room::timeline()` plus spawning the listener — which
+    // is exactly the slow-path latency this is meant to measure. Starting
+    // the transaction after it, as an earlier version of this change did,
+    // would systematically exclude that cost and underreport cold opens.
     crate::observability_trace::traced("timeline.get_page", "matrix.timeline", async {
+        let timeline = state
+            .get_or_create_timeline(&app, &client, &parsed_room_id)
+            .await?;
+        let media_cache = state.require_media_cache(&app).await.ok();
+
         get_timeline_page_impl(&client, &timeline, media_cache, limit).await
     })
     .await
