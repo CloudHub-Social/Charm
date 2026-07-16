@@ -206,6 +206,9 @@ async fn preview_url_requires_the_non_simple_web_transport_header() {
                 .method("POST")
                 .uri(uri)
                 .header("x-charm-operation-id", "ipc-test-1")
+                // Same-origin browser POSTs can include Origin even when the
+                // server has no cross-origin allowlist configured.
+                .header("origin", "https://charm.example.test")
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
                 .unwrap(),

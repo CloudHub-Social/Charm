@@ -1921,7 +1921,6 @@ async fn preview_url(
     Json(query): Json<PreviewUrlQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     require_web_transport_header(&headers)?;
-    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let preview = get_url_preview_impl(&session.client, query.url, query.event_ts_ms).await;
     Ok(Json(preview))
