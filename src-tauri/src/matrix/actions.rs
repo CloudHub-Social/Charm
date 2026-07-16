@@ -481,7 +481,15 @@ pub async fn discard_failed_message_impl(
     let Some(send_handle) = find_local_echo_send_handle(&room, transaction_id).await? else {
         return Ok(false);
     };
-    send_handle.abort().await.map_err(|e| e.to_string())
+    let aborted = send_handle.abort().await.map_err(|e| e.to_string())?;
+    // Same reasoning as resend_message_impl's set_enabled(true): whatever
+    // send error wedged this echo also disabled the room's queue, and
+    // discarding the bad echo doesn't touch that — without this, every
+    // *other* message the user sends in this room afterward would sit as a
+    // local echo forever, never actually reaching the queue's background
+    // task.
+    room.send_queue().set_enabled(true);
+    Ok(aborted)
 }
 
 #[cfg(test)]
@@ -642,6 +650,14 @@ mod resend_discard_tests {
                 .await
                 .expect("discarding a wedged local echo should succeed");
         assert!(removed, "the wedged local echo should have been removed");
+        // The send error that wedged this echo also disabled the room's
+        // queue; discarding the bad echo must re-enable it too, or every
+        // subsequent message sent in this room would sit as a local echo
+        // forever.
+        assert!(
+            room.send_queue().is_enabled(),
+            "discarding a failed send should re-enable the room's send queue"
+        );
 
         // A second discard of the same (now-gone) transaction id must not
         // succeed a second time — it's the "already gone" case the doc
