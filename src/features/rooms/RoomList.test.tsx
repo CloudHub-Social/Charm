@@ -800,6 +800,34 @@ describe("RoomList", () => {
     expect(screen.getByText("Other read")).toBeInTheDocument();
   });
 
+  it("keeps search results constrained to unread and active rooms", () => {
+    featureFlagMocks.roomListUnreadFilter = true;
+    const activeRead = makeRoomSummary({ room_id: "!active:localhost", name: "Alpha active" });
+    const otherRead = makeRoomSummary({ room_id: "!read:localhost", name: "Alpha read" });
+    const unread = makeRoomSummary({
+      room_id: "!unread:localhost",
+      name: "Alpha unread",
+      has_unread: true,
+    });
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [activeRead, otherRead, unread],
+          activeRoomId: activeRead.room_id,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search rooms" }), {
+      target: { value: "alpha" },
+    });
+
+    expect(screen.getByText("Alpha active")).toBeInTheDocument();
+    expect(screen.getByText("Alpha unread")).toBeInTheDocument();
+    expect(screen.queryByText("Alpha read")).not.toBeInTheDocument();
+  });
+
   it("persists the unread filter per list mode and disables reorder in the filtered view", () => {
     featureFlagMocks.roomListUnreadFilter = true;
     const unreadDm = makeRoomSummary({

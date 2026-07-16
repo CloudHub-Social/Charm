@@ -212,9 +212,19 @@ export function RoomList({
     // Spaces aren't a destination search should surface — selecting one
     // isn't a single unambiguous action the way a room/DM row is (see
     // HierarchyRow's separate "Open" affordance for that).
-    const pool = (searchEverywhere ? joinedRooms : scopedRooms).filter((room) => !room.is_space);
+    const joinedPool = searchEverywhere ? joinedRooms : scopedRooms;
+    const visiblePool = unreadOnly ? filterRoomsToUnread(joinedPool, activeRoomId) : joinedPool;
+    const pool = visiblePool.filter((room) => !room.is_space);
     return filterRoomsByQuery(pool, searchQuery);
-  }, [isSearching, searchEverywhere, joinedRooms, scopedRooms, searchQuery]);
+  }, [
+    isSearching,
+    searchEverywhere,
+    joinedRooms,
+    scopedRooms,
+    unreadOnly,
+    activeRoomId,
+    searchQuery,
+  ]);
   // Unjoined children of the currently selected space's hierarchy: `rooms`
   // (and therefore `scopedRooms`) only ever contains rooms the account has
   // joined, so a public/knock child the user can see in the unsearched
@@ -225,12 +235,12 @@ export function RoomList({
   // widens the *joined-room* pool above; unjoined children of other spaces
   // aren't loaded here to search in the first place.
   const unjoinedHierarchyMatches = useMemo(() => {
-    if (!isSearching || mode !== "space" || !selectedSpaceId) return [];
+    if (!isSearching || unreadOnly || mode !== "space" || !selectedSpaceId) return [];
     const unjoinedChildren = flattenHierarchy(spaceHierarchy)
       .map((node) => node.child)
       .filter((child) => !child.is_space && !roomById.has(child.room_id));
     return filterSpaceChildrenByQuery(unjoinedChildren, searchQuery);
-  }, [isSearching, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
+  }, [isSearching, unreadOnly, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
 
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
