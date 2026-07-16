@@ -14,6 +14,17 @@ const captureDir = env.SENTRY_SNAPSHOT_CAPTURE
 const config: TestRunnerConfig = {
   async postVisit(page, context) {
     if (!captureDir) return;
+    // Rich message stories lazy-load syntax grammars and their CSS. Capturing
+    // before that work settles produces alternating highlighted/unhighlighted
+    // baselines depending on network and module-cache timing.
+    await page.waitForFunction(
+      () => !document.querySelector('[data-async-content-state="loading"]'),
+      undefined,
+      { timeout: 5_000 },
+    );
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+    });
     // Playwright creates parent dirs for the screenshot path; `animations: "disabled"`
     // keeps captures deterministic across runs.
     await page.screenshot({

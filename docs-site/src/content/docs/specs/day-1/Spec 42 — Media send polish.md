@@ -3,8 +3,22 @@ title: Charm 2.0 Spec — Media send polish
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 ---
+
+## Implementation status
+
+**In progress behind the default-off `media_send_polish` feature flag.** The first
+independently releasable slice adds a full-chat drop-target overlay while a file is
+dragged over the active room. It uses drag-depth tracking so crossing nested message
+or composer elements does not flicker the target, ignores non-file drags, clears on
+drop, leave, or room switch, and keeps the existing desktop/web attachment payload
+handling unchanged. The public media-and-attachments gallery entry now identifies
+this flag as a preview rollout while the broader attachment experience remains usable.
+
+Captions, upload-size preflight, actual upload cancellation, GIF autoplay controls,
+and default EXIF stripping remain planned. This spec is therefore not shipped or
+complete.
 
 **Workstream:** one PR / one agent. Small cluster of Spec 02 (media) sub-features
 the parity audit found scoped out. Individually minor, collectively noticeable.

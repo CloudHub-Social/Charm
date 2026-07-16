@@ -3311,6 +3311,89 @@ describe("ChatShell", () => {
     );
   });
 
+  it("shows a stable file drop target while dragging over nested chat content", async () => {
+    renderChatShell();
+    const shell = await screen.findByTestId("chat-shell");
+    const composer = screen.getByPlaceholderText("Message general");
+    const dataTransfer = {
+      files: [new File(["fake"], "drop.png", { type: "image/png" })],
+      types: ["Files"],
+      dropEffect: "none",
+    };
+
+    const attachButton = screen.getByRole("button", { name: "Attach" });
+
+    fireEvent.dragEnter(composer, { dataTransfer });
+    fireEvent.dragLeave(composer, { dataTransfer, relatedTarget: attachButton });
+    fireEvent.dragEnter(attachButton, { dataTransfer, relatedTarget: composer });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Drop files in general");
+
+    fireEvent.dragLeave(shell, { dataTransfer });
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+  });
+
+  it("does not show the file drop target for text drags or while the flag is disabled", async () => {
+    const { unmount } = renderChatShell();
+    const shell = await screen.findByTestId("chat-shell");
+    fireEvent.dragEnter(shell, {
+      dataTransfer: { files: [], types: ["text/plain"], dropEffect: "none" },
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    unmount();
+
+    mockUseFlag.mockReturnValue(false);
+    renderChatShell();
+    const disabledShell = await screen.findByTestId("chat-shell");
+    fireEvent.dragEnter(disabledShell, {
+      dataTransfer: {
+        files: [new File(["fake"], "drop.png", { type: "image/png" })],
+        types: ["Files"],
+        dropEffect: "none",
+      },
+    });
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("prevents native text drags and drops without showing the file target", async () => {
+    renderChatShell();
+    const shell = await screen.findByTestId("chat-shell");
+    const dataTransfer = { files: [], types: ["text/plain"], dropEffect: "none" };
+
+    const dragOver = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, "dataTransfer", { value: dataTransfer });
+    fireEvent(shell, dragOver);
+    expect(dragOver.defaultPrevented).toBe(true);
+
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: dataTransfer });
+    fireEvent(shell, drop);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(sendAttachment).not.toHaveBeenCalled();
+  });
+
+  it("clears the drop target after a file is dropped", async () => {
+    renderChatShell();
+    const shell = await screen.findByTestId("chat-shell");
+    const file = new File(["fake"], "drop.png", { type: "image/png" });
+    Object.defineProperty(file, "path", { value: "/Users/me/drop.png" });
+    const dataTransfer = { files: [file], types: ["Files"], dropEffect: "none" };
+
+    fireEvent.dragEnter(shell, { dataTransfer });
+    expect(screen.getByRole("status")).toBeInTheDocument();
+    fireEvent.drop(shell, { dataTransfer });
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        "/Users/me/drop.png",
+        expect.any(String),
+      ),
+    );
+  });
+
   it("does not pass pathless drop files to desktop attachment upload", async () => {
     renderChatShell();
     const textarea = await screen.findByPlaceholderText("Message general");

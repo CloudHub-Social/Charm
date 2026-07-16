@@ -52,5 +52,11 @@
     "default": false,
     "description": "Add the next set of message actions, beginning with copying a canonical message permalink.",
     "owner": "Spec 37 (message action parity)"
+  },
+  {
+    "key": "media_send_polish",
+    "default": false,
+    "description": "Improve attachment sending with a visible file drag-and-drop target and later media-send controls.",
+    "owner": "Spec 42 (media send polish)"
   }
 ]

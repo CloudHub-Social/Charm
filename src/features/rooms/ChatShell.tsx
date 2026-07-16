@@ -91,6 +91,10 @@ function LoadingOlderHeader({ context }: { context?: { loadingMore: boolean; has
   return null;
 }
 
+function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
+  return dataTransfer.files.length > 0 || Array.from(dataTransfer.types).includes("Files");
+}
+
 /**
  * Per-message affordance state: whether the current user sent it, and
  * whether they're allowed to redact it (own messages always; others gated
@@ -159,10 +163,12 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
+  const mediaSendPolishEnabled = useFlag("media_send_polish");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const fileDragLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Drives the Send button's `disabled` state — there's no attachment
   // concept in the composer today (files upload and send independently via
   // `useAttachmentUploads`), so trimmed text emptiness is the only signal.
@@ -170,6 +176,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const [followingExpanded, setFollowingExpanded] = useState(false);
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
   const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
+  const [fileDragActive, setFileDragActive] = useState(false);
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -182,6 +189,17 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
+    setFileDragActive(false);
+    return () => {
+      if (fileDragLeaveTimerRef.current !== null) {
+        clearTimeout(fileDragLeaveTimerRef.current);
+        fileDragLeaveTimerRef.current = null;
+      }
+    };
   }, [activeRoomId]);
   const [replyTarget, setReplyTarget] = useAtom(
     room ? activeReplyTargetAtomFamily(roomId) : noRoomActiveReplyTargetAtom,
@@ -637,12 +655,50 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
+    setFileDragActive(false);
     const files = Array.from(event.dataTransfer.files) as (File & { path?: string })[];
     const file = files[0];
     const upload = file ? attachmentUploadPayload(file) : null;
     if (upload) {
       handleAttachFile(upload);
     }
+  }
+
+  function handleDragEnter(event: React.DragEvent<HTMLDivElement>) {
+    if (!mediaSendPolishEnabled || !hasDraggedFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    if (fileDragLeaveTimerRef.current !== null) {
+      clearTimeout(fileDragLeaveTimerRef.current);
+      fileDragLeaveTimerRef.current = null;
+    }
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    setFileDragActive(true);
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (hasDraggedFiles(event.dataTransfer)) event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    if (!mediaSendPolishEnabled) return;
+    event.preventDefault();
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+
+    // A few webviews omit `relatedTarget` for child-to-child transitions. Delay
+    // clearing by one task so the matching `dragenter` can cancel it without a
+    // one-frame overlay flicker.
+    if (fileDragLeaveTimerRef.current !== null) clearTimeout(fileDragLeaveTimerRef.current);
+    fileDragLeaveTimerRef.current = setTimeout(() => {
+      fileDragLeaveTimerRef.current = null;
+      setFileDragActive(false);
+    }, 0);
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLDivElement>) {
@@ -657,10 +713,27 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
 
   return (
     <div
-      className="flex min-w-0 flex-1 flex-col"
-      onDragOver={(e) => e.preventDefault()}
+      data-testid="chat-shell"
+      className="relative flex min-w-0 flex-1 flex-col"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {mediaSendPolishEnabled && fileDragActive && (
+        <output
+          aria-live="polite"
+          className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-solid bg-background/90 text-center shadow-lg backdrop-blur-sm"
+        >
+          <div className="flex flex-col items-center gap-2 px-6 text-foreground">
+            <Paperclip className="size-8 text-primary" />
+            <span className="text-base font-semibold">
+              Drop files in {displayName(room.room_id, room.name)}
+            </span>
+            <span className="text-sm text-muted-foreground">Release to upload</span>
+          </div>
+        </output>
+      )}
       <div
         className={cn(
           "flex items-center justify-between border-b border-border",
