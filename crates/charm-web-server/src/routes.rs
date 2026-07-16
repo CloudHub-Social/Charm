@@ -375,6 +375,20 @@ tokio::task_local! {
 /// alive indefinitely by repeatedly hitting an unauthenticated route,
 /// without the app itself ever actually being used (Codex review finding on
 /// #280).
+///
+/// And requires [`require_web_transport_header`] to pass on the *incoming*
+/// request, checked before `next.run` even starts (its own doc comment
+/// explains why the header itself is unforgeable by a same-site subresource
+/// request). `REQUEST_AUTHENTICATED` alone still isn't enough: a same-site
+/// subdomain attacker can't reach `/api/health`, but *can* still get
+/// `SameSite=Strict` to attach the victim's cookie to a "simple" (no
+/// preflight) cross-site `<img>`/no-CORS `fetch` at a route that genuinely
+/// does call `require_session` — `GET /api/auth/me` or `GET /api/rooms`,
+/// say — and a real 200 from either would set `REQUEST_AUTHENTICATED`
+/// without the app's own transport layer (which always attaches this
+/// header) ever being involved. Regular CORS preflight/origin checks don't
+/// apply to that request shape at all, which is exactly the gap this closes
+/// (Codex review finding on #280).
 async fn refresh_session_cookie(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -382,6 +396,7 @@ async fn refresh_session_cookie(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
+    let has_transport_header = require_web_transport_header(request.headers()).is_ok();
     let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut response = REQUEST_AUTHENTICATED
         .scope(Arc::clone(&authenticated), next.run(request))
@@ -389,6 +404,9 @@ async fn refresh_session_cookie(
     let Some(token) = token else {
         return response;
     };
+    if !has_transport_header {
+        return response;
+    }
     if response_already_sets_session_cookie(&response) {
         return response;
     }
@@ -541,6 +559,56 @@ mod refresh_session_cookie_gating_tests {
                 .headers()
                 .contains_key(axum::http::header::SET_COOKIE),
             "an unauthenticated route must never refresh a session cookie, live or not"
+        );
+    }
+
+    /// Regression test for the actual review finding: `REQUEST_AUTHENTICATED`
+    /// alone isn't enough — `SameSite=Strict` still attaches the cookie to a
+    /// same-site subdomain's "simple" (no-preflight) cross-site request, and
+    /// a genuinely authenticated GET route like `/api/auth/me` would set
+    /// `REQUEST_AUTHENTICATED` for that request too, without the app's own
+    /// transport layer (`matrixTransport.ts`'s `requestJson`, which always
+    /// attaches `x-charm-operation-id`) ever being involved. This drives the
+    /// same route *with* a live session but *without* that header and
+    /// asserts the cookie is still not refreshed — regardless of the
+    /// route's own response status, which isn't what's under test here
+    /// (`dummy_live_session`'s bare `Client` has no real `device_id`, so
+    /// `me` itself 401s on that unrelated check; `require_session` inside
+    /// it still succeeds first, which is the only thing that matters for
+    /// `REQUEST_AUTHENTICATED`).
+    #[tokio::test]
+    async fn a_same_site_request_missing_the_transport_header_does_not_refresh_the_cookie() {
+        let state = AppState::default();
+        state
+            .sessions
+            .insert(
+                "attacker-held-token".to_string(),
+                dummy_live_session("@victim:example.invalid").await,
+            )
+            .await;
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=attacker-held-token",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a same-site request missing the app's transport header must never refresh a \
+             session cookie, even against a genuinely authenticated route"
         );
     }
 }
