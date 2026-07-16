@@ -94,106 +94,115 @@ pub async fn login(
     state: State<'_, MatrixState>,
     request: LoginRequest,
 ) -> Result<LoginResponse, String> {
-    // The account's MXID isn't known for certain until login succeeds (the
-    // homeserver, not the client, has final say over the resolved server
-    // name), so this opens a temp store like SSO/QR and relocates it to the
-    // per-account path below — see `persistence::relocate_store`.
-    let temp_key = persistence::temp_store_key();
-    let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
+    // `login` is a plain typed command, not a raw `tauri::ipc::Request`, so
+    // there's no `sentry-trace` header to continue a frontend trace from
+    // (see `observability_trace::traced`'s doc comment). Still gives real
+    // server-side duration data in Sentry Performance, which is what
+    // motivated this: `POST /api/auth/login` showed a p75 of ~84s in the web
+    // build's traces, with nothing on the Tauri side to compare it against.
+    crate::observability_trace::traced("login", "matrix.auth", async move {
+        // The account's MXID isn't known for certain until login succeeds (the
+        // homeserver, not the client, has final say over the resolved server
+        // name), so this opens a temp store like SSO/QR and relocates it to the
+        // per-account path below — see `persistence::relocate_store`.
+        let temp_key = persistence::temp_store_key();
+        let client = build_client(&app, &request.homeserver_url, &temp_key).await?;
 
-    client
-        .matrix_auth()
-        .login_username(&request.username, &request.password)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+        client
+            .matrix_auth()
+            .login_username(&request.username, &request.password)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
 
-    let session = client
-        .matrix_auth()
-        .session()
-        .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
+        let session = client
+            .matrix_auth()
+            .session()
+            .ok_or_else(|| "login succeeded but no session was returned".to_string())?;
 
-    let account_key = persistence::account_key(session.meta.user_id.as_str());
-    // Persist the *resolved* URL (not the raw server-name-or-URL input) so
-    // `try_restore_session` doesn't need to re-run discovery on every launch.
-    let homeserver_url = client.homeserver().to_string();
+        let account_key = persistence::account_key(session.meta.user_id.as_str());
+        // Persist the *resolved* URL (not the raw server-name-or-URL input) so
+        // `try_restore_session` doesn't need to re-run discovery on every launch.
+        let homeserver_url = client.homeserver().to_string();
 
-    // Held for the rest of this function: serializes stopping the previous
-    // sync loop/client, relocating the store, saving the session, and
-    // adopting the new client against any *other* interactive login
-    // completing for this same account at the same time — see
-    // `MatrixState::login_completion_lock`'s doc comment for why a narrower
-    // lock (or none) lets one completion's cleanup clobber another's
-    // already-adopted client.
-    let _completion_guard = state.login_completion_lock.lock().await;
+        // Held for the rest of this function: serializes stopping the previous
+        // sync loop/client, relocating the store, saving the session, and
+        // adopting the new client against any *other* interactive login
+        // completing for this same account at the same time — see
+        // `MatrixState::login_completion_lock`'s doc comment for why a narrower
+        // lock (or none) lets one completion's cleanup clobber another's
+        // already-adopted client.
+        let _completion_guard = state.login_completion_lock.lock().await;
 
-    // Captured before tearing anything down: if this attempt's relocation
-    // fails below, whatever was already working gets restored rather than
-    // left logged out over a failure unrelated to that previous session
-    // (e.g. a transient keychain error relocating *this* login's store).
-    let previous_client = state.client.lock().await.clone();
+        // Captured before tearing anything down: if this attempt's relocation
+        // fails below, whatever was already working gets restored rather than
+        // left logged out over a failure unrelated to that previous session
+        // (e.g. a transient keychain error relocating *this* login's store).
+        let previous_client = state.client.lock().await.clone();
 
-    // Stop any sync loop already running for this account *before*
-    // relocating its store — otherwise a live client from an earlier login
-    // (e.g. a double-submitted login button) could still be mid-`/sync` and
-    // writing to the directory this is about to rename out from under it.
-    sync::abort_current_sync_loop(&app).await;
-    if let Err(e) = persistence::relocate_store_and_save_session(
-        &app,
-        &temp_key,
-        &account_key,
-        &homeserver_url,
-        &session,
-    ) {
-        // Only resume `previous_client` if relocation's own rollback left
-        // the account's on-disk store consistent with it — otherwise doing
-        // so would paper over a half-restored store neither this client nor
-        // anything else can reliably decrypt. See `RelocationFailure`'s doc
-        // comment.
-        if e.safe_to_resume_previous {
+        // Stop any sync loop already running for this account *before*
+        // relocating its store — otherwise a live client from an earlier login
+        // (e.g. a double-submitted login button) could still be mid-`/sync` and
+        // writing to the directory this is about to rename out from under it.
+        sync::abort_current_sync_loop(&app).await;
+        if let Err(e) = persistence::relocate_store_and_save_session(
+            &app,
+            &temp_key,
+            &account_key,
+            &homeserver_url,
+            &session,
+        ) {
+            // Only resume `previous_client` if relocation's own rollback left
+            // the account's on-disk store consistent with it — otherwise doing
+            // so would paper over a half-restored store neither this client nor
+            // anything else can reliably decrypt. See `RelocationFailure`'s doc
+            // comment.
+            if e.safe_to_resume_previous {
+                if let Some(previous_client) = previous_client {
+                    *state.client.lock().await = Some(previous_client.clone());
+                    sync::spawn_sync_task(app, previous_client);
+                }
+            }
+            return Err(e.into());
+        }
+
+        // With `login_completion_lock` held for the whole sequence, no other
+        // completion for this account can run concurrently — so this should
+        // always hold. Kept as a cheap defense-in-depth assertion rather than
+        // load-bearing synchronization (which is now `login_completion_lock`'s
+        // job): if it ever *did* somehow fail, the fallback is the same as
+        // before — report the loss rather than a losing `Ok`, since
+        // `LoginScreen` treats any `Ok` response as signed-in-and-adopted.
+        if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
+            // See the identical restore-on-failure step above this check: this
+            // is the same "don't leave a working session logged out over this
+            // completion's own failure" rationale, just for the later failure
+            // point rather than the relocation itself.
             if let Some(previous_client) = previous_client {
                 *state.client.lock().await = Some(previous_client.clone());
                 sync::spawn_sync_task(app, previous_client);
             }
+            return Err(
+                "login succeeded but was superseded by a concurrent login for the same account"
+                    .to_string(),
+            );
         }
-        return Err(e.into());
-    }
+        // Enforces the single-account invariant: only one session kind
+        // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
+        // present at a time.
+        let _ = persistence::clear_oauth_session(&account_key);
 
-    // With `login_completion_lock` held for the whole sequence, no other
-    // completion for this account can run concurrently — so this should
-    // always hold. Kept as a cheap defense-in-depth assertion rather than
-    // load-bearing synchronization (which is now `login_completion_lock`'s
-    // job): if it ever *did* somehow fail, the fallback is the same as
-    // before — report the loss rather than a losing `Ok`, since
-    // `LoginScreen` treats any `Ok` response as signed-in-and-adopted.
-    if !persistence::session_is_current(&account_key, session.meta.device_id.as_str()) {
-        // See the identical restore-on-failure step above this check: this
-        // is the same "don't leave a working session logged out over this
-        // completion's own failure" rationale, just for the later failure
-        // point rather than the relocation itself.
-        if let Some(previous_client) = previous_client {
-            *state.client.lock().await = Some(previous_client.clone());
-            sync::spawn_sync_task(app, previous_client);
-        }
-        return Err(
-            "login succeeded but was superseded by a concurrent login for the same account"
-                .to_string(),
-        );
-    }
-    // Enforces the single-account invariant: only one session kind
-    // (password/SSO's MatrixSession vs QR login's OAuthSession) should be
-    // present at a time.
-    let _ = persistence::clear_oauth_session(&account_key);
+        let response = LoginResponse {
+            user_id: session.meta.user_id.to_string(),
+            device_id: session.meta.device_id.to_string(),
+        };
 
-    let response = LoginResponse {
-        user_id: session.meta.user_id.to_string(),
-        device_id: session.meta.device_id.to_string(),
-    };
+        *state.client.lock().await = Some(client.clone());
+        sync::spawn_sync_loop(app, client);
 
-    *state.client.lock().await = Some(client.clone());
-    sync::spawn_sync_loop(app, client);
-
-    Ok(response)
+        Ok(response)
+    })
+    .await
 }
 
 /// Called once at app startup, before showing the login screen: if a session
