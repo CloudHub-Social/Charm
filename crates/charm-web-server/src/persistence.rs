@@ -1237,7 +1237,7 @@ impl PersistenceStore {
     /// `sync_loop::PersistHandle::initial_access_token`'s doc comment for
     /// why that distinction matters.
     ///
-    /// `max_age` (pass [`crate::session::session_cookie_max_age`]) skips
+    /// `max_age` (pass [`crate::session::session_revocation_grace`]) skips
     /// restoring — not just building a live `Client` for, but even
     /// attempting — any entry already past [`Self::sweep_expired`]'s
     /// retention window. Without this, a session already expired *before* a
