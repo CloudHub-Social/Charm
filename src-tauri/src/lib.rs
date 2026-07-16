@@ -646,6 +646,11 @@ fn runtime_observability_logs_enabled() -> bool {
 /// after a same-session opt-out (only the frontend client and this flag
 /// update live) — so without this check, a transaction started after
 /// in-session opt-out would still report.
+///
+/// Pure flag read — deliberately doesn't also check whether a native Sentry
+/// client actually exists (see `observability_trace::traced`'s doc comment
+/// for that separate check and why it lives at the call site instead of
+/// here).
 pub(crate) fn runtime_observability_sentry_enabled() -> bool {
     RUNTIME_SENTRY_CONSENT.load(Ordering::SeqCst)
 }
@@ -1314,8 +1319,15 @@ mod observability_tests {
         RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
     }
 
-    static SENTRY_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+    // `tokio::sync::Mutex`, not `std::sync::Mutex` like `LOG_CONSENT_TEST_LOCK`
+    // above: `traced_drops_a_transaction_whose_consent_is_revoked_mid_flight`
+    // below needs to hold this lock across an `.await` (so a concurrently
+    // running sentry-consent test can't interleave and flip the shared
+    // `RUNTIME_SENTRY_CONSENT` static mid-test), and clippy's
+    // `await_holding_lock` correctly flags doing that with a
+    // `std::sync::MutexGuard`.
+    static SENTRY_CONSENT_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
     struct RuntimeSentryConsentReset(bool);
 
@@ -1474,9 +1486,7 @@ mod observability_tests {
         // likely common combination (see `RUNTIME_SENTRY_CONSENT`'s doc
         // comment).
         let _log_guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
-        let _sentry_guard = SENTRY_CONSENT_TEST_LOCK
-            .lock()
-            .expect("sentry consent test lock");
+        let _sentry_guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
         let _log_reset = set_runtime_log_consent_for_test(false);
         let _sentry_reset = set_runtime_sentry_consent_for_test(false);
 
@@ -1488,9 +1498,7 @@ mod observability_tests {
 
     #[test]
     fn runtime_sentry_consent_updates_after_notification() {
-        let _guard = SENTRY_CONSENT_TEST_LOCK
-            .lock()
-            .expect("sentry consent test lock");
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
         let _reset = set_runtime_sentry_consent_for_test(false);
 
         update_runtime_observability_sentry_enabled(true);
@@ -1512,10 +1520,19 @@ mod observability_tests {
         // taking the revoked-mid-flight path, and that the wrapped future's
         // own result still comes through untouched regardless of whether
         // the transaction ends up finished or dropped.
-        let _guard = SENTRY_CONSENT_TEST_LOCK
-            .lock()
-            .expect("sentry consent test lock");
+        let _guard = SENTRY_CONSENT_TEST_LOCK.lock().await;
         let _reset = set_runtime_sentry_consent_for_test(true);
+        // `traced`'s pre-check also requires a live Sentry client (a
+        // separate P2 fix on the same review round) — without one, the
+        // consent-flag flip below would never even reach the transaction
+        // machinery this test means to exercise. `sentry::init(())` (no DSN)
+        // still binds a "disabled" client onto the current Hub — see
+        // sentry-rust's own `init()`, which unconditionally calls
+        // `hub.bind_client(Some(client))` regardless of whether a DSN was
+        // configured — so this satisfies `Hub::current().client().is_some()`
+        // without any real network activity. Held for the test's duration;
+        // dropping it at the end closes this dummy client.
+        let _sentry_client = sentry::init(());
 
         let result: Result<u8, &str> =
             crate::observability_trace::traced("test.mid_flight_revoke", "test", async {

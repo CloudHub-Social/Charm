@@ -87,12 +87,30 @@ pub fn continue_ipc_trace(
 /// see `scrub_log`'s doc comment for the same distinction on the logs flag),
 /// so it reads as permanently `false` in that binary. A web-server call site
 /// would need its own gating, not this one.
+///
+/// Also requires `sentry::Hub::current().client().is_some()` (Codex review on
+/// #289, P2), not just the consent flag: `sentry::init` only ever runs once,
+/// in `init_sentry_from_settings`, and only when `sentry_enabled` was already
+/// `true` at *launch*. A user who launches with Sentry off and enables it
+/// mid-session gets the consent flag flipped `true` (via
+/// `update_observability_sentry_consent`) but no native client was ever
+/// initialized to submit through — without this check, every transaction for
+/// the rest of that session would silently start against nothing rather than
+/// either reporting or cleanly no-op'ing. `sentry::Hub::current().client()`
+/// is the authoritative live signal sentry-rust itself keeps (cheap: an
+/// `Arc` clone/check, no I/O). Actually initializing a client mid-session on
+/// same-session opt-in — client lifecycle, thread safety of swapping the
+/// global client — is a larger change than this PR's job of wiring tracing
+/// through the *existing* consent infrastructure; native logs have had this
+/// identical launch-time-only limitation since before this PR (not a
+/// regression this PR introduces, just a corner the new consent flag could
+/// otherwise have made worse by not checking it).
 pub async fn traced<T, E>(
     name: &str,
     op: &str,
     fut: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    if !crate::runtime_observability_sentry_enabled() {
+    if !crate::runtime_observability_sentry_enabled() || sentry::Hub::current().client().is_none() {
         return fut.await;
     }
 
