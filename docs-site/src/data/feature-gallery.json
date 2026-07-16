@@ -168,8 +168,8 @@
     {
       "slug": "media-attachments",
       "title": "Media and attachments",
-      "summary": "Preview images, open a lightbox, track uploads, and download Matrix attachments from the timeline.",
-      "status": "stable",
+      "summary": "Preview images, open a lightbox, track uploads, download Matrix attachments, and progressively enable polished file-drop sending.",
+      "status": "preview",
       "spec": "Specs 02 and 42",
       "specLinks": [
         {
@@ -181,6 +181,7 @@
           "href": "/specs/day-1/spec-42--media-send-polish/"
         }
       ],
+      "flag": "media_send_polish",
       "snapshot": {
         "suite": "e2e",
         "name": "media-attachments-download-chip",
