@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T15:32:34.231Z",
+  "generatedAt": "2026-07-16T15:34:39.222Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
@@ -10,6 +10,13 @@
     "planned": 37
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 279,
+      "title": "feat(rooms): add file drop target",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/279",
+      "detail": "Day-1 Spec 42 · draft"
+    },
     {
       "type": "issue",
       "number": 48,
@@ -1083,7 +1090,16 @@
       "title": "Media send polish",
       "route": "/specs/day-1/spec-42--media-send-polish/",
       "status": "in-progress",
-      "pullRequests": [],
+      "pullRequests": [
+        {
+          "number": 279,
+          "title": "feat(rooms): add file drop target",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/279",
+          "state": "open",
+          "draft": true,
+          "updatedAt": "2026-07-16T15:34:33Z"
+        }
+      ],
       "issues": []
     },
     {
