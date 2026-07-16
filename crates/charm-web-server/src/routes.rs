@@ -1221,8 +1221,15 @@ async fn toggle_reaction(
 async fn resend_message(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, transaction_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // Zero-body POST, so (like `redact_event`) it's a CORS "simple request"
+    // that never triggers a preflight the origin allowlist could otherwise
+    // block — a cross-*site* page could still submit it with this session's
+    // `SameSite=Strict` cookie attached if it knows a failed transaction id,
+    // without this check.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     resend_message_impl(&session.client, &room_id, &transaction_id)
         .await
@@ -1233,8 +1240,11 @@ async fn resend_message(
 async fn discard_failed_message(
     State(state): State<AppState>,
     jar: CookieJar,
+    headers: axum::http::HeaderMap,
     Path((room_id, transaction_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
+    // See `resend_message`'s comment on the same guard.
+    require_allowed_origin(&headers)?;
     let session = require_session(&state, &jar).await?;
     let removed = discard_failed_message_impl(&session.client, &room_id, &transaction_id)
         .await
