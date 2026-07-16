@@ -63,7 +63,7 @@ use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata:
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
-use crate::session::Session;
+use crate::session::{self, Session};
 use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
@@ -737,7 +737,12 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoRe
 
 /// Server-issued session cookie: HttpOnly (unreadable to page JS), Secure
 /// unless explicitly disabled (HTTPS-only transport by default — see below),
-/// SameSite=Strict (never sent on cross-site navigations/requests).
+/// SameSite=Strict (never sent on cross-site navigations/requests), and an
+/// explicit `Max-Age` (see [`session::SESSION_COOKIE_MAX_AGE_SECS`]) — without
+/// one this is a session-only cookie that most browsers discard on close,
+/// forcing a full re-login (and, with it, a new Matrix device that needs the
+/// recovery key again) far sooner than the persisted session backing it
+/// actually expires.
 ///
 /// `Secure` cookies are never stored or sent by browsers over plain HTTP —
 /// `main.rs` itself only ever serves plain HTTP (TLS termination is expected
@@ -752,7 +757,39 @@ fn session_cookie(token: String) -> Cookie<'static> {
         .secure(secure)
         .same_site(SameSite::Strict)
         .path("/")
+        .max_age(time::Duration::seconds(
+            session::SESSION_COOKIE_MAX_AGE_SECS,
+        ))
         .build()
+}
+
+#[cfg(test)]
+mod session_cookie_tests {
+    use super::session_cookie;
+
+    /// Regression test: a cookie with no `Max-Age`/`Expires` is a
+    /// browser-session cookie that most browsers discard on close, forcing a
+    /// full re-login (and a brand-new Matrix device needing the recovery key
+    /// again) far sooner than the persisted session it points at actually
+    /// expires. `max_age()` must be set and must be positive.
+    #[test]
+    fn session_cookie_has_a_positive_max_age() {
+        let cookie = session_cookie("test-token".to_string());
+
+        let max_age = cookie.max_age().expect("session cookie must set Max-Age");
+        assert!(max_age.whole_seconds() > 0);
+    }
+
+    #[test]
+    fn session_cookie_max_age_matches_the_documented_constant() {
+        let cookie = session_cookie("test-token".to_string());
+
+        let max_age = cookie.max_age().expect("session cookie must set Max-Age");
+        assert_eq!(
+            max_age.whole_seconds(),
+            crate::session::SESSION_COOKIE_MAX_AGE_SECS
+        );
+    }
 }
 
 /// Resolves the caller's session from their cookie, or a 401 if it's

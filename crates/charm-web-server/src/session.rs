@@ -43,6 +43,19 @@ pub const IDLE_TIMEOUT_SECS_ENV: &str = "CHARM_WEB_SERVER_SESSION_IDLE_TIMEOUT_S
 /// this is purely a memory-pressure knob, not a security timeout.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 
+/// How long the browser should hold onto the session cookie itself —
+/// separate from [`DEFAULT_IDLE_TIMEOUT_SECS`], which only bounds the
+/// in-memory `Client`, not the cookie or the persisted session it points at.
+/// `persistence.rs` has no expiry on a persisted session at all (it lives
+/// until explicit logout), so the cookie must outlive any plausible gap
+/// between visits — otherwise the browser drops it as soon as it closes
+/// (a cookie with no `Max-Age`/`Expires` is a session-only cookie), forcing
+/// a full re-login and, with it, a brand-new Matrix device that needs the
+/// recovery key again even though the server-side crypto store (Spec 25)
+/// was never actually lost. 30 days: a conventional "remember me" window,
+/// comfortably past `EVICTED_PRESENCE_MAX_AGE`'s week-long vacation case.
+pub const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
 /// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
 /// Shorter than the idle timeout itself so an idle session isn't kept around
 /// much longer than the timeout implies, but long enough not to churn a
