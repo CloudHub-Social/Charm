@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Copy, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from "lucide-react";
+import { Copy, Link2, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { useFlag } from "@/featureFlags";
 import { EmojiPicker } from "./EmojiPicker";
 
 /** How long a touch must be held before it counts as a long-press. */
@@ -20,6 +21,7 @@ export interface MessageActionsProps {
   onEdit: () => void;
   onDelete: () => void;
   onCopy: () => void;
+  onCopyLink: () => void;
   className?: string;
   /**
    * Set while the message is still a local echo (`send_state.state ===
@@ -71,12 +73,14 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onEdit,
       onDelete,
       onCopy,
+      onCopyLink,
       className,
       disableRelationActions = false,
       isUndecrypted = false,
     },
     ref,
   ) {
+    const messageActionParityEnabled = useFlag("message_action_parity");
     const [menuOpen, setMenuOpen] = useState(false);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -203,6 +207,15 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               <Copy />
               Copy
             </DropdownMenuItem>
+            {messageActionParityEnabled && (
+              <DropdownMenuItem
+                onSelect={onCopyLink}
+                disabled={disableRelationActions || isUndecrypted}
+              >
+                <Link2 />
+                Copy link
+              </DropdownMenuItem>
+            )}
             {canRedact && (
               <DropdownMenuItem
                 variant="destructive"

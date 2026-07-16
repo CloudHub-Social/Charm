@@ -14,6 +14,15 @@ const ROOM = { room_id: "!e2e:localhost", name: "E2E Room", unread_count: 0 };
 const USER_ID = "@e2e:localhost";
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { message_action_parity: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
@@ -22,6 +31,23 @@ test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: ROOM.name }).click();
   await expect(page.getByText("No messages yet")).toBeVisible();
+});
+
+test("copies the canonical permalink for a sent message", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const composer = page.getByPlaceholder(`Message ${ROOM.name}`);
+  await composer.fill("copy my link");
+  await composer.press("Enter");
+
+  const row = page
+    .getByText("copy my link", { exact: true })
+    .locator("xpath=ancestor::*[contains(@class, 'group')][1]");
+  await row.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Copy link" }).click();
+
+  await expect
+    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .toBe("https://matrix.to/#/%21e2e%3Alocalhost/%241?via=localhost");
 });
 
 test("sending a message shows exactly one bubble that goes pending -> sent, never duplicated", async ({

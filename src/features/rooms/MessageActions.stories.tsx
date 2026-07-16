@@ -22,6 +22,7 @@ export const OthersMessageWithoutRedact: Story = {
     onEdit: noop,
     onDelete: noop,
     onCopy: noop,
+    onCopyLink: noop,
   },
 };
 
@@ -34,6 +35,7 @@ export const OwnMessage: Story = {
     onEdit: noop,
     onDelete: noop,
     onCopy: noop,
+    onCopyLink: noop,
   },
 };
 
@@ -46,5 +48,6 @@ export const OthersMessageModeratorCanRedact: Story = {
     onEdit: noop,
     onDelete: noop,
     onCopy: noop,
+    onCopyLink: noop,
   },
 };

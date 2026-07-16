@@ -46,5 +46,11 @@
     "default": false,
     "description": "Filter Home, direct-message, and space room lists to rooms needing attention.",
     "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "message_action_parity",
+    "default": false,
+    "description": "Add the next set of message actions, beginning with copying a canonical message permalink.",
+    "owner": "Spec 37 (message action parity)"
   }
 ]

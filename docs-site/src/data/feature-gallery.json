@@ -144,8 +144,8 @@
     {
       "slug": "message-actions",
       "title": "Message actions",
-      "summary": "React, reply, edit, redact, and inspect messages through contextual actions that respect ownership and power levels.",
-      "status": "stable",
+      "summary": "React, reply, edit, redact, inspect, and copy canonical links through contextual actions that respect ownership and power levels.",
+      "status": "preview",
       "spec": "Specs 03 and 37",
       "specLinks": [
         {
@@ -157,6 +157,7 @@
           "href": "/specs/day-1/spec-37--message-action-parity/"
         }
       ],
+      "flag": "message_action_parity",
       "snapshot": {
         "suite": "e2e",
         "name": "message-actions-reacted",

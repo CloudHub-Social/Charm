@@ -1,22 +1,15 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T13:45:48.929Z",
+  "generatedAt": "2026-07-16T14:15:58.119Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
-    "follow-up": 5,
-    "in-progress": 2,
+    "follow-up": 6,
+    "in-progress": 1,
     "planned": 38
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 275,
-      "title": "feat: copy Matrix message permalinks (Spec 37)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/275",
-      "detail": "Day-1 Spec 37 · ready for review"
-    },
     {
       "type": "pull-request",
       "number": 276,
@@ -123,8 +116,8 @@
       ],
       "counts": {
         "shipped": 6,
-        "follow-up": 2,
-        "in-progress": 2,
+        "follow-up": 3,
+        "in-progress": 1,
         "planned": 25
       }
     },
@@ -1036,15 +1029,15 @@
       "number": 37,
       "title": "Message action parity",
       "route": "/specs/day-1/spec-37--message-action-parity/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 275,
           "title": "feat: copy Matrix message permalinks (Spec 37)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/275",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-16T13:39:55Z"
+          "updatedAt": "2026-07-16T14:13:56Z"
         }
       ],
       "issues": []
@@ -1240,7 +1233,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/276",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-16T13:28:20Z"
+          "updatedAt": "2026-07-16T14:14:53Z"
         }
       ],
       "issues": []

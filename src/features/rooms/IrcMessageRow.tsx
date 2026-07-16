@@ -29,6 +29,7 @@ export function IrcMessageRow({
   onEdit,
   onDelete,
   onCopy,
+  onCopyLink,
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
@@ -146,6 +147,7 @@ export function IrcMessageRow({
             onEdit={onEdit}
             onDelete={onDelete}
             onCopy={onCopy}
+            onCopyLink={onCopyLink}
           />
         </>
       )}
