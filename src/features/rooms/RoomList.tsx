@@ -2,7 +2,7 @@ import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -955,9 +955,31 @@ function DraggableRoomRow({
     },
   );
 
-  const measureRow = (node: HTMLElement | null) => {
-    if (node) rowHeights.set(room.room_id, node.getBoundingClientRect().height);
-  };
+  const measureRow = useCallback(
+    (node: HTMLElement | null) => {
+      if (node) rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+    },
+    [room.room_id, rowHeights],
+  );
+
+  // Memoized so `RoomListItem`'s memo comparator (which checks these by
+  // reference) can actually skip a re-render when nothing relevant changed
+  // (Codex review on #288, P2) — an inline object literal here would be a
+  // fresh reference on every `RoomList` render regardless, defeating that
+  // comparator for every row in the main, non-virtualized list.
+  const dragHandleProps = useMemo(() => ({ ...bind(), ref: measureRow }), [bind, measureRow]);
+  const style = useMemo(
+    () => ({
+      transform: dragging ? `translateY(${dragOffset}px)` : undefined,
+      position: dragging ? ("relative" as const) : undefined,
+      zIndex: dragging ? 10 : undefined,
+      // Only opt out of touch scrolling while a drag is actually in
+      // progress — applying this unconditionally would swallow a normal
+      // vertical scroll gesture that merely starts on a room row.
+      touchAction: dragging ? "none" : undefined,
+    }),
+    [dragging, dragOffset],
+  );
 
   return (
     <RoomListItem
@@ -977,16 +999,8 @@ function DraggableRoomRow({
       }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
-      dragHandleProps={{ ...bind(), ref: measureRow }}
-      style={{
-        transform: dragging ? `translateY(${dragOffset}px)` : undefined,
-        position: dragging ? "relative" : undefined,
-        zIndex: dragging ? 10 : undefined,
-        // Only opt out of touch scrolling while a drag is actually in
-        // progress — applying this unconditionally would swallow a normal
-        // vertical scroll gesture that merely starts on a room row.
-        touchAction: dragging ? "none" : undefined,
-      }}
+      dragHandleProps={dragHandleProps}
+      style={style}
     />
   );
 }

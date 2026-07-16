@@ -101,6 +101,23 @@ pub async fn login(
     // motivated this: `POST /api/auth/login` showed a p75 of ~84s in the web
     // build's traces, with nothing on the Tauri side to compare it against.
     crate::observability_trace::traced("login", "matrix.auth", async move {
+        // Held for this whole closure, not just around `relocate_store_and_
+        // save_session` further down (Codex review on #288, P1): the startup
+        // orphan-temp-store sweep (`lib.rs`'s `.setup()`) now runs as a
+        // spawned background task rather than blocking window creation, so
+        // it can still be mid-`sweep_orphan_temp_stores` when this command's
+        // temp store gets created below — without serializing against it for
+        // the *entire* window this store exists unprotected (creation
+        // through relocation), the sweep's single-pass `read_dir` could
+        // still observe and delete this login's brand-new `tmp-*` directory
+        // sometime after creation but before it's relocated to a permanent
+        // account-key path, since the sweep has no way to distinguish
+        // "orphaned by a crash" from "a login in progress right now." The
+        // previous synchronous-setup path couldn't race a UI-initiated login
+        // by construction (the window wasn't interactive yet); this restores
+        // that same guarantee for the async path.
+        let _restore_store_guard = restore_store_lock().lock().await;
+
         // The account's MXID isn't known for certain until login succeeds (the
         // homeserver, not the client, has final say over the resolved server
         // name), so this opens a temp store like SSO/QR and relocates it to the
@@ -527,6 +544,12 @@ pub async fn register(
     state: State<'_, MatrixState>,
     request: RegisterRequest,
 ) -> Result<LoginResponse, String> {
+    // Same rationale as `login`'s identical guard (Codex review on #288,
+    // P1): held for this whole function so the startup orphan-temp-store
+    // sweep can't delete this registration's temp store out from under it
+    // between creation and relocation.
+    let _restore_store_guard = restore_store_lock().lock().await;
+
     // Same rationale as `login`: the account isn't certain until
     // registration succeeds, so this opens a temp store and relocates it.
     let temp_key = persistence::temp_store_key();
