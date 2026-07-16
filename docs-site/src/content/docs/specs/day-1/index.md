@@ -70,7 +70,7 @@ here.
 | 34 | [Labs settings](/specs/day-1/spec-34--labs-and-experimental-settings-panel/) | **Shipped** | [#253](https://github.com/CloudHub-Social/Charm/pull/253) |
 | 35 | [Feature flags](/specs/day-1/spec-35--feature-flags-openfeature--sentry-evaluation-tracking/) | **Shipped** | [#241](https://github.com/CloudHub-Social/Charm/pull/241), [#255](https://github.com/CloudHub-Social/Charm/pull/255), [#256](https://github.com/CloudHub-Social/Charm/pull/256), [#259](https://github.com/CloudHub-Social/Charm/pull/259) |
 | 36 | [User profile cards](/specs/day-1/spec-36--user-profile-cards/) | **Planned** | No matching merged implementation found |
-| 37 | [Message action parity](/specs/day-1/spec-37--message-action-parity/) | **Planned** | No matching merged implementation found |
+| 37 | [Message action parity](/specs/day-1/spec-37--message-action-parity/) | **In progress** | First slice adds feature-gated message permalinks; the remaining actions are still planned |
 | 38 | [Full emoji picker](/specs/day-1/spec-38--full-emoji-picker/) | **Planned** | No matching merged implementation found |
 | 39 | [Timeline state and membership events](/specs/day-1/spec-39--timeline-state-and-membership-events/) | **Planned** | No matching merged implementation found |
 | 40 | [Presence and receipt privacy](/specs/day-1/spec-40--presence-and-receipt-privacy-controls/) | **Planned** | No matching merged implementation found |

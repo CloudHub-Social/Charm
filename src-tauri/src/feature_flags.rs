@@ -109,6 +109,9 @@ define_feature_flag_keys!(
         /// the canonical alias, and add alternative aliases from room
         /// settings.
         RoomAliasManagement,
+        /// Spec 37 message-action parity. The first slice adds a canonical
+        /// matrix.to permalink action for server-backed timeline events.
+        MessageActionParity,
     }
 );
 
@@ -124,6 +127,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => false,
             FeatureFlagKey::LinkPreviews => false,
             FeatureFlagKey::RoomAliasManagement => false,
+            FeatureFlagKey::MessageActionParity => false,
         }
     }
 
@@ -152,6 +156,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => {
                 "Manage room aliases and the canonical alias from room settings."
             }
+            FeatureFlagKey::MessageActionParity => {
+                "Add the next set of message actions, beginning with copying a canonical message permalink."
+            }
         }
     }
 
@@ -166,6 +173,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "Spec 30 (focus mode / do-not-disturb)",
             FeatureFlagKey::LinkPreviews => "Spec 29 (link previews)",
             FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
+            FeatureFlagKey::MessageActionParity => "Spec 37 (message action parity)",
         }
     }
 
@@ -180,6 +188,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "focus_mode",
             FeatureFlagKey::LinkPreviews => "link_previews",
             FeatureFlagKey::RoomAliasManagement => "room_alias_management",
+            FeatureFlagKey::MessageActionParity => "message_action_parity",
         }
     }
 }

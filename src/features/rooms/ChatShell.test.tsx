@@ -66,6 +66,7 @@ const getRoomMembers = vi.fn().mockResolvedValue([]);
 const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 const openUrl = vi.fn().mockResolvedValue(undefined);
+const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -317,6 +318,11 @@ describe("ChatShell", () => {
   });
 
   beforeEach(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWriteText },
+    });
+    clipboardWriteText.mockReset().mockResolvedValue(undefined);
     mockUseAdaptiveLayout.mockReturnValue("desktop");
     mockUseFlag.mockReturnValue(true);
     getTimelinePage.mockReset().mockResolvedValue({ messages: [], next_cursor: null });
@@ -2829,6 +2835,33 @@ describe("ChatShell", () => {
     });
 
     expect(await screen.findByText("Delete")).toBeInTheDocument();
+  });
+
+  it("copies a fully encoded matrix.to permalink for a server-backed message", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "$event:localhost",
+          sender: "@alice:localhost",
+          body: "link me",
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), makeRoomSummary({ room_id: "!room:localhost" }));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Copy link"));
+
+    await waitFor(() =>
+      expect(clipboardWriteText).toHaveBeenCalledWith(
+        "https://matrix.to/#/%21room%3Alocalhost/%24event%3Alocalhost",
+      ),
+    );
   });
 
   it("stops showing a reply's quote preview once that reply message is itself redacted", async () => {

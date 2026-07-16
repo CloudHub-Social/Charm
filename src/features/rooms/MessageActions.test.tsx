@@ -1,7 +1,10 @@
 import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageActions, type MessageActionsHandle } from "./MessageActions";
+
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> = {}) {
   const onReply = vi.fn();
@@ -9,6 +12,7 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
   const onEdit = vi.fn();
   const onDelete = vi.fn();
   const onCopy = vi.fn();
+  const onCopyLink = vi.fn();
 
   render(
     <MessageActions
@@ -19,11 +23,12 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
       onEdit={onEdit}
       onDelete={onDelete}
       onCopy={onCopy}
+      onCopyLink={onCopyLink}
       {...overrides}
     />,
   );
 
-  return { onReply, onReact, onEdit, onDelete, onCopy };
+  return { onReply, onReact, onEdit, onDelete, onCopy, onCopyLink };
 }
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */
@@ -36,6 +41,10 @@ function openMenu() {
 }
 
 describe("MessageActions", () => {
+  beforeEach(() => {
+    mockUseFlag.mockReturnValue(true);
+  });
+
   it("shows Reply and Copy for a message that isn't own and can't be redacted", async () => {
     renderActions({ isOwn: false, canRedact: false });
     openMenu();
@@ -84,6 +93,23 @@ describe("MessageActions", () => {
     expect(onDelete).toHaveBeenCalledOnce();
   });
 
+  it("calls onCopyLink when Copy link is selected", async () => {
+    const { onCopyLink } = renderActions();
+    openMenu();
+    fireEvent.click(await screen.findByText("Copy link"));
+
+    expect(onCopyLink).toHaveBeenCalledOnce();
+  });
+
+  it("hides Copy link when message-action parity is disabled", async () => {
+    mockUseFlag.mockReturnValue(false);
+    renderActions();
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Copy link")).not.toBeInTheDocument();
+  });
+
   it("has 44x44px hit targets for the trigger buttons", () => {
     renderActions();
     const moreButton = screen.getByRole("button", { name: "More actions" });
@@ -102,6 +128,7 @@ describe("MessageActions", () => {
     const edit = screen.getByText("Edit").closest('[role="menuitem"]');
     const del = screen.getByText("Delete").closest('[role="menuitem"]');
     const copy = screen.getByText("Copy").closest('[role="menuitem"]');
+    const copyLink = screen.getByText("Copy link").closest('[role="menuitem"]');
 
     expect(reply).toHaveAttribute("data-disabled");
     expect(edit).toHaveAttribute("data-disabled");
@@ -109,6 +136,7 @@ describe("MessageActions", () => {
     // Copy only needs the already-known body text, so it stays enabled even
     // on a pending message.
     expect(copy).not.toHaveAttribute("data-disabled");
+    expect(copyLink).toHaveAttribute("data-disabled");
   });
 
   it("disables Edit, Copy, Reply, and React for an undecrypted message, but not Delete", async () => {
@@ -119,11 +147,13 @@ describe("MessageActions", () => {
     const reply = (await screen.findByText("Reply")).closest('[role="menuitem"]');
     const edit = screen.getByText("Edit").closest('[role="menuitem"]');
     const copy = screen.getByText("Copy").closest('[role="menuitem"]');
+    const copyLink = screen.getByText("Copy link").closest('[role="menuitem"]');
     const del = screen.getByText("Delete").closest('[role="menuitem"]');
 
     expect(reply).toHaveAttribute("data-disabled");
     expect(edit).toHaveAttribute("data-disabled");
     expect(copy).toHaveAttribute("data-disabled");
+    expect(copyLink).toHaveAttribute("data-disabled");
     // Redacting doesn't need the plaintext, so Delete stays available even
     // though the message never decrypted.
     expect(del).not.toHaveAttribute("data-disabled");
@@ -164,6 +194,7 @@ describe("MessageActions", () => {
           onEdit={vi.fn()}
           onDelete={vi.fn()}
           onCopy={vi.fn()}
+          onCopyLink={vi.fn()}
         />
       </div>,
     );

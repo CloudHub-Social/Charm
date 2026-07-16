@@ -20,6 +20,7 @@ import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFlag } from "@/featureFlags";
+import { eventPermalink } from "@/lib/matrixPermalink";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -875,6 +876,12 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     onEdit={() => handleEdit(message.event_id)}
                     onDelete={() => handleDelete(message.event_id)}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
+                    onCopyLink={() => {
+                      if (!navigator.clipboard?.writeText) return;
+                      navigator.clipboard
+                        .writeText(eventPermalink(room.room_id, message.event_id))
+                        .catch(logAndIgnore);
+                    }}
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
