@@ -183,6 +183,42 @@ async fn unauthenticated_route_is_rejected_with_bogus_cookie() {
 }
 
 #[tokio::test]
+async fn preview_url_requires_the_non_simple_web_transport_header() {
+    let app = app();
+    let uri = "/api/media/preview_url";
+    let body = json!({ "url": "https://example.com" });
+
+    let response = request(&app, "POST", uri, None, Some(body.clone())).await;
+    let status = response.status();
+    let response_body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "unexpected response: {}",
+        String::from_utf8_lossy(&response_body)
+    );
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("x-charm-operation-id", "ipc-test-1")
+                // Same-origin browser POSTs can include Origin even when the
+                // server has no cross-origin allowlist configured.
+                .header("origin", "https://charm.example.test")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn list_rooms_returns_an_array() {
     let app = app();
     let cookie = login_and_get_cookie(&app).await;
