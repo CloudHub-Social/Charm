@@ -32,6 +32,13 @@ import { cn } from "@/lib/utils";
 import { RoomListItem } from "./RoomListItem";
 import { RoomInviteItem } from "./RoomInviteItem";
 import { RoomListSection } from "./SpaceSection";
+import {
+  filterHierarchyToUnread,
+  filterRoomsToUnread,
+  persistRoomListFilters,
+  readRoomListFilters,
+  type RoomListFilter,
+} from "./roomListFilter";
 import { groupRoomsIntoSections, planManualReorder } from "./roomSections";
 import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
@@ -111,6 +118,7 @@ export function RoomList({
   // matching Charm 1.0's Search.tsx pattern — this is the escape hatch to
   // search every joined room instead.
   const [searchEverywhere, setSearchEverywhere] = useState(false);
+  const [roomListFilters, setRoomListFilters] = useState(readRoomListFilters);
   const [spaceHierarchy, setSpaceHierarchy] = useState<SpaceHierarchyNode[]>([]);
   const [spaceLoading, setSpaceLoading] = useState(false);
   // Kept separate from `joinError`: this is specifically "the hierarchy
@@ -137,8 +145,13 @@ export function RoomList({
   // all. Does not affect unread badge computation above, which is untouched
   // by DND (see `shell::compute_badge_state`'s own doc comment).
   const focusModeFlagEnabled = useFlag("focus_mode");
+  const roomListUnreadFilterFlagEnabled = useFlag("room_list_unread_filter");
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
+  const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
+    ? roomListFilters[mode]
+    : "all";
+  const unreadOnly = activeFilter === "unread";
   currentScopeRef.current = { mode, selectedSpaceId };
 
   const invitedRooms = useMemo(() => rooms.filter((room) => room.membership === "invite"), [rooms]);
@@ -147,9 +160,14 @@ export function RoomList({
     () => new Map(joinedRooms.map((room) => [room.room_id, room])),
     [joinedRooms],
   );
+  const filteredSpaceHierarchy = useMemo(
+    () =>
+      unreadOnly ? filterHierarchyToUnread(spaceHierarchy, roomById, activeRoomId) : spaceHierarchy,
+    [unreadOnly, spaceHierarchy, roomById, activeRoomId],
+  );
   const visibleHierarchyCount = useMemo(
-    () => countVisibleHierarchyNodes(spaceHierarchy, roomById),
-    [spaceHierarchy, roomById],
+    () => countVisibleHierarchyNodes(filteredSpaceHierarchy, roomById),
+    [filteredSpaceHierarchy, roomById],
   );
   const scopedRooms = useMemo(
     () =>
@@ -170,7 +188,11 @@ export function RoomList({
     () => new Set(scopedRooms.map((room) => room.room_id)),
     [scopedRooms],
   );
-  const sections = useMemo(() => groupRoomsIntoSections(scopedRooms), [scopedRooms]);
+  const visibleScopedRooms = useMemo(
+    () => (unreadOnly ? filterRoomsToUnread(scopedRooms, activeRoomId) : scopedRooms),
+    [unreadOnly, scopedRooms, activeRoomId],
+  );
+  const sections = useMemo(() => groupRoomsIntoSections(visibleScopedRooms), [visibleScopedRooms]);
   const fullSections = useMemo(() => groupRoomsIntoSections(joinedRooms), [joinedRooms]);
   const fullFavouriteSectionRooms = getFullSectionRooms(
     sections.favourites,
@@ -260,7 +282,9 @@ export function RoomList({
   }
 
   function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
-    const canReorder = hasSameRoomOrder(sectionRooms, fullSectionRooms);
+    // Reordering a filtered subset would compute positions against missing
+    // rows and silently corrupt the full section order once "All" is restored.
+    const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => (
       <DraggableRoomRow
         key={room.room_id}
@@ -376,6 +400,14 @@ export function RoomList({
         ? "Direct messages"
         : "Home";
 
+  function selectRoomFilter(filter: RoomListFilter) {
+    setRoomListFilters((previous) => {
+      const next = { ...previous, [mode]: filter };
+      persistRoomListFilters(next);
+      return next;
+    });
+  }
+
   return (
     <TooltipProvider>
       <aside className="flex w-[280px] shrink-0 flex-col border-r border-border">
@@ -462,6 +494,34 @@ export function RoomList({
               </label>
             )}
           </div>
+          {roomListUnreadFilterFlagEnabled && (
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <span className="text-xs text-muted-foreground">Show</span>
+              <fieldset className="flex rounded-md border border-border bg-muted/40 p-0.5">
+                <legend className="sr-only">Room filter</legend>
+                {(["all", "unread"] as const).map((filter) => {
+                  const selected = activeFilter === filter;
+                  const label = filter === "all" ? "All" : "Unread";
+                  return (
+                    <button
+                      key={filter}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => selectRoomFilter(filter)}
+                      className={cn(
+                        "rounded px-2 py-1 text-xs font-medium transition-colors",
+                        selected
+                          ? "bg-background text-foreground shadow-xs"
+                          : "text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </fieldset>
+            </div>
+          )}
           <div className="mt-2 flex items-center gap-2">
             <div className="relative min-w-0 flex-1">
               <SearchIcon
@@ -551,7 +611,13 @@ export function RoomList({
             )
           ) : !spaceError && allEmpty && (mode !== "space" || visibleHierarchyCount === 0) ? (
             <p className="px-3 py-2 text-sm text-muted-foreground">
-              {mode === "dms" ? "No direct messages yet" : "No rooms yet"}
+              {unreadOnly
+                ? mode === "dms"
+                  ? "No unread direct messages"
+                  : "No unread rooms"
+                : mode === "dms"
+                  ? "No direct messages yet"
+                  : "No rooms yet"}
             </p>
           ) : (
             <div className="flex flex-col gap-2">
@@ -591,7 +657,7 @@ export function RoomList({
                   expanded={isExpanded("spaceRooms")}
                   onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
                 >
-                  {renderHierarchy(spaceHierarchy, {
+                  {renderHierarchy(filteredSpaceHierarchy, {
                     roomById,
                     activeRoomId,
                     onSelectRoom,

@@ -3,10 +3,29 @@ title: Charm 2.0 Spec — Room-list row enrichment, filtering and sorting
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: in-progress
 sidebar:
   label: "Room-list row enrichment"
 ---
+
+## Implementation status
+
+**Partial implementation behind the default-off `room_list_unread_filter`
+feature flag.** Home, Direct messages, and selected-space lists now expose an
+explicit All / Unread control. The choice persists independently for each list
+mode, uses `RoomSummary.has_unread` as the authoritative signal, retains the open
+room, never filters pending invitations, and preserves nested-space ancestors that
+lead to an unread or open room. Manual row reordering is disabled while the
+filtered subset is visible so hidden rows cannot corrupt the full ordering.
+
+Sorting controls, last-message previews, typing indicators, ambient unread-count
+display settings, topic previews, and sidebar resizing remain follow-up work. This
+spec is therefore not shipped or complete.
+
+:::note[Historical baseline]
+The proposal below is retained as the full design. Statements that Charm has no
+unread filter describe the state before the first implementation slice.
+:::
 
 **Workstream:** one PR / one agent (or split rows vs filter/sort). New spec from the
 UI-parity deep-dive (2026-07-13). Includes the owner's explicit request: **filter
@@ -63,6 +82,10 @@ filtering or sorting control:
   side already sorts) — add a sort-mode parameter the UI sets, or sort frontend-side
   over the summaries; pick per where `roomSections.ts` currently orders.
 - Persist the chosen filter/sort (local or synced per Spec 50).
+
+The first implementation slice persists All / Unread locally per top-level list
+mode (Home, Direct messages, Spaces). Cross-device synchronization remains part of
+Spec 50 rather than a prerequisite for this local filter.
 
 ### Row enrichment
 

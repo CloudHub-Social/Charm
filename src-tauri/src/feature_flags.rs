@@ -109,6 +109,9 @@ define_feature_flag_keys!(
         /// the canonical alias, and add alternative aliases from room
         /// settings.
         RoomAliasManagement,
+        /// Spec 54 room-list filtering: switch Home, DMs, and space room
+        /// lists between all joined rooms and rooms needing attention.
+        RoomListUnreadFilter,
     }
 );
 
@@ -124,6 +127,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => false,
             FeatureFlagKey::LinkPreviews => false,
             FeatureFlagKey::RoomAliasManagement => false,
+            FeatureFlagKey::RoomListUnreadFilter => false,
         }
     }
 
@@ -152,6 +156,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomAliasManagement => {
                 "Manage room aliases and the canonical alias from room settings."
             }
+            FeatureFlagKey::RoomListUnreadFilter => {
+                "Filter Home, direct-message, and space room lists to rooms needing attention."
+            }
         }
     }
 
@@ -166,6 +173,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "Spec 30 (focus mode / do-not-disturb)",
             FeatureFlagKey::LinkPreviews => "Spec 29 (link previews)",
             FeatureFlagKey::RoomAliasManagement => "Spec 32 (room alias management)",
+            FeatureFlagKey::RoomListUnreadFilter => "Spec 54 (room-list enrichment and filtering)",
         }
     }
 
@@ -180,6 +188,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::FocusMode => "focus_mode",
             FeatureFlagKey::LinkPreviews => "link_previews",
             FeatureFlagKey::RoomAliasManagement => "room_alias_management",
+            FeatureFlagKey::RoomListUnreadFilter => "room_list_unread_filter",
         }
     }
 }

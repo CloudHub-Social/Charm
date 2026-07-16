@@ -7,6 +7,13 @@ import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
 import { makeRoomSummary } from "./testFixtures";
 
+const featureFlagMocks = vi.hoisted(() => ({ roomListUnreadFilter: false }));
+
+vi.mock("@/featureFlags", () => ({
+  useFlag: (key: string) =>
+    key === "room_list_unread_filter" ? featureFlagMocks.roomListUnreadFilter : false,
+}));
+
 // Radix's Tooltip.Content measures itself via ResizeObserver, which jsdom
 // doesn't implement — stub it so the tooltip-hover test below can render the
 // portal content without crashing. Scoped to this file's beforeAll/afterAll
@@ -56,9 +63,8 @@ const getOwnProfile = vi.fn().mockReturnValue(new Promise(() => {}));
 const onSelfProfileUpdate = vi.fn().mockResolvedValue(() => {});
 // Spec 30: RoomList's header renders a Do Not Disturb indicator via
 // `useFocusMode`, which calls these — never resolving here is fine, the
-// indicator only cares whether `focus_mode` is flagged on (mocked off by
-// default below via no `@/featureFlags` mock, so real `useFlag` reads the
-// off-by-default catalog and the indicator never renders in these tests).
+// indicator only cares whether `focus_mode` is flagged on (the feature-flag
+// mock above keeps every flag except the Spec 54 test flag off).
 const getDndState = vi.fn().mockReturnValue(new Promise(() => {}));
 const setDndState = vi.fn().mockResolvedValue({ enabled: false, until: null });
 const onDndChanged = vi.fn().mockResolvedValue(() => {});
@@ -103,9 +109,22 @@ function roomListProps(overrides: Partial<ComponentProps<typeof RoomList>> = {})
   };
 }
 
+function hierarchyChild(roomId: string, name: string, isSpace = false) {
+  return {
+    room_id: roomId,
+    name,
+    topic: null,
+    num_joined_members: 2,
+    join_rule: "invite" as const,
+    is_space: isSpace,
+  };
+}
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();
+  localStorage.clear();
+  featureFlagMocks.roomListUnreadFilter = false;
 });
 
 describe("RoomList", () => {
@@ -739,6 +758,136 @@ describe("RoomList", () => {
 
     expect(screen.getByText("Alice")).toBeInTheDocument();
     expect(screen.queryByText("Room")).not.toBeInTheDocument();
+  });
+
+  it("keeps the All/Unread control hidden while the Spec 54 flag is off", () => {
+    renderRoomList(<RoomList {...roomListProps()} />);
+
+    expect(screen.queryByRole("group", { name: "Room filter" })).not.toBeInTheDocument();
+  });
+
+  it("filters joined rooms by authoritative unread state while preserving the active room and invites", () => {
+    featureFlagMocks.roomListUnreadFilter = true;
+    const activeRead = makeRoomSummary({ room_id: "!active:localhost", name: "Active read" });
+    const otherRead = makeRoomSummary({ room_id: "!read:localhost", name: "Other read" });
+    const unread = makeRoomSummary({
+      room_id: "!unread:localhost",
+      name: "Unread room",
+      has_unread: true,
+    });
+    const invite = makeRoomSummary({
+      room_id: "!invite:localhost",
+      name: "Invited room",
+      membership: "invite",
+    });
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [activeRead, otherRead, unread, invite],
+          activeRoomId: activeRead.room_id,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+
+    expect(screen.getByText("Active read")).toBeInTheDocument();
+    expect(screen.getByText("Unread room")).toBeInTheDocument();
+    expect(screen.getByText("Invited room")).toBeInTheDocument();
+    expect(screen.queryByText("Other read")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("Other read")).toBeInTheDocument();
+  });
+
+  it("persists the unread filter per list mode and disables reorder in the filtered view", () => {
+    featureFlagMocks.roomListUnreadFilter = true;
+    const unreadDm = makeRoomSummary({
+      room_id: "!unread-dm:localhost",
+      name: "Unread DM",
+      is_direct: true,
+      is_favourite: true,
+      has_unread: true,
+    });
+    const readDm = makeRoomSummary({
+      room_id: "!read-dm:localhost",
+      name: "Read DM",
+      is_direct: true,
+      is_favourite: true,
+    });
+    const first = renderRoomList(
+      <RoomList {...roomListProps({ rooms: [unreadDm, readDm], mode: "dms" })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+    expect(screen.getByText("Unread DM").closest("button")).toHaveAttribute(
+      "data-reorder-enabled",
+      "false",
+    );
+    expect(screen.queryByText("Read DM")).not.toBeInTheDocument();
+    expect(localStorage.getItem("charm:room-list-filters")).toContain('"dms":"unread"');
+
+    first.unmount();
+    renderRoomList(<RoomList {...roomListProps({ rooms: [unreadDm, readDm], mode: "dms" })} />);
+    expect(screen.getByRole("button", { name: "Unread" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("Read DM")).not.toBeInTheDocument();
+  });
+
+  it("prunes read space descendants but keeps unread and active rooms with their hierarchy ancestors", async () => {
+    featureFlagMocks.roomListUnreadFilter = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", name: "Team", is_space: true });
+    const nested = makeRoomSummary({
+      room_id: "!nested:localhost",
+      name: "Nested",
+      is_space: true,
+      parent_space_ids: [space.room_id],
+    });
+    const unread = makeRoomSummary({
+      room_id: "!unread-child:localhost",
+      name: "Unread child",
+      parent_space_ids: [nested.room_id],
+      has_unread: true,
+    });
+    const activeRead = makeRoomSummary({
+      room_id: "!active-child:localhost",
+      name: "Active read child",
+      parent_space_ids: [nested.room_id],
+    });
+    const otherRead = makeRoomSummary({
+      room_id: "!read-child:localhost",
+      name: "Other read child",
+      parent_space_ids: [nested.room_id],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: hierarchyChild(nested.room_id, "Nested", true),
+        children: [
+          { child: hierarchyChild(unread.room_id, "Unread child"), children: [] },
+          { child: hierarchyChild(activeRead.room_id, "Active read child"), children: [] },
+          { child: hierarchyChild(otherRead.room_id, "Other read child"), children: [] },
+          { child: hierarchyChild("!public:localhost", "Public unjoined child"), children: [] },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [space, nested, unread, activeRead, otherRead],
+          mode: "space",
+          selectedSpace: space,
+          activeRoomId: activeRead.room_id,
+        })}
+      />,
+    );
+
+    expect(await screen.findByText("Public unjoined child")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Unread" }));
+
+    expect(screen.getByText("Nested")).toBeInTheDocument();
+    expect(screen.getByText("Unread child")).toBeInTheDocument();
+    expect(screen.getByText("Active read child")).toBeInTheDocument();
+    expect(screen.queryByText("Other read child")).not.toBeInTheDocument();
+    expect(screen.queryByText("Public unjoined child")).not.toBeInTheDocument();
   });
 
   it("keeps DM favourites reorderable when non-DM favourites exist", () => {
