@@ -52,7 +52,6 @@
 //! directory remains the live SDK store; snapshots are restored before the
 //! SDK opens it after an App Platform redeploy.
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -910,17 +909,28 @@ impl PersistenceStore {
     /// longer being restored by a live cookie (Codex review finding on
     /// #280).
     ///
-    /// `live_tokens` — every token currently resident in `SessionStore` — is
-    /// skipped outright rather than checked against `last_seen_unix`: a
-    /// session continuously live in memory for the entire `max_age` window
-    /// (e.g. a tab left open for weeks against a homeserver that never
-    /// rotates its access token) would otherwise never have a reason to
-    /// re-trigger [`Self::save`] or [`Self::touch_last_seen`], and so would
-    /// look just as stale on disk as one nobody has opened in months. Being
-    /// resident in `SessionStore` at all is itself the stronger, provably-
-    /// current signal: `session::SessionStore::sweep_idle` would already
-    /// have evicted it from memory (though not from persistence) had it
-    /// truly gone idle.
+    /// `sessions` (`SessionStore`) is consulted *fresh, per entry* — not a
+    /// single snapshot taken once before the loop starts — and any token
+    /// resident there is skipped outright rather than checked against
+    /// `last_seen_unix`: a session continuously live in memory for the
+    /// entire `max_age` window (e.g. a tab left open for weeks against a
+    /// homeserver that never rotates its access token) would otherwise never
+    /// have a reason to re-trigger [`Self::save`] or [`Self::touch_last_seen`],
+    /// and so would look just as stale on disk as one nobody has opened in
+    /// months. Being resident in `SessionStore` at all is itself the
+    /// stronger, provably-current signal: `session::SessionStore::sweep_idle`
+    /// would already have evicted it from memory (though not from
+    /// persistence) had it truly gone idle. Rechecking per entry, right
+    /// before revocation rather than once up front, matters because
+    /// `read_all` and this loop both take real time (network round-trips to
+    /// decrypt/list every object, then per-entry homeserver revocation
+    /// calls): a session idle-evicted-but-not-yet-expired when the sweep
+    /// started can be restored by a genuinely active browser mid-sweep, and
+    /// a stale up-front snapshot would still delete it out from under that
+    /// browser (Codex review finding on #280). This narrows, not fully
+    /// closes, the race — a restore landing in the instant between this
+    /// check and the revoke/remove below can still lose — but that window is
+    /// now single-entry-sized instead of whole-sweep-sized.
     ///
     /// An entry with `last_seen_unix: None` (persisted before that field
     /// existed) is backfilled to `Some(now)` and written back to disk on the
@@ -934,15 +944,12 @@ impl PersistenceStore {
     pub async fn sweep_expired(
         &self,
         max_age: std::time::Duration,
-        live_tokens: &HashSet<String>,
+        sessions: &crate::session::SessionStore,
     ) -> usize {
         let now = now_unix();
         let max_age_secs = max_age.as_secs();
         let mut swept = 0;
         for entry in self.read_all().await {
-            if live_tokens.contains(&entry.token) {
-                continue;
-            }
             let Some(last_seen_unix) = entry.last_seen_unix else {
                 if let Err(e) = self
                     .save(
@@ -963,6 +970,11 @@ impl PersistenceStore {
                 continue;
             };
             if now.saturating_sub(last_seen_unix) < max_age_secs {
+                continue;
+            }
+            // Rechecked fresh here, not from a snapshot taken before this
+            // loop started — see this function's doc comment.
+            if sessions.get(&entry.token).await.is_some() {
                 continue;
             }
             if let Some(client) = self.restore_client_for_revocation(&entry.token).await {
@@ -1292,6 +1304,7 @@ mod tests {
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
+    use std::collections::HashSet;
 
     fn scratch_dir(name: &str) -> PathBuf {
         let suffix: String = format!("{:x}", rand::random::<u64>());
@@ -2135,6 +2148,23 @@ mod tests {
             .unwrap();
     }
 
+    /// Same shape as `session::tests::dummy_session` (private to that
+    /// module) — a `Client` against an unreachable homeserver is enough to
+    /// construct a `Session` without any real network access, just to put
+    /// something live in a `SessionStore` for `sweep_expired` to check
+    /// against.
+    async fn dummy_live_session(user_id: &str) -> crate::session::Session {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        crate::session::Session::new(client, user_id.to_string(), None, false)
+    }
+
     #[tokio::test]
     async fn sweep_expired_removes_only_stale_sessions_not_in_live_tokens() {
         let dir = scratch_dir("sweep-expired");
@@ -2147,12 +2177,15 @@ mod tests {
         save_with_last_seen(&store, "tok-fresh", now.saturating_sub(one_hour)).await;
         save_with_last_seen(&store, "tok-stale-but-live", now.saturating_sub(sixty_days)).await;
 
-        let live_tokens = HashSet::from(["tok-stale-but-live".to_string()]);
-        let swept = store
-            .sweep_expired(
-                std::time::Duration::from_secs(30 * 24 * 60 * 60),
-                &live_tokens,
+        let sessions = crate::session::SessionStore::new();
+        sessions
+            .insert(
+                "tok-stale-but-live".to_string(),
+                dummy_live_session("@stale-but-live:example.invalid").await,
             )
+            .await;
+        let swept = store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
             .await;
 
         assert_eq!(swept, 1);
@@ -2238,7 +2271,7 @@ mod tests {
         let swept = store
             .sweep_expired(
                 std::time::Duration::from_secs(30 * 24 * 60 * 60),
-                &HashSet::new(),
+                &crate::session::SessionStore::new(),
             )
             .await;
 

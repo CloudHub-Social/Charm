@@ -321,6 +321,19 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+tokio::task_local! {
+    /// Set by [`require_session`] whenever it actually resolves a session
+    /// for the current request, read by [`refresh_session_cookie`] to decide
+    /// whether this request earned a cookie refresh — see that function's
+    /// doc comment. A task-local rather than a new parameter threaded
+    /// through `require_session`'s ~30 call sites: every one of those calls
+    /// still runs on the same task `refresh_session_cookie` set this scope
+    /// up on (axum's `from_fn` middleware and the handler it wraps share one
+    /// task per request), so `require_session` can reach it without any
+    /// caller needing to pass it through.
+    static REQUEST_AUTHENTICATED: Arc<std::sync::atomic::AtomicBool>;
+}
+
 /// Slides the session cookie's expiry forward on every request that carries
 /// one resolving to a still-active session — otherwise `Max-Age` (set once,
 /// at login/register; see `session_cookie`) counts down from that one
@@ -347,6 +360,21 @@ pub fn router(state: AppState) -> Router {
 /// discarding the fresh login and leaving the browser pointed at the old
 /// session while the new one sits orphaned server-side (Codex review
 /// finding on #280).
+///
+/// Also skips entirely unless [`require_session`] actually resolved a
+/// session for *this* request (`REQUEST_AUTHENTICATED`, set from inside
+/// `require_session` via `tokio::task_local!` rather than threaded through
+/// every one of its ~30 call sites as an extra parameter). Without this, any
+/// request carrying a valid cookie for a live session — including one that
+/// never calls `require_session` at all, like `GET /api/health` or a 404 —
+/// would still get its `Max-Age` refreshed here, since the only check left
+/// would be "is this token live in `SessionStore`". In the same-site
+/// subdomain threat model `require_allowed_origin`'s own doc comment
+/// already covers (`SameSite=Strict` still attaches the cookie to a
+/// same-site request), that would let an attacker keep a victim's session
+/// alive indefinitely by repeatedly hitting an unauthenticated route,
+/// without the app itself ever actually being used (Codex review finding on
+/// #280).
 async fn refresh_session_cookie(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -354,11 +382,17 @@ async fn refresh_session_cookie(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
-    let mut response = next.run(request).await;
+    let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut response = REQUEST_AUTHENTICATED
+        .scope(Arc::clone(&authenticated), next.run(request))
+        .await;
     let Some(token) = token else {
         return response;
     };
     if response_already_sets_session_cookie(&response) {
+        return response;
+    }
+    if !authenticated.load(std::sync::atomic::Ordering::Relaxed) {
         return response;
     }
     if let Some(session) = state.sessions.get(&token).await {
@@ -444,6 +478,70 @@ mod refresh_session_cookie_tests {
             .body(axum::body::Body::empty())
             .unwrap();
         assert!(!response_already_sets_session_cookie(&response));
+    }
+}
+
+#[cfg(test)]
+mod refresh_session_cookie_gating_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    /// Same shape as `persistence::tests::dummy_live_session` — enough of a
+    /// `Session` to put in `SessionStore` without any real network access.
+    async fn dummy_live_session(user_id: &str) -> crate::session::Session {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        crate::session::Session::new(client, user_id.to_string(), None, false)
+    }
+
+    /// Regression test for the actual review finding:
+    /// `refresh_session_cookie` must not refresh a cookie for a token that's
+    /// live in `SessionStore` unless *this* request's handler actually called
+    /// `require_session` — otherwise a same-site request to an
+    /// unauthenticated route like `/api/health`, carrying a stolen or leaked
+    /// cookie, would keep that session's server-side lifetime extended
+    /// indefinitely without the app ever genuinely being used.
+    #[tokio::test]
+    async fn hitting_an_unauthenticated_route_does_not_refresh_a_live_sessions_cookie() {
+        let state = AppState::default();
+        state
+            .sessions
+            .insert(
+                "attacker-held-token".to_string(),
+                dummy_live_session("@victim:example.invalid").await,
+            )
+            .await;
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/health")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=attacker-held-token",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "an unauthenticated route must never refresh a session cookie, live or not"
+        );
     }
 }
 
@@ -922,6 +1020,17 @@ mod session_cookie_tests {
     }
 }
 
+/// Marks [`REQUEST_AUTHENTICATED`] for the current request, from within
+/// [`require_session`]'s success paths only. A no-op (not a panic) outside
+/// `refresh_session_cookie`'s task-local scope — every real request goes
+/// through that middleware, but the test router built directly in this
+/// module's own unit tests doesn't, and `require_session` shouldn't need to
+/// know or care.
+fn mark_request_authenticated() {
+    let _ = REQUEST_AUTHENTICATED
+        .try_with(|marker| marker.store(true, std::sync::atomic::Ordering::Relaxed));
+}
+
 /// Resolves the caller's session from their cookie, or a 401 if it's
 /// missing/unknown. Every authenticated route below starts with this — kept
 /// as a plain helper rather than `axum` middleware so each handler's auth
@@ -934,6 +1043,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
     if let Some(session) = state.sessions.get(&token).await {
         session.touch();
+        mark_request_authenticated();
         return Ok(session);
     }
 
@@ -1013,11 +1123,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // of this session (this request, `sync_loop`'s spawned task, any other
     // concurrent request racing the same restore) is looking at the same
     // instance.
-    state
+    let session = state
         .sessions
         .get(&token)
         .await
-        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))
+        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))?;
+    mark_request_authenticated();
+    Ok(session)
 }
 
 // ---------------------------------------------------------------------

@@ -324,13 +324,7 @@ fn spawn_expired_session_sweeper(
         interval.tick().await;
         loop {
             interval.tick().await;
-            let live_tokens = sessions
-                .entries()
-                .await
-                .into_iter()
-                .map(|(token, _)| token)
-                .collect::<std::collections::HashSet<_>>();
-            let swept = persistence.sweep_expired(max_age, &live_tokens).await;
+            let swept = persistence.sweep_expired(max_age, &sessions).await;
             if swept > 0 {
                 tracing::info!("swept {swept} expired persisted session(s)");
             }
