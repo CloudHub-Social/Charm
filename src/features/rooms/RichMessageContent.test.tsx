@@ -96,6 +96,7 @@ describe("RichMessageContent", () => {
     );
 
     await waitFor(() => expect(container.querySelectorAll("code[data-language]")).toHaveLength(6));
+    expect(container.querySelector('[data-async-content-state="loading"]')).not.toBeInTheDocument();
     const mixedCaseCode = container.querySelector('code[data-language="javascript"]');
     expect(mixedCaseCode).toHaveTextContent("const mixedCase = true;");
   });

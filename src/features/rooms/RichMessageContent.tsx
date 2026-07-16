@@ -148,15 +148,20 @@ async function highlightCode(code: string, language: string | null): Promise<Hig
 
 function CodeBlock({ code, language }: { code: string; language: string | null }) {
   const [highlighted, setHighlighted] = useState<HighlightResult>({ html: null, language: null });
+  const [highlightSettled, setHighlightSettled] = useState(language === null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let active = true;
+    setHighlightSettled(language === null);
     highlightCode(code, language)
       .then((result) => {
         if (active) setHighlighted(result);
       })
-      .catch(logAndIgnore);
+      .catch(logAndIgnore)
+      .finally(() => {
+        if (active) setHighlightSettled(true);
+      });
     return () => {
       active = false;
     };
@@ -174,7 +179,10 @@ function CodeBlock({ code, language }: { code: string; language: string | null }
   }
 
   return (
-    <div className="group/code relative my-2 max-w-full overflow-x-auto rounded-md border border-border bg-muted/60">
+    <div
+      data-async-content-state={highlightSettled ? "ready" : "loading"}
+      className="group/code relative my-2 max-w-full overflow-x-auto rounded-md border border-border bg-muted/60"
+    >
       <button
         type="button"
         aria-label="Copy code"
