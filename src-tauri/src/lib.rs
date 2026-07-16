@@ -1277,13 +1277,27 @@ pub fn run() {
             }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
-            let sweep_result = tauri::async_runtime::block_on(async {
-                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
-                matrix::persistence::sweep_orphan_temp_stores(&handle)
+            // Spawned rather than `block_on`'d: this used to block the whole
+            // `.setup()` callback (and therefore the main window becoming
+            // interactive) on synchronous `std::fs::read_dir` + discard/
+            // recover work scaling with however many stale store directories
+            // are on disk. It's safe to run in the background because it
+            // still takes `restore_store_lock` before touching anything —
+            // any concurrent restore (a real login, or Android's
+            // receiver-only push path) will simply await that same lock
+            // rather than racing the sweep, exactly as it already does
+            // against another restore.
+            let sweep_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let sweep_result = async {
+                    let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    matrix::persistence::sweep_orphan_temp_stores(&sweep_handle)
+                }
+                .await;
+                if let Err(e) = sweep_result {
+                    eprintln!("orphan temp-store sweep failed: {e}");
+                }
             });
-            if let Err(e) = sweep_result {
-                eprintln!("orphan temp-store sweep failed: {e}");
-            }
             matrix::dnd::init(&handle);
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
