@@ -190,14 +190,29 @@
     {
       "slug": "spaces",
       "title": "Spaces and room organization",
-      "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages, with an optional unread-only view.",
-      "status": "preview",
-      "spec": "Specs 19 and 54",
+      "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages.",
+      "status": "stable",
+      "spec": "Spec 19",
       "specLinks": [
         {
           "label": "Spec 19",
           "href": "/specs/day-1/spec-19--space-hierarchy-and-room-list-rebuild-match-charm-10-structure/"
-        },
+        }
+      ],
+      "snapshot": {
+        "suite": "e2e",
+        "name": "space-hierarchy-foundation",
+        "alt": "Charm space rail and room list showing a Team Space hierarchy",
+        "caption": "The hierarchy fixture documents nested spaces and unread badges."
+      }
+    },
+    {
+      "slug": "unread-room-filter",
+      "title": "Unread room filter",
+      "summary": "Focus the room list on unread conversations while keeping the active room available.",
+      "status": "preview",
+      "spec": "Spec 54",
+      "specLinks": [
         {
           "label": "Spec 54",
           "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
@@ -206,9 +221,9 @@
       "flag": "room_list_unread_filter",
       "snapshot": {
         "suite": "e2e",
-        "name": "space-hierarchy-foundation",
-        "alt": "Charm space rail and room list showing a Team Space hierarchy",
-        "caption": "The hierarchy fixture documents nested spaces and unread badges."
+        "name": "room-list-org-unread-filter",
+        "alt": "Charm room list filtered to unread conversations",
+        "caption": "The E2E fixture verifies the unread-only filter and active-room retention."
       }
     },
     {
