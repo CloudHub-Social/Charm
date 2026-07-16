@@ -111,6 +111,21 @@ fn resolve_sentry_environment() -> Option<String> {
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
+/// Separate from `RUNTIME_LOG_CONSENT`: `sentryEnabled` (the primary
+/// Sentry opt-in — crash reports, performance, breadcrumbs) and
+/// `logsEnabled` (a stricter sub-toggle gating only native log events) are
+/// independent settings on the Observability panel — see
+/// `ObservabilitySettings` on the frontend. A user can have Sentry on with
+/// logs off, a legitimate and likely common combination; gating
+/// `observability_trace::traced`'s performance transactions on the
+/// logs-specific flag would silently drop them for exactly that case. Starts
+/// `false` and is only ever flipped `true` by `init_sentry_from_settings`
+/// (which only runs at all when the initial `sentry_enabled` was true) or a
+/// live toggle from the panel — never assume it's `true` just because a
+/// `SentryGuard` exists, since a same-session opt-out can flip it back to
+/// `false` while the guard itself stays alive for the rest of the process
+/// (see `runtime_observability_sentry_enabled`'s doc comment).
+static RUNTIME_SENTRY_CONSENT: AtomicBool = AtomicBool::new(false);
 
 /// Consent-gated wrapper around `observability_scrub::scrub_log_in_place` —
 /// desktop is the one Sentry call site with a per-user runtime toggle (the
@@ -481,6 +496,23 @@ fn update_observability_log_consent<R: tauri::Runtime>(
     update_runtime_observability_logs_enabled(logs_enabled);
 }
 
+fn update_runtime_observability_sentry_enabled(sentry_enabled: bool) {
+    RUNTIME_SENTRY_CONSENT.store(sentry_enabled, Ordering::SeqCst);
+}
+
+/// Frontend counterpart: `persistObservabilitySettings` calls this whenever
+/// `sentryEnabled` changes, the same live-sync pattern
+/// `update_observability_log_consent` already uses for `logsEnabled` — see
+/// `RUNTIME_SENTRY_CONSENT`'s doc comment for why this needs to be a
+/// separate command/flag rather than reusing that one.
+#[tauri::command]
+fn update_observability_sentry_consent<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    sentry_enabled: bool,
+) {
+    update_runtime_observability_sentry_enabled(sentry_enabled);
+}
+
 /// Returns every catalog flag resolved to a boolean for this install
 /// (local override over static default). The frontend seeds its own resolver
 /// cache from this so JS and the Rust core agree on flag state for the same
@@ -599,20 +631,23 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `pub(crate)`, not private: also read by `observability_trace::traced`/
-/// `traced_infallible` to gate the Sentry performance transactions they
-/// start. Despite the name (kept as-is to avoid touching every existing call
-/// site for a rename), this is the one live, in-process consent toggle for
-/// *all* Sentry reporting on desktop, not logs specifically — see this
-/// static's own doc comment. Native transactions from a background task
-/// (the sync loop, an open room's timeline) have no per-call opportunity to
-/// re-check `observability_enabled_from_store` on disk the way an IPC
-/// command handler might, and `SentryGuard` itself stays alive for the rest
-/// of the process after a same-session opt-out (only the frontend client and
-/// this flag update live) — so without this check, a transaction started
-/// after in-session opt-out would still report.
-pub(crate) fn runtime_observability_logs_enabled() -> bool {
+fn runtime_observability_logs_enabled() -> bool {
     RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
+}
+
+/// `pub(crate)`: read by `observability_trace::traced`/`traced_infallible`
+/// to gate the Sentry performance transactions they start — see
+/// `RUNTIME_SENTRY_CONSENT`'s doc comment for why this needs to be its own
+/// flag rather than reusing `runtime_observability_logs_enabled`. Native
+/// transactions from a background task (the sync loop, an open room's
+/// timeline) have no per-call opportunity to re-check
+/// `observability_enabled_from_store` on disk the way an IPC command handler
+/// might, and `SentryGuard` itself stays alive for the rest of the process
+/// after a same-session opt-out (only the frontend client and this flag
+/// update live) — so without this check, a transaction started after
+/// in-session opt-out would still report.
+pub(crate) fn runtime_observability_sentry_enabled() -> bool {
+    RUNTIME_SENTRY_CONSENT.load(Ordering::SeqCst)
 }
 
 /// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):
@@ -658,6 +693,12 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
 
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
     update_runtime_observability_logs_enabled(logs_enabled);
+    // `sentry_enabled` is already known `true` here (the early return above
+    // covers `false`), so this seeds the flag to match the state a
+    // `SentryGuard` is about to exist for — the panel's live toggle
+    // (`update_observability_sentry_consent`) takes over from here for any
+    // change during this same session.
+    update_runtime_observability_sentry_enabled(true);
     let environment = resolve_sentry_environment().map(Cow::Owned);
     // Priority: an explicit runtime SENTRY_RELEASE override, then the
     // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
@@ -1118,6 +1159,7 @@ pub fn run() {
             greet,
             get_platform,
             update_observability_log_consent,
+            update_observability_sentry_consent,
             get_feature_flags,
             get_feature_flag_catalog,
             fetch_remote_flags,
@@ -1272,6 +1314,21 @@ mod observability_tests {
         RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
     }
 
+    static SENTRY_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+    struct RuntimeSentryConsentReset(bool);
+
+    impl Drop for RuntimeSentryConsentReset {
+        fn drop(&mut self) {
+            RUNTIME_SENTRY_CONSENT.store(self.0, Ordering::SeqCst);
+        }
+    }
+
+    fn set_runtime_sentry_consent_for_test(sentry_enabled: bool) -> RuntimeSentryConsentReset {
+        RuntimeSentryConsentReset(RUNTIME_SENTRY_CONSENT.swap(sentry_enabled, Ordering::SeqCst))
+    }
+
     // Pure redaction-rule tests (matrix ID/secret patterns, JSON walking)
     // live in `observability_scrub`'s own test module now that the logic
     // does — this module keeps only what's actually desktop-specific:
@@ -1407,6 +1464,41 @@ mod observability_tests {
         assert!(observability_logs_enabled_from_store(&dir));
 
         std::fs::remove_dir_all(&dir).expect("temp observability dir cleanup");
+    }
+
+    #[test]
+    fn runtime_sentry_consent_is_independent_of_log_consent() {
+        // The bug this guards against: gating performance transactions on
+        // the logs-specific flag would silently drop them for a user who
+        // has Sentry on but the stricter logs sub-toggle off — a legitimate,
+        // likely common combination (see `RUNTIME_SENTRY_CONSENT`'s doc
+        // comment).
+        let _log_guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
+        let _sentry_guard = SENTRY_CONSENT_TEST_LOCK
+            .lock()
+            .expect("sentry consent test lock");
+        let _log_reset = set_runtime_log_consent_for_test(false);
+        let _sentry_reset = set_runtime_sentry_consent_for_test(false);
+
+        update_runtime_observability_sentry_enabled(true);
+
+        assert!(runtime_observability_sentry_enabled());
+        assert!(!runtime_observability_logs_enabled());
+    }
+
+    #[test]
+    fn runtime_sentry_consent_updates_after_notification() {
+        let _guard = SENTRY_CONSENT_TEST_LOCK
+            .lock()
+            .expect("sentry consent test lock");
+        let _reset = set_runtime_sentry_consent_for_test(false);
+
+        update_runtime_observability_sentry_enabled(true);
+        assert!(runtime_observability_sentry_enabled());
+
+        update_runtime_observability_sentry_enabled(false);
+
+        assert!(!runtime_observability_sentry_enabled());
     }
 
     #[test]

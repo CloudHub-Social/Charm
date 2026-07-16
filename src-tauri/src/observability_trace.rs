@@ -63,29 +63,36 @@ pub fn continue_ipc_trace(
 /// the span status (based on `Result::is_ok`), matching the shape
 /// `send_attachment` already reports by hand.
 ///
-/// Gated on `crate::runtime_observability_logs_enabled()`: on desktop, the
-/// Observability settings panel can be toggled off mid-session, which closes
-/// the frontend Sentry client and flips that in-process flag, but leaves the
-/// backend's `SentryGuard` itself alive for the rest of the process (see its
-/// own doc comment on why it's initialized once at startup). Without this
-/// check, a call from a still-running background task (the sync loop, an
-/// open room's timeline) would keep starting real transactions after a
-/// same-session opt-out. When disabled, `fut` still runs — only the tracing
-/// wrapper around it is skipped — so callers never lose functionality over a
-/// user's telemetry choice.
+/// Gated on `crate::runtime_observability_sentry_enabled()` — deliberately
+/// *not* `runtime_observability_logs_enabled()`: `sentryEnabled` (the
+/// primary opt-in, covering crash reports/performance/breadcrumbs) and
+/// `logsEnabled` (a stricter sub-toggle for native log events only) are
+/// independent settings, and a user can have Sentry on with logs off — a
+/// legitimate, likely common combination that gating on the logs flag would
+/// silently drop these transactions for.
+///
+/// On desktop, the Observability settings panel can be toggled off
+/// mid-session, which closes the frontend Sentry client and flips this
+/// in-process flag, but leaves the backend's `SentryGuard` itself alive for
+/// the rest of the process (see its own doc comment on why it's initialized
+/// once at startup). Without this check, a call from a still-running
+/// background task (the sync loop, an open room's timeline) would keep
+/// starting real transactions after a same-session opt-out. When disabled,
+/// `fut` still runs — only the tracing wrapper around it is skipped — so
+/// callers never lose functionality over a user's telemetry choice.
 ///
 /// Note for any future caller from `charm-web-server`: that flag is only
-/// ever toggled by desktop's `update_observability_log_consent` Tauri
+/// ever toggled by desktop's `update_observability_sentry_consent` Tauri
 /// command (the companion server has no equivalent per-user runtime toggle —
-/// see `scrub_log`'s doc comment for the same distinction), so it reads as
-/// permanently `false` in that binary. A web-server call site would need its
-/// own gating, not this one.
+/// see `scrub_log`'s doc comment for the same distinction on the logs flag),
+/// so it reads as permanently `false` in that binary. A web-server call site
+/// would need its own gating, not this one.
 pub async fn traced<T, E>(
     name: &str,
     op: &str,
     fut: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
-    if !crate::runtime_observability_logs_enabled() {
+    if !crate::runtime_observability_sentry_enabled() {
         return fut.await;
     }
 

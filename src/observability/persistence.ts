@@ -80,6 +80,28 @@ async function syncRustLogConsent(logsEnabled: boolean): Promise<void> {
   }
 }
 
+/**
+ * Rust's counterpart to `syncRustLogConsent`, but for the primary
+ * `sentryEnabled` opt-in rather than the stricter `logsEnabled` sub-toggle —
+ * kept as its own call (not folded into `syncRustLogConsent`) because the
+ * two are independent settings and the backend gates different things on
+ * each (`observability_trace::traced`'s performance transactions on this
+ * one; native log events on the other). See `RUNTIME_SENTRY_CONSENT`'s doc
+ * comment in `src-tauri/src/lib.rs`.
+ */
+async function syncRustSentryConsent(sentryEnabled: boolean): Promise<void> {
+  if (!isTauri()) {
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("update_observability_sentry_consent", { sentryEnabled });
+  } catch (error) {
+    console.warn("Failed to sync Rust observability Sentry consent", error);
+    // Rust reads the persisted store on the next app start if same-session IPC is unavailable.
+  }
+}
+
 async function readStoreEnvelope(): Promise<PersistedEnvelope | null> {
   try {
     const store = await getStore();
@@ -113,6 +135,9 @@ export async function persistObservabilitySettings(
   if (!envelope.state.logsEnabled) {
     await syncRustLogConsent(false);
   }
+  if (!envelope.state.sentryEnabled) {
+    await syncRustSentryConsent(false);
+  }
   let persisted = false;
   try {
     const durablePersist = durablePersistTail.then(async () => {
@@ -143,5 +168,8 @@ export async function persistObservabilitySettings(
   }
   if (persisted && mutationId === persistMutationId && envelope.state.logsEnabled) {
     await syncRustLogConsent(true);
+  }
+  if (persisted && mutationId === persistMutationId && envelope.state.sentryEnabled) {
+    await syncRustSentryConsent(true);
   }
 }
