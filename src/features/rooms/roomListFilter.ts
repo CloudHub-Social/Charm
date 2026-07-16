@@ -57,9 +57,10 @@ export function filterRoomsToUnread(
 
 /**
  * Prunes a selected space's hierarchy to unread/open joined rooms. Ancestor
- * spaces stay visible when they lead to a retained descendant; unjoined rooms
- * have no local unread state and are omitted. The same hidden-room rules as
- * RoomList's normal hierarchy render keep counts and visible rows aligned.
+ * spaces stay visible when they lead to a retained descendant. Unjoined leaves
+ * have no local unread state and are omitted, while unjoined ancestors remain
+ * when they lead to a retained joined descendant. The same hidden-room rules
+ * as RoomList's normal hierarchy render keep counts and visible rows aligned.
  */
 export function filterHierarchyToUnread(
   nodes: SpaceHierarchyNode[],
@@ -67,8 +68,9 @@ export function filterHierarchyToUnread(
   activeRoomId: string | null,
 ): SpaceHierarchyNode[] {
   return nodes.flatMap((node) => {
+    const children = filterHierarchyToUnread(node.children, roomById, activeRoomId);
     const joinedRoom = roomById.get(node.child.room_id);
-    if (!joinedRoom) return [];
+    if (!joinedRoom) return children.length === 0 ? [] : [{ ...node, children }];
     if (
       joinedRoom.is_direct ||
       (!joinedRoom.is_space && (joinedRoom.is_favourite || joinedRoom.is_low_priority))
@@ -76,7 +78,6 @@ export function filterHierarchyToUnread(
       return [];
     }
 
-    const children = filterHierarchyToUnread(node.children, roomById, activeRoomId);
     const retainSelf = joinedRoom.has_unread || joinedRoom.room_id === activeRoomId;
     if (!retainSelf && children.length === 0) return [];
 
