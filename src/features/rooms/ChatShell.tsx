@@ -925,6 +925,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
         title="Delete message?"
         description="This removes the message for everyone in the room and cannot be undone."
         confirmLabel="Delete message"
+        submittingLabel="Deleting…"
         reasonDescription="The reason is sent to your homeserver and may be visible to other room clients."
         onOpenChange={(open) => {
           if (!open) setRedactionTargetEventId(null);

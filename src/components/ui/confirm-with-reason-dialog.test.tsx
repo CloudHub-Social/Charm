@@ -10,6 +10,7 @@ function renderDialog(onConfirm = vi.fn().mockResolvedValue(true), open = true) 
       title="Delete message?"
       description="This cannot be undone."
       confirmLabel="Delete message"
+      submittingLabel="Deleting…"
       onOpenChange={onOpenChange}
       onConfirm={onConfirm}
     />,
@@ -80,6 +81,7 @@ describe("ConfirmWithReasonDialog", () => {
         title="Delete message?"
         description="This cannot be undone."
         confirmLabel="Delete message"
+        submittingLabel="Deleting…"
         onOpenChange={onOpenChange}
         onConfirm={onConfirm}
       />,
@@ -91,6 +93,7 @@ describe("ConfirmWithReasonDialog", () => {
         title="Delete message?"
         description="This cannot be undone."
         confirmLabel="Delete message"
+        submittingLabel="Deleting…"
         onOpenChange={onOpenChange}
         onConfirm={onConfirm}
       />,

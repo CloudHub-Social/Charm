@@ -15,6 +15,7 @@ interface ConfirmWithReasonDialogProps {
   title: string;
   description: string;
   confirmLabel: string;
+  submittingLabel: string;
   reasonLabel?: string;
   reasonDescription?: string;
   onOpenChange: (open: boolean) => void;
@@ -27,6 +28,7 @@ export function ConfirmWithReasonDialog({
   title,
   description,
   confirmLabel,
+  submittingLabel,
   reasonLabel = "Reason (optional)",
   reasonDescription,
   onOpenChange,
@@ -94,7 +96,7 @@ export function ConfirmWithReasonDialog({
             Cancel
           </Button>
           <Button variant="destructive" onClick={confirm} disabled={submitting}>
-            {submitting ? "Deleting…" : confirmLabel}
+            {submitting ? submittingLabel : confirmLabel}
           </Button>
         </DialogFooter>
       </DialogContent>
