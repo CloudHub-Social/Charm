@@ -1081,6 +1081,19 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // though the cached value was sitting right there the whole time. Only
     // consumed (`forget_evicted_presence`, below) once the restore this
     // presence was seeded into has actually succeeded.
+    // Checked *before* the real restore below — see
+    // `PersistenceStore::is_expired`'s doc comment for why an idle-evicted
+    // session already past the retention window must be rejected here, not
+    // just left for the next daily sweep: without this, a client that keeps
+    // presenting an already-expired cookie could stay resurrected
+    // indefinitely, since a successful restore's own `touch_last_seen`
+    // would reset its clock right back to "now" every time.
+    if persistence
+        .is_expired(&token, session::session_cookie_max_age())
+        .await
+    {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    }
     let evicted_presence = state.sessions.peek_evicted_presence(&token);
     let Some((homeserver_url, session, initial_response, initial_access_token)) =
         persistence.restore_by_token(&token, evicted_presence).await
