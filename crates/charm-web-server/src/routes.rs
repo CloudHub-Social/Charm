@@ -861,7 +861,13 @@ async fn finish_login(
     let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         match persistence
-            .save(&token, homeserver_url, matrix_session, crypto, true)
+            .save(
+                &token,
+                homeserver_url,
+                matrix_session,
+                crypto,
+                crate::persistence::SaveMode::FreshLogin,
+            )
             .await
         {
             Ok(()) => {

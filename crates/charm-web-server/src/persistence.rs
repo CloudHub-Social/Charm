@@ -237,6 +237,34 @@ fn virtual_hosted_endpoint(bucket: &str, region_endpoint: &str) -> String {
     }
 }
 
+/// Which of [`PersistenceStore::save`]'s three genuinely distinct callers
+/// this call is — a bare `bool` (an earlier revision of this parameter) can
+/// only distinguish two cases, but a missing object means something
+/// different for each of `Resave` and `RetryInitialSave` even though both
+/// otherwise behave identically (preserve `last_seen_unix`, retry past a
+/// benign conflict).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveMode {
+    /// A fresh login/register (`routes::finish_login`) — a browser request
+    /// genuinely just happened, so `last_seen_unix` bumps to now, and the
+    /// write unconditionally wins regardless of whatever's currently there.
+    FreshLogin,
+    /// An ordinary re-save of a session already known to be persisted —
+    /// `main.rs`'s idle-eviction re-save, and `sync_loop`'s token-refresh
+    /// repersist once its very first save has already landed
+    /// (`PersistHandle::initial_access_token` is `Some`). A missing object
+    /// here is indistinguishable from another process's logout having just
+    /// deleted it, so it must never be resurrected.
+    Resave,
+    /// `sync_loop`'s token-refresh repersist when
+    /// `PersistHandle::initial_access_token` is `None` — `finish_login`'s
+    /// own initial save never landed (a transient disk/lock error), and
+    /// this is the retry that's supposed to actually persist the session
+    /// for the first time. Unlike `Resave`, a missing object here is the
+    /// *expected* case to create, not a resurrection.
+    RetryInitialSave,
+}
+
 pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
@@ -816,26 +844,17 @@ impl PersistenceStore {
     /// at that same identity. Persisting a different pair later would orphan
     /// both the original local store and its remote snapshots.
     ///
-    /// `bump_last_seen` — `true` only for a fresh login/register, where a
-    /// browser request genuinely just happened. `main.rs`'s idle-eviction
-    /// re-save and `sync_loop`'s token-refresh repersist both call this too,
-    /// but neither is a sign the browser actually did anything just now —
-    /// resetting `last_seen_unix` to "now" for either would silently grant
-    /// an otherwise-abandoned session another full `SESSION_COOKIE_MAX_AGE_SECS`
-    /// of server-side retention on every idle eviction or token rotation,
-    /// with no corresponding refresh of the browser's own cookie
-    /// (`routes::refresh_session_cookie` only fires from an actual
-    /// authenticated request). `false` preserves whatever `last_seen_unix`
-    /// was already on disk instead — read fresh under the same lock this
-    /// whole call already holds, same pattern [`Self::touch_last_seen_now`]
-    /// uses (Codex review finding on #280).
+    /// `mode` selects among the three genuinely distinct callers of this
+    /// function — see [`SaveMode`]'s own doc comment for what each one
+    /// means and why a plain `bool` (an earlier revision of this parameter)
+    /// couldn't tell all three apart (Codex review finding on #280).
     pub async fn save(
         &self,
         token: &str,
         homeserver_url: &str,
         session: &MatrixSession,
         crypto: Option<(&str, &str)>,
-        bump_last_seen: bool,
+        mode: SaveMode,
     ) -> Result<(), String> {
         // See `token_write_locks`'s doc comment — held for this whole call so
         // a concurrent `touch_last_seen` for the same token can't read a
@@ -843,11 +862,10 @@ impl PersistenceStore {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
 
-        if bump_last_seen {
+        if mode == SaveMode::FreshLogin {
             // A fresh login/register is meant to unconditionally win
-            // regardless of whatever's currently there — same as this
-            // function's behavior before `bump_last_seen` existed. No read,
-            // no conflict possible, nothing to retry.
+            // regardless of whatever's currently there. No read, no
+            // conflict possible, nothing to retry.
             let (crypto_store_key, crypto_passphrase) = match crypto {
                 Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
                 None => (None, None),
@@ -873,39 +891,45 @@ impl PersistenceStore {
                 .map_err(|e| e.to_string());
         }
 
-        // `bump_last_seen: false` — `main.rs`'s idle-eviction re-save and
-        // `sync_loop`'s token-refresh repersist. Both only ever fire for a
-        // token that was already live in `SessionStore`, which itself is
-        // only ever populated from a token that already has a persisted
-        // record (a prior `save(bump_last_seen: true)`, or `restore_one`
-        // reading one back) — so, unlike the `bump_last_seen: true` case,
-        // there is no legitimate "never persisted yet" scenario for this
-        // path to create fresh. A missing object here — on the very first
-        // read, not just mid-retry — is indistinguishable from "another
-        // process's logout just deleted it", and treating *any* `None` read
-        // as license to `put` a brand new object would recreate a session
-        // that was just correctly revoked and removed, exactly the
-        // resurrection every other fix on this PR closes (Codex review
-        // finding on #280 — this was the one remaining gap: the earlier
-        // `ever_saw_existing` tracking only caught the object vanishing
-        // *during* this call's own retries, not it already being gone on
-        // the very first read). So: `None`, at any attempt, always means
-        // "don't write, don't resurrect" — never "create".
+        // `Resave` (`main.rs`'s idle-eviction re-save, `sync_loop`'s
+        // ordinary token-refresh repersist) and `RetryInitialSave`
+        // (`sync_loop`'s repersist when `PersistHandle::initial_access_token`
+        // is `None` — `finish_login`'s own initial save never landed) both
+        // preserve the existing `last_seen_unix` rather than bumping it —
+        // neither is a sign the browser actually did anything just now, and
+        // resetting the clock would silently grant an otherwise-abandoned
+        // session another full retention window with no corresponding
+        // cookie refresh. They differ only in what a missing object means:
+        // for `Resave`, the token was already live in `SessionStore`, which
+        // is only ever populated from an already-persisted record, so a
+        // missing object is indistinguishable from "another process's
+        // logout just deleted it" and must never be resurrected. For
+        // `RetryInitialSave` specifically, nothing may have ever landed on
+        // disk yet — that retry exists *because* the very first save may
+        // have failed — so a missing object there is the expected case to
+        // create, not a resurrection (Codex review finding on #280: an
+        // earlier revision of this treated every `bump_last_seen: false`
+        // call the same as `Resave`, which broke exactly this retry).
         //
         // Bounded retry on a `Precondition` conflict against an object that
-        // *does* still exist, though, is still correct and necessary: this
-        // write's payload can be the new, just-refreshed Matrix token pair
-        // from `sync_loop`'s repersist, and a benign conflict (e.g. a
-        // `touch_last_seen_now` from another instance, not a logout)
-        // silently treated as a no-op would drop that refresh on the floor.
+        // *does* still exist, though, is correct and necessary for both:
+        // this write's payload can be the new, just-refreshed Matrix token
+        // pair, and a benign conflict (e.g. a `touch_last_seen_now` from
+        // another instance, not a logout) silently treated as a no-op would
+        // drop that refresh on the floor.
         const MAX_SAVE_ATTEMPTS: u32 = 5;
         for attempt in 0..MAX_SAVE_ATTEMPTS {
-            let Some((entry, version)) = self.read_one_with_version(token).await else {
-                tracing::info!(
-                    "skipped a re-save for a persisted session: removed by a racing logout \
-                     on another instance"
-                );
-                return Ok(());
+            let existing = self.read_one_with_version(token).await;
+            let (last_seen_unix, existing_version) = match &existing {
+                Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
+                None if mode == SaveMode::RetryInitialSave => (None, None),
+                None => {
+                    tracing::info!(
+                        "skipped a re-save for a persisted session: removed by a racing \
+                         logout on another instance"
+                    );
+                    return Ok(());
+                }
             };
             let (crypto_store_key, crypto_passphrase) = match crypto {
                 Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
@@ -919,11 +943,24 @@ impl PersistenceStore {
                     session: session.clone(),
                     crypto_store_key,
                     crypto_passphrase,
-                    last_seen_unix: entry.last_seen_unix,
+                    last_seen_unix,
                 },
                 &path,
             )?;
             let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            let Some(version) = existing_version else {
+                // `RetryInitialSave` with nothing there yet — plain create,
+                // the same as `FreshLogin`, just without bumping
+                // `last_seen_unix` (there's no browser activity to
+                // attribute this one to; `repersist_if_token_changed` calls
+                // this from a background sync cycle, not a request).
+                return self
+                    .store
+                    .put(&path, PutPayload::from(json))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+            };
             let opts = object_store::PutOptions {
                 mode: object_store::PutMode::Update(version),
                 ..Default::default()
@@ -1711,7 +1748,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1736,7 +1773,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1768,7 +1805,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@restart:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1844,7 +1881,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@bob:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1866,7 +1903,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@carol:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1885,7 +1922,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@dave:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1895,7 +1932,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@erin:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1917,7 +1954,7 @@ mod tests {
                 "https://old.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1927,7 +1964,7 @@ mod tests {
                 "https://new.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1951,7 +1988,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@grace:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1995,7 +2032,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2024,7 +2061,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@iris:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2057,7 +2094,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@judy:example.invalid"),
                 Some(("store-key-abc", "passphrase-xyz")),
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2151,7 +2188,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@kevin:example.invalid"),
                 Some(("storeKeyLogout", "passphrase-logout")),
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2375,7 +2412,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2403,7 +2440,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@nadia:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2447,7 +2484,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@mallory:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2680,7 +2717,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@idle-resave:example.invalid"),
                 None,
-                false,
+                SaveMode::Resave,
             )
             .await
             .unwrap();
@@ -2723,7 +2760,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@concurrent-conflict:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2742,7 +2779,7 @@ mod tests {
                 "https://example.invalid",
                 &refreshed,
                 None,
-                false,
+                SaveMode::Resave,
             ),
             process_b.touch_last_seen_now("tok-concurrent-conflict"),
         );
@@ -2796,7 +2833,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@fresh-login:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2881,7 +2918,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@cross-process:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -2951,7 +2988,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@cross-process-resave:example.invalid"),
                 None,
-                true,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -3019,7 +3056,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@never-persisted:example.invalid"),
                 None,
-                false,
+                SaveMode::Resave,
             )
             .await
             .unwrap();
@@ -3027,6 +3064,37 @@ mod tests {
         assert!(
             store.read_one("tok-never-persisted").await.is_none(),
             "a bump_last_seen: false save must never create a new persisted session"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Preserve
+    /// retries after an initial persistence failure"): `sync_loop`'s
+    /// `repersist_if_token_changed` must still be able to create the
+    /// persisted object when `finish_login`'s own initial save failed and
+    /// nothing has ever landed on disk yet for this token —
+    /// `SaveMode::RetryInitialSave` exists specifically to allow that,
+    /// unlike `SaveMode::Resave` (tested above) which must never resurrect
+    /// a genuinely deleted session.
+    #[tokio::test]
+    async fn save_retry_initial_creates_when_nothing_was_ever_there() {
+        let dir = scratch_dir("save-retry-initial-nothing-there");
+        let store = PersistenceStore::new_for_test(&dir, [58u8; 32]);
+
+        store
+            .save(
+                "tok-retry-initial",
+                "https://example.invalid",
+                &dummy_session("@retry-initial:example.invalid"),
+                None,
+                SaveMode::RetryInitialSave,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store.read_one("tok-retry-initial").await.is_some(),
+            "SaveMode::RetryInitialSave must create a fresh object when the initial \
+             login save previously failed and nothing was ever persisted"
         );
     }
 

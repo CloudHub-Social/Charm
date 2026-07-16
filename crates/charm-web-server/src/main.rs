@@ -264,7 +264,13 @@ fn spawn_idle_session_sweeper(
                     tracing::warn!("failed to snapshot crypto store before idle eviction: {e}");
                 }
                 if let Err(e) = persistence
-                    .save(&token, &homeserver_url, &matrix_session, crypto, false)
+                    .save(
+                        &token,
+                        &homeserver_url,
+                        &matrix_session,
+                        crypto,
+                        charm_web_server::persistence::SaveMode::Resave,
+                    )
                     .await
                 {
                     // Evicted anyway — an earlier version of this tried to

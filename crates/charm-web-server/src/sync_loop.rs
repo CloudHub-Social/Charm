@@ -110,6 +110,20 @@ async fn repersist_if_token_changed(
         .crypto
         .as_ref()
         .map(|c| (c.store_key.as_str(), c.passphrase.as_str()));
+    // `last_saved_access_token` being `None` here means no save has ever
+    // succeeded yet for this handle's lifetime — either the very first call
+    // (seeded from `PersistHandle::initial_access_token`, which is `None`
+    // exactly when `finish_login`'s own initial save failed) or every prior
+    // attempt has itself failed. Either way, `persistence::save` needs to
+    // know it's allowed to create a fresh object if nothing is there yet,
+    // not treat a missing object as "another process's logout deleted it"
+    // — see `SaveMode::RetryInitialSave`'s doc comment (Codex review
+    // finding on #280).
+    let mode = if last_saved_access_token.is_none() {
+        crate::persistence::SaveMode::RetryInitialSave
+    } else {
+        crate::persistence::SaveMode::Resave
+    };
     if let Err(e) = persist
         .store
         .save(
@@ -117,7 +131,7 @@ async fn repersist_if_token_changed(
             &persist.homeserver_url,
             &session,
             crypto,
-            false,
+            mode,
         )
         .await
     {
