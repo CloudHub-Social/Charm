@@ -87,7 +87,7 @@ here.
 | 51 | [App localization](/specs/day-1/spec-51--app-localization-i18n/) | **Planned** | Stretch / lower priority |
 | 52 | [Responsive and mobile-web hardening](/specs/day-1/spec-52--responsive-and-mobile-web-layout-hardening/) | **Shipped** | [#242](https://github.com/CloudHub-Social/Charm/pull/242), [#245](https://github.com/CloudHub-Social/Charm/pull/245); redesign defaults off |
 | 53 | [Avatars and presence visuals](/specs/day-1/spec-53--avatars-and-presence-visuals/) | **Planned** | No matching merged implementation found |
-| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **Planned** | No matching merged implementation found |
+| 54 | [Room-list enrichment and sorting](/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/) | **In progress** | Flag-gated All / Unread filters for Home, DMs, and Spaces are implemented; sorting and row enrichment remain |
 | 55 | [Command palette and quick switcher](/specs/day-1/spec-55--command-palette-and-quick-switcher/) | **Planned** | No matching merged implementation found |
 | 56 | [Room invites](/specs/day-1/spec-56--room-invites-surface/) | **Shipped** | [#243](https://github.com/CloudHub-Social/Charm/pull/243), default-off flag |
 | 57 | [Activity and notifications inbox](/specs/day-1/spec-57--in-app-activity-and-notifications-inbox/) | **Planned** | No matching merged implementation found |

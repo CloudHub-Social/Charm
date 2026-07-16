@@ -34,13 +34,12 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-14, after merging Spec 30's focus-mode coverage with Spec 32's
-        // room-alias-management and Spec 29's link-preview coverage. When tests
-        // raise coverage, raise these floors in the same PR.
-        lines: 85.4,
-        statements: 83.5,
-        functions: 76,
-        branches: 83.1,
+        // 2026-07-16, after adding Spec 54's unread room-list filtering coverage.
+        // When tests raise coverage, raise these floors in the same PR.
+        lines: 86,
+        statements: 83.9,
+        functions: 76.6,
+        branches: 83.4,
       },
     },
   },
