@@ -53,8 +53,8 @@ export function ConfirmWithReasonDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={submitting ? undefined : onOpenChange}>
-      <DialogContent>
+    <Dialog open={open} onOpenChange={(nextOpen) => !submitting && onOpenChange(nextOpen)}>
+      <DialogContent showCloseButton={!submitting}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

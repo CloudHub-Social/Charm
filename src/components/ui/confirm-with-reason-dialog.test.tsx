@@ -41,4 +41,25 @@ describe("ConfirmWithReasonDialog", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
+
+  it("prevents closing while the destructive action is pending", async () => {
+    let resolveConfirmation: ((value: boolean) => void) | undefined;
+    const onConfirm = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveConfirmation = resolve;
+        }),
+    );
+    const { onOpenChange } = renderDialog(onConfirm);
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete message" }));
+
+    expect(await screen.findByRole("button", { name: "Deleting…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    resolveConfirmation?.(true);
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
 });
