@@ -2859,7 +2859,7 @@ describe("ChatShell", () => {
 
     await waitFor(() =>
       expect(clipboardWriteText).toHaveBeenCalledWith(
-        "https://matrix.to/#/%21room%3Alocalhost/%24event%3Alocalhost",
+        "https://matrix.to/#/%21room%3Alocalhost/%24event%3Alocalhost?via=localhost",
       ),
     );
   });

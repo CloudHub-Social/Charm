@@ -11,7 +11,14 @@ function encodeRfc3986Component(value: string): string {
   );
 }
 
-/** Build the canonical matrix.to permalink for one event in a room. */
-export function eventPermalink(roomId: string, eventId: string): string {
-  return `https://matrix.to/#/${encodeRfc3986Component(roomId)}/${encodeRfc3986Component(eventId)}`;
+/** Return the server-name portion of a Matrix user id, including any port. */
+export function userIdServerName(userId: string): string | null {
+  const separator = userId.indexOf(":");
+  if (!userId.startsWith("@") || separator < 2 || separator === userId.length - 1) return null;
+  return userId.slice(separator + 1);
+}
+
+/** Build a routable matrix.to permalink for one event in a room. */
+export function eventPermalink(roomId: string, eventId: string, viaServer: string): string {
+  return `https://matrix.to/#/${encodeRfc3986Component(roomId)}/${encodeRfc3986Component(eventId)}?via=${encodeRfc3986Component(viaServer)}`;
 }

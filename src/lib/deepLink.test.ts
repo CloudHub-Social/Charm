@@ -22,6 +22,14 @@ describe("parseRoomTarget", () => {
     );
   });
 
+  it("extracts the room from a matrix.to event permalink", () => {
+    expect(
+      parseRoomTarget(
+        "https://matrix.to/#/%21abc123%3Alocalhost/%24event%3Alocalhost?via=localhost",
+      ),
+    ).toBe("!abc123:localhost");
+  });
+
   it("returns null for unrelated URLs", () => {
     expect(parseRoomTarget("https://example.com/not-a-deep-link")).toBeNull();
   });

@@ -20,7 +20,7 @@ import { usePresence } from "@/features/presence/usePresence";
 import { cn } from "@/lib/utils";
 import { useAdaptiveLayout } from "@/features/shell/useAdaptiveLayout";
 import { useFlag } from "@/featureFlags";
-import { eventPermalink } from "@/lib/matrixPermalink";
+import { eventPermalink, userIdServerName } from "@/lib/matrixPermalink";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -175,6 +175,7 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const actionsRefs = useRef<Map<string, MessageActionsHandle>>(new Map());
   const roomId = room?.room_id ?? "";
   const activeRoomId = room?.room_id ?? null;
+  const permalinkViaServer = userIdServerName(currentUserId);
   useEffect(() => {
     setShowMobileFormatting(false);
   }, [activeRoomId]);
@@ -877,9 +878,11 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     onDelete={() => handleDelete(message.event_id)}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
                     onCopyLink={() => {
-                      if (!navigator.clipboard?.writeText) return;
+                      if (!navigator.clipboard?.writeText || !permalinkViaServer) return;
                       navigator.clipboard
-                        .writeText(eventPermalink(room.room_id, message.event_id))
+                        .writeText(
+                          eventPermalink(room.room_id, message.event_id, permalinkViaServer),
+                        )
                         .catch(logAndIgnore);
                     }}
                     onJumpToMessage={handleJumpToMessage}

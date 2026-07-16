@@ -47,7 +47,7 @@ test("copies the canonical permalink for a sent message", async ({ page, context
 
   await expect
     .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-    .toBe("https://matrix.to/#/%21e2e%3Alocalhost/%241");
+    .toBe("https://matrix.to/#/%21e2e%3Alocalhost/%241?via=localhost");
 });
 
 test("sending a message shows exactly one bubble that goes pending -> sent, never duplicated", async ({
