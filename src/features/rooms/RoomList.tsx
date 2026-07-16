@@ -146,6 +146,11 @@ export function RoomList({
   // by DND (see `shell::compute_badge_state`'s own doc comment).
   const focusModeFlagEnabled = useFlag("focus_mode");
   const roomListUnreadFilterFlagEnabled = useFlag("room_list_unread_filter");
+  // `ROW_HEIGHT_PX` below assumes every row is the same fixed height, which
+  // the message-preview flag breaks (rows with a preview grow a second text
+  // line) — same "would silently corrupt order" reasoning `unreadOnly`
+  // already disables reordering for below, not a new precedent.
+  const roomListMessagePreviewFlagEnabled = useFlag("room_list_message_preview");
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
@@ -294,7 +299,12 @@ export function RoomList({
   function renderSectionRooms(sectionRooms: RoomSummary[], fullSectionRooms = sectionRooms) {
     // Reordering a filtered subset would compute positions against missing
     // rows and silently corrupt the full section order once "All" is restored.
-    const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
+    // Message-preview rows aren't `ROW_HEIGHT_PX` tall either, so disable
+    // reordering there too rather than rounding a drag to the wrong index.
+    const canReorder =
+      !unreadOnly &&
+      !roomListMessagePreviewFlagEnabled &&
+      hasSameRoomOrder(sectionRooms, fullSectionRooms);
     return sectionRooms.map((room, index) => (
       <DraggableRoomRow
         key={room.room_id}

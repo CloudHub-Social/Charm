@@ -6,9 +6,10 @@
 use matrix_sdk::latest_events::LatestEventValue;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::Room;
-use matrix_sdk::ruma::events::room::message::MessageType;
+use matrix_sdk::ruma::events::room::message::{MessageType, Relation};
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName, UserTagName};
 use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
+use matrix_sdk::ruma::html::{HtmlSanitizerMode, RemoveReplyFallback};
 use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -63,6 +64,13 @@ fn truncate_preview(text: &str, max_chars: usize) -> String {
 /// [`message_type_preview_text`] instead of using the raw (often
 /// filename-only) `body()`, since this preview is read standalone rather
 /// than alongside a media attachment already rendered in a notification.
+///
+/// Normalizes the content the same way the open timeline (`matrix-sdk-ui`'s
+/// `Timeline`) does before previewing it: an edit's top-level body/msgtype is
+/// just the `* <fallback>` marker, so an `m.replace` relation swaps in
+/// `m.new_content`'s msgtype first; a reply's body is prefixed with the
+/// quoted-fallback text, which `sanitize` strips once the (possibly just-
+/// substituted) msgtype's relation says it's a reply.
 fn room_message_preview_from_raw(
     raw: &matrix_sdk::ruma::serde::Raw<AnySyncTimelineEvent>,
 ) -> Option<(String, String)> {
@@ -73,15 +81,17 @@ fn room_message_preview_from_raw(
     else {
         return None;
     };
-    if matches!(
-        original.content.msgtype,
-        MessageType::VerificationRequest(_)
-    ) {
+    let mut content = original.content.clone();
+    if let Some(Relation::Replacement(replacement)) = content.relates_to.clone() {
+        content.apply_replacement(replacement.new_content);
+    }
+    if matches!(content.msgtype, MessageType::VerificationRequest(_)) {
         return None;
     }
+    content.sanitize(HtmlSanitizerMode::Compat, RemoveReplyFallback::Yes);
     Some((
         original.sender.to_string(),
-        message_type_preview_text(&original.content.msgtype),
+        message_type_preview_text(&content.msgtype),
     ))
 }
 
@@ -1014,5 +1024,46 @@ mod tests {
             .into_raw_sync();
 
         assert!(room_message_preview_from_raw(&raw).is_none());
+    }
+
+    #[test]
+    fn room_message_preview_strips_the_rich_reply_fallback() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .text_msg("> <@bob:example.org> earlier message\n\nsee you at 6")
+            .sender(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$reply"))
+            .reply_to(matrix_sdk::ruma::event_id!("$original"))
+            .into_raw_sync();
+
+        let (_, text) = room_message_preview_from_raw(&raw).expect("a reply message has a preview");
+        // Not the raw fallback-prefixed body — just the actual reply text.
+        assert_eq!(text, "see you at 6");
+    }
+
+    #[test]
+    fn room_message_preview_uses_the_replacement_content_for_an_edit() {
+        use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .text_msg("* see you at 7")
+            .sender(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$edit"))
+            .edit(
+                matrix_sdk::ruma::event_id!("$original"),
+                RoomMessageEventContentWithoutRelation::text_plain("see you at 7"),
+            )
+            .into_raw_sync();
+
+        let (_, text) =
+            room_message_preview_from_raw(&raw).expect("an edited message has a preview");
+        // Not the top-level `* <fallback>` body — the replacement's real text.
+        assert_eq!(text, "see you at 7");
     }
 }
