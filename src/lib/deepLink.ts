@@ -26,7 +26,11 @@ export function parseRoomTarget(url: string): string | null {
       // Event permalinks add a second path component. Room navigation does
       // not consume the event yet, but it must still pass only the room id or
       // alias downstream rather than treating `<room>/<event>` as a room id.
-      const [roomTarget] = fragmentPath.split("/", 1);
+      // Only an event-id component is a separator: historical matrix.to
+      // links may contain an unencoded slash in a room alias localpart.
+      const eventSeparator = fragmentPath.search(/\/(?=(?:\$|%24))/i);
+      const roomTarget =
+        eventSeparator === -1 ? fragmentPath : fragmentPath.slice(0, eventSeparator);
       if (roomTarget) return decodeURIComponent(roomTarget);
     }
   } catch {
