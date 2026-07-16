@@ -219,6 +219,27 @@ pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
     crypto_backup: Option<Arc<crate::crypto_backup::CryptoBackupStore>>,
+    /// Serializes [`Self::save`] and [`Self::touch_last_seen`] against each
+    /// other, per token — without this, `touch_last_seen`'s read-then-write
+    /// (fired detached from `routes::require_session`) can interleave with a
+    /// concurrent `save` from `sync_loop`'s `repersist_if_token_changed`
+    /// (e.g. an idle-evicted restore whose initial sync refreshes the access
+    /// token): whichever write lands second wins the whole object, so a
+    /// `touch_last_seen` that read the *pre-refresh* entry before losing the
+    /// race would silently put the stale, already-invalidated token pair
+    /// back on disk (Codex review finding on #280). Each entry's lock is
+    /// only ever held for the few in-process, no-network operations inside
+    /// one `save`/`touch_last_seen` call — never across the `Client`
+    /// rebuild/homeserver round-trips in `restore_one` or
+    /// `restore_client_for_revocation` — so this can't become a bottleneck
+    /// or a cross-await deadlock risk. Entries are never removed (a small,
+    /// bounded amount of memory per token ever seen, for the process
+    /// lifetime) — deliberately, since removing one on `remove()` would
+    /// reopen the exact same race against an in-flight `save`/
+    /// `touch_last_seen` for that same token that started just before
+    /// logout.
+    token_write_locks:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PersistenceStore {
@@ -279,6 +300,7 @@ impl PersistenceStore {
             key,
             store,
             crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }))
     }
 
@@ -291,7 +313,22 @@ impl PersistenceStore {
             key,
             store: Arc::new(store),
             crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// The per-token write lock backing [`Self::save`]/[`Self::touch_last_seen`]'s
+    /// serialization — see [`Self::token_write_locks`]'s doc comment for why.
+    fn token_write_lock(&self, token: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .token_write_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            locks
+                .entry(token.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     pub fn with_crypto_backup(
@@ -690,6 +727,11 @@ impl PersistenceStore {
         session: &MatrixSession,
         crypto: Option<(&str, &str)>,
     ) -> Result<(), String> {
+        // See `token_write_locks`'s doc comment — held for this whole call so
+        // a concurrent `touch_last_seen` for the same token can't read a
+        // stale entry out from under this write and clobber it back on top.
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
         let (crypto_store_key, crypto_passphrase) = match crypto {
             Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
             None => (None, None),
@@ -808,6 +850,14 @@ impl PersistenceStore {
         let this = Arc::clone(self);
         let token = token.to_string();
         tokio::spawn(async move {
+            // See `token_write_locks`'s doc comment — this is the other half
+            // of the race `save`'s lock guards against: without holding it
+            // for the whole read-modify-write below, a concurrent `save`
+            // (e.g. `sync_loop`'s post-refresh repersist) landing between
+            // this task's read and its write would get silently overwritten
+            // back to the stale, already-invalidated token pair.
+            let lock = this.token_write_lock(&token);
+            let _guard = lock.lock().await;
             let Some(mut entry) = this.read_one(&token).await else {
                 return;
             };

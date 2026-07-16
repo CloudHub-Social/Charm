@@ -334,6 +334,19 @@ pub fn router(state: AppState) -> Router {
 /// on-demand persistence fallback), not the state before it ran. A
 /// missing/unknown cookie is left alone — `require_session`'s explicit 401
 /// already covers that, and there's nothing here to refresh.
+///
+/// Skips entirely when the handler's own response already sets
+/// `SESSION_COOKIE` — `login`/`register` (a *different* token than the one
+/// this middleware read from the incoming request) and `logout` (removing
+/// it) both do. Without this check, re-authenticating while the browser
+/// still carried a valid cookie for a *different*, still-live session (an
+/// account switch, or simply logging in again) would have this middleware
+/// append a second `Set-Cookie` refreshing that old token right after the
+/// handler's own `Set-Cookie` for the new one — same name and path, so
+/// common browser behavior keeps whichever header arrives last, silently
+/// discarding the fresh login and leaving the browser pointed at the old
+/// session while the new one sits orphaned server-side (Codex review
+/// finding on #280).
 async fn refresh_session_cookie(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -345,6 +358,9 @@ async fn refresh_session_cookie(
     let Some(token) = token else {
         return response;
     };
+    if response_already_sets_session_cookie(&response) {
+        return response;
+    }
     if state.sessions.get(&token).await.is_some() {
         if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string()) {
             response
@@ -353,6 +369,60 @@ async fn refresh_session_cookie(
         }
     }
     response
+}
+
+/// Whether `response` already carries a `Set-Cookie: charm_session=...`
+/// header of its own — see [`refresh_session_cookie`]'s doc comment for why
+/// that must suppress this middleware's refresh rather than stack another
+/// `Set-Cookie` on top of it.
+fn response_already_sets_session_cookie(response: &axum::response::Response) -> bool {
+    response
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|s| s.starts_with(&format!("{SESSION_COOKIE}=")))
+        })
+}
+
+#[cfg(test)]
+mod refresh_session_cookie_tests {
+    use super::response_already_sets_session_cookie;
+
+    fn response_with_set_cookie(cookie: &str) -> axum::response::Response {
+        axum::response::Response::builder()
+            .header(axum::http::header::SET_COOKIE, cookie)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    /// Regression test for the actual review finding: re-authenticating
+    /// while the browser still carries a cookie for a *different*,
+    /// still-live session must not have `refresh_session_cookie` append a
+    /// second `Set-Cookie` for the old token on top of the handler's own
+    /// fresh one — same name/path, so whichever the browser keeps is
+    /// effectively random, and clobbering the new login silently orphans it.
+    #[test]
+    fn detects_a_session_cookie_the_handler_already_set() {
+        let response = response_with_set_cookie("charm_session=new-token; Path=/; HttpOnly");
+        assert!(response_already_sets_session_cookie(&response));
+    }
+
+    #[test]
+    fn ignores_an_unrelated_cookie() {
+        let response = response_with_set_cookie("other_cookie=value; Path=/");
+        assert!(!response_already_sets_session_cookie(&response));
+    }
+
+    #[test]
+    fn no_set_cookie_header_at_all_is_not_mistaken_for_one() {
+        let response = axum::response::Response::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(!response_already_sets_session_cookie(&response));
+    }
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
