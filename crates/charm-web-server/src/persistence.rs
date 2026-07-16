@@ -557,13 +557,39 @@ impl PersistenceStore {
         &self,
         token: &str,
     ) -> Option<(PersistedSession, object_store::UpdateVersion)> {
+        self.read_one_with_version_result(token)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("{e}");
+                None
+            })
+    }
+
+    /// Same read as [`Self::read_one_with_version`], but keeping "genuinely
+    /// not there" (`Ok(None)`) distinguishable from a transient
+    /// object-store read/body/decode error (`Err`) — needed by
+    /// [`Self::save`]'s `Resave`/`RetryInitialSave` path, which must not
+    /// treat a hiccuped read the same as "another process's logout deleted
+    /// it" and silently skip persisting a refreshed token pair, leaving the
+    /// disk copy holding a token the homeserver already invalidated until
+    /// the next restart forces an avoidable re-login (Codex review finding
+    /// on #280). A decrypted-but-corrupt entry (bad nonce, wrong key,
+    /// token/path mismatch) is still treated as `Ok(None)`, not an error —
+    /// that data is never coming back regardless of how many times this is
+    /// retried, so it stays lumped in with "not found" rather than wedging
+    /// a refresh loop on a session that's unrecoverable either way.
+    async fn read_one_with_version_result(
+        &self,
+        token: &str,
+    ) -> Result<Option<(PersistedSession, object_store::UpdateVersion)>, String> {
         let path = object_path_for_token(token);
         let result = match self.store.get(&path).await {
             Ok(result) => result,
-            Err(object_store::Error::NotFound { .. }) => return None,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(e) => {
-                tracing::warn!("failed to read persisted session object {path}: {e}");
-                return None;
+                return Err(format!(
+                    "failed to read persisted session object {path}: {e}"
+                ));
             }
         };
         let version = object_store::UpdateVersion {
@@ -573,32 +599,33 @@ impl PersistenceStore {
         let bytes = match result.bytes().await {
             Ok(bytes) => bytes,
             Err(e) => {
-                tracing::warn!("failed to read persisted session object {path}: {e}");
-                return None;
+                return Err(format!(
+                    "failed to read persisted session object {path}: {e}"
+                ));
             }
         };
         let blob: EncryptedBlob = match serde_json::from_slice(&bytes) {
             Ok(blob) => blob,
             Err(e) => {
                 tracing::warn!("dropping unreadable persisted session object {path}: {e}");
-                return None;
+                return Ok(None);
             }
         };
         match self.decrypt(&blob, &path) {
             Ok(session)
                 if session.token == token && object_path_for_token(&session.token) == path =>
             {
-                Some((session, version))
+                Ok(Some((session, version)))
             }
             Ok(_) => {
                 tracing::warn!(
                     "dropping persisted session object {path}: decrypted token does not match lookup token"
                 );
-                None
+                Ok(None)
             }
             Err(e) => {
                 tracing::warn!("dropping unreadable persisted session object {path}: {e}");
-                None
+                Ok(None)
             }
         }
     }
@@ -919,7 +946,17 @@ impl PersistenceStore {
         // drop that refresh on the floor.
         const MAX_SAVE_ATTEMPTS: u32 = 5;
         for attempt in 0..MAX_SAVE_ATTEMPTS {
-            let existing = self.read_one_with_version(token).await;
+            // The `Result`-returning read, not the `Option`-collapsing
+            // `read_one_with_version` — a transient read/decode error must
+            // propagate as `Err` here, not get treated as "not found" and
+            // silently skipped as if a racing logout had happened (Codex
+            // review finding on #280): callers like
+            // `sync_loop::repersist_if_token_changed` read `Ok(())` as
+            // proof the refreshed token pair actually landed on disk and
+            // advance their tracking on that basis, so swallowing a
+            // transient error here would leave the old, already-invalidated
+            // token on disk with no future call ever retrying the write.
+            let existing = self.read_one_with_version_result(token).await?;
             let (last_seen_unix, existing_version) = match &existing {
                 Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
                 None if mode == SaveMode::RetryInitialSave => (None, None),
@@ -2824,6 +2861,72 @@ mod tests {
             entry.session.tokens.access_token, "refreshed-access-token",
             "a benign concurrent conflict must not cause save() to silently drop a genuinely \
              refreshed token pair"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Return an
+    /// error when resave cannot read the session object"): a read failure
+    /// distinct from "not found" inside `save`'s `Resave`/`RetryInitialSave`
+    /// path must propagate as `Err`, not get collapsed into the same
+    /// `Ok(())` "skipped, removed by a racing logout" branch a genuine
+    /// missing object takes. Collapsing the two would let
+    /// `sync_loop::repersist_if_token_changed` believe a refreshed token
+    /// pair was durably saved when it wasn't, stranding the old
+    /// (soon-to-be-invalidated) token on disk. Simulates the failure by
+    /// making the on-disk object unreadable (`chmod 000`) rather than a
+    /// mock `ObjectStore` — `LocalFileSystem`'s `get` surfaces a permission
+    /// error the same way any other transient backend error would, without
+    /// needing a hand-rolled pass-through wrapper for the whole trait.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_without_bump_propagates_a_transient_read_error_instead_of_treating_it_as_a_racing_logout(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("save-no-bump-transient-read-error");
+        let store = PersistenceStore::new_for_test(&dir, [59u8; 32]);
+        store
+            .save(
+                "tok-flaky-read",
+                "https://example.invalid",
+                &dummy_session("@flaky-read:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        let file_path = object_file_path(&dir, "tok-flaky-read");
+        let original_perms = std::fs::metadata(&file_path).unwrap().permissions();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut refreshed = dummy_session("@flaky-read:example.invalid");
+        refreshed.tokens.access_token = "refreshed-access-token".to_string();
+        let result = store
+            .save(
+                "tok-flaky-read",
+                "https://example.invalid",
+                &refreshed,
+                None,
+                SaveMode::Resave,
+            )
+            .await;
+
+        // Restore permissions before any assertion can panic and leave an
+        // unreadable file behind for the OS to clean up.
+        std::fs::set_permissions(&file_path, original_perms).unwrap();
+
+        assert!(
+            result.is_err(),
+            "a transient read error must propagate as Err, not be swallowed as if the entry \
+             had been removed by a racing logout"
+        );
+
+        let entry = store.read_one("tok-flaky-read").await.unwrap();
+        assert_eq!(
+            entry.session.tokens.access_token, "test-access-token",
+            "the refreshed token pair must not have been silently dropped without either \
+             being written or the caller being told the write failed"
         );
     }
 
