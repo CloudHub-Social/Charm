@@ -34,12 +34,15 @@ const AMBIENT_ROOM = {
   has_unread: true,
 };
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
+  const extraRooms = testInfo.title.includes("ambient unread message totals")
+    ? [SECOND_ROOM, AMBIENT_ROOM]
+    : [SECOND_ROOM];
   await page.addInitScript(installMockTauri, {
     userId: USER_ID,
     deviceId: "E2E_DEVICE",
     room: MAIN_ROOM,
-    extraRooms: [SECOND_ROOM, AMBIENT_ROOM],
+    extraRooms,
   });
   await page.goto("/");
 });
