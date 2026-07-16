@@ -118,6 +118,9 @@ define_feature_flag_keys!(
         /// Spec 42 media-send polish: progressive attachment-send UX such as
         /// a visible file drag-and-drop target.
         MediaSendPolish,
+        /// Spec 54 room-list last-message preview: a compact sender + text
+        /// snippet rendered under the room name in each row.
+        RoomListMessagePreview,
     }
 );
 
@@ -136,6 +139,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListUnreadFilter => false,
             FeatureFlagKey::MessageActionParity => false,
             FeatureFlagKey::MediaSendPolish => false,
+            FeatureFlagKey::RoomListMessagePreview => false,
         }
     }
 
@@ -173,6 +177,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => {
                 "Improve attachment sending with a visible file drag-and-drop target and later media-send controls."
             }
+            FeatureFlagKey::RoomListMessagePreview => {
+                "Show a compact last-message preview with sender label under each room-list row."
+            }
         }
     }
 
@@ -190,6 +197,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListUnreadFilter => "Spec 54 (room-list enrichment and filtering)",
             FeatureFlagKey::MessageActionParity => "Spec 37 (message action parity)",
             FeatureFlagKey::MediaSendPolish => "Spec 42 (media send polish)",
+            FeatureFlagKey::RoomListMessagePreview => {
+                "Spec 54 (room-list enrichment and filtering)"
+            }
         }
     }
 
@@ -207,6 +217,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListUnreadFilter => "room_list_unread_filter",
             FeatureFlagKey::MessageActionParity => "message_action_parity",
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
+            FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
         }
     }
 }

@@ -23,6 +23,7 @@ export function makeRoomSummary(overrides: Partial<RoomSummary> = {}): RoomSumma
     membership: "join",
     inviter_user_id: null,
     inviter_display_name: null,
+    last_message_preview: null,
     ...overrides,
   };
 }

@@ -3,9 +3,12 @@
 //! the UI reads from (computed once here, in [`snapshot_rooms`] via
 //! [`has_unread`], never re-derived per-component — see Spec 06).
 
+use matrix_sdk::latest_events::LatestEventValue;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::Room;
+use matrix_sdk::ruma::events::room::message::MessageType;
 use matrix_sdk::ruma::events::tag::{TagInfo, TagName, UserTagName};
+use matrix_sdk::ruma::events::{AnySyncMessageLikeEvent, AnySyncTimelineEvent};
 use matrix_sdk::{Client, RoomState};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -13,7 +16,122 @@ use tauri::{AppHandle, State};
 use ts_rs::TS;
 
 use super::notifications::set_room_notification_mode;
+use super::timeline::message_type_preview_text;
 use super::{media, profiles, MatrixState};
+
+/// Truncation cap for [`LastMessagePreview::text`], applied in `char`s (not
+/// bytes) so multi-byte UTF-8 sequences never get split mid-codepoint. Chosen
+/// to comfortably fit a couple of lines of preview text in the room-list row
+/// without letting a very long message dominate it; matches the ballpark of
+/// `shell::build_notification`'s own `MAX_BODY_CHARS` notification-body cap.
+const LAST_MESSAGE_PREVIEW_MAX_CHARS: usize = 100;
+
+/// A compact last-message preview for a room-list row (Spec 54): the
+/// sender's user id (always present) and resolved display name (best
+/// effort), plus a truncated text snippet. `None` on [`RoomSummary`] when the
+/// room has no known latest event yet, the latest event isn't a plain
+/// (decrypted, non-redacted) `m.room.message`, or it's a pending invite —
+/// callers fall back to showing just the room name, same as before this
+/// field existed.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct LastMessagePreview {
+    pub sender_id: String,
+    pub sender_display_name: Option<String>,
+    /// Already truncated to [`LAST_MESSAGE_PREVIEW_MAX_CHARS`] chars (with a
+    /// trailing `…` when truncated) — the frontend still applies CSS
+    /// `truncate` for narrow layouts, but doesn't need to bound the length
+    /// itself.
+    pub text: String,
+}
+
+/// Truncates `text` to at most `max_chars` `char`s, appending `…` when it had
+/// to cut something — mirrors `shell::build_notification`'s truncation
+/// behavior so previews and notifications read consistently.
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(max_chars).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// Extracts a `(sender, preview text)` pair from a raw sync timeline event,
+/// if it's a non-redacted `m.room.message` — mirrors
+/// `push::message_preview`'s shape, but summarizes non-text msgtypes via
+/// [`message_type_preview_text`] instead of using the raw (often
+/// filename-only) `body()`, since this preview is read standalone rather
+/// than alongside a media attachment already rendered in a notification.
+fn room_message_preview_from_raw(
+    raw: &matrix_sdk::ruma::serde::Raw<AnySyncTimelineEvent>,
+) -> Option<(String, String)> {
+    let event = raw.deserialize().ok()?;
+    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+        matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(original),
+    )) = event
+    else {
+        return None;
+    };
+    if matches!(
+        original.content.msgtype,
+        MessageType::VerificationRequest(_)
+    ) {
+        return None;
+    }
+    Some((
+        original.sender.to_string(),
+        message_type_preview_text(&original.content.msgtype),
+    ))
+}
+
+/// Computes [`RoomSummary::last_message_preview`] for `room` via
+/// `matrix-sdk`'s [`LatestEvents`](matrix_sdk::latest_events::LatestEvents)
+/// tracker — the SDK's own mechanism for exactly this "last message in a
+/// room-list row" use case (see its module doc comment). Registering a room
+/// with `listen_and_subscribe_to_room` is idempotent and lazy: once
+/// registered, the tracker keeps the value current off the same event-cache
+/// updates the ongoing sync loop already produces, so repeated calls (every
+/// `snapshot_rooms` run, including the periodic background one) are cheap
+/// reads rather than new per-room fetches — see Spec 54's trade-off on
+/// keeping this in the summary instead of a separate per-room request.
+///
+/// Only [`LatestEventValue::Remote`] (a synced, plain-text-extractable
+/// message) yields a preview today; a pending invite, a still-sending local
+/// echo, or "nothing computed yet" all yield `None` and the row falls back to
+/// showing just the room name.
+async fn last_message_preview(client: &Client, room: &Room) -> Option<LastMessagePreview> {
+    // Cheap/idempotent: only actually subscribes to sync updates once per
+    // client, regardless of how many times `snapshot_rooms` calls this.
+    let _ = client.event_cache().subscribe();
+
+    let room_id = room.room_id();
+    let latest_events = client.latest_events().await;
+    let subscriber = latest_events
+        .listen_and_subscribe_to_room(room_id)
+        .await
+        .ok()??;
+    let value = subscriber.get().await;
+    let LatestEventValue::Remote(timeline_event) = value else {
+        return None;
+    };
+    let (sender_id, text) = room_message_preview_from_raw(timeline_event.raw())?;
+    let sender_display_name = match matrix_sdk::ruma::UserId::parse(sender_id.as_str()) {
+        Ok(user_id) => room
+            .get_member_no_sync(&user_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|member| member.display_name().map(ToOwned::to_owned)),
+        Err(_) => None,
+    };
+
+    Some(LastMessagePreview {
+        sender_id,
+        sender_display_name,
+        text: truncate_preview(&text, LAST_MESSAGE_PREVIEW_MAX_CHARS),
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -103,6 +221,10 @@ pub struct RoomSummary {
     /// when a malformed/incomplete invite omitted its membership event.
     pub inviter_user_id: Option<String>,
     pub inviter_display_name: Option<String>,
+    /// Spec 54 room-list row enrichment: a compact sender + text snippet for
+    /// the room's most recent message, or `None` when none is available yet
+    /// — see [`last_message_preview`].
+    pub last_message_preview: Option<LastMessagePreview>,
 }
 
 /// The tag a room's manual order lives on: whichever section tag is
@@ -327,6 +449,12 @@ pub async fn snapshot_rooms(
         } else {
             (None, None)
         };
+        // Pending invites have no readable message history to preview yet.
+        let last_message_preview = if membership == RoomMembershipKind::Join {
+            last_message_preview(client, &room).await
+        } else {
+            None
+        };
 
         summaries.push((
             membership_rank(membership),
@@ -354,6 +482,7 @@ pub async fn snapshot_rooms(
                 membership,
                 inviter_user_id,
                 inviter_display_name,
+                last_message_preview,
             },
         ));
     }
@@ -797,5 +926,82 @@ mod tests {
         assert!(
             membership_rank(RoomMembershipKind::Invite) < membership_rank(RoomMembershipKind::Join)
         );
+    }
+
+    #[test]
+    fn truncate_preview_leaves_short_text_untouched() {
+        assert_eq!(truncate_preview("see you at 6", 100), "see you at 6");
+    }
+
+    #[test]
+    fn truncate_preview_cuts_long_text_and_appends_ellipsis() {
+        let long_text = "a".repeat(150);
+        let truncated = truncate_preview(&long_text, 100);
+        assert_eq!(truncated.chars().count(), 101); // 100 chars + the ellipsis
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.starts_with(&"a".repeat(100)));
+    }
+
+    #[test]
+    fn truncate_preview_counts_chars_not_bytes() {
+        // Multi-byte characters must not be split mid-codepoint.
+        let long_text = "é".repeat(150);
+        let truncated = truncate_preview(&long_text, 100);
+        assert_eq!(truncated.chars().count(), 101);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn room_message_preview_extracts_sender_and_text_for_a_text_message() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .text_msg("see you at 6")
+            .sender(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$text"))
+            .into_raw_sync();
+
+        let (sender, text) =
+            room_message_preview_from_raw(&raw).expect("a text message has a preview");
+        assert_eq!(sender, ALICE.to_string());
+        assert_eq!(text, "see you at 6");
+    }
+
+    #[test]
+    fn room_message_preview_summarizes_an_image_message() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .image(
+                "vacation.jpg".to_string(),
+                matrix_sdk::ruma::mxc_uri!("mxc://example.org/abc123").to_owned(),
+            )
+            .sender(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$image"))
+            .into_raw_sync();
+
+        let (sender, text) =
+            room_message_preview_from_raw(&raw).expect("an image message has a preview");
+        assert_eq!(sender, ALICE.to_string());
+        // Not the raw filename-only body — a human-readable summary instead.
+        assert_eq!(text, "Sent an image");
+    }
+
+    #[test]
+    fn room_message_preview_is_none_for_a_non_message_event() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::ALICE;
+
+        let raw = EventFactory::new()
+            .room(matrix_sdk::ruma::room_id!("!test:example.org"))
+            .member(&ALICE)
+            .event_id(matrix_sdk::ruma::event_id!("$member"))
+            .into_raw_sync();
+
+        assert!(room_message_preview_from_raw(&raw).is_none());
     }
 }

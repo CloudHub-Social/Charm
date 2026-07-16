@@ -135,6 +135,56 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
     }
 }
 
+/// A short, human-readable summary of a `m.room.message` for contexts that
+/// show only a single line of text (the room-list last-message preview, Spec
+/// 54) — text/emote/notice bodies are shown verbatim, but a raw `body()` for
+/// a media msgtype is often just the file's name (or, for some clients,
+/// empty), which reads as a stray filename rather than a description of what
+/// was sent. Kept alongside [`message_type_to_media`] since both switch on
+/// the same `MessageType` variants; this one is pure text, no info/thumbnail
+/// metadata, so callers that already have a [`MediaContent`] don't need this
+/// too.
+pub(crate) fn message_type_preview_text(msgtype: &MessageType) -> String {
+    match msgtype {
+        MessageType::Text(content) => content.body.clone(),
+        MessageType::Emote(content) => content.body.clone(),
+        MessageType::Notice(content) => content.body.clone(),
+        MessageType::Image(_) => "Sent an image".to_string(),
+        MessageType::Video(_) => "Sent a video".to_string(),
+        MessageType::Audio(_) => "Sent an audio message".to_string(),
+        MessageType::File(_) => "Sent a file".to_string(),
+        MessageType::Location(_) => "Sent a location".to_string(),
+        other => other.body().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod message_type_preview_text_tests {
+    use matrix_sdk::ruma::events::room::message::{
+        ImageMessageEventContent, TextMessageEventContent,
+    };
+    use matrix_sdk::ruma::events::room::ImageInfo;
+
+    use super::*;
+
+    #[test]
+    fn text_message_shows_body_verbatim() {
+        let msgtype = MessageType::Text(TextMessageEventContent::plain("see you at 6"));
+        assert_eq!(message_type_preview_text(&msgtype), "see you at 6");
+    }
+
+    #[test]
+    fn image_message_shows_a_human_summary_not_the_filename() {
+        let mut content = ImageMessageEventContent::plain(
+            "vacation.jpg".to_string(),
+            matrix_sdk::ruma::mxc_uri!("mxc://example.org/abc123").to_owned(),
+        );
+        content.info = Some(Box::new(ImageInfo::new()));
+        let msgtype = MessageType::Image(content);
+        assert_eq!(message_type_preview_text(&msgtype), "Sent an image");
+    }
+}
+
 /// Extracts a message's `org.matrix.custom.html` formatted body, if it has
 /// one — `None` for plain-text messages/emotes/notices or ones formatted
 /// with anything other than HTML (the only format Matrix currently defines).
