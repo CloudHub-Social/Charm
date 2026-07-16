@@ -332,6 +332,20 @@ tokio::task_local! {
     /// task per request), so `require_session` can reach it without any
     /// caller needing to pass it through.
     static REQUEST_AUTHENTICATED: Arc<std::sync::atomic::AtomicBool>;
+
+    /// Whether *this* request already passed `refresh_session_cookie`'s
+    /// transport-header-or-allowed-origin check — set once, before
+    /// `next.run`, unlike `REQUEST_AUTHENTICATED` (which can only be known
+    /// after the handler runs). Read by `require_session`'s on-demand
+    /// restore path to decide whether to call
+    /// `PersistenceStore::touch_last_seen`: without this, an untrusted
+    /// same-site subdomain's request restoring an idle-evicted session
+    /// would still bump the *persisted* `last_seen_unix` unconditionally,
+    /// even though the cookie itself correctly never gets refreshed for it
+    /// — extending `PersistenceStore::sweep_expired`'s retention window
+    /// from activity the request middleware already decided not to trust
+    /// (Codex review finding on #280).
+    static REQUEST_TRANSPORT_VALIDATED: bool;
 }
 
 /// Slides the session cookie's expiry forward on every request that carries
@@ -424,7 +438,11 @@ async fn refresh_session_cookie(
         || origin_is_allowed(request_origin.as_deref());
     let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut response = REQUEST_AUTHENTICATED
-        .scope(Arc::clone(&authenticated), next.run(request))
+        .scope(
+            Arc::clone(&authenticated),
+            REQUEST_TRANSPORT_VALIDATED
+                .scope(has_transport_header_or_allowed_origin, next.run(request)),
+        )
         .await;
     let Some(token) = token else {
         return response;
@@ -1209,7 +1227,22 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // can't get any other way (see that function's doc comment). Fired,
     // not awaited: it's a courtesy timestamp bump, not something this
     // response should wait on.
-    persistence.touch_last_seen(&token);
+    //
+    // Gated on `REQUEST_TRANSPORT_VALIDATED`, same as `Session::
+    // last_validated_active` (see that field's doc comment) and for the
+    // same reason: without this, an untrusted same-site subdomain's
+    // request — restoring an idle-evicted session is still possible for
+    // it, since `require_session` runs before `refresh_session_cookie`'s
+    // own gate — would bump the *persisted* `last_seen_unix`
+    // unconditionally, extending `sweep_expired`'s retention window from
+    // activity that middleware already decided not to trust enough to even
+    // refresh the cookie for (Codex review finding on #280).
+    if REQUEST_TRANSPORT_VALIDATED
+        .try_with(|v| *v)
+        .unwrap_or(false)
+    {
+        persistence.touch_last_seen(&token);
+    }
     session.touch();
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
