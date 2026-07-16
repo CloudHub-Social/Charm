@@ -52,8 +52,10 @@
 //! directory remains the live SDK store; snapshots are restored before the
 //! SDK opens it after an App Platform redeploy.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -113,6 +115,32 @@ struct PersistedSession {
     /// `None` exactly when `crypto_store_key` is `None`, for the same reason.
     #[serde(default)]
     crypto_passphrase: Option<String>,
+    /// Unix timestamp of the last time this session was known to be in
+    /// active use — either a fresh login/register (`save`, called there) or
+    /// an on-demand restore of an idle-evicted session (`touch_last_seen`,
+    /// called from `routes::require_session`). Consulted only by
+    /// [`PersistenceStore::sweep_expired`] to decide whether a session's
+    /// browser cookie has almost certainly already expired
+    /// (`SESSION_COOKIE_MAX_AGE_SECS`) and so nothing server-side should go
+    /// on trusting it either. `#[serde(default = "now_unix")]`, not
+    /// `Option`/`0`: a session persisted before this field existed getting
+    /// backfilled with "now" (not "the epoch") on first read after
+    /// deploying this change is the only choice that doesn't immediately
+    /// treat every pre-existing session as already-expired and revoke them
+    /// all on the very next sweep.
+    #[serde(default = "now_unix")]
+    last_seen_unix: u64,
+}
+
+/// Current wall-clock time as a Unix timestamp — clamped to 0 rather than
+/// panicking if the system clock is ever set before 1970 (never expected in
+/// practice, but a `sweep_expired` comparison degrading to "everything looks
+/// ancient" is a far better failure mode than a startup panic).
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -674,6 +702,7 @@ impl PersistenceStore {
                 session: session.clone(),
                 crypto_store_key,
                 crypto_passphrase,
+                last_seen_unix: now_unix(),
             },
             &path,
         )?;
@@ -761,6 +790,103 @@ impl PersistenceStore {
             }
         }
         Ok(())
+    }
+
+    /// Best-effort activity-timestamp bump for `token`'s persisted session —
+    /// fired (not awaited) from `routes::require_session` whenever a request
+    /// restores an idle-evicted session. This is the only reliable "the user
+    /// is still around" signal [`Self::sweep_expired`] gets for a session
+    /// that isn't continuously resident in `SessionStore` (a long-lived tab
+    /// left open never re-triggers this — `sweep_expired`'s own doc comment
+    /// covers that case separately). Independent of [`Self::save`]'s
+    /// token-pair semantics: reads the current object, rewrites only
+    /// `last_seen_unix`, and no-ops (logged) rather than erroring if the
+    /// object has since been removed by a racing logout or is otherwise
+    /// unreadable — same tolerance `read_one`/`read_all` already give a
+    /// single bad or missing entry.
+    pub fn touch_last_seen(self: &Arc<Self>, token: &str) {
+        let this = Arc::clone(self);
+        let token = token.to_string();
+        tokio::spawn(async move {
+            let Some(mut entry) = this.read_one(&token).await else {
+                return;
+            };
+            entry.last_seen_unix = now_unix();
+            let path = object_path_for_token(&entry.token);
+            let blob = match this.encrypt(&entry, &path) {
+                Ok(blob) => blob,
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to bump last-seen timestamp for a persisted session: {e}"
+                    );
+                    return;
+                }
+            };
+            let json = match serde_json::to_vec(&blob) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to bump last-seen timestamp for a persisted session: {e}"
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = this.store.put(&path, PutPayload::from(json)).await {
+                tracing::warn!("failed to bump last-seen timestamp for a persisted session: {e}");
+            }
+        });
+    }
+
+    /// Revokes and removes every persisted session whose last recorded
+    /// activity is older than `max_age` — the server-side half of
+    /// `routes::session_cookie`'s `SESSION_COOKIE_MAX_AGE_SECS`. Without
+    /// this, a session whose browser cookie has already expired and been
+    /// discarded still leaves its access token valid at the homeserver and
+    /// its crypto store sitting on this host's disk indefinitely — nothing
+    /// else in this file ever revisits a persisted session once it's no
+    /// longer being restored by a live cookie (Codex review finding on
+    /// #280).
+    ///
+    /// `live_tokens` — every token currently resident in `SessionStore` — is
+    /// skipped outright rather than checked against `last_seen_unix`: a
+    /// session continuously live in memory for the entire `max_age` window
+    /// (e.g. a tab left open for weeks against a homeserver that never
+    /// rotates its access token) would otherwise never have a reason to
+    /// re-trigger [`Self::save`] or [`Self::touch_last_seen`], and so would
+    /// look just as stale on disk as one nobody has opened in months. Being
+    /// resident in `SessionStore` at all is itself the stronger, provably-
+    /// current signal: `session::SessionStore::sweep_idle` would already
+    /// have evicted it from memory (though not from persistence) had it
+    /// truly gone idle.
+    pub async fn sweep_expired(
+        &self,
+        max_age: std::time::Duration,
+        live_tokens: &HashSet<String>,
+    ) -> usize {
+        let now = now_unix();
+        let max_age_secs = max_age.as_secs();
+        let mut swept = 0;
+        for entry in self.read_all().await {
+            if live_tokens.contains(&entry.token) {
+                continue;
+            }
+            if now.saturating_sub(entry.last_seen_unix) < max_age_secs {
+                continue;
+            }
+            if let Some(client) = self.restore_client_for_revocation(&entry.token).await {
+                if let Err(e) = client.matrix_auth().logout().await {
+                    tracing::warn!(
+                        "failed to revoke access token for an expired persisted session: {e}"
+                    );
+                }
+            }
+            if let Err(e) = self.remove(&entry.token, None).await {
+                tracing::warn!("failed to remove an expired persisted session: {e}");
+                continue;
+            }
+            swept += 1;
+        }
+        swept
     }
 
     /// Rebuilds a live `Client` (and runs an initial sync, same as
@@ -1856,6 +1982,7 @@ mod tests {
             session: dummy_session("@laura:example.invalid"),
             crypto_store_key: Some("nonexistentstorekey".to_string()),
             crypto_passphrase: Some("some-passphrase".to_string()),
+            last_seen_unix: now_unix(),
         };
 
         let crypto = persisted_crypto_from_entry(&entry).expect(
@@ -1874,8 +2001,84 @@ mod tests {
             session: dummy_session("@mallory:example.invalid"),
             crypto_store_key: None,
             crypto_passphrase: None,
+            last_seen_unix: now_unix(),
         };
 
         assert!(persisted_crypto_from_entry(&entry).is_none());
+    }
+
+    /// Directly overwrites `token`'s persisted object with a chosen
+    /// `last_seen_unix`, bypassing `save`'s always-`now_unix()` timestamp —
+    /// the only way these tests can construct a session that looks stale
+    /// without waiting real wall-clock time.
+    async fn save_with_last_seen(store: &PersistenceStore, token: &str, last_seen_unix: u64) {
+        let entry = PersistedSession {
+            token: token.to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@sweep-target:example.invalid"),
+            crypto_store_key: None,
+            crypto_passphrase: None,
+            last_seen_unix,
+        };
+        let path = object_path_for_token(token);
+        let blob = store.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .store
+            .put(&path, PutPayload::from(json))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_removes_only_stale_sessions_not_in_live_tokens() {
+        let dir = scratch_dir("sweep-expired");
+        let store = PersistenceStore::new_for_test(&dir, [42u8; 32]);
+        let now = now_unix();
+        let one_hour = 60 * 60;
+        let sixty_days = 60 * 24 * 60 * 60;
+
+        save_with_last_seen(&store, "tok-stale", now.saturating_sub(sixty_days)).await;
+        save_with_last_seen(&store, "tok-fresh", now.saturating_sub(one_hour)).await;
+        save_with_last_seen(&store, "tok-stale-but-live", now.saturating_sub(sixty_days)).await;
+
+        let live_tokens = HashSet::from(["tok-stale-but-live".to_string()]);
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &live_tokens,
+            )
+            .await;
+
+        assert_eq!(swept, 1);
+        let remaining: HashSet<String> = store
+            .read_all()
+            .await
+            .into_iter()
+            .map(|entry| entry.token)
+            .collect();
+        assert_eq!(
+            remaining,
+            HashSet::from(["tok-fresh".to_string(), "tok-stale-but-live".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_last_seen_updates_the_persisted_timestamp() {
+        let dir = scratch_dir("touch-last-seen");
+        let store = Arc::new(PersistenceStore::new_for_test(&dir, [43u8; 32]));
+        let old = now_unix().saturating_sub(60 * 24 * 60 * 60);
+        save_with_last_seen(&store, "tok-touch", old).await;
+
+        store.touch_last_seen("tok-touch");
+        // `touch_last_seen` is fire-and-forget (`tokio::spawn`) — give the
+        // spawned task a moment to actually run before reading it back.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let entry = store.read_one("tok-touch").await.unwrap();
+        assert!(
+            entry.last_seen_unix > old,
+            "touch_last_seen should have bumped last_seen_unix forward"
+        );
     }
 }

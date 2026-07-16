@@ -170,6 +170,25 @@ For local dev or any other non-TLS deployment, set
 `CHARM_WEB_SERVER_INSECURE_COOKIES=1` to drop the `Secure` flag; never set
 this in a production deployment that's actually behind TLS.
 
+The cookie carries an explicit 30-day `Max-Age`
+(`session::SESSION_COOKIE_MAX_AGE_SECS`), not just the security attributes
+above — a cookie with no `Max-Age`/`Expires` is a browser-session cookie that
+most browsers discard as soon as the browser fully closes, which forced a
+full re-login (and, since e2ee device verification doesn't survive that, a
+fresh recovery-key prompt) far sooner than the persisted session behind it
+actually expired. `routes::refresh_session_cookie` re-issues the cookie with
+a fresh 30-day window on every authenticated request that resolves to a
+still-active session, so a browser in continuous daily use never runs out the
+clock; only real inactivity for the full window does.
+`persistence::PersistenceStore::sweep_expired` runs once a day and is the
+server-side half of that same window: it revokes the Matrix access token and
+deletes the persisted session and crypto store for any session whose last
+known activity (`PersistedSession::last_seen_unix`, bumped by `save` at
+login/token-refresh and by `touch_last_seen` on an on-demand restore) is
+older than 30 days — a session still resident in `SessionStore` is skipped
+outright rather than judged by that timestamp, since idle eviction would
+already have dropped it from memory if it had actually gone stale.
+
 ### Session persistence env vars
 
 - `CHARM_WEB_SERVER_MASTER_KEY` — base64-encoded 32-byte AES-256 key

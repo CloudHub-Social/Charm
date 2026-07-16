@@ -99,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // idle timeout, with no way back short of a fresh login.
     if let Some(persistence) = &persistence {
         spawn_idle_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
+        spawn_expired_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
     }
 
     let addr =
@@ -287,6 +288,51 @@ fn spawn_idle_session_sweeper(
                          anyway: {e}"
                     );
                 }
+            }
+        }
+    });
+}
+
+/// How often the expired-session sweep below runs. Daily, not tied to
+/// `session::SWEEP_INTERVAL` (5 minutes) — unlike idle eviction, this only
+/// ever acts on sessions already `SESSION_COOKIE_MAX_AGE_SECS` (30 days)
+/// stale, so there's no benefit to checking anywhere near that often, and a
+/// daily cadence keeps this well clear of the per-request-touch write
+/// volume `PersistenceStore::touch_last_seen` already adds.
+const EXPIRED_SESSION_SWEEP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Periodically revokes and removes persisted sessions whose browser cookie
+/// (`routes::session_cookie`'s `SESSION_COOKIE_MAX_AGE_SECS`) has almost
+/// certainly already expired — see `PersistenceStore::sweep_expired`'s doc
+/// comment for why that field, not idle-eviction, is what this needs to
+/// track, and why sessions still resident in `SessionStore` are skipped
+/// rather than judged by it. Runs for the lifetime of the process, same as
+/// [`spawn_idle_session_sweeper`]; nothing to join it against on shutdown.
+fn spawn_expired_session_sweeper(
+    sessions: charm_web_server::session::SessionStore,
+    persistence: Arc<PersistenceStore>,
+) {
+    let max_age = std::time::Duration::from_secs(
+        charm_web_server::session::SESSION_COOKIE_MAX_AGE_SECS.max(0) as u64,
+    );
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(EXPIRED_SESSION_SWEEP_INTERVAL);
+        // Same reasoning as `spawn_idle_session_sweeper`'s first `tick()`
+        // skip: nothing has had 30 days to go stale the instant the process
+        // starts.
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let live_tokens = sessions
+                .entries()
+                .await
+                .into_iter()
+                .map(|(token, _)| token)
+                .collect::<std::collections::HashSet<_>>();
+            let swept = persistence.sweep_expired(max_age, &live_tokens).await;
+            if swept > 0 {
+                tracing::info!("swept {swept} expired persisted session(s)");
             }
         }
     });

@@ -314,7 +314,45 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(redact_request_uri_for_sentry))
         .layer(sentry_tower::NewSentryLayer::<axum::extract::Request>::new_from_top())
         .layer(cors_layer())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            refresh_session_cookie,
+        ))
         .with_state(state)
+}
+
+/// Slides the session cookie's expiry forward on every request that carries
+/// one resolving to a still-active session — otherwise `Max-Age` (set once,
+/// at login/register; see `session_cookie`) counts down from that one
+/// instant regardless of how continuously the browser keeps using it, and a
+/// user active every single day still gets logged out on day 30 (Codex
+/// review finding on #280).
+///
+/// Runs *after* the handler (`next.run` first), not before: the token this
+/// middleware checks against `state.sessions` needs to reflect any restore
+/// the handler itself may have just performed (`routes::require_session`'s
+/// on-demand persistence fallback), not the state before it ran. A
+/// missing/unknown cookie is left alone — `require_session`'s explicit 401
+/// already covers that, and there's nothing here to refresh.
+async fn refresh_session_cookie(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
+    let mut response = next.run(request).await;
+    let Some(token) = token else {
+        return response;
+    };
+    if state.sessions.get(&token).await.is_some() {
+        if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string()) {
+            response
+                .headers_mut()
+                .append(axum::http::header::SET_COOKIE, value);
+        }
+    }
+    response
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
@@ -850,6 +888,12 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     if evicted_presence.is_some() {
         state.sessions.forget_evicted_presence(&token);
     }
+    // This request is restoring a session that was idle-evicted from
+    // memory — the one activity signal `PersistenceStore::sweep_expired`
+    // can't get any other way (see that function's doc comment). Fired,
+    // not awaited: it's a courtesy timestamp bump, not something this
+    // response should wait on.
+    persistence.touch_last_seen(&token);
     session.touch();
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
