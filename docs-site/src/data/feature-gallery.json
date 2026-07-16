@@ -190,8 +190,8 @@
     {
       "slug": "spaces",
       "title": "Spaces and room organization",
-      "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages from one adaptable rail.",
-      "status": "stable",
+      "summary": "Browse nested spaces, favourites, low-priority rooms, unread state, and direct messages, with an optional unread-only view.",
+      "status": "preview",
       "spec": "Specs 19 and 54",
       "specLinks": [
         {
@@ -203,6 +203,7 @@
           "href": "/specs/day-1/spec-54--room-list-row-enrichment-filtering-and-sorting/"
         }
       ],
+      "flag": "room_list_unread_filter",
       "snapshot": {
         "suite": "e2e",
         "name": "space-hierarchy-foundation",
