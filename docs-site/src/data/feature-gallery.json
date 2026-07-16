@@ -144,7 +144,7 @@
     {
       "slug": "message-actions",
       "title": "Message actions",
-      "summary": "React, reply, edit, redact, inspect, and copy canonical links through contextual actions that respect ownership and power levels.",
+      "summary": "React, reply, edit, inspect, copy canonical links, and confirm redactions with optional reasons through contextual actions that respect ownership and power levels.",
       "status": "preview",
       "spec": "Specs 03 and 37",
       "specLinks": [
@@ -168,7 +168,7 @@
     {
       "slug": "media-attachments",
       "title": "Media and attachments",
-      "summary": "Preview images, open a lightbox, track uploads, download Matrix attachments, and progressively enable polished file-drop sending.",
+      "summary": "Preview images, open a lightbox, track uploads, download Matrix attachments, and progressively enable a stable full-chat file-drop target.",
       "status": "preview",
       "spec": "Specs 02 and 42",
       "specLinks": [
@@ -211,7 +211,7 @@
     {
       "slug": "unread-room-filter",
       "title": "Unread room filter",
-      "summary": "Focus the room list on unread conversations while keeping the active room available.",
+      "summary": "Focus room lists on unread conversations while retaining the active room, with optional ambient unread message totals in each row.",
       "status": "preview",
       "spec": "Spec 54",
       "specLinks": [
