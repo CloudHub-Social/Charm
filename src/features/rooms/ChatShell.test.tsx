@@ -69,6 +69,10 @@ const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 const openUrl = vi.fn().mockResolvedValue(undefined);
 const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+const listBookmarks = vi.fn().mockResolvedValue([]);
+const addBookmark = vi.fn().mockResolvedValue(undefined);
+const removeBookmark = vi.fn().mockResolvedValue(undefined);
+const loadTimelineAroundEvent = vi.fn().mockResolvedValue(false);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -219,6 +223,13 @@ vi.mock("@/lib/matrix", () => ({
   // this test file doesn't mock.
   getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
   getUrlPreview: vi.fn(),
+  // Spec 12 (bookmarks): defaults to "nothing bookmarked yet" —
+  // `useMessageActions` fetches this unconditionally whenever the active
+  // room changes.
+  listBookmarks: (...args: unknown[]) => listBookmarks(...args),
+  addBookmark: (...args: unknown[]) => addBookmark(...args),
+  removeBookmark: (...args: unknown[]) => removeBookmark(...args),
+  loadTimelineAroundEvent: (...args: unknown[]) => loadTimelineAroundEvent(...args),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -350,6 +361,10 @@ describe("ChatShell", () => {
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
+    listBookmarks.mockReset().mockResolvedValue([]);
+    addBookmark.mockReset().mockResolvedValue(undefined);
+    removeBookmark.mockReset().mockResolvedValue(undefined);
+    loadTimelineAroundEvent.mockReset().mockResolvedValue(false);
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
@@ -3148,6 +3163,99 @@ describe("ChatShell", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /long gone/ }));
 
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("jumps to an already-loaded bookmark without paginating (Spec 12 Saved Messages)", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$bookmarked" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+  });
+
+  it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+  });
+
+  it("loads the timeline around a not-yet-loaded bookmark, then scrolls once it lands", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue(true);
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    // Mirrors the real backend: a successful `loadTimelineAroundEvent`
+    // paginates the target into the room's live timeline, which arrives here
+    // as a `timeline:update` — not as that call's own return value driving
+    // `messages` directly.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "old save" }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("old save")).toBeInTheDocument();
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+  });
+
+  it("calls onJumpHandled without scrolling when a bookmark is never found", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue(false);
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$gone"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$gone"),
+    );
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 

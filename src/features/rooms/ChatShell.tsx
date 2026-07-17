@@ -29,7 +29,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
+import {
+  canRedactOthers,
+  loadTimelineAroundEvent,
+  onRoomDetailsUpdate,
+  type RoomSummary,
+} from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -68,6 +73,16 @@ interface ChatShellProps {
   currentUserId: string;
   onBack?: () => void;
   onNavigateToRoom?: (roomIdentifier: string) => void;
+  /**
+   * An event id to scroll to as soon as it's loaded in this room's timeline
+   * (Spec 12's Saved Messages "jump to message"). Set by the caller after
+   * selecting the bookmark's room; cleared via `onJumpHandled` once the jump
+   * completes (found and scrolled to) or definitively fails (not reachable
+   * even after `loadTimelineAroundEvent`), so a stale target doesn't
+   * re-trigger a jump on some unrelated later render.
+   */
+  jumpToEventId?: string | null;
+  onJumpHandled?: () => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
@@ -207,7 +222,14 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
-export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
+export function ChatShell({
+  room,
+  currentUserId,
+  onBack,
+  onNavigateToRoom,
+  jumpToEventId = null,
+  onJumpHandled,
+}: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
@@ -450,6 +472,62 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     seededRoomIdRef.current = null;
     hasStartedLoadingRoomIdRef.current = null;
   }
+  // Drives Spec 12's Saved Messages "jump to message": the caller
+  // (`RoomsScreen`) selects the bookmark's room and sets `jumpToEventId`;
+  // once that room is actually the active one, this either scrolls straight
+  // to it (already loaded — same path as a reply-preview click) or triggers
+  // `loadTimelineAroundEvent` to paginate it in first. Re-runs whenever
+  // `messages` updates (each `timeline:update` from that pagination) so it
+  // notices the moment the target becomes loaded, but only issues the
+  // load-around request once per `jumpToEventId` value — `loadRequestedForRef`
+  // guards against re-firing it on every subsequent `messages` update while
+  // that request is still in flight.
+  const loadRequestedForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpToEventId || !room) return;
+    const index = messages.findIndex((m) => m.event_id === jumpToEventId);
+    if (index >= 0) {
+      handleJumpToMessage(jumpToEventId);
+      loadRequestedForRef.current = null;
+      onJumpHandled?.();
+      return;
+    }
+    // Waits for this room's own initial load to genuinely finish
+    // (`hasStartedLoadingRoomIdRef` — same "readyToSeed" gate the
+    // entrance-animation/unread-divider logic above already uses) before
+    // falling back to `loadTimelineAroundEvent`. `loading`'s own initial
+    // value is `false` before `useChatTimeline`'s fetch effect has even run
+    // (see this file's other uses of `hasStartedLoadingRoomIdRef` for the
+    // same caveat) — a plain `!loading` check would otherwise treat that
+    // premature render as "settled, and the event isn't here" and fire a
+    // redundant load-around request for a bookmark that's actually part of
+    // this very first page.
+    const initialLoadSettled = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    if (!initialLoadSettled) return;
+    if (loadRequestedForRef.current === jumpToEventId) return;
+    loadRequestedForRef.current = jumpToEventId;
+    loadTimelineAroundEvent(room.room_id, jumpToEventId)
+      .then((found) => {
+        // Only act on this request if it's still the current one — cleared
+        // (to `null`) the moment the already-loaded branch above fires for
+        // this same `jumpToEventId`, which can still happen before this
+        // promise resolves. Without this check, an already-handled jump
+        // could double-call `onJumpHandled` once this stale promise
+        // finally settles.
+        if (loadRequestedForRef.current !== jumpToEventId) return;
+        // A `false` result means the event isn't reachable at all (further
+        // back than the pagination cap, or no longer in this room's
+        // history) — nothing more to try, so give up rather than leaving
+        // the caller's `jumpToEventId` set forever.
+        if (!found) onJumpHandled?.();
+        // A `true` result doesn't call `onJumpHandled` here: the
+        // `timeline:update` triggered by that pagination will land in
+        // `messages` and re-run this effect, which then takes the
+        // already-loaded branch above.
+      })
+      .catch(logAndIgnore);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpToEventId, room?.room_id, messages, loading, activeRoomId]);
   // The memo callback below is pure — no ref mutation inside it. `React.
   // StrictMode` (see `src/main.tsx`) double-invokes memo callbacks for the
   // same commit; mutating `seenRowKeysRef`/`seededRoomIdRef` *inside this
@@ -631,6 +709,9 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     handleEdit,
     handleResend,
     handleDiscard,
+    handleBookmark,
+    handleUnbookmark,
+    bookmarkedEventIds,
   } = useMessageActions({
     roomId: activeRoomId,
     setReplyTarget,
@@ -1035,6 +1116,15 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
+                    // Bookmarks (Spec 12) have no local per-account store on
+                    // the web build — omitting these entirely (rather than
+                    // wiring them to a no-op) hides the menu item, same
+                    // pattern as `SettingsScreen`'s `webUnsupported` sections.
+                    onBookmark={isWebBuild() ? undefined : () => handleBookmark(message.event_id)}
+                    onUnbookmark={
+                      isWebBuild() ? undefined : () => handleUnbookmark(message.event_id)
+                    }
+                    isBookmarked={bookmarkedEventIds.has(message.event_id)}
                   />
                 </div>
               );

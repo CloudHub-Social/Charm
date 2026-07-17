@@ -1,11 +1,16 @@
+import { useEffect, useState } from "react";
 import {
+  addBookmark,
   discardFailedMessage,
+  listBookmarks,
   redactEvent,
+  removeBookmark,
   resendMessage,
   toggleReaction,
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import type { ReplyRef } from "@/lib/matrix";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 
 interface UseMessageActionsOptions {
   roomId: string | null;
@@ -18,6 +23,34 @@ export function useMessageActions({
   setReplyTarget,
   setEditingEventId,
 }: UseMessageActionsOptions) {
+  // Which of *this room's* messages are currently bookmarked (Spec 12) — a
+  // `Set` of event ids scoped to `roomId`, not the full cross-room bookmarks
+  // list (that's `SavedMessagesPanel`'s concern), so `MessageActions`'
+  // per-row `isBookmarked` lookup stays a plain `Set.has`. Refetched
+  // whenever the active room changes; updated optimistically on
+  // bookmark/unbookmark so the action menu reflects the change immediately
+  // rather than waiting on a round trip.
+  const [bookmarkedEventIds, setBookmarkedEventIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!roomId) {
+      setBookmarkedEventIds(new Set());
+      return undefined;
+    }
+    let cancelled = false;
+    listBookmarks()
+      .then((bookmarks) => {
+        if (cancelled) return;
+        setBookmarkedEventIds(
+          new Set(bookmarks.filter((b) => b.room_id === roomId).map((b) => b.event_id)),
+        );
+      })
+      .catch(logAndIgnore);
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
   async function handleToggleReaction(targetEventId: string, key: string) {
     if (!roomId) return;
     try {
@@ -78,6 +111,39 @@ export function useMessageActions({
     }
   }
 
+  /** Bookmarks a message (Spec 12) — purely local, no Matrix event sent. */
+  async function handleBookmark(eventId: string) {
+    if (!roomId) return;
+    setBookmarkedEventIds((prev) => new Set(prev).add(eventId));
+    try {
+      await addBookmark(roomId, eventId);
+    } catch (err) {
+      console.error(err);
+      // Roll back the optimistic update on failure — otherwise the menu
+      // would keep showing "Remove bookmark" for a save that never landed.
+      setBookmarkedEventIds((prev) => {
+        const next = new Set(prev);
+        next.delete(eventId);
+        return next;
+      });
+    }
+  }
+
+  /** Removes a bookmark from the message action menu. See {@link handleBookmark}. */
+  async function handleUnbookmark(eventId: string) {
+    setBookmarkedEventIds((prev) => {
+      const next = new Set(prev);
+      next.delete(eventId);
+      return next;
+    });
+    try {
+      await removeBookmark(eventId);
+    } catch (err) {
+      console.error(err);
+      setBookmarkedEventIds((prev) => new Set(prev).add(eventId));
+    }
+  }
+
   return {
     handleToggleReaction,
     handleDelete,
@@ -85,5 +151,8 @@ export function useMessageActions({
     handleEdit,
     handleResend,
     handleDiscard,
+    handleBookmark,
+    handleUnbookmark,
+    bookmarkedEventIds,
   };
 }

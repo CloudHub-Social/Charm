@@ -2,6 +2,7 @@ pub mod account;
 pub mod account_data;
 pub mod actions;
 pub mod auth;
+pub mod bookmarks;
 pub mod commands;
 pub mod devices;
 pub mod dnd;

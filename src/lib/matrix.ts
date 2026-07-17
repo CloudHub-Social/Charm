@@ -1,4 +1,5 @@
 import type { BadgeState } from "@bindings/BadgeState";
+import type { BookmarkEntry } from "@bindings/BookmarkEntry";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { DndSnapshot } from "@bindings/DndSnapshot";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
@@ -124,6 +125,7 @@ export async function invokeMatrix<T>(
  */
 export type {
   BadgeState,
+  BookmarkEntry,
   CommandResult,
   CrossSigningStatusSummary,
   DeviceSummary,
@@ -320,6 +322,34 @@ export function getTimelinePage(
   limit?: number,
 ): Promise<TimelinePage> {
   return invoke("get_timeline_page", { roomId, cursor, limit });
+}
+
+/**
+ * Spec 12's minimal "load timeline around an arbitrary event id" — pulls
+ * older history into the room's live timeline (the same `paginate_backwards`
+ * primitive `getTimelinePage` uses, pushed to the frontend via the existing
+ * `timeline:update` listener) until `eventId` is loaded, or gives up.
+ * Resolves to whether the event was found — `false` means it's further back
+ * than this will paginate to, or no longer reachable.
+ */
+export function loadTimelineAroundEvent(roomId: string, eventId: string): Promise<boolean> {
+  return invoke("load_timeline_around_event", { roomId, eventId });
+}
+
+/** Bookmarks (Spec 12: personal, private "saved messages" — never a Matrix
+ * event of any kind, see `add_bookmark`'s Rust doc comment) a loaded message. */
+export function addBookmark(roomId: string, eventId: string): Promise<void> {
+  return invoke("add_bookmark", { roomId, eventId });
+}
+
+/** Removes a bookmark. A no-op if `eventId` isn't currently bookmarked. */
+export function removeBookmark(eventId: string): Promise<void> {
+  return invoke("remove_bookmark", { eventId });
+}
+
+/** Every bookmark for the current account, newest-saved first. */
+export function listBookmarks(): Promise<BookmarkEntry[]> {
+  return invoke("list_bookmarks");
 }
 
 /**

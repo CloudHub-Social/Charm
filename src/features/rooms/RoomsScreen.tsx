@@ -91,6 +91,11 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
+  // Spec 12's "jump to message" from the Saved Messages settings panel: the
+  // event to scroll to once its room is selected and loaded. `ChatShell`
+  // clears this itself (via `onJumpHandled`) once the jump completes or
+  // definitively fails, rather than this screen guessing when that happened.
+  const [jumpToEventId, setJumpToEventId] = useState<string | null>(null);
   const autoSelectSuppressedRef = useRef<
     { kind: "space" } | { kind: "invite"; roomId: string } | null
   >(null);
@@ -155,6 +160,20 @@ export function RoomsScreen({
   function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
     selectSpace(spaceId);
     autoSelectSuppressedRef.current = { kind: "space" };
+  }
+
+  /** Handles a jump-to-message click from the Saved Messages settings panel
+   * (Spec 12): selects the bookmark's room (in whatever nav mode it belongs
+   * to, same as clicking it in the room list) and hands the target event id
+   * to `ChatShell`, which does the actual scroll/load-around once that room
+   * is active. A bookmark whose room isn't currently joined (left since
+   * saving) has nothing to select into — silently does nothing, same as
+   * `navigateToRoomPill`'s handling of an unresolvable target. */
+  function handleJumpToBookmark(roomId: string, eventId: string) {
+    const room = joinedRooms.find((candidate) => candidate.room_id === roomId);
+    if (!room) return;
+    selectRoomInVisibleMode(room);
+    setJumpToEventId(eventId);
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -473,6 +492,8 @@ export function RoomsScreen({
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
+            jumpToEventId={jumpToEventId}
+            onJumpHandled={() => setJumpToEventId(null)}
           />
         }
         rightPanel={
@@ -493,7 +514,7 @@ export function RoomsScreen({
       />
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
-      <SettingsScreen onLoggedOut={onLoggedOut} />
+      <SettingsScreen onLoggedOut={onLoggedOut} onJumpToBookmark={handleJumpToBookmark} />
       <CrashRecoveryPrompt
         open={crashRecoveryPromptOpen}
         onDismiss={onDismissCrashRecoveryPrompt}

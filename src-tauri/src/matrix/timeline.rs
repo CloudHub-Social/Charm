@@ -990,6 +990,74 @@ pub async fn get_timeline_page_impl(
     })
 }
 
+/// How many `paginate_backwards` batches [`load_timeline_around_event`] will
+/// request before giving up on finding `event_id` — bounds worst-case work
+/// for a bookmark whose event is much further back than typical (e.g. a
+/// months-old saved message in a very active room), rather than paginating
+/// all the way to the start of history on every jump. At
+/// `EVENTS_PER_BATCH` per iteration this covers several thousand events,
+/// comfortably more than a real "jump to an old bookmark" needs in practice.
+const MAX_LOAD_AROUND_ITERATIONS: usize = 20;
+const EVENTS_PER_BATCH: u16 = 50;
+
+/// Spec 12's minimal "load timeline around an arbitrary event id" capability
+/// — needed so jumping to a bookmarked message from the Saved Messages view
+/// works even when that message isn't in the room's currently-loaded
+/// timeline window (e.g. the room hasn't been opened yet, or the bookmark is
+/// older than what's paginated in). Deliberately not a shared/generic
+/// abstraction: it just keeps calling the existing `paginate_backwards` (the
+/// same primitive `get_timeline_page` already uses) until `event_id` shows up
+/// in the live snapshot or history is exhausted, relying on the timeline
+/// listener's existing `timeline:update` emission (spawned by
+/// `get_or_create_timeline`) to push each newly-paginated batch to the
+/// frontend exactly the way backward-scrolling already does — no separate
+/// event/response payload of its own.
+///
+/// Returns whether `event_id` was found. `false` means the event is not
+/// (or no longer) in this room's history reachable from the current sync
+/// state — e.g. a stale bookmark for an event since removed from the
+/// room's DAG the local store can see, or one further back than
+/// `MAX_LOAD_AROUND_ITERATIONS` batches away.
+#[tauri::command]
+pub async fn load_timeline_around_event(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<bool, String> {
+    let client = state.require_client().await?;
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let timeline = state
+        .get_or_create_timeline(&app, &client, &parsed_room_id)
+        .await?;
+
+    if timeline_contains_event(&timeline, &event_id).await {
+        return Ok(true);
+    }
+
+    for _ in 0..MAX_LOAD_AROUND_ITERATIONS {
+        let hit_start = timeline
+            .paginate_backwards(EVENTS_PER_BATCH)
+            .await
+            .map_err(|e| e.to_string())?;
+        if timeline_contains_event(&timeline, &event_id).await {
+            return Ok(true);
+        }
+        if hit_start {
+            break;
+        }
+    }
+    Ok(false)
+}
+
+async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {
+    let (items, _stream) = timeline.subscribe().await;
+    items
+        .iter()
+        .filter_map(|item| item.as_event())
+        .any(|item| item.event_id().is_some_and(|id| id.as_str() == event_id))
+}
+
 #[cfg(test)]
 mod mapping_tests {
     use futures_util::StreamExt;

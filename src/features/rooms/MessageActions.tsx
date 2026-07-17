@@ -1,5 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
+  Bookmark,
+  BookmarkX,
   Copy,
   Link2,
   MoreHorizontal,
@@ -32,6 +34,17 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /**
+   * Bookmarks/unbookmarks this message (Spec 12: personal, private "saved
+   * messages" — purely local, no Matrix event sent, distinct from room
+   * pinning). Toggled by `isBookmarked`; not rendered at all when
+   * `onBookmark`/`onUnbookmark` are both omitted (the web build, which has
+   * no local per-account store for this — see `SettingsScreen`'s
+   * `webUnsupported` pattern).
+   */
+  onBookmark?: () => void;
+  onUnbookmark?: () => void;
+  isBookmarked?: boolean;
   /**
    * Retries a failed send in place (SDK send-queue retry, not a
    * re-composed re-send). Only rendered when `isError` is set — see that
@@ -103,6 +116,9 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDelete,
       onCopy,
       onCopyLink,
+      onBookmark,
+      onUnbookmark,
+      isBookmarked = false,
       onResend,
       onDiscard,
       className,
@@ -247,6 +263,19 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 <Link2 />
                 Copy link
               </DropdownMenuItem>
+            )}
+            {isBookmarked && onUnbookmark ? (
+              <DropdownMenuItem onSelect={onUnbookmark} disabled={isUndecrypted}>
+                <BookmarkX />
+                Remove bookmark
+              </DropdownMenuItem>
+            ) : (
+              onBookmark && (
+                <DropdownMenuItem onSelect={onBookmark} disabled={isUndecrypted}>
+                  <Bookmark />
+                  Bookmark
+                </DropdownMenuItem>
+              )
             )}
             {messageActionParityEnabled && isError && onResend && (
               <DropdownMenuItem onSelect={onResend}>

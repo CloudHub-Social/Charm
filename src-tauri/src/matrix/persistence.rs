@@ -1287,6 +1287,74 @@ pub fn has_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<bool, S
     Ok(onboarding_flag_path(app, account_key)?.exists())
 }
 
+/// Where a single account's local bookmarks table (Spec 12: personal, private
+/// "saved messages" — never a Matrix account-data event, see the module doc
+/// on `add_bookmark`) lives on disk: one JSON file per [`account_key`], same
+/// `<root>/<subdir>/<account_key>` layout as [`onboarding_flag_path_at`], so
+/// two accounts signed into the same Charm install never see each other's
+/// bookmarks.
+fn bookmarks_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> {
+    let dir = root.join("bookmarks");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{account_key}.json")))
+}
+
+/// Reads `account_key`'s bookmarks list, or an empty `Vec` if the file
+/// doesn't exist yet (never bookmarked anything) — not an error, matching
+/// [`has_onboarding_flag`]'s "absence means default" convention.
+pub fn load_bookmarks<T: serde::de::DeserializeOwned>(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<Vec<T>, String> {
+    load_bookmarks_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+    )
+}
+
+pub fn load_bookmarks_at<T: serde::de::DeserializeOwned>(
+    root: &Path,
+    account_key: &str,
+) -> Result<Vec<T>, String> {
+    let path = bookmarks_path_at(root, account_key)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(&raw).map_err(|e| e.to_string())
+}
+
+/// Overwrites `account_key`'s bookmarks list wholesale — callers read the
+/// current list, mutate the `Vec` in memory, then call this rather than this
+/// module offering an append/remove-by-id API of its own, since the list is
+/// small (personal bookmarks, not a synced/shared dataset) and every caller
+/// in `bookmarks.rs` already needs the full list in memory anyway (e.g.
+/// `remove_bookmark` finding-and-filtering by event id).
+pub fn save_bookmarks<T: serde::Serialize>(
+    app: &AppHandle,
+    account_key: &str,
+    bookmarks: &[T],
+) -> Result<(), String> {
+    save_bookmarks_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+        bookmarks,
+    )
+}
+
+pub fn save_bookmarks_at<T: serde::Serialize>(
+    root: &Path,
+    account_key: &str,
+    bookmarks: &[T],
+) -> Result<(), String> {
+    let path = bookmarks_path_at(root, account_key)?;
+    let json = serde_json::to_string(bookmarks).map_err(|e| e.to_string())?;
+    std::fs::write(path, json).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1847,5 +1915,36 @@ mod tests {
         assert!(!onboarding_flag_path_at(&root.0, &account_key_b)
             .unwrap()
             .exists());
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestBookmark {
+        event_id: String,
+    }
+
+    #[test]
+    fn bookmarks_round_trip_and_are_isolated_per_account() {
+        let root = ScratchRoot::new("bookmarks");
+        let account_key_a = account_key("@charm-persistence-test-bookmarks-a:localhost");
+        let account_key_b = account_key("@charm-persistence-test-bookmarks-b:localhost");
+
+        assert!(load_bookmarks_at::<TestBookmark>(&root.0, &account_key_a)
+            .unwrap()
+            .is_empty());
+
+        let bookmarks_a = vec![TestBookmark {
+            event_id: "$a1".to_string(),
+        }];
+        save_bookmarks_at(&root.0, &account_key_a, &bookmarks_a).unwrap();
+
+        assert_eq!(
+            load_bookmarks_at::<TestBookmark>(&root.0, &account_key_a).unwrap(),
+            bookmarks_a
+        );
+        // Account B never sees account A's bookmarks, even though both
+        // accounts share the same on-disk root.
+        assert!(load_bookmarks_at::<TestBookmark>(&root.0, &account_key_b)
+            .unwrap()
+            .is_empty());
     }
 }

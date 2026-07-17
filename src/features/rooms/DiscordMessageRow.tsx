@@ -35,6 +35,9 @@ export function DiscordMessageRow({
   onDelete,
   onCopy,
   onCopyLink,
+  onBookmark,
+  onUnbookmark,
+  isBookmarked,
   onResend,
   onDiscard,
   onJumpToMessage,
@@ -141,6 +144,9 @@ export function DiscordMessageRow({
               onDelete={onDelete}
               onCopy={onCopy}
               onCopyLink={onCopyLink}
+              onBookmark={onBookmark}
+              onUnbookmark={onUnbookmark}
+              isBookmarked={isBookmarked}
               onResend={onResend}
               onDiscard={onDiscard}
             />
