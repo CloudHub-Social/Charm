@@ -98,6 +98,18 @@ pub struct MatrixState {
     /// against — see `PendingSso::store_key`'s doc comment; same rationale,
     /// same `std::sync::Mutex` synchronous-with-spawn requirement.
     pub(crate) pending_qr_temp_store_key: std::sync::Mutex<Option<String>>,
+    /// Temp-store keys for an SSO login whose callback has arrived and is
+    /// actively completing (`auth::complete_sso_login`), from the moment it
+    /// takes the entry out of `pending_sso` through relocation finishing —
+    /// unlike QR login, whose `pending_qr_temp_store_key` naturally stays
+    /// set until relocation completes, `complete_sso_login` clears
+    /// `pending_sso` immediately (needed so a *different* SSO callback can't
+    /// still match the same entry mid-completion), which leaves a window
+    /// where `lib.rs`'s delayed sweep pass would no longer see this store
+    /// as pending anything (Codex review on #288, P2). Consulted alongside
+    /// `pending_sso`/`pending_qr_temp_store_key` when that pass gathers its
+    /// protected set.
+    pub(crate) completing_sso_temp_store_keys: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Filesystem media cache (`<app_data>/media/`), built once at app
     /// startup and shared across every login/restore — see
     /// `media::MediaCache`. `OnceCell` rather than living inside the client
@@ -196,6 +208,7 @@ impl Default for MatrixState {
             pending_qr_check_code: Mutex::default(),
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),
+            completing_sso_temp_store_keys: std::sync::Mutex::default(),
             media_cache: tokio::sync::OnceCell::default(),
             sync_presence: std::sync::Mutex::default(),
             timelines: Mutex::new(lru::LruCache::new(

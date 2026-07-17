@@ -1337,6 +1337,19 @@ pub fn run() {
                 {
                     protected_temp_keys.insert(key.clone());
                 }
+                // `pending_sso` alone misses an SSO callback that's already
+                // completing: `complete_sso_login` clears `pending_sso`
+                // immediately on taking it, well before relocation finishes
+                // — see `completing_sso_temp_store_keys`'s doc comment
+                // (Codex review on #288, P2).
+                protected_temp_keys.extend(
+                    matrix_state
+                        .completing_sso_temp_store_keys
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .cloned(),
+                );
                 let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
                 if let Err(e) = matrix::persistence::sweep_orphan_temp_stores_excluding(
                     &sweep_handle,

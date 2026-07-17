@@ -851,6 +851,36 @@ pub async fn complete_sso_login(
     drop(pending_sso);
     let client = pending.client;
 
+    // See `MatrixState::completing_sso_temp_store_keys`'s doc comment
+    // (Codex review on #288, P2): tracks this store as still in flight from
+    // here through every exit path below, closing the window `pending_sso`
+    // being cleared just above would otherwise leave for the delayed sweep
+    // pass to race. `struct`+`Drop`, not a `defer!`-style macro (this crate
+    // has none) — removes itself on every return, including the early ones,
+    // without needing a matching cleanup call at each site.
+    struct SsoCompletionGuard<'a> {
+        matrix_state: &'a MatrixState,
+        store_key: String,
+    }
+    impl Drop for SsoCompletionGuard<'_> {
+        fn drop(&mut self) {
+            self.matrix_state
+                .completing_sso_temp_store_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.store_key);
+        }
+    }
+    state
+        .completing_sso_temp_store_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(pending.store_key.clone());
+    let _completing_guard = SsoCompletionGuard {
+        matrix_state: &state,
+        store_key: pending.store_key.clone(),
+    };
+
     if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
         // The account was never learned, so this temp store would
         // otherwise sit on disk (and in the keychain) until the next
