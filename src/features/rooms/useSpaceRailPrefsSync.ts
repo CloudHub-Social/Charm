@@ -103,8 +103,19 @@ export function useSpaceRailPrefsSync(userId: string) {
         // Only the *latest* claimed write clears the marker — if a newer
         // edit was queued after this one started, the cache is still
         // "unsynced" from that edit's perspective even though this older
-        // write just succeeded.
-        if (writeGenerationRef.current === generation) {
+        // write just succeeded. Also rechecked here, not just at the top of
+        // this continuation: `setAccountData` can settle after the hook has
+        // since unmounted or moved to a different account (e.g. log out,
+        // log back in as the same user, edit again — that newer edit's own
+        // write could still be queued or fail). Clearing the marker here
+        // regardless would let this older write mask the newer local edit,
+        // so the next mount treats it as clean and an older remote read
+        // silently overwrites it.
+        if (
+          writeGenerationRef.current === generation &&
+          !unmountedRef.current &&
+          latestUserIdRef.current === forUserId
+        ) {
           setSpaceRailPrefsPendingSync(forUserId, false);
         }
       } catch {

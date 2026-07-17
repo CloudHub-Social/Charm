@@ -4,7 +4,7 @@ import { StrictMode } from "react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixLib from "@/lib/matrix";
-import { spaceRailPrefsAtomFamily } from "./spaceRailPrefs";
+import { hasUnsyncedSpaceRailPrefs, spaceRailPrefsAtomFamily } from "./spaceRailPrefs";
 
 const TEST_USER_ID = "@e2e:localhost";
 
@@ -442,6 +442,40 @@ describe("useSpaceRailPrefsSync", () => {
     // session under a new user id) must never see a write land from the
     // unmounted instance.
     expect(setAccountData).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the pending-sync marker set when an in-flight write settles after unmount", async () => {
+    // A write already inside `setAccountData` when the component unmounts
+    // (e.g. logout) must not clear the pending-sync marker once it settles
+    // — only `unmountedRef`/`latestUserIdRef` being rechecked *after* the
+    // await, not just at the top of the continuation, catches this. Without
+    // it, this stale write could mask a newer local edit (made after
+    // logging back in as the same user) that's still queued or failed, and
+    // the next mount would wrongly treat the cache as clean.
+    getAccountData.mockResolvedValue(null);
+    let resolveWrite: () => void = () => {};
+    setAccountData.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite = resolve;
+        }),
+    );
+
+    const { result, unmount } = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
+
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!edit:localhost"] });
+    });
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(1));
+    expect(hasUnsyncedSpaceRailPrefs(TEST_USER_ID)).toBe(true);
+
+    unmount();
+    resolveWrite();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(hasUnsyncedSpaceRailPrefs(TEST_USER_ID)).toBe(true);
   });
 
   it("still writes after React.StrictMode's dev-only double-invoke of the unmount-guard effect", async () => {
