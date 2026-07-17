@@ -68,4 +68,21 @@ describe("LeaveSpaceDialog", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("cannot leave"));
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
+
+  it("clears a stale error when re-targeted at a different space without closing", async () => {
+    leaveRoom.mockRejectedValueOnce(new Error("cannot leave"));
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <LeaveSpaceDialog spaceId="!team:localhost" spaceName="Team" onOpenChange={onOpenChange} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("cannot leave"));
+
+    rerender(
+      <LeaveSpaceDialog spaceId="!other:localhost" spaceName="Other" onOpenChange={onOpenChange} />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

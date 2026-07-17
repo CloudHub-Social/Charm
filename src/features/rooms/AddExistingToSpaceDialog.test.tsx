@@ -114,4 +114,37 @@ describe("AddExistingToSpaceDialog", () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("clears a stale error and query when re-targeted at a different space without closing", async () => {
+    addExistingSpaceChild.mockRejectedValueOnce(new Error("network error"));
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <AddExistingToSpaceDialog
+        spaceId="!team:localhost"
+        spaceName="Team"
+        rooms={rooms}
+        excludedIds={new Set()}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("Search your rooms and spaces"), {
+      target: { value: "design" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Design/ }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("network error"));
+
+    rerender(
+      <AddExistingToSpaceDialog
+        spaceId="!other:localhost"
+        spaceName="Other"
+        rooms={rooms}
+        excludedIds={new Set()}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Search your rooms and spaces")).toHaveValue("");
+  });
 });

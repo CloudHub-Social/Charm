@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,14 @@ export function AddExistingToSpaceDialog({
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Guards against stale state if `spaceId` changes while the dialog stays
+  // open — `handleClose`'s reset only runs on an open->closed transition.
+  useEffect(() => {
+    setQuery("");
+    setPendingId(null);
+    setError(null);
+  }, [spaceId]);
 
   const candidates = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();

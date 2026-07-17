@@ -70,4 +70,30 @@ describe("InviteToSpaceDialog", () => {
     expect(inviteMember).not.toHaveBeenCalled();
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("clears a stale error and typed value when re-targeted at a different space without closing", () => {
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <InviteToSpaceDialog
+        spaceId="!team:localhost"
+        spaceName="Team"
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Matrix ID"), { target: { value: "not-an-id" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Enter a valid Matrix ID");
+
+    rerender(
+      <InviteToSpaceDialog
+        spaceId="!other:localhost"
+        spaceName="Other"
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Matrix ID")).toHaveValue("");
+  });
 });

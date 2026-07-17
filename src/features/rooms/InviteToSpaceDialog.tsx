@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,6 +33,14 @@ export function InviteToSpaceDialog({
   const [userId, setUserId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  // Guards against stale state if `spaceId` changes while the dialog stays
+  // open — `handleClose`'s reset only runs on an open->closed transition.
+  useEffect(() => {
+    setUserId("");
+    setError(null);
+    setPending(false);
+  }, [spaceId]);
 
   function handleClose(open: boolean) {
     if (!open) {

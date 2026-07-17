@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,6 +21,14 @@ interface LeaveSpaceDialogProps {
 export function LeaveSpaceDialog({ spaceId, spaceName, onOpenChange }: LeaveSpaceDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  // Guards against stale state if `spaceId` changes while the dialog stays
+  // open (e.g. the context menu re-targets it without the caller closing it
+  // first) — `handleClose`'s reset only runs on an open->closed transition.
+  useEffect(() => {
+    setError(null);
+    setPending(false);
+  }, [spaceId]);
 
   function handleClose(open: boolean) {
     if (!open) {
