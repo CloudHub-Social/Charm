@@ -24,6 +24,10 @@ tokio = { version = "1.52.3", features = [
 ] }
 axum = { version = "0.8", features = ["ws", "multipart"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
+# For session_cookie()'s explicit Max-Age (routes.rs) — already pulled in
+# transitively via axum-extra's `cookie` feature; declared directly here
+# since routes.rs names it, not just axum-extra internals.
+time = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 serde = { version = "1", features = ["derive"] }
