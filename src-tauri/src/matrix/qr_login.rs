@@ -20,7 +20,7 @@ use ts_rs::TS;
 
 use super::auth::LoginResponse;
 use super::sync::spawn_sync_loop;
-use super::{persistence, MatrixState};
+use super::{persistence, MatrixState, ReservedTempStoreGuard};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -85,7 +85,15 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     // The account isn't known until the OAuth device-code dance completes —
     // open a temp store now and relocate it once the MXID is known.
     let temp_key = persistence::temp_store_key();
+    // See `MatrixState::ReservedTempStoreGuard`'s doc comment (Codex review
+    // on #288, P2): reserved before the client-build `.await` below so the
+    // delayed sweep pass can't see this store as unprotected for however
+    // long that network setup takes — `pending_qr_temp_store_key` itself
+    // isn't set until further down.
+    let matrix_state = app.state::<MatrixState>();
+    let reservation = ReservedTempStoreGuard::new(&matrix_state, temp_key.clone());
     let client = super::auth::build_client(&app, &homeserver_url, &temp_key).await?;
+    reservation.defuse();
 
     // Device-code grant only — this client only ever needs to be the "new
     // device" side of QR login, never a full browser-based OAuth login.

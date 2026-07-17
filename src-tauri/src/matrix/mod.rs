@@ -110,6 +110,19 @@ pub struct MatrixState {
     /// `pending_sso`/`pending_qr_temp_store_key` when that pass gathers its
     /// protected set.
     pub(crate) completing_sso_temp_store_keys: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Temp-store keys reserved by `start_sso_login`/`start_qr_login`
+    /// immediately after generating them, before any `.await` — closes a
+    /// window at the *other* end of the flow from
+    /// `completing_sso_temp_store_keys`: both flows `.await` a client
+    /// build (network discovery) and, for SSO, a second network call for
+    /// the login URL, before ever publishing to `pending_sso`/
+    /// `pending_qr_temp_store_key` — so a `tmp-*` directory can exist on
+    /// disk, unprotected by either of those, for however long that setup
+    /// takes (Codex review on #288, P2). Cleared once ownership transfers
+    /// to `pending_sso`/`pending_qr_temp_store_key` (which then protect it
+    /// themselves the rest of the way) or on early failure — see each
+    /// call site's `ReservedTempStoreGuard`.
+    pub(crate) reserved_temp_store_keys: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Filesystem media cache (`<app_data>/media/`), built once at app
     /// startup and shared across every login/restore — see
     /// `media::MediaCache`. `OnceCell` rather than living inside the client
@@ -209,6 +222,7 @@ impl Default for MatrixState {
             pending_qr_login_task: std::sync::Mutex::default(),
             pending_qr_temp_store_key: std::sync::Mutex::default(),
             completing_sso_temp_store_keys: std::sync::Mutex::default(),
+            reserved_temp_store_keys: std::sync::Mutex::default(),
             media_cache: tokio::sync::OnceCell::default(),
             sync_presence: std::sync::Mutex::default(),
             timelines: Mutex::new(lru::LruCache::new(
@@ -226,6 +240,52 @@ impl Default for MatrixState {
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
             dnd: std::sync::Mutex::default(),
             preview_registered_rooms: std::sync::Mutex::default(),
+        }
+    }
+}
+
+/// RAII handle for an entry in [`MatrixState::reserved_temp_store_keys`].
+/// Removes the key on drop unless [`Self::defuse`] was called first — the
+/// pattern is: reserve immediately (before any `.await`), do the
+/// network-dependent setup, then `defuse()` right before handing ownership
+/// off to `pending_sso`/`pending_qr_temp_store_key` (which protect the key
+/// themselves from that point on). An early return via `?` from anywhere in
+/// between drops the guard un-defused, cleaning the reservation up
+/// automatically so a failed attempt doesn't leak protection for a store
+/// that no longer has anything actually pending.
+pub(crate) struct ReservedTempStoreGuard<'a> {
+    matrix_state: &'a MatrixState,
+    store_key: String,
+    defused: bool,
+}
+
+impl<'a> ReservedTempStoreGuard<'a> {
+    pub(crate) fn new(matrix_state: &'a MatrixState, store_key: String) -> Self {
+        matrix_state
+            .reserved_temp_store_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(store_key.clone());
+        Self {
+            matrix_state,
+            store_key,
+            defused: false,
+        }
+    }
+
+    pub(crate) fn defuse(mut self) {
+        self.defused = true;
+    }
+}
+
+impl Drop for ReservedTempStoreGuard<'_> {
+    fn drop(&mut self) {
+        if !self.defused {
+            self.matrix_state
+                .reserved_temp_store_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.store_key);
         }
     }
 }

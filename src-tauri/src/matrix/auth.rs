@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
-use super::{persistence, sync, MatrixState};
+use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
 
 /// The `charm://` deep-link the homeserver's SSO flow redirects back to with
 /// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
@@ -719,9 +719,16 @@ pub async fn start_sso_login(
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
     let store_key = persistence::temp_store_key();
+    // See `MatrixState::ReservedTempStoreGuard`'s doc comment (Codex review
+    // on #288, P2): reserved before the two `.await`s below (client build,
+    // login-URL fetch) so the delayed sweep pass can't see this store as
+    // unprotected for however long that network setup takes — `pending_sso`
+    // itself isn't set until after both succeed.
+    let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
     let client = build_client(&app, &homeserver_url, &store_key).await?;
     let attempt_state = generate_sso_state();
     let sso_url = get_sso_login_url(&client, &attempt_state).await?;
+    reservation.defuse();
 
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
