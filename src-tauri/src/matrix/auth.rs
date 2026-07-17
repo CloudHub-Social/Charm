@@ -251,8 +251,19 @@ pub async fn try_restore_session(
     // the store open), and either platform could end up publishing a
     // client backed by a store that's since been superseded. See
     // `MatrixState::login_completion_lock`'s doc comment.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    //
+    // Acquired in this order — `restore_store_lock` before
+    // `login_completion_lock` — to match `login`/`register`/`handle_push`:
+    // `login`/`register` hold `restore_store_lock` from before the
+    // account's MXID is even known through the whole homeserver round trip,
+    // only taking `login_completion_lock` afterward. Taking these two in
+    // the reverse order here would be the identical ABBA deadlock already
+    // fixed between `login`/`register` and `handle_push` (Codex review on
+    // #288, P1) — a login in flight holding `restore_store_lock` while
+    // waiting on `login_completion_lock`, racing this restore holding
+    // `login_completion_lock` while waiting on `restore_store_lock`.
     let _restore_store_guard = restore_store_lock().lock().await;
+    let _completion_guard = state.login_completion_lock.lock().await;
 
     // Which account (if any) has a session worth restoring isn't known
     // up front — iterate every account this install has a store for and

@@ -997,7 +997,31 @@ function DraggableRoomRow({
   // (Codex review on #288, P2) — an inline object literal here would be a
   // fresh reference on every `RoomList` render regardless, defeating that
   // comparator for every row in the main, non-virtualized list.
-  const dragHandleProps = useMemo(() => ({ ...bind(), ref: measureRow }), [bind, measureRow]);
+  //
+  // `bind` deliberately excluded from the deps array (Sentry review on
+  // #288): `useDrag` returns a *new* bound function every render
+  // (`ctrl.bind.bind(ctrl)` in `@use-gesture/react`'s `useRecognizers`), so
+  // including it here would recompute this memo — and therefore defeat the
+  // downstream `React.memo` — on every single render, exactly the bug this
+  // memoization exists to prevent. `canReorder` (the one config value that
+  // actually varies — `axis`/`filterTaps` below are fixed literals) stands
+  // in for it instead: the gesture handler itself always dispatches through
+  // the same persistent `Controller` instance regardless of which render's
+  // `bind()` produced the specific function in hand (`ctrl.applyHandlers`/
+  // `ctrl.applyConfig` re-apply this render's closure unconditionally,
+  // before `useRecognizers` ever returns), so a "stale" handler is still
+  // behaviorally current — but `bind()`'s *returned props themselves* can
+  // embed config-derived values (the mocked `data-reorder-enabled` in
+  // `RoomList.test.tsx` stands in for this; verified against a regression
+  // there), which a reused call would freeze at whatever `canReorder` was
+  // on the render that produced it. Recomputing only when `canReorder`
+  // itself changes keeps both correct: memoized across unrelated
+  // re-renders, refreshed exactly when the value it's derived from does.
+  const dragHandleProps = useMemo(
+    () => ({ ...bind(), ref: measureRow }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `bind` deliberately omitted, see comment above
+    [canReorder, measureRow],
+  );
   const style = useMemo(
     () => ({
       transform: dragging ? `translateY(${dragOffset}px)` : undefined,
