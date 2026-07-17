@@ -195,7 +195,7 @@ pub fn mark_startup_sweep_complete() {
 /// before this coordination existed.
 pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
     let mut rx = startup_sweep_channel().1.clone();
-    if *rx.borrow() {
+    if *rx.borrow_and_update() {
         return;
     }
     if tokio::time::timeout(timeout, rx.changed()).await.is_err() {
