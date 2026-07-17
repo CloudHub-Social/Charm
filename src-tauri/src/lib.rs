@@ -1277,13 +1277,119 @@ pub fn run() {
             }
             // Best-effort sweep of any per-account temp stores stranded by a
             // crash mid-login (a clean cancel already cleans up its own).
-            let sweep_result = tauri::async_runtime::block_on(async {
+            // Spawned rather than `block_on`'d: this used to block the whole
+            // `.setup()` callback (and therefore the main window becoming
+            // interactive) on synchronous `std::fs::read_dir` + discard/
+            // recover work scaling with however many stale store directories
+            // are on disk. It's safe to run in the background because it
+            // still takes `restore_store_lock` before touching anything —
+            // any concurrent restore (a real login, or Android's
+            // receiver-only push path) will simply await that same lock
+            // rather than racing the sweep, exactly as it already does
+            // against another restore.
+            let sweep_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                // Recovery only, not the full sweep — see
+                // `recover_stale_backups`'s doc comment (Codex review on
+                // #288, P2): signaling readiness right after this (not
+                // after the temp-store discards below too, which scale
+                // with however many stranded stores are on disk) means
+                // `try_restore_session`'s wait only ever blocks on the part
+                // it actually needs.
+                let recovery_result = async {
+                    let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    matrix::persistence::recover_stale_backups(&sweep_handle)
+                }
+                .await;
+                let deferred_discards = match recovery_result {
+                    Ok(deferred) => Some(deferred),
+                    Err(e) => {
+                        eprintln!("orphan temp-store sweep (recovery phase) failed: {e}");
+                        None
+                    }
+                };
+                // Unblocks `try_restore_session`'s bounded wait regardless of
+                // outcome — see `wait_for_startup_sweep`'s doc comment
+                // (Codex review on #288, P1).
+                matrix::persistence::mark_startup_sweep_complete();
+
+                // Temp-store discards run after the signal above, not
+                // before — nothing waits on this phase, so there's no
+                // reason to make it block startup restore too.
+                if let Some(deferred) = deferred_discards {
+                    let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    deferred.discard(&std::collections::HashSet::new());
+                }
+
+                // A second, delayed pass: this first sweep's own grace
+                // period (`ORPHAN_TEMP_STORE_MIN_AGE`) means a genuine crash
+                // orphan created shortly before *this* launch is
+                // indistinguishable from a login in progress right now, so
+                // it's deliberately skipped rather than swept — see that
+                // constant's doc comment. Without a second pass, an orphan
+                // skipped for exactly that reason would never get cleaned
+                // up unless the user happens to relaunch the app again
+                // after the grace period elapses (Codex review on #288,
+                // P2). Sleeping for the same duration and re-running once
+                // more closes that gap within this same session: by then,
+                // anything that was still "fresh" at the first pass and
+                // hasn't since been relocated to its permanent path is
+                // genuinely stale, not racing an in-progress flow — *except*
+                // a still-pending SSO/QR login, which has no inherent time
+                // limit (waiting on a browser redirect or a QR scan) and can
+                // legitimately outlive this delay; unlike the first pass,
+                // age alone can no longer tell those apart by now. Gathered
+                // fresh right before sweeping (not once, up front) so a
+                // login that started or finished partway through the sleep
+                // is still read accurately (Codex review on #288, P2).
+                tokio::time::sleep(matrix::persistence::ORPHAN_TEMP_STORE_MIN_AGE).await;
+                let matrix_state = sweep_handle.state::<matrix::MatrixState>();
+                let mut protected_temp_keys = std::collections::HashSet::new();
+                if let Some(pending) = matrix_state.pending_sso.lock().await.as_ref() {
+                    protected_temp_keys.insert(pending.store_key.clone());
+                }
+                if let Some(key) = matrix_state
+                    .pending_qr_temp_store_key
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    protected_temp_keys.insert(key.clone());
+                }
+                // `pending_sso` alone misses an SSO callback that's already
+                // completing: `complete_sso_login` clears `pending_sso`
+                // immediately on taking it, well before relocation finishes
+                // — see `completing_sso_temp_store_keys`'s doc comment
+                // (Codex review on #288, P2).
+                protected_temp_keys.extend(
+                    matrix_state
+                        .completing_sso_temp_store_keys
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .cloned(),
+                );
+                // Also misses a store `start_sso_login`/`start_qr_login`
+                // opened but hasn't yet published to `pending_sso`/
+                // `pending_qr_temp_store_key` — see
+                // `MatrixState::reserved_temp_store_keys`'s doc comment
+                // (Codex review on #288, P2).
+                protected_temp_keys.extend(
+                    matrix_state
+                        .reserved_temp_store_keys
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .cloned(),
+                );
                 let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
-                matrix::persistence::sweep_orphan_temp_stores(&handle)
+                if let Err(e) = matrix::persistence::sweep_orphan_temp_stores_excluding(
+                    &sweep_handle,
+                    &protected_temp_keys,
+                ) {
+                    eprintln!("delayed orphan temp-store sweep failed: {e}");
+                }
             });
-            if let Err(e) = sweep_result {
-                eprintln!("orphan temp-store sweep failed: {e}");
-            }
             matrix::dnd::init(&handle);
             #[cfg(desktop)]
             setup_tray_and_menu(app)?;
