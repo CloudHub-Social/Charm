@@ -535,10 +535,16 @@ export function ChatShell({
       .catch((err) => {
         // Same rationale as the `!found` branch above: an errored jump
         // attempt is also finished, so the dedup ref must not keep blocking
-        // a retry of the same `jumpToEventId` forever.
+        // a retry of the same `jumpToEventId` forever. Also clear the
+        // caller's own jump target here (review fix) — otherwise
+        // `RoomsScreen` keeps the stale `jumpToEventId` set, and since
+        // mutating this ref alone doesn't trigger a re-render, a later
+        // room selection could still see this same value re-attempted
+        // against an unrelated room.
         if (loadRequestedForRef.current === jumpToEventId) {
           loadRequestedForRef.current = null;
         }
+        onJumpHandled?.();
         logAndIgnore(err);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

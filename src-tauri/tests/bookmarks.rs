@@ -4,6 +4,15 @@
 //! `..._impl`-style core function) directly, since constructing a real
 //! `tauri::State<MatrixState>` outside a running Tauri app isn't practical.
 
+// `build_bookmark_entry` now composes through an extra `resolve_from_timeline`
+// async layer (review fix: shared with `list_bookmarks`'s read-time
+// resolution — see `bookmarks.rs`), which pushed this integration test
+// binary's async-block layout query past rustc's default 128 recursion
+// limit on CI's toolchain (query depth increased by 130 computing the
+// layout of this file's own top-level async test block). Bumping just this
+// binary's limit is the fix rustc itself suggests for this error.
+#![recursion_limit = "256"]
+
 mod common;
 
 use std::time::Duration;

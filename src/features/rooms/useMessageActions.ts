@@ -134,6 +134,12 @@ export function useMessageActions({
     setBookmarkedEventIds((prev) => new Set(prev).add(eventId));
     try {
       await addBookmark(roomId, eventId);
+      // Review fix: this row-menu bookmark only updates the per-room `Set`
+      // above — without invalidating the shared `["bookmarks"]` query too,
+      // `SavedMessagesPanel` (if already mounted, or reopened within
+      // react-query's staleTime window) would keep showing its
+      // pre-bookmark snapshot instead of picking up this new entry.
+      await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       console.error(err);
       // Roll back the optimistic update on failure — otherwise the menu
@@ -155,6 +161,8 @@ export function useMessageActions({
     });
     try {
       await removeBookmark(eventId);
+      // See the matching comment in handleBookmark above.
+      await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       console.error(err);
       // Review fix: blindly re-adding the id on failure can be wrong if a

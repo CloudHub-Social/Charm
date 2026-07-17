@@ -232,7 +232,16 @@ pub async fn list_bookmarks(
     state: State<'_, MatrixState>,
 ) -> Result<Vec<BookmarkEntry>, String> {
     let account_key = account_key_for_current_user(&state).await?;
-    let mut bookmarks: Vec<StoredBookmark> = persistence::load_bookmarks(&app, &account_key)?;
+    // Review fix: without taking the same lock `add_bookmark`/`remove_bookmark`
+    // hold across their read-modify-write, this read could land mid-write —
+    // observing the file after `std::fs::write` has truncated it but before
+    // the new contents are fully written, surfacing a parse error or a
+    // transiently empty/stale list.
+    let lock = persistence::bookmarks_lock(&account_key);
+    let mut bookmarks: Vec<StoredBookmark> = {
+        let _guard = lock.lock().await;
+        persistence::load_bookmarks(&app, &account_key)?
+    };
     bookmarks.sort_by_key(|b| std::cmp::Reverse(b.saved_at_ms));
 
     let client = state.require_client().await.ok();
