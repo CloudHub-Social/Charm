@@ -19,6 +19,10 @@ vi.mock("@/lib/matrix", () => ({
   toggleReaction: (...args: unknown[]) => mockToggleReaction(...args),
 }));
 
+// The `bookmarks` flag defaults on here — this file exercises the bookmark
+// behavior itself; flag-off gating is covered separately.
+vi.mock("@/featureFlags", () => ({ useFlag: () => true }));
+
 function setup(
   roomId: string | null = "!room:localhost",
   overrides: Partial<{

@@ -11,6 +11,7 @@ import {
 } from "@/lib/matrix";
 import type { ReplyRef } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { useFlag } from "@/featureFlags";
 
 interface UseMessageActionsOptions {
   roomId: string | null;
@@ -31,9 +32,10 @@ export function useMessageActions({
   // bookmark/unbookmark so the action menu reflects the change immediately
   // rather than waiting on a round trip.
   const [bookmarkedEventIds, setBookmarkedEventIds] = useState<Set<string>>(new Set());
+  const bookmarksEnabled = useFlag("bookmarks");
 
   useEffect(() => {
-    if (!roomId) {
+    if (!roomId || !bookmarksEnabled) {
       setBookmarkedEventIds(new Set());
       return undefined;
     }
@@ -49,7 +51,7 @@ export function useMessageActions({
     return () => {
       cancelled = true;
     };
-  }, [roomId]);
+  }, [roomId, bookmarksEnabled]);
 
   async function handleToggleReaction(targetEventId: string, key: string) {
     if (!roomId) return;

@@ -129,6 +129,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     ref,
   ) {
     const messageActionParityEnabled = useFlag("message_action_parity");
+    const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -264,19 +265,20 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 Copy link
               </DropdownMenuItem>
             )}
-            {isBookmarked && onUnbookmark ? (
-              <DropdownMenuItem onSelect={onUnbookmark} disabled={isUndecrypted}>
-                <BookmarkX />
-                Remove bookmark
-              </DropdownMenuItem>
-            ) : (
-              onBookmark && (
-                <DropdownMenuItem onSelect={onBookmark} disabled={isUndecrypted}>
-                  <Bookmark />
-                  Bookmark
+            {bookmarksEnabled &&
+              (isBookmarked && onUnbookmark ? (
+                <DropdownMenuItem onSelect={onUnbookmark} disabled={isUndecrypted}>
+                  <BookmarkX />
+                  Remove bookmark
                 </DropdownMenuItem>
-              )
-            )}
+              ) : (
+                onBookmark && (
+                  <DropdownMenuItem onSelect={onBookmark} disabled={isUndecrypted}>
+                    <Bookmark />
+                    Bookmark
+                  </DropdownMenuItem>
+                )
+              ))}
             {messageActionParityEnabled && isError && onResend && (
               <DropdownMenuItem onSelect={onResend}>
                 <RotateCw />

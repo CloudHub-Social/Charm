@@ -93,6 +93,7 @@ function SettingsBody({
   const showDesktopSection = useIsDesktopPlatform();
   const webBuild = isWebBuild();
   const focusModeEnabled = useFlag("focus_mode");
+  const bookmarksEnabled = useFlag("bookmarks");
   // Review fix: if `focus_mode` is later disabled (rollout killed, local
   // override cleared) while a user still has an active/indefinite DND
   // persisted, Rust enforcement keeps suppressing notifications regardless
@@ -112,7 +113,7 @@ function SettingsBody({
       // embedding of `SettingsScreen` without `RoomsScreen`'s wiring) get no
       // Saved Messages tab at all, rather than one whose jump action is a
       // silent no-op.
-      (s.value !== "saved-messages" || onJumpToBookmark !== undefined),
+      (s.value !== "saved-messages" || (onJumpToBookmark !== undefined && bookmarksEnabled)),
   );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from
@@ -195,7 +196,7 @@ function SettingsBody({
             <FocusPanel />
           </TabsContent>
         )}
-        {!webBuild && onJumpToBookmark && (
+        {!webBuild && bookmarksEnabled && onJumpToBookmark && (
           <TabsContent value="saved-messages">
             <Suspense fallback={null}>
               <SavedMessagesPanel onJumpToMessage={onJumpToBookmark} />
