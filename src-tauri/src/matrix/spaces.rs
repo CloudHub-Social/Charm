@@ -494,9 +494,30 @@ pub async fn remove_space_child_impl(
     child_room_id: &str,
 ) -> Result<(), String> {
     let space = require_room(client, space_id)?;
-    // Validate before sending — a raw send skips the typed state-key check
-    // `send_state_event_for_key` would otherwise give for a malformed id.
-    RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
+    if !space.is_space() {
+        return Err(format!("{space_id} is not a space"));
+    }
+    let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
+
+    // Mirrors `set_space_child_suggested_impl`'s existing-child check — sending
+    // an empty `m.space.child` at a state key with no live child edge (never
+    // set, or already redacted) would be a silent no-op rather than an error,
+    // hiding a stale/duplicate removal from the caller.
+    let existing = space
+        .get_state_event_static_for_key::<SpaceChildEventContent, RoomId>(&parsed_child_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let has_live_via = matches!(
+        existing.and_then(|raw| raw.deserialize().ok()),
+        Some(SyncOrStrippedState::Sync(SyncStateEvent::Original(original)))
+            if !original.content.via.is_empty()
+    );
+    if !has_live_via {
+        return Err(format!(
+            "{child_room_id} is not currently a child of {space_id}"
+        ));
+    }
+
     space
         .send_state_event_raw("m.space.child", child_room_id, serde_json::json!({}))
         .await
@@ -1060,13 +1081,29 @@ mod tests {
 
     #[tokio::test]
     async fn remove_space_child_impl_sends_an_empty_content_to_revoke_the_child_link() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
         let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
 
         server.mock_room_state_encryption().plain().mount().await;
-        server.sync_joined_room(&client, space_id).await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
 
         wiremock::Mock::given(wiremock::matchers::method("PUT"))
             .and(wiremock::matchers::path(format!(
@@ -1101,6 +1138,52 @@ mod tests {
         assert!(
             result.is_err(),
             "expected a malformed child id to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_rejects_a_target_that_is_not_a_space() {
+        let not_a_space_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // A plain (non-space) joined room — no `m.room.create` `room_type`.
+        server.sync_joined_room(&client, not_a_space_id).await;
+
+        let result =
+            remove_space_child_impl(&client, not_a_space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected removing a child from a non-space room to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_rejects_a_room_that_is_not_currently_a_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let not_a_child_id = matrix_sdk::ruma::room_id!("!stranger:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id).add_state_event(create_event);
+        server.sync_room(&client, room_builder).await;
+
+        let result =
+            remove_space_child_impl(&client, space_id.as_str(), not_a_child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected removing a room with no live child edge to be rejected, got {result:?}"
         );
     }
 
