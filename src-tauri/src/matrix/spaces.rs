@@ -406,16 +406,61 @@ pub async fn add_existing_space_child_impl(
 ) -> Result<(), String> {
     let space = require_room(client, space_id)?;
     let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
-    let via = client
+    if child_room_id == space_id {
+        return Err(format!("{space_id} cannot be a child of itself"));
+    }
+    let parents_by_room = super::rooms::parent_space_ids(client).await;
+    if let Some(existing_children) = parents_by_room.get(child_room_id) {
+        if existing_children.iter().any(|parent| parent == space_id) {
+            return Err(format!("{child_room_id} is already a child of {space_id}"));
+        }
+    }
+    if is_ancestor(space_id, child_room_id, &parents_by_room) {
+        return Err(format!(
+            "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
+        ));
+    }
+    // Every client that later reads this edge needs at least one candidate
+    // server to route the join through — an empty `via` (which a missing
+    // `user_id`, e.g. a session lost mid-request, would otherwise silently
+    // produce) makes the edge unusable rather than merely degraded, so this
+    // is a hard error rather than falling back to an empty list.
+    let user_id = client
         .user_id()
-        .map(|user_id| user_id.server_name().to_owned())
-        .into_iter()
-        .collect();
+        .ok_or_else(|| "not logged in".to_string())?;
+    let via = vec![user_id.server_name().to_owned()];
     space
         .send_state_event_for_key(&parsed_child_id, SpaceChildEventContent::new(via))
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// True if `candidate_ancestor_id` is reachable by walking up `room_id`'s
+/// parent chain (per `parents_by_room`, itself built from every joined
+/// space's own `m.space.child` list — see its doc comment for why that's the
+/// authoritative direction rather than the child-side `m.space.parent`).
+/// Cycle-guarded against a malformed/cyclic parent graph already existing in
+/// synced state.
+fn is_ancestor(
+    room_id: &str,
+    candidate_ancestor_id: &str,
+    parents_by_room: &std::collections::HashMap<String, Vec<String>>,
+) -> bool {
+    let mut visited = HashSet::new();
+    let mut stack: Vec<String> = parents_by_room.get(room_id).cloned().unwrap_or_default();
+    while let Some(current) = stack.pop() {
+        if current == candidate_ancestor_id {
+            return true;
+        }
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        if let Some(parents) = parents_by_room.get(&current) {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    false
 }
 
 /// Detaches `child_room_id` from `space_id`'s hierarchy — sends an empty
@@ -479,8 +524,21 @@ pub async fn set_space_child_suggested_impl(
         .get_state_event_static_for_key::<SpaceChildEventContent, RoomId>(&parsed_child_id)
         .await
         .map_err(|e| e.to_string())?;
-    let mut content = existing
-        .and_then(|raw| raw.deserialize().ok())
+    let deserialized = existing.and_then(|raw| raw.deserialize().ok());
+    // A redacted `m.space.child` event has no `via` left to preserve — per
+    // MSC1772 that's equivalent to the child link having been revoked, so
+    // this reports the same "not currently a child" outcome a caller would
+    // see for a link that was cleanly removed via `remove_space_child`,
+    // rather than a generic deserialization failure.
+    if matches!(
+        deserialized,
+        Some(SyncOrStrippedState::Sync(SyncStateEvent::Redacted(_)))
+    ) {
+        return Err(format!(
+            "{child_room_id}'s child link to {space_id} was redacted and no longer carries a via — it is not currently a valid child"
+        ));
+    }
+    let mut content = deserialized
         .and_then(|event| match event {
             SyncOrStrippedState::Sync(SyncStateEvent::Original(original)) => Some(original.content),
             _ => None,
@@ -865,6 +923,108 @@ mod tests {
             result.is_ok(),
             "expected the existing room to be added as a child, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_adding_a_space_as_its_own_child() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, space_id).await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), space_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected adding a space as its own child to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_an_already_existing_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let factory = EventFactory::new().room(root_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(root_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        let result =
+            add_existing_space_child_impl(&client, root_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected re-adding an already-existing child to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_an_ancestor_as_a_child_cycle() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        // Root already has Child as its child (root --child--> child). Trying
+        // to add Root as a child of Child would close the loop.
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let factory = EventFactory::new().room(root_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(root_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        let result =
+            add_existing_space_child_impl(&client, child_id.as_str(), root_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected adding an ancestor as a child to be rejected as a cycle, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn is_ancestor_walks_multiple_levels_and_guards_against_cycles() {
+        let parents_by_room: HashMap<String, Vec<String>> = HashMap::from([
+            ("grandchild".to_string(), vec!["child".to_string()]),
+            ("child".to_string(), vec!["root".to_string()]),
+            ("root".to_string(), vec!["grandchild".to_string()]),
+        ]);
+
+        assert!(is_ancestor("grandchild", "root", &parents_by_room));
+        assert!(is_ancestor("grandchild", "child", &parents_by_room));
+        assert!(!is_ancestor("grandchild", "unrelated", &parents_by_room));
     }
 
     #[tokio::test]

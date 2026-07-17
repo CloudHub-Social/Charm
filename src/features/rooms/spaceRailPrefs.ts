@@ -1,4 +1,4 @@
-import { atomWithStorage } from "jotai/utils";
+import { atomFamily, atomWithStorage } from "jotai/utils";
 
 export interface SpaceRailPrefs {
   /** Explicit rail order for pinned top-level spaces. Spaces not yet present
@@ -21,10 +21,13 @@ const DEFAULT_PREFS: SpaceRailPrefs = { order: [], unpinned: [] };
 export const SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE = "social.cloudhub.charm.space_rail_prefs";
 
 /** Local-only cache: instant on cold start, before the account-data round
- * trip in `useSpaceRailPrefsSync` resolves; kept in sync with it afterward. */
-export const spaceRailPrefsAtom = atomWithStorage<SpaceRailPrefs>(
-  "charm.spaceRailPrefs",
-  DEFAULT_PREFS,
+ * trip in `useSpaceRailPrefsSync` resolves; kept in sync with it afterward.
+ * Keyed per signed-in account (the storage key embeds `userId`) so switching
+ * accounts on the same device/browser profile never inherits — or, worse,
+ * silently rewrites — a different account's pinned/ordered spaces before its
+ * own account-data read has had a chance to resolve. */
+export const spaceRailPrefsAtomFamily = atomFamily((userId: string) =>
+  atomWithStorage<SpaceRailPrefs>(`charm.spaceRailPrefs.${userId}`, DEFAULT_PREFS),
 );
 
 export function isSpaceRailPrefs(value: unknown): value is SpaceRailPrefs {

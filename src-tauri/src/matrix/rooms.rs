@@ -321,7 +321,9 @@ fn parse_room(client: &Client, room_id: &str) -> Result<Room, String> {
 /// that never actually listed them), so parenthood here is defined by the
 /// space's own child list, matching the client-side "which space's children
 /// include this room" semantics `RoomList.tsx` groups by.
-async fn parent_space_ids(client: &Client) -> std::collections::HashMap<String, Vec<String>> {
+pub(crate) async fn parent_space_ids(
+    client: &Client,
+) -> std::collections::HashMap<String, Vec<String>> {
     use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
 
     let mut parents: std::collections::HashMap<String, Vec<String>> =

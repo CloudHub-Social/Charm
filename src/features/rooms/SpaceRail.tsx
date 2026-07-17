@@ -27,6 +27,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
+import { logAndIgnore } from "@/lib/logAndIgnore";
 import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
@@ -43,6 +44,10 @@ interface SpaceRailProps {
   activeMode: RoomListMode;
   activeSpaceId: string | null;
   showAllRooms: boolean;
+  /** Scopes locally cached pin/order state (`useSpaceRailPrefsSync`) to the
+   * signed-in account, so switching accounts on the same device never
+   * inherits — or overwrites — a different account's rail preferences. */
+  currentUserId: string;
   onSelectHome: () => void;
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
@@ -54,6 +59,7 @@ export function SpaceRail({
   activeMode,
   activeSpaceId,
   showAllRooms,
+  currentUserId,
   onSelectHome,
   onSelectDms,
   onSelectSpace,
@@ -61,7 +67,7 @@ export function SpaceRail({
 }: SpaceRailProps) {
   const managementEnabled = useFlag("space_rail_management");
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
-  const [prefs, setPrefs] = useSpaceRailPrefsSync();
+  const [prefs, setPrefs] = useSpaceRailPrefsSync(currentUserId);
   const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
   const [leaveTarget, setLeaveTarget] = useState<{ spaceId: string; name: string } | null>(null);
   const [addExistingTarget, setAddExistingTarget] = useState<{
@@ -281,18 +287,24 @@ export function SpaceRail({
               {parentId && (
                 <>
                   <ContextMenuItem
-                    onSelect={() => setSpaceChildSuggested(parentId, space.room_id, true)}
+                    onSelect={() =>
+                      setSpaceChildSuggested(parentId, space.room_id, true).catch(logAndIgnore)
+                    }
                   >
                     <Star aria-hidden="true" />
                     Mark as suggested
                   </ContextMenuItem>
                   <ContextMenuItem
-                    onSelect={() => setSpaceChildSuggested(parentId, space.room_id, false)}
+                    onSelect={() =>
+                      setSpaceChildSuggested(parentId, space.room_id, false).catch(logAndIgnore)
+                    }
                   >
                     <StarOff aria-hidden="true" />
                     Unmark as suggested
                   </ContextMenuItem>
-                  <ContextMenuItem onSelect={() => removeSpaceChild(parentId, space.room_id)}>
+                  <ContextMenuItem
+                    onSelect={() => removeSpaceChild(parentId, space.room_id).catch(logAndIgnore)}
+                  >
                     <DoorOpen aria-hidden="true" />
                     Remove from space
                   </ContextMenuItem>

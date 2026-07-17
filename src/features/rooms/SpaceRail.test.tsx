@@ -80,6 +80,7 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
     activeMode: "home" as const,
     activeSpaceId: null,
     showAllRooms: false,
+    currentUserId: "@e2e:localhost",
     onSelectHome: vi.fn(),
     onSelectDms: vi.fn(),
     onSelectSpace: vi.fn(),
