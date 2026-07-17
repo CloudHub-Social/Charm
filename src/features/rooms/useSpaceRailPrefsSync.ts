@@ -50,6 +50,15 @@ export function useSpaceRailPrefsSync(userId: string) {
   prefsRef.current = prefs;
   const latestUserIdRef = useRef(userId);
   latestUserIdRef.current = userId;
+  // Set right before the load effect applies a remote value via
+  // `setPrefsAtom`, so the mirror-write effect below can tell "this change
+  // came from the read I just did" apart from a genuine local edit and skip
+  // writing it straight back. Without this, opening the app on a second
+  // device could write back a stale snapshot of what was just read — racing
+  // (and, since account data is last-write-wins, potentially clobbering) a
+  // newer write another device makes in the gap between the read landing
+  // here and this redundant write reaching the server.
+  const skipNextMirrorRef = useRef(false);
 
   const queueWrite = useCallback((forUserId: string, value: SpaceRailPrefs) => {
     writeQueueRef.current = writeQueueRef.current.then(async () => {
@@ -81,6 +90,7 @@ export function useSpaceRailPrefsSync(userId: string) {
     // data until *this* account's own read has resolved.
     loadedRef.current = false;
     dirtySinceLoadStartRef.current = false;
+    skipNextMirrorRef.current = false;
     // Also re-arm the write queue: without this, a write still queued
     // behind a slow previous-account request would run its
     // `setAccountData` call only once that earlier write settles — by which
@@ -94,6 +104,7 @@ export function useSpaceRailPrefsSync(userId: string) {
       .then((remote) => {
         if (cancelled) return;
         if (isSpaceRailPrefs(remote) && !dirtySinceLoadStartRef.current) {
+          skipNextMirrorRef.current = true;
           setPrefsAtom(remote);
         }
       })
@@ -130,6 +141,10 @@ export function useSpaceRailPrefsSync(userId: string) {
     // would race the read and could clobber a remote value with the local
     // (possibly stale, possibly just-reset-to-default) cache.
     if (!loadedRef.current) return;
+    if (skipNextMirrorRef.current) {
+      skipNextMirrorRef.current = false;
+      return;
+    }
     queueWrite(userId, prefs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs, userId]);

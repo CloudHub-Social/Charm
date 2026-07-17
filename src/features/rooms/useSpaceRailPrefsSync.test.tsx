@@ -95,17 +95,37 @@ describe("useSpaceRailPrefsSync", () => {
   it("does not mirror the remote-applied value straight back to account data as a redundant write", async () => {
     getAccountData.mockResolvedValue({ order: ["!remote:localhost"], unpinned: [] });
 
-    renderWithStore();
+    const { result } = renderWithStore();
 
-    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
-    // The read-triggered `setPrefs` does change the atom, so the mirror
-    // effect does fire once — but with exactly the value that was just
-    // read, not a stale local one, so it's a harmless no-op write rather
-    // than data loss. Assert it's the *remote* value, not the default.
+    // The read-triggered `setPrefsAtom` does change the atom, so the mirror
+    // effect's `[prefs]` deps do fire — but this is exactly the value that
+    // was just read, and writing it straight back would race a newer write
+    // from another device landing in the gap (account data is last-write-
+    // wins), so it must be suppressed rather than treated as a harmless
+    // no-op.
+    await waitFor(() =>
+      expect(result.current[0]).toEqual({ order: ["!remote:localhost"], unpinned: [] }),
+    );
+    expect(setAccountData).not.toHaveBeenCalled();
+  });
+
+  it("still mirrors a genuine local edit made right after a remote load applies", async () => {
+    getAccountData.mockResolvedValue({ order: ["!remote:localhost"], unpinned: [] });
+
+    const { result } = renderWithStore();
+    await waitFor(() =>
+      expect(result.current[0]).toEqual({ order: ["!remote:localhost"], unpinned: [] }),
+    );
+    expect(setAccountData).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current[1]({ order: ["!remote:localhost"], unpinned: ["!new-edit:localhost"] });
+    });
+
     await waitFor(() =>
       expect(setAccountData).toHaveBeenCalledWith("social.cloudhub.charm.space_rail_prefs", {
         order: ["!remote:localhost"],
-        unpinned: [],
+        unpinned: ["!new-edit:localhost"],
       }),
     );
   });
