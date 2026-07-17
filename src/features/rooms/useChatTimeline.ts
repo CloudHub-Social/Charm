@@ -270,7 +270,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // which holds items in their natural oldest-to-newest order — unlike the
     // old `room.messages()` backward-pagination page, which was newest-first
     // and needed reversing.
-    getTimelinePage(timelineRoomId)
+    //
+    // `forceLive: true` — this effect fires only on a genuine room open
+    // (keyed on `room?.room_id` below), so it's the right place to reset a
+    // stale focused (Saved Messages jump) view back to live; the separate
+    // pagination call further down must not do the same (see its own
+    // comment) or scrolling further back while still viewing a bookmark's
+    // context would snap back to the live tail mid-scroll.
+    getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
         if (cancelled) return;
         applyMessages(page.messages);
@@ -429,6 +436,12 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     const initialFirstItemIndex = firstItemIndexRef.current;
     try {
       for (;;) {
+        // `forceLive` defaults to `false` here (deliberately not passed) —
+        // this loop is pagination within whatever's already the active view,
+        // which may itself be a focused (Saved Messages jump) timeline the
+        // user is still scrolling further back through; forcing live here
+        // would snap that view back to the room's live tail mid-scroll. Only
+        // the room-open effect above passes `true`.
         const page = await getTimelinePage(roomId);
         // Stale if the room has changed since this request was issued —
         // including a revisit to the same room id, which `visitGenerationRef`

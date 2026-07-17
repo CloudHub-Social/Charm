@@ -208,7 +208,11 @@ pub async fn add_bookmark(
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let timeline = state
-        .get_or_create_timeline(&app, &client, &parsed_room_id)
+        // `force_live: false` — bookmarking just needs whatever's currently
+        // cached for this room (matching the message the user can see right
+        // now); it has no "room open" semantics that should ever discard a
+        // focused view.
+        .get_or_create_timeline(&app, &client, &parsed_room_id, false)
         .await?;
 
     let account_key = account_key_for_client(&client)?;

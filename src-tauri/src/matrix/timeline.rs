@@ -894,7 +894,20 @@ async fn fetch_message_mentions(
 /// `MessagesOptions::backward()` cursor, this has no opaque server-side token
 /// any more — see [`TimelinePage::next_cursor`]'s doc comment for the sentinel
 /// this now is. `cursor` is accepted (and ignored) purely to keep the
-/// frontend's `getTimelinePage(roomId, cursor, limit)` call shape stable.
+/// frontend's `getTimelinePage(roomId, cursor, limit, forceLive)` call shape
+/// stable.
+///
+/// `force_live`: review fix — a room can have a cached, focused
+/// (`TimelineFocus::Event`) `Timeline` left over from a Saved Messages jump
+/// (`MatrixState::replace_timeline`). Passing `true` resets that back to the
+/// room's ordinary live tail if present; the frontend passes `true` only
+/// from its room-*open* call (`useChatTimeline`'s effect keyed on
+/// `room?.room_id`), never from its separate pagination-loop call, so
+/// scrolling further back while still viewing a bookmark's focused context
+/// doesn't get treated as a fresh open and snapped back to live — but
+/// genuinely reopening that room (from the room list, after navigating
+/// away) does reset it, instead of leaving the user stuck on a stale
+/// focused view until LRU eviction or app restart.
 #[tauri::command]
 pub async fn get_timeline_page(
     app: AppHandle,
@@ -902,6 +915,7 @@ pub async fn get_timeline_page(
     room_id: String,
     cursor: Option<String>,
     limit: Option<u32>,
+    force_live: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
     let client = state.require_client().await?;
@@ -935,7 +949,7 @@ pub async fn get_timeline_page(
     // would systematically exclude that cost and underreport cold opens.
     crate::observability_trace::traced(transaction_name, "matrix.timeline", async {
         let timeline = state
-            .get_or_create_timeline(&app, &client, &parsed_room_id)
+            .get_or_create_timeline(&app, &client, &parsed_room_id, force_live)
             .await?;
         let media_cache = state.require_media_cache(&app).await.ok();
 
@@ -1031,8 +1045,12 @@ pub async fn load_timeline_around_event(
 ) -> Result<bool, String> {
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    // `force_live: false` — this is the jump machinery itself; it should
+    // start from whatever's already cached, including a focused view left
+    // over from a previous jump in this same room this session, not force a
+    // reset back to live.
     let timeline = state
-        .get_or_create_timeline(&app, &client, &parsed_room_id)
+        .get_or_create_timeline(&app, &client, &parsed_room_id, false)
         .await?;
 
     if timeline_contains_event(&timeline, &event_id).await {

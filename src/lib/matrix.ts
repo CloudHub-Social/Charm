@@ -316,12 +316,23 @@ export function onRoomListUpdate(callback: (rooms: RoomSummary[]) => void): Prom
   return listen<RoomSummary[]>("room_list:update", (e) => callback(e.payload));
 }
 
+/**
+ * `forceLive`: review fix — resets a room's cached, focused
+ * (`TimelineFocus::Event`) timeline (left over from a Saved Messages jump)
+ * back to its ordinary live tail if one is currently cached, instead of
+ * paginating within the focused view. Pass `true` only when genuinely
+ * opening/reopening a room (see `useChatTimeline`'s room-open effect); the
+ * separate pagination-loop call must pass `false` (the default) so scrolling
+ * further back while still viewing a bookmark's focused context extends that
+ * view instead of snapping back to live mid-scroll.
+ */
 export function getTimelinePage(
   roomId: string,
   cursor?: string,
   limit?: number,
+  forceLive = false,
 ): Promise<TimelinePage> {
-  return invoke("get_timeline_page", { roomId, cursor, limit });
+  return invoke("get_timeline_page", { roomId, cursor, limit, forceLive });
 }
 
 /**

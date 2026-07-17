@@ -1119,6 +1119,38 @@ describe("ChatShell", () => {
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
   });
 
+  it("passes forceLive: true on room open but not on subsequent pagination (Spec 12 review fix)", async () => {
+    // Review fix regression test: a room's cached timeline can be a
+    // TimelineFocus::Event view left over from a Saved Messages jump.
+    // Reopening the room should reset that back to live (forceLive: true,
+    // the room-open call), but pagination while still viewing that focused
+    // context must not (forceLive: false/omitted) — otherwise scrolling
+    // further back would snap back to the live tail mid-scroll.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true);
+    getTimelinePage.mockClear();
+
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    fireStartReached();
+    await screen.findByText("first");
+
+    expect(getTimelinePage).toHaveBeenCalledWith(room.room_id);
+  });
+
   it("does not animate history prepended by a live update racing an in-flight pagination request, and shifts firstItemIndex exactly once", async () => {
     // Regression test: if a `timeline:update` pushes the same
     // paginate_backwards diff before `loadMoreHistory`'s own await resolves,

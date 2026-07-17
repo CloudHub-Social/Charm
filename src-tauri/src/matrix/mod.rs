@@ -372,32 +372,33 @@ impl MatrixState {
     /// already held. Bounded LRU: opening more than [`MAX_LIVE_TIMELINES`]
     /// distinct rooms in a session evicts the least-recently-opened one
     /// rather than growing unbounded.
+    ///
+    /// `force_live`: if the cached entry for this room is a focused
+    /// (`TimelineFocus::Event`) view left over from a Saved Messages jump,
+    /// discard it and rebuild a fresh live one instead of returning it as-is.
+    /// Review fix history: an earlier version of this self-heal always ran
+    /// (round 6), but `get_or_create_timeline` is also what `get_timeline_page`
+    /// calls on *every* pagination request, not just a genuine room (re)open
+    /// — always forcing broke paging further back while still viewing a
+    /// bookmark's focused context (round 7 reverted that). `force_live` lets
+    /// the one caller that actually represents "the user is opening this
+    /// room" (`get_timeline_page`'s room-open path, keyed off `room?.room_id`
+    /// in `useChatTimeline`'s effect — not its separate pagination-loop call
+    /// site) opt back into resetting a stale focused view to live, without
+    /// affecting pagination within an still-active focused view.
     pub(crate) async fn get_or_create_timeline(
         &self,
         app: &AppHandle,
         client: &Client,
         room_id: &matrix_sdk::ruma::RoomId,
+        force_live: bool,
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        // Review fix (round 6, then corrected in round 7): a cached entry
-        // left over from a Saved Messages jump (`replace_timeline`,
-        // `is_focused = true`) is a `TimelineFocus::Event` view, not the
-        // room's live tail. An earlier version of this fix rebuilt a fresh
-        // live timeline right here whenever the cached entry was focused —
-        // but this function is also what `get_timeline_page` calls on
-        // *every* pagination request, not just a genuine room (re)open:
-        // that made paging further back while viewing a bookmark's focused
-        // context (e.g. Virtuoso's `startReached` auto-load) immediately
-        // evict the focused view and snap back to the live tail instead of
-        // extending it. A focused entry is now returned as-is here, same as
-        // a live one — `is_timeline_open` (see its own doc comment) already
-        // covers the actual correctness concern (live notifications)
-        // independent of this return; only an explicit reopen/reset path
-        // should ever discard a focused entry, and none currently forces
-        // one, so a focused view simply persists until normal LRU eviction.
-        if let Some((existing, _, _)) = self.timelines.lock().await.get(room_id) {
-            return Ok(std::sync::Arc::clone(existing));
+        if let Some((existing, _, is_focused)) = self.timelines.lock().await.get(room_id) {
+            if !(*is_focused && force_live) {
+                return Ok(std::sync::Arc::clone(existing));
+            }
         }
 
         let room = client
@@ -410,8 +411,14 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        if let Some((existing, _, _)) = timelines.get(room_id) {
-            return Ok(std::sync::Arc::clone(existing));
+        // Same `force_live` exclusion as above (a concurrent caller with
+        // `force_live: false` — e.g. a pagination request racing this
+        // room-open request — must not have its own focused view discarded
+        // out from under it here either).
+        if let Some((existing, _, is_focused)) = timelines.get(room_id) {
+            if !(*is_focused && force_live) {
+                return Ok(std::sync::Arc::clone(existing));
+            }
         }
 
         let handle = timeline::spawn_timeline_listener(
