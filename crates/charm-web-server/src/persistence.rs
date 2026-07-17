@@ -1200,7 +1200,15 @@ impl PersistenceStore {
     pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        let Some((mut entry, version)) = self.read_one_with_version(token).await else {
+        // The `Result`-returning read, not `read_one_with_version` — a
+        // transient read error must propagate as `Err` here too, not get
+        // silently collapsed into the same `Ok(())` "nothing to touch" a
+        // genuine `NotFound` takes. `routes::refresh_session_cookie` relies
+        // on that `Err` to skip advancing its once-an-hour throttle, so a
+        // hiccuped read doesn't get treated the same as a confirmed durable
+        // bump and end up hiding a real `last_seen_unix` staleness for
+        // another hour (Codex review finding on #280).
+        let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
             return Ok(());
         };
         entry.last_seen_unix = Some(now_unix());

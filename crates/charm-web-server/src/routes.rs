@@ -498,7 +498,13 @@ async fn refresh_session_cookie(
         // in `SessionStore` at all already exempts it from `sweep_expired`
         // regardless (see that function's doc comment); this bump is
         // belt-and-suspenders, not the only thing standing between a
-        // transient write hiccup and a forced logout.
+        // transient write hiccup and a forced logout. `last_persistence_touch_unix`
+        // is only advanced *after* a confirmed successful write, not
+        // unconditionally before attempting it — an earlier revision of
+        // this consumed the once-an-hour throttle regardless of outcome, so
+        // a single failed touch would silently hide a genuinely stale
+        // `last_seen_unix` for a full hour before the next request even
+        // tried again (Codex review finding on #280).
         if let Some(persistence) = &state.persistence {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -508,14 +514,19 @@ async fn refresh_session_cookie(
                 .last_persistence_touch_unix
                 .load(std::sync::atomic::Ordering::Relaxed);
             if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
-                session
-                    .last_persistence_touch_unix
-                    .store(now, std::sync::atomic::Ordering::Relaxed);
-                if let Err(e) = persistence.touch_last_seen_now(&token).await {
-                    tracing::warn!(
-                        "failed to durably bump last-seen timestamp before refreshing a \
-                         session cookie: {e}"
-                    );
+                match persistence.touch_last_seen_now(&token).await {
+                    Ok(()) => {
+                        session
+                            .last_persistence_touch_unix
+                            .store(now, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to durably bump last-seen timestamp before refreshing a \
+                             session cookie, leaving the throttle unadvanced so the next \
+                             request retries: {e}"
+                        );
+                    }
                 }
             }
         }
@@ -695,8 +706,9 @@ mod refresh_session_cookie_gating_tests {
         );
     }
 
-    /// Regression test for the Codex review finding on #280 ("Await
-    /// last-seen persistence before refreshing cookies"): a failed durable
+    /// Regression test for the Codex review findings on #280 ("Await
+    /// last-seen persistence before refreshing cookies", then "Advance
+    /// touch throttle only after a successful write"): a failed durable
     /// last-seen touch must not prevent this middleware from still
     /// refreshing the session cookie — the touch is now awaited (not
     /// fire-and-forget) so it completes *before* the cookie is sent, but a
@@ -704,11 +716,16 @@ mod refresh_session_cookie_gating_tests {
     /// propagated) rather than degrading the request, since the in-memory
     /// session being resident in `SessionStore` at all already exempts it
     /// from `sweep_expired` regardless of this particular bump succeeding.
-    /// Forces the failure by revoking write permission on the persisted
-    /// session's containing directory after its initial save, so the
-    /// throttled touch this request triggers hits a genuine write error
-    /// rather than a `NotFound`/`Precondition` case `touch_last_seen_now`
-    /// already tolerates as a no-op.
+    /// It must also leave `last_persistence_touch_unix` unadvanced on
+    /// failure — an earlier revision of this consumed the once-an-hour
+    /// throttle unconditionally *before* attempting the write, so a single
+    /// failed touch would hide a genuinely stale `last_seen_unix` for a
+    /// full hour before the next request even tried again. Forces the
+    /// failure by revoking write permission on the persisted session's
+    /// containing directory after its initial save, so the throttled touch
+    /// this request triggers hits a genuine write error rather than a
+    /// `NotFound`/`Precondition` case `touch_last_seen_now` already
+    /// tolerates as a no-op.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_failed_durable_touch_does_not_prevent_the_cookie_from_still_refreshing() {
@@ -761,6 +778,10 @@ mod refresh_session_cookie_gating_tests {
                 dummy_live_session("@touch-fail:example.invalid").await,
             )
             .await;
+        // Cloned before `state` moves into the router — `SessionStore` is
+        // cheaply `Clone` (Arc-backed), so this still observes the same
+        // `Session` the request handles.
+        let sessions = state.sessions.clone();
         let app = super::router(state);
 
         let response = app
@@ -777,6 +798,17 @@ mod refresh_session_cookie_gating_tests {
             .unwrap();
 
         std::fs::set_permissions(&sessions_dir, original_perms).unwrap();
+
+        let session = sessions.get("tok-touch-fail").await.unwrap();
+        assert_eq!(
+            session
+                .last_persistence_touch_unix
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a failed durable touch must not advance the once-an-hour throttle — otherwise \
+             the next request wouldn't retry it for another hour (Codex review finding on \
+             #280)"
+        );
 
         assert!(
             response
