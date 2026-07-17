@@ -74,6 +74,17 @@ export function moveSpaceInOrder(
   // seen, so a newly joined space could never again interleave with
   // never-explicitly-ordered ones — it would just append after all of them.
   const next = order.filter((id) => id !== spaceId);
+  const pairStart = Math.min(index, swapWith);
+  // `orderSpaceIds` always ranks every explicit id above every natural one —
+  // so if the pair about to become explicit isn't at the very front of
+  // `current`, any still-natural id ahead of it would otherwise jump behind
+  // the pair once it's added to `order`, even though this move never touched
+  // it. Make those untouched leading ids explicit too, in their existing
+  // relative order, so they stay exactly where they were.
+  for (let i = 0; i < pairStart; i++) {
+    const id = current[i];
+    if (!next.includes(id)) next.push(id);
+  }
   const swapPosition = next.indexOf(swapId);
   if (swapPosition === -1) {
     // `swapId` isn't explicit either. Since every explicit id ranks above

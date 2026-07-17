@@ -59,4 +59,17 @@ describe("moveSpaceInOrder", () => {
     const visibleWithNewSpace = orderSpaceIds(["a", "b", "c", "d"], afterFirstMove);
     expect(visibleWithNewSpace).toEqual(["b", "a", "c", "d"]);
   });
+
+  it("does not reshuffle an untouched leading space when swapping its two natural-order successors", () => {
+    // Regression: with three untouched spaces [a, b, c], moving c up past b
+    // must produce [a, c, b] — "a" was never touched and must stay first,
+    // not get bumped behind the newly explicit pair.
+    const order = moveSpaceInOrder(["a", "b", "c"], [], "c", "up");
+    expect(orderSpaceIds(["a", "b", "c"], order)).toEqual(["a", "c", "b"]);
+  });
+
+  it("does not reshuffle an untouched leading space when moving a natural-order space down", () => {
+    const order = moveSpaceInOrder(["a", "b", "c"], [], "b", "down");
+    expect(orderSpaceIds(["a", "b", "c"], order)).toEqual(["a", "c", "b"]);
+  });
 });
