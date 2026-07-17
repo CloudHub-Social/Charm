@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
-import { ChatShell } from "./ChatShell";
+import { ChatShell, type ChatShellHandle } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -26,10 +26,13 @@ import {
   type RoomSummary,
 } from "@/lib/matrix";
 import { MembersDrawer } from "@/features/room-info/MembersDrawer";
+import { PinnedMessagesPanel } from "@/features/room-info/PinnedMessagesPanel";
 import { RoomSettingsModal } from "@/features/room-info/RoomSettingsModal";
 import {
   membersDrawerOpenAtomFamily,
   noRoomMembersDrawerOpenAtom,
+  noRoomPinnedMessagesDrawerOpenAtom,
+  pinnedMessagesDrawerOpenAtomFamily,
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
@@ -407,6 +410,16 @@ export function RoomsScreen({
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     activeRoom ? membersDrawerOpenAtomFamily(activeRoom.room_id) : noRoomMembersDrawerOpenAtom,
   );
+  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
+    activeRoom
+      ? pinnedMessagesDrawerOpenAtomFamily(activeRoom.room_id)
+      : noRoomPinnedMessagesDrawerOpenAtom,
+  );
+  // Lets `PinnedMessagesPanel` (rendered in the separate `rightPanel` slot
+  // below, a sibling of `ChatShell` — see `ChatShellHandle`'s doc comment)
+  // trigger the same in-timeline scroll-to-message `ChatShell` itself uses
+  // for reply-preview/search-result jumps.
+  const chatShellRef = useRef<ChatShellHandle>(null);
 
   // The members drawer is desktop-only (mobile has no room besides the
   // active one to show it alongside — see `AppShell`'s non-goals). Reset
@@ -421,11 +434,18 @@ export function RoomsScreen({
   // opened in.
   const prevLayoutRef = useRef(layout);
   useEffect(() => {
-    if (prevLayoutRef.current === "desktop" && layout === "mobile" && membersDrawerOpen) {
-      setMembersDrawerOpen(false);
+    if (prevLayoutRef.current === "desktop" && layout === "mobile") {
+      if (membersDrawerOpen) setMembersDrawerOpen(false);
+      if (pinnedMessagesDrawerOpen) setPinnedMessagesDrawerOpen(false);
     }
     prevLayoutRef.current = layout;
-  }, [layout, membersDrawerOpen, setMembersDrawerOpen]);
+  }, [
+    layout,
+    membersDrawerOpen,
+    setMembersDrawerOpen,
+    pinnedMessagesDrawerOpen,
+    setPinnedMessagesDrawerOpen,
+  ]);
 
   return (
     <>
@@ -469,6 +489,7 @@ export function RoomsScreen({
         }
         content={
           <ChatShell
+            ref={chatShellRef}
             room={activeRoom}
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
@@ -476,7 +497,13 @@ export function RoomsScreen({
           />
         }
         rightPanel={
-          activeRoom && membersDrawerOpen ? (
+          activeRoom && pinnedMessagesDrawerOpen ? (
+            <PinnedMessagesPanel
+              roomId={activeRoom.room_id}
+              onClose={() => setPinnedMessagesDrawerOpen(false)}
+              onJumpToMessage={(eventId) => chatShellRef.current?.scrollToMessage(eventId)}
+            />
+          ) : activeRoom && membersDrawerOpen ? (
             <MembersDrawer
               roomId={activeRoom.room_id}
               currentUserId={currentUserId}

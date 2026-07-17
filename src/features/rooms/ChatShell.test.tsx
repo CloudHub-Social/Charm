@@ -2,9 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import type { ReactElement } from "react";
-import { forwardRef, useImperativeHandle, useState } from "react";
+import { createRef, forwardRef, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatShell } from "./ChatShell";
+import { ChatShell, type ChatShellHandle } from "./ChatShell";
 import type {
   ReactionToggleResult,
   ReceiptUpdate,
@@ -60,6 +60,14 @@ const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResul
 const resendMessage = vi.fn().mockResolvedValue(undefined);
 const discardFailedMessage = vi.fn().mockResolvedValue(true);
 const canRedactOthers = vi.fn().mockResolvedValue(true);
+const pinEvent = vi.fn().mockResolvedValue(undefined);
+const unpinEvent = vi.fn().mockResolvedValue(undefined);
+// Spec 29's encryption-state check (see the `getRoomDetails` mock factory
+// below) defaults to "encrypted" for every test that doesn't override this —
+// see that mock's own doc comment. Pin-gating tests override it per-case.
+const getRoomDetails = vi
+  .fn()
+  .mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true });
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
@@ -185,6 +193,8 @@ vi.mock("@/lib/matrix", () => ({
   resendMessage: (...args: unknown[]) => resendMessage(...args),
   discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
+  pinEvent: (...args: unknown[]) => pinEvent(...args),
+  unpinEvent: (...args: unknown[]) => unpinEvent(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
@@ -217,7 +227,7 @@ vi.mock("@/lib/matrix", () => ({
   // state) — this must never resolve `is_encrypted: false`, or a stray
   // test message containing a URL would start firing real preview fetches
   // this test file doesn't mock.
-  getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
+  getRoomDetails: (...args: unknown[]) => getRoomDetails(...args),
   getUrlPreview: vi.fn(),
 }));
 
@@ -345,6 +355,11 @@ describe("ChatShell", () => {
     toggleReaction.mockReset();
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
+    pinEvent.mockReset().mockResolvedValue(undefined);
+    unpinEvent.mockReset().mockResolvedValue(undefined);
+    getRoomDetails
+      .mockReset()
+      .mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true });
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
     sendAttachment.mockReset().mockResolvedValue(undefined);
@@ -3910,5 +3925,118 @@ describe("ChatShell", () => {
 
     // IRC mode's distinguishing structure: `<nick>` prefix, not a bubble.
     expect(await screen.findByText("<Alice>")).toBeInTheDocument();
+  });
+
+  // --- Spec day-2/04: message pinning ---
+
+  it("exposes scrollToMessage via ref for the pinned-messages panel to jump with", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$1", sender: "@alice:localhost", body: "first" }),
+        summary({ event_id: "$2", sender: "@alice:localhost", body: "second" }),
+      ],
+      next_cursor: null,
+    });
+    const ref = createRef<ChatShellHandle>();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("first");
+
+    act(() => {
+      ref.current?.scrollToMessage("$2");
+    });
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 1, align: "center" }),
+    );
+  });
+
+  it("gates the Pin action by RoomDetails.can.set_pinned_events and calls pinEvent", async () => {
+    getRoomDetails.mockResolvedValue({
+      room_id: room.room_id,
+      is_encrypted: false,
+      pinned_event_ids: [],
+      can: { set_pinned_events: true },
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$1", sender: "@alice:localhost", body: "pin me" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("pin me");
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Pin"));
+
+    await waitFor(() => expect(pinEvent).toHaveBeenCalledWith(room.room_id, "$1"));
+  });
+
+  it("hides the Pin action entirely when RoomDetails.can.set_pinned_events is false", async () => {
+    getRoomDetails.mockResolvedValue({
+      room_id: room.room_id,
+      is_encrypted: false,
+      pinned_event_ids: [],
+      can: { set_pinned_events: false },
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$1", sender: "@alice:localhost", body: "not pinnable" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("not pinnable");
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    await screen.findByText("Reply");
+    expect(screen.queryByText("Pin")).not.toBeInTheDocument();
+  });
+
+  it("shows Unpin and calls unpinEvent for an already-pinned message, plus a header badge", async () => {
+    getRoomDetails.mockResolvedValue({
+      room_id: room.room_id,
+      is_encrypted: false,
+      pinned_event_ids: ["$1"],
+      can: { set_pinned_events: true },
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$1", sender: "@alice:localhost", body: "already pinned" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("already pinned");
+
+    // Pin count badge on the room header.
+    expect(await screen.findByText("1")).toBeInTheDocument();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Unpin"));
+
+    await waitFor(() => expect(unpinEvent).toHaveBeenCalledWith(room.room_id, "$1"));
+  });
+
+  it("toggles the pinned-messages drawer atom from the room header button", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    const store = createStore();
+    renderChatShell(store);
+    await screen.findByText("No messages yet");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show pinned messages" }));
+    expect(
+      screen.getByRole("button", { name: "Hide pinned messages" }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 });

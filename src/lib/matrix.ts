@@ -30,6 +30,7 @@ import type { ReceiptTypeDto } from "@bindings/ReceiptTypeDto";
 import type { ReceiptUpdate } from "@bindings/ReceiptUpdate";
 import type { RecoveryStatusSummary } from "@bindings/RecoveryStatusSummary";
 import type { RegisterRequest } from "@bindings/RegisterRequest";
+import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
 import type { ReplyRef } from "@bindings/ReplyRef";
 import type { RoomDetails } from "@bindings/RoomDetails";
 import type { RoomMemberSummary } from "@bindings/RoomMemberSummary";
@@ -138,6 +139,7 @@ export type {
   MembershipKind,
   NotificationSettingsSummary,
   OwnProfile,
+  PinnedMessageSummary,
   PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
@@ -888,6 +890,24 @@ export function setSpaceChildSuggested(
   suggested: boolean,
 ): Promise<void> {
   return invoke("set_space_child_suggested", { spaceId, childRoomId, suggested });
+}
+
+/** Resolves `roomId`'s currently-pinned events (per `RoomDetails.pinned_event_ids`) for the pinned-messages panel. */
+export function getPinnedMessages(roomId: string): Promise<PinnedMessageSummary[]> {
+  return invoke("get_pinned_messages", { roomId });
+}
+
+/**
+ * Pins `eventId` in `roomId` — a granular read-modify-write against
+ * `m.room.pinned_events` (see `pin_event`/`unpin_event`'s Rust doc comment
+ * for why this isn't a single `set_pinned_events(ids[])` command).
+ */
+export function pinEvent(roomId: string, eventId: string): Promise<void> {
+  return invoke("pin_event", { roomId, eventId });
+}
+
+export function unpinEvent(roomId: string, eventId: string): Promise<void> {
+  return invoke("unpin_event", { roomId, eventId });
 }
 
 /** Server-published (room-directory) aliases for `roomId` — distinct from `RoomDetails.canonical_alias`/`alt_aliases`. */

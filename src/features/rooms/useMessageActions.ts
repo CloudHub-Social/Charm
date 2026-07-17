@@ -1,8 +1,10 @@
 import {
   discardFailedMessage,
+  pinEvent,
   redactEvent,
   resendMessage,
   toggleReaction,
+  unpinEvent,
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import type { ReplyRef } from "@/lib/matrix";
@@ -78,6 +80,32 @@ export function useMessageActions({
     }
   }
 
+  /**
+   * Pins `eventId` in the room's `m.room.pinned_events` (Spec day-2/04).
+   * `RoomDetails.pinned_event_ids` (and thus the pinned-messages panel/badge
+   * that read it via `useRoomDetails`) updates itself off the
+   * `room_details:update` push the resulting state event triggers — no
+   * local optimistic update or query invalidation needed here.
+   */
+  async function handlePin(eventId: string) {
+    if (!roomId) return;
+    try {
+      await pinEvent(roomId, eventId);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  /** Unpins `eventId`. See {@link handlePin}. */
+  async function handleUnpin(eventId: string) {
+    if (!roomId) return;
+    try {
+      await unpinEvent(roomId, eventId);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
   return {
     handleToggleReaction,
     handleDelete,
@@ -85,5 +113,7 @@ export function useMessageActions({
     handleEdit,
     handleResend,
     handleDiscard,
+    handlePin,
+    handleUnpin,
   };
 }

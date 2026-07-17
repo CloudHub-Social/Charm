@@ -9,4 +9,11 @@ export type RoomPermissions = { set_name: boolean, set_topic: boolean, set_avata
  * covers the whole alias-management surface per the spec's power-level
  * gating requirement.
  */
-set_canonical_alias: boolean, };
+set_canonical_alias: boolean, 
+/**
+ * Gates the "Pin"/"Unpin" entry in `MessageActions` and any other
+ * pin/unpin affordance (Spec day-2/04) — power level required to send
+ * `m.room.pinned_events`, same pattern as every other `set_*` field
+ * above.
+ */
+set_pinned_events: boolean, };

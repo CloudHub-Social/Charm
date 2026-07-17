@@ -19,6 +19,10 @@ interface MessageRowProps {
   sameSenderAsNext: boolean;
   /** Already resolved: own messages are always redactable regardless of this. */
   canRedact: boolean;
+  /** Gates the "Pin"/"Unpin" entry — see `MessageRowLayoutProps.canPin`. */
+  canPin: boolean;
+  /** Whether this message is currently pinned. */
+  isPinned: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
   /** Best-effort user id -> display name lookup for the "Read by {name}" tooltip; falls back to the user id when absent. */
@@ -35,6 +39,8 @@ interface MessageRowProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  onPin: () => void;
+  onUnpin: () => void;
   /** See `MessageRowLayoutProps.onResend`. */
   onResend: () => void;
   /** See `MessageRowLayoutProps.onDiscard`. */

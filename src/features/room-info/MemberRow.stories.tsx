@@ -17,6 +17,7 @@ const ADMIN_PERMISSIONS: RoomPermissions = {
   kick: true,
   ban: true,
   set_canonical_alias: true,
+  set_pinned_events: true,
 };
 
 const READ_ONLY_PERMISSIONS: RoomPermissions = {
@@ -31,6 +32,7 @@ const READ_ONLY_PERMISSIONS: RoomPermissions = {
   kick: false,
   ban: false,
   set_canonical_alias: false,
+  set_pinned_events: false,
 };
 
 const MEMBER: RoomMemberSummary = {

@@ -36,6 +36,13 @@ export interface MessageRowLayoutProps {
   sameSenderAsNext: boolean;
   /** Already resolved: own messages are always redactable regardless of this. */
   canRedact: boolean;
+  /** Gates the "Pin"/"Unpin" `MessageActions` entry — the power level
+   * required for `m.room.pinned_events`, mirroring `canRedact`'s pattern
+   * (resolved once by the caller from `RoomDetails.can.set_pinned_events`,
+   * not re-checked per row). */
+  canPin: boolean;
+  /** Whether this message's event id is currently in `RoomDetails.pinned_event_ids`. */
+  isPinned: boolean;
   /** User ids with a read receipt on this message. */
   readers: string[];
   /** Best-effort user id -> display name lookup for the "Read by {name}" tooltip; falls back to the user id when absent. */
@@ -52,6 +59,8 @@ export interface MessageRowLayoutProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  onPin: () => void;
+  onUnpin: () => void;
   /** Retries a failed send in place via the send queue. Only meaningful (and rendered) when `isError` is set. */
   onResend: () => void;
   /** Discards a failed send's local echo. Only meaningful (and rendered) when `isError` is set. */

@@ -4,6 +4,8 @@ import {
   Link2,
   MoreHorizontal,
   Pencil,
+  Pin,
+  PinOff,
   Reply,
   RotateCw,
   SmilePlus,
@@ -32,6 +34,17 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /**
+   * Gates the "Pin"/"Unpin" entry — the power level required for
+   * `m.room.pinned_events` (Spec day-2/04), same pattern as `canRedact`.
+   * Reuses Spec 07's power-level gating, resolved once by the caller from
+   * `RoomDetails.can.set_pinned_events` rather than re-checked per row.
+   */
+  canPin?: boolean;
+  /** Whether this message is currently in the room's pinned-events list. */
+  isPinned?: boolean;
+  onPin?: () => void;
+  onUnpin?: () => void;
   /**
    * Retries a failed send in place (SDK send-queue retry, not a
    * re-composed re-send). Only rendered when `isError` is set — see that
@@ -103,6 +116,10 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDelete,
       onCopy,
       onCopyLink,
+      canPin = false,
+      isPinned = false,
+      onPin,
+      onUnpin,
       onResend,
       onDiscard,
       className,
@@ -246,6 +263,15 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               >
                 <Link2 />
                 Copy link
+              </DropdownMenuItem>
+            )}
+            {canPin && !isError && (isPinned ? onUnpin : onPin) && (
+              <DropdownMenuItem
+                onSelect={isPinned ? onUnpin : onPin}
+                disabled={disableRelationActions || isUndecrypted}
+              >
+                {isPinned ? <PinOff /> : <Pin />}
+                {isPinned ? "Unpin" : "Pin"}
               </DropdownMenuItem>
             )}
             {messageActionParityEnabled && isError && onResend && (

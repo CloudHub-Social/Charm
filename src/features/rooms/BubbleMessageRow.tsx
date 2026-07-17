@@ -22,6 +22,8 @@ export function BubbleMessageRow({
   sameSenderAsPrev,
   sameSenderAsNext,
   canRedact,
+  canPin,
+  isPinned,
   readers,
   senderNameByUserId,
   isNew,
@@ -31,6 +33,8 @@ export function BubbleMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onPin,
+  onUnpin,
   onCopy,
   onCopyLink,
   onResend,
@@ -124,6 +128,8 @@ export function BubbleMessageRow({
               ref={(el) => registerActionsRef(rowKey, el)}
               isOwn={own}
               canRedact={canRedact}
+              canPin={canPin}
+              isPinned={isPinned}
               disableRelationActions={disableRelationActions}
               isUndecrypted={isUndecrypted}
               isError={isError}
@@ -132,6 +138,8 @@ export function BubbleMessageRow({
               onReact={onReact}
               onEdit={onEdit}
               onDelete={onDelete}
+              onPin={onPin}
+              onUnpin={onUnpin}
               onCopy={onCopy}
               onCopyLink={onCopyLink}
               onResend={onResend}

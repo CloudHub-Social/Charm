@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -8,6 +8,7 @@ import {
   MessageCircle,
   MoreVertical,
   Paperclip,
+  Pin,
   Send,
   Settings,
   Type,
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
 import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
+import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -46,6 +48,8 @@ import { escapeHtmlText, sanitizeMatrixHtml } from "./composerSanitize";
 import {
   membersDrawerOpenAtomFamily,
   noRoomMembersDrawerOpenAtom,
+  noRoomPinnedMessagesDrawerOpenAtom,
+  pinnedMessagesDrawerOpenAtomFamily,
   roomSettingsAtom,
 } from "@/features/room-info/roomInfoAtoms";
 import { useReadReceipts } from "./useReadReceipts";
@@ -68,6 +72,19 @@ interface ChatShellProps {
   currentUserId: string;
   onBack?: () => void;
   onNavigateToRoom?: (roomIdentifier: string) => void;
+}
+
+/**
+ * Imperative handle so a sibling of `ChatShell` — namely `RoomsScreen`'s
+ * `PinnedMessagesPanel`, rendered in the separate `rightPanel` layout slot
+ * (see `AppShell`), not nested inside `ChatShell`'s own returned JSX — can
+ * trigger the same scroll-to-loaded-message mechanism the in-timeline
+ * reply-preview click and search-result click already use
+ * (`handleJumpToMessage` below), without either lifting the whole `messages`
+ * array/Virtuoso ref out of this component or duplicating the scroll logic.
+ */
+export interface ChatShellHandle {
+  scrollToMessage: (eventId: string) => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
@@ -207,7 +224,10 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
-export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
+export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function ChatShell(
+  { room, currentUserId, onBack, onNavigateToRoom },
+  ref,
+) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
@@ -258,6 +278,15 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   const [membersDrawerOpen, setMembersDrawerOpen] = useAtom(
     room ? membersDrawerOpenAtomFamily(roomId) : noRoomMembersDrawerOpenAtom,
   );
+  // The right panel is a single slot (see `RoomsScreen`) — opening one of
+  // these two drawers closes the other, same as toggling between Members
+  // and any other room-info surface would.
+  const [pinnedMessagesDrawerOpen, setPinnedMessagesDrawerOpen] = useAtom(
+    room ? pinnedMessagesDrawerOpenAtomFamily(roomId) : noRoomPinnedMessagesDrawerOpenAtom,
+  );
+  const { data: roomDetails } = useRoomDetails(room?.room_id ?? null);
+  const pinnedEventIds = roomDetails?.pinned_event_ids ?? [];
+  const canPinMessages = roomDetails?.can?.set_pinned_events ?? false;
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
@@ -384,6 +413,10 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
       behavior: "smooth",
     });
   }
+  // Exposes the same scroll-to mechanism to `RoomsScreen`'s
+  // `PinnedMessagesPanel` — see `ChatShellHandle`'s doc comment for why this
+  // needs to cross a component boundary rather than being called directly.
+  useImperativeHandle(ref, () => ({ scrollToMessage: handleJumpToMessage }));
   // Jump-to-present state (Spec 26 Phase 2) lives here in `ChatShell`, not in
   // `useChatTimeline` or on the (per-room-remounted) Virtuoso instance —
   // switching rooms while scrolled away and mid-pill in room A must not
@@ -631,6 +664,8 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     handleEdit,
     handleResend,
     handleDiscard,
+    handlePin,
+    handleUnpin,
   } = useMessageActions({
     roomId: activeRoomId,
     setReplyTarget,
@@ -835,10 +870,24 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
             <DropdownMenuContent align="end" className="min-w-48">
               <DropdownMenuItem
                 className="min-h-11"
-                onSelect={() => setMembersDrawerOpen((open) => !open)}
+                onSelect={() => {
+                  setMembersDrawerOpen((open) => !open);
+                  setPinnedMessagesDrawerOpen(false);
+                }}
               >
                 <Info />
                 {membersDrawerOpen ? "Hide members" : "Show members"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="min-h-11"
+                onSelect={() => {
+                  setPinnedMessagesDrawerOpen((open) => !open);
+                  setMembersDrawerOpen(false);
+                }}
+              >
+                <Pin />
+                {pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Pinned messages"}
+                {pinnedEventIds.length > 0 && ` (${pinnedEventIds.length})`}
               </DropdownMenuItem>
               <DropdownMenuItem
                 className="min-h-11"
@@ -855,13 +904,38 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
               type="button"
               aria-label={membersDrawerOpen ? "Hide members" : "Show members"}
               aria-pressed={membersDrawerOpen}
-              onClick={() => setMembersDrawerOpen((open) => !open)}
+              onClick={() => {
+                setMembersDrawerOpen((open) => !open);
+                setPinnedMessagesDrawerOpen(false);
+              }}
               className={cn(
                 "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                 membersDrawerOpen && "bg-accent text-accent-foreground",
               )}
             >
               <Info className="size-4" />
+            </button>
+            <button
+              type="button"
+              aria-label={
+                pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Show pinned messages"
+              }
+              aria-pressed={pinnedMessagesDrawerOpen}
+              onClick={() => {
+                setPinnedMessagesDrawerOpen((open) => !open);
+                setMembersDrawerOpen(false);
+              }}
+              className={cn(
+                "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
+              )}
+            >
+              <Pin className="size-4" />
+              {pinnedEventIds.length > 0 && (
+                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                  {pinnedEventIds.length}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -989,6 +1063,8 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     sameSenderAsPrev={prev?.sender === message.sender && !isGroupBreakAt(i)}
                     sameSenderAsNext={next?.sender === message.sender && !isGroupBreakAt(i + 1)}
                     canRedact={allowedToRedact}
+                    canPin={canPinMessages}
+                    isPinned={pinnedEventIds.includes(message.event_id)}
                     readers={readers}
                     senderNameByUserId={senderNameByUserId}
                     // Excludes `own` messages: `messageRowKey` (transaction_id ??
@@ -1032,6 +1108,8 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                         )
                         .catch(logAndIgnore);
                     }}
+                    onPin={() => void handlePin(message.event_id)}
+                    onUnpin={() => void handleUnpin(message.event_id)}
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
@@ -1277,4 +1355,4 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
       <MessagePillProfileDialog profile={pillProfile} onClose={() => setPillProfile(null)} />
     </div>
   );
-}
+});

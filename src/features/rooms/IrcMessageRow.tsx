@@ -21,6 +21,8 @@ export function IrcMessageRow({
   currentUserId,
   own,
   canRedact,
+  canPin,
+  isPinned,
   isNew,
   getActionsHandle,
   registerActionsRef,
@@ -28,6 +30,8 @@ export function IrcMessageRow({
   onReact,
   onEdit,
   onDelete,
+  onPin,
+  onUnpin,
   onCopy,
   onCopyLink,
   onResend,
@@ -141,6 +145,8 @@ export function IrcMessageRow({
             ref={(el) => registerActionsRef(rowKey, el)}
             isOwn={own}
             canRedact={canRedact}
+            canPin={canPin}
+            isPinned={isPinned}
             disableRelationActions={disableRelationActions}
             isUndecrypted={isUndecrypted}
             isError={isError}
@@ -149,6 +155,8 @@ export function IrcMessageRow({
             onReact={onReact}
             onEdit={onEdit}
             onDelete={onDelete}
+            onPin={onPin}
+            onUnpin={onUnpin}
             onCopy={onCopy}
             onCopyLink={onCopyLink}
             onResend={onResend}

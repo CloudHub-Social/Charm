@@ -34,13 +34,12 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-16, after adding Spec 54's last-message preview row coverage
-        // and Spec 37's resend/discard-failed-send coverage.
+        // 2026-07-16, after adding day-2 Spec 04's message-pinning coverage).
         // When tests raise coverage, raise these floors in the same PR.
-        lines: 86.3,
-        statements: 84.1,
-        functions: 77.1,
-        branches: 83.5,
+        lines: 86.5,
+        statements: 84.4,
+        functions: 77.25,
+        branches: 83.75,
       },
     },
   },

@@ -54,6 +54,8 @@ function renderRow(messageLayout: MessageLayout, body = "hello", edited = false)
           sameSenderAsPrev={false}
           sameSenderAsNext={false}
           canRedact={false}
+          canPin={false}
+          isPinned={false}
           readers={[]}
           senderNameByUserId={new Map()}
           isNew={false}
@@ -63,6 +65,8 @@ function renderRow(messageLayout: MessageLayout, body = "hello", edited = false)
           onReact={vi.fn()}
           onEdit={vi.fn()}
           onDelete={vi.fn()}
+          onPin={vi.fn()}
+          onUnpin={vi.fn()}
           onCopy={vi.fn()}
           onCopyLink={vi.fn()}
           onResend={vi.fn()}

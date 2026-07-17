@@ -41,9 +41,11 @@ const ADMIN_DETAILS: RoomDetails = {
     kick: true,
     ban: true,
     set_canonical_alias: true,
+    set_pinned_events: true,
   },
   canonical_alias: null,
   alt_aliases: [],
+  pinned_event_ids: [],
 };
 
 const READ_ONLY_DETAILS: RoomDetails = {
@@ -61,9 +63,11 @@ const READ_ONLY_DETAILS: RoomDetails = {
     kick: false,
     ban: false,
     set_canonical_alias: false,
+    set_pinned_events: false,
   },
   canonical_alias: null,
   alt_aliases: [],
+  pinned_event_ids: [],
 };
 
 const MEMBERS: RoomMemberSummary[] = [
