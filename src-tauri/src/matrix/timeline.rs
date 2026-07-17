@@ -991,12 +991,12 @@ pub async fn get_timeline_page_impl(
 }
 
 /// How many `paginate_backwards` batches [`load_timeline_around_event`] will
-/// request before giving up on finding `event_id` — bounds worst-case work
-/// for a bookmark whose event is much further back than typical (e.g. a
-/// months-old saved message in a very active room), rather than paginating
-/// all the way to the start of history on every jump. At
-/// `EVENTS_PER_BATCH` per iteration this covers several thousand events,
-/// comfortably more than a real "jump to an old bookmark" needs in practice.
+/// request against the room's *live* timeline before falling back to
+/// [`load_focused_event_timeline`] — bounds worst-case work for the common
+/// case (a bookmark within recent-ish history) before paying for a second
+/// request/timeline swap. At `EVENTS_PER_BATCH` per iteration this covers
+/// several thousand events; deliberately not raised further; see the
+/// fallback below for events older than that.
 const MAX_LOAD_AROUND_ITERATIONS: usize = 20;
 const EVENTS_PER_BATCH: u16 = 50;
 
@@ -1004,20 +1004,24 @@ const EVENTS_PER_BATCH: u16 = 50;
 /// — needed so jumping to a bookmarked message from the Saved Messages view
 /// works even when that message isn't in the room's currently-loaded
 /// timeline window (e.g. the room hasn't been opened yet, or the bookmark is
-/// older than what's paginated in). Deliberately not a shared/generic
-/// abstraction: it just keeps calling the existing `paginate_backwards` (the
-/// same primitive `get_timeline_page` already uses) until `event_id` shows up
-/// in the live snapshot or history is exhausted, relying on the timeline
-/// listener's existing `timeline:update` emission (spawned by
+/// older than what's paginated in). Tries the cheap path first: keep calling
+/// the existing `paginate_backwards` (the same primitive `get_timeline_page`
+/// already uses) until `event_id` shows up in the live snapshot, relying on
+/// the timeline listener's existing `timeline:update` emission (spawned by
 /// `get_or_create_timeline`) to push each newly-paginated batch to the
-/// frontend exactly the way backward-scrolling already does — no separate
-/// event/response payload of its own.
+/// frontend exactly the way backward-scrolling already does.
 ///
-/// Returns whether `event_id` was found. `false` means the event is not
-/// (or no longer) in this room's history reachable from the current sync
-/// state — e.g. a stale bookmark for an event since removed from the
-/// room's DAG the local store can see, or one further back than
-/// `MAX_LOAD_AROUND_ITERATIONS` batches away.
+/// If that bounded walk doesn't find the event within
+/// `MAX_LOAD_AROUND_ITERATIONS` batches (review fix — previously this simply
+/// gave up and returned `false` here, even though the event exists and is
+/// reachable, just further back than ~1000 events), falls back to
+/// [`load_focused_event_timeline`], which resolves the event via the
+/// server's `/context` endpoint directly — no client-side scanning bound.
+///
+/// Returns whether `event_id` was found. `false` now only means the event is
+/// genuinely not reachable from the current sync state (e.g. a stale
+/// bookmark for an event since removed from the room's DAG the local store
+/// can see), not merely "further back than we were willing to page through".
 #[tauri::command]
 pub async fn load_timeline_around_event(
     app: AppHandle,
@@ -1044,10 +1048,68 @@ pub async fn load_timeline_around_event(
             return Ok(true);
         }
         if hit_start {
-            break;
+            // Genuinely reached the start of the room's visible history
+            // without finding the event — no amount of further scanning
+            // (bounded or not) will locate it, so the event-focused
+            // fallback below would only fail too. Report not-found now.
+            return Ok(false);
         }
     }
-    Ok(false)
+
+    // Exhausted the bounded live-timeline walk without hitting the start of
+    // history — the event may simply be deeper than we're willing to page
+    // through client-side. Fall back to a direct server-side lookup instead
+    // of reporting failure.
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+    load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id).await
+}
+
+/// Fallback for [`load_timeline_around_event`] once the live timeline's
+/// bounded backward-pagination gives up without finding `event_id`. Builds a
+/// dedicated `TimelineFocus::Event`-focused `Timeline` (`matrix-sdk-ui`'s
+/// purpose-built mechanism for jumping to an arbitrary historical event,
+/// e.g. from a permalink) via `Room::timeline_builder`, which resolves the
+/// target through the server's `/context` endpoint
+/// (`Room::event_with_context` under the hood) in a single request no
+/// matter how far back it is — no client-side page-by-page scanning bound.
+///
+/// On success, swaps this room's cached timeline over to the focused one
+/// (see `MatrixState::replace_timeline`) so the frontend's next
+/// `get_timeline_page`/`timeline:update` sees events around the target
+/// instead of the room's unrelated live tail from before the jump.
+async fn load_focused_event_timeline(
+    app: &AppHandle,
+    state: &State<'_, MatrixState>,
+    client: &Client,
+    room_id: &RoomId,
+    event_id: &matrix_sdk::ruma::EventId,
+) -> Result<bool, String> {
+    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
+
+    let room = client
+        .get_room(room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+
+    let focused = room
+        .timeline_builder()
+        .with_focus(TimelineFocus::Event {
+            target: event_id.to_owned(),
+            num_context_events: EVENTS_PER_BATCH,
+            thread_mode: TimelineEventFocusThreadMode::Automatic {
+                hide_threaded_events: false,
+            },
+        })
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+    let focused = Arc::new(focused);
+
+    if !timeline_contains_event(&focused, event_id.as_str()).await {
+        return Ok(false);
+    }
+
+    state.replace_timeline(app, client, room_id, focused).await;
+    Ok(true)
 }
 
 async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {

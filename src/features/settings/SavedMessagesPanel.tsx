@@ -25,7 +25,7 @@ function useRoomNames() {
   });
 }
 
-function formatSavedAt(timestampMs: number): string {
+function formatMessageDate(timestampMs: number): string {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -95,7 +95,12 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
                     <span>&middot;</span>
                     <span>{bookmark.sender_display_name ?? bookmark.sender}</span>
                     <span>&middot;</span>
-                    <span>{formatSavedAt(bookmark.saved_at_ms)}</span>
+                    {/* Review fix: show when the message was actually sent
+                    (`timestamp_ms`), not when it was bookmarked
+                    (`saved_at_ms`, which only drives this list's own sort
+                    order) — a bookmark saved today for an old message
+                    should show the old date, not today's. */}
+                    <span>{formatMessageDate(bookmark.timestamp_ms)}</span>
                   </div>
                   <p className="mt-1 truncate text-sm text-foreground">{bookmark.body_preview}</p>
                 </button>

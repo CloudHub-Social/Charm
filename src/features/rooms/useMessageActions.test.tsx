@@ -9,14 +9,16 @@ const mockRemoveBookmark = vi.fn();
 const mockListBookmarks = vi.fn<() => Promise<BookmarkEntry[]>>();
 const mockToggleReaction = vi.fn();
 const mockRedactEvent = vi.fn();
+const mockResendMessage = vi.fn();
+const mockDiscardFailedMessage = vi.fn();
 
 vi.mock("@/lib/matrix", () => ({
   addBookmark: (...args: unknown[]) => mockAddBookmark(...args),
   removeBookmark: (...args: unknown[]) => mockRemoveBookmark(...args),
   listBookmarks: () => mockListBookmarks(),
-  discardFailedMessage: vi.fn(),
+  discardFailedMessage: (...args: unknown[]) => mockDiscardFailedMessage(...args),
   redactEvent: (...args: unknown[]) => mockRedactEvent(...args),
-  resendMessage: vi.fn(),
+  resendMessage: (...args: unknown[]) => mockResendMessage(...args),
   toggleReaction: (...args: unknown[]) => mockToggleReaction(...args),
 }));
 
@@ -58,10 +60,33 @@ function makeMessage(overrides: Partial<RoomMessageSummary> = {}): RoomMessageSu
 }
 
 describe("useMessageActions bookmarks (Spec 12)", () => {
+  // `handleBookmark`/`handleUnbookmark` invalidate the shared bookmarks
+  // query, which refetches via `listBookmarks` — real `add_bookmark`/
+  // `remove_bookmark` calls mutate the same server-side list that
+  // `list_bookmarks` then reads back, so this in-memory array keeps the
+  // mock consistent with that real round trip instead of refetching a
+  // canned response that doesn't reflect the just-made change.
+  let serverBookmarks: BookmarkEntry[] = [];
+
   beforeEach(() => {
-    mockAddBookmark.mockReset().mockResolvedValue(undefined);
-    mockRemoveBookmark.mockReset().mockResolvedValue(undefined);
-    mockListBookmarks.mockReset().mockResolvedValue([]);
+    serverBookmarks = [];
+    mockAddBookmark.mockReset().mockImplementation((roomId: string, eventId: string) => {
+      serverBookmarks.push({
+        room_id: roomId,
+        event_id: eventId,
+        saved_at_ms: Date.now(),
+        sender: "",
+        sender_display_name: null,
+        body_preview: "",
+        timestamp_ms: Date.now(),
+      } as BookmarkEntry);
+      return Promise.resolve();
+    });
+    mockRemoveBookmark.mockReset().mockImplementation((eventId: string) => {
+      serverBookmarks = serverBookmarks.filter((b) => b.event_id !== eventId);
+      return Promise.resolve();
+    });
+    mockListBookmarks.mockReset().mockImplementation(() => Promise.resolve(serverBookmarks));
   });
 
   it("seeds bookmarkedEventIds from list_bookmarks, scoped to the active room", async () => {
@@ -101,9 +126,9 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
   });
 
   it("optimistically unmarks a message and calls removeBookmark", async () => {
-    mockListBookmarks.mockResolvedValue([
+    serverBookmarks = [
       { room_id: "!room:localhost", event_id: "$a", saved_at_ms: 1 } as BookmarkEntry,
-    ]);
+    ];
     const { result } = setup("!room:localhost");
     await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(true));
 
@@ -112,13 +137,16 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
     });
 
     expect(mockRemoveBookmark).toHaveBeenCalledWith("$a");
-    expect(result.current.bookmarkedEventIds.has("$a")).toBe(false);
+    // react-query's post-invalidate refetch notification can land in a
+    // microtask outside what a single `act()` flush picks up, so assert
+    // via `waitFor` rather than immediately after `act` resolves.
+    await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(false));
   });
 
   it("rolls back the optimistic unbookmark if remove_bookmark fails", async () => {
-    mockListBookmarks.mockResolvedValue([
+    serverBookmarks = [
       { room_id: "!room:localhost", event_id: "$a", saved_at_ms: 1 } as BookmarkEntry,
-    ]);
+    ];
     mockRemoveBookmark.mockRejectedValue(new Error("network error"));
     const { result } = setup("!room:localhost");
     await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(true));
@@ -128,6 +156,27 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
     });
 
     expect(result.current.bookmarkedEventIds.has("$a")).toBe(true);
+  });
+
+  it("restores the pre-optimistic bookmarks list if remove_bookmark fails and the recovery refetch also fails", async () => {
+    serverBookmarks = [
+      { room_id: "!room:localhost", event_id: "$a", saved_at_ms: 1 } as BookmarkEntry,
+    ];
+    mockRemoveBookmark.mockRejectedValue(new Error("network error"));
+    const { result } = setup("!room:localhost");
+    await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(true));
+
+    // The recovery refetch triggered inside handleUnbookmark's catch block
+    // also fails here (not just remove_bookmark itself) — exercises the
+    // fallback that restores the pre-optimistic-removal snapshot directly
+    // via setQueryData rather than relying on that refetch to reconcile it.
+    mockListBookmarks.mockRejectedValueOnce(new Error("also down"));
+
+    await act(async () => {
+      await result.current.handleUnbookmark("$a");
+    });
+
+    await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(true));
   });
 
   it("clears bookmarkedEventIds when there is no active room", async () => {
@@ -152,6 +201,8 @@ describe("useMessageActions other handlers", () => {
     mockListBookmarks.mockReset().mockResolvedValue([]);
     mockToggleReaction.mockReset();
     mockRedactEvent.mockReset();
+    mockResendMessage.mockReset();
+    mockDiscardFailedMessage.mockReset();
   });
 
   it("sets the reply target from a message", () => {
@@ -227,5 +278,69 @@ describe("useMessageActions other handlers", () => {
 
     expect(succeeded).toBe(false);
     expect(mockRedactEvent).not.toHaveBeenCalled();
+  });
+
+  it("resends a failed message via resendMessage", async () => {
+    mockResendMessage.mockResolvedValue(undefined);
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handleResend("txn-1");
+    });
+
+    expect(mockResendMessage).toHaveBeenCalledWith("!room:localhost", "txn-1");
+  });
+
+  it("swallows a resendMessage failure", async () => {
+    mockResendMessage.mockRejectedValue(new Error("still failing"));
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handleResend("txn-1");
+    });
+
+    expect(mockResendMessage).toHaveBeenCalled();
+  });
+
+  it("does nothing when resending with no active room", async () => {
+    const { result } = setup(null);
+
+    await act(async () => {
+      await result.current.handleResend("txn-1");
+    });
+
+    expect(mockResendMessage).not.toHaveBeenCalled();
+  });
+
+  it("discards a failed message's local echo via discardFailedMessage", async () => {
+    mockDiscardFailedMessage.mockResolvedValue(undefined);
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handleDiscard("txn-1");
+    });
+
+    expect(mockDiscardFailedMessage).toHaveBeenCalledWith("!room:localhost", "txn-1");
+  });
+
+  it("swallows a discardFailedMessage failure", async () => {
+    mockDiscardFailedMessage.mockRejectedValue(new Error("already gone"));
+    const { result } = setup("!room:localhost");
+
+    await act(async () => {
+      await result.current.handleDiscard("txn-1");
+    });
+
+    expect(mockDiscardFailedMessage).toHaveBeenCalled();
+  });
+
+  it("does nothing when discarding with no active room", async () => {
+    const { result } = setup(null);
+
+    await act(async () => {
+      await result.current.handleDiscard("txn-1");
+    });
+
+    expect(mockDiscardFailedMessage).not.toHaveBeenCalled();
   });
 });

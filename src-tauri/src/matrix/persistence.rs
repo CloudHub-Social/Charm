@@ -1378,7 +1378,22 @@ pub fn save_bookmarks_at<T: serde::Serialize>(
 ) -> Result<(), String> {
     let path = bookmarks_path_at(root, account_key)?;
     let json = serde_json::to_string(bookmarks).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())
+    write_atomically(&path, json.as_bytes())
+}
+
+/// Writes `contents` to `path` by first writing a sibling `.tmp` file, then
+/// renaming it over `path`. Review fix: a plain `std::fs::write` truncates
+/// the destination before writing the new contents — if the process or
+/// machine stops mid-write, the bookmarks file is left truncated/partially
+/// serialized, and every subsequent `load_bookmarks` call then fails to
+/// parse it, with no way to recover the previous valid list. A same-directory
+/// rename is atomic on the filesystems Charm targets (POSIX rename(2);
+/// Windows `MoveFileEx` in this same-volume case), so a reader always either
+/// sees the old complete file or the new complete file, never a partial one.
+fn write_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, contents).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp_path, path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

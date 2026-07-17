@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   addBookmark,
   discardFailedMessage,
@@ -8,16 +8,21 @@ import {
   removeBookmark,
   resendMessage,
   toggleReaction,
+  type BookmarkEntry,
   type RoomMessageSummary,
 } from "@/lib/matrix";
 import type { ReplyRef } from "@/lib/matrix";
-import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
 import { isWebBuild } from "@/lib/platform";
 
-// Shared with `SavedMessagesPanel`, which is the source of truth for the
-// cross-room bookmarks list — keep this key in sync with that file's
-// `BOOKMARKS_QUERY_KEY` so an invalidation here also refetches that view.
+// Shared with `SavedMessagesPanel` — same query, same key, so a change from
+// either surface (a row-menu bookmark here, a removal there) is reflected
+// in both instead of each holding its own out-of-sync snapshot. Review fix:
+// this hook previously kept its own `useState<Set<string>>` seeded once
+// from `listBookmarks()`, so removing a bookmark from `SavedMessagesPanel`
+// never reached an already-mounted `ChatShell`'s independent state — the
+// message menu kept showing "Remove bookmark" until the room changed. Both
+// now read the same react-query cache entry.
 const BOOKMARKS_QUERY_KEY = ["bookmarks"] as const;
 
 interface UseMessageActionsOptions {
@@ -31,42 +36,37 @@ export function useMessageActions({
   setReplyTarget,
   setEditingEventId,
 }: UseMessageActionsOptions) {
-  // Which of *this room's* messages are currently bookmarked (Spec 12) — a
-  // `Set` of event ids scoped to `roomId`, not the full cross-room bookmarks
-  // list (that's `SavedMessagesPanel`'s concern), so `MessageActions`'
-  // per-row `isBookmarked` lookup stays a plain `Set.has`. Refetched
-  // whenever the active room changes; updated optimistically on
-  // bookmark/unbookmark so the action menu reflects the change immediately
-  // rather than waiting on a round trip.
-  const [bookmarkedEventIds, setBookmarkedEventIds] = useState<Set<string>>(new Set());
   const bookmarksEnabled = useFlag("bookmarks");
   const queryClient = useQueryClient();
 
-  useEffect(() => {
-    // Bookmarks are backed by a local per-account file the Tauri process
-    // owns (see `SettingsScreen`'s `webUnsupported` note) — the web
-    // companion build has no `invokeWeb` case for `list_bookmarks`, so
-    // calling it there throws `UnsupportedCommand` into the console even
-    // though the flag defaults off. Guard on `isWebBuild()` directly rather
-    // than relying solely on the flag default, since a local override could
-    // otherwise flip `bookmarksEnabled` on for a web build too.
-    if (!roomId || !bookmarksEnabled || isWebBuild()) {
-      setBookmarkedEventIds(new Set());
-      return undefined;
-    }
-    let cancelled = false;
-    listBookmarks()
-      .then((bookmarks) => {
-        if (cancelled) return;
-        setBookmarkedEventIds(
-          new Set(bookmarks.filter((b) => b.room_id === roomId).map((b) => b.event_id)),
-        );
-      })
-      .catch(logAndIgnore);
-    return () => {
-      cancelled = true;
-    };
-  }, [roomId, bookmarksEnabled]);
+  // Bookmarks are backed by a local per-account file the Tauri process
+  // owns (see `SettingsScreen`'s `webUnsupported` note) — the web
+  // companion build has no `invokeWeb` case for `list_bookmarks`, so
+  // calling it there throws `UnsupportedCommand` into the console even
+  // though the flag defaults off. Guard on `isWebBuild()` directly rather
+  // than relying solely on the flag default, since a local override could
+  // otherwise flip `bookmarksEnabled` on for a web build too.
+  // Also gated on `roomId`: no active room means nothing in this hook's own
+  // surface (the message action menu) can be bookmarked yet, so there's no
+  // need for *this* hook instance to fetch — `SavedMessagesPanel`'s own
+  // `useQuery` on the same key still populates the shared cache regardless.
+  const fetchEnabled = bookmarksEnabled && !isWebBuild() && roomId !== null;
+  const { data: bookmarks } = useQuery({
+    queryKey: BOOKMARKS_QUERY_KEY,
+    queryFn: listBookmarks,
+    enabled: fetchEnabled,
+  });
+
+  // Which of *this room's* messages are currently bookmarked — a `Set` of
+  // event ids scoped to `roomId`, not the full cross-room bookmarks list
+  // (that's `SavedMessagesPanel`'s concern), so `MessageActions`' per-row
+  // `isBookmarked` lookup stays a plain `Set.has`. Derived from the same
+  // shared query `SavedMessagesPanel` reads, so a change from either
+  // surface is reflected in both.
+  const bookmarkedEventIds = useMemo(() => {
+    if (!roomId || !fetchEnabled || !bookmarks) return new Set<string>();
+    return new Set(bookmarks.filter((b) => b.room_id === roomId).map((b) => b.event_id));
+  }, [bookmarks, roomId, fetchEnabled]);
 
   async function handleToggleReaction(targetEventId: string, key: string) {
     if (!roomId) return;
@@ -128,58 +128,66 @@ export function useMessageActions({
     }
   }
 
-  /** Bookmarks a message (Spec 12) — purely local, no Matrix event sent. */
+  /**
+   * Bookmarks a message (Spec 12) — purely local, no Matrix event sent.
+   * Optimistically pushes a placeholder entry into the shared `["bookmarks"]`
+   * query cache (rather than a hook-local `Set`, per the review fix above)
+   * so both this room's action menu *and* an already-mounted
+   * `SavedMessagesPanel` see the change immediately; `add_bookmark`'s
+   * response isn't needed for that placeholder since presence in the list
+   * (not its exact sender/preview/timestamp) is all `bookmarkedEventIds`
+   * checks, and a follow-up invalidate reconciles the full resolved entry.
+   */
   async function handleBookmark(eventId: string) {
     if (!roomId) return;
-    setBookmarkedEventIds((prev) => new Set(prev).add(eventId));
+    const optimisticEntry: BookmarkEntry = {
+      room_id: roomId,
+      event_id: eventId,
+      saved_at_ms: Date.now(),
+      sender: "",
+      sender_display_name: null,
+      body_preview: "",
+      timestamp_ms: Date.now(),
+    };
+    queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, (prev) => [
+      ...(prev ?? []).filter((b) => b.event_id !== eventId),
+      optimisticEntry,
+    ]);
     try {
       await addBookmark(roomId, eventId);
-      // Review fix: this row-menu bookmark only updates the per-room `Set`
-      // above — without invalidating the shared `["bookmarks"]` query too,
-      // `SavedMessagesPanel` (if already mounted, or reopened within
-      // react-query's staleTime window) would keep showing its
-      // pre-bookmark snapshot instead of picking up this new entry.
       await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       console.error(err);
       // Roll back the optimistic update on failure — otherwise the menu
       // would keep showing "Remove bookmark" for a save that never landed.
-      setBookmarkedEventIds((prev) => {
-        const next = new Set(prev);
-        next.delete(eventId);
-        return next;
-      });
+      queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, (prev) =>
+        (prev ?? []).filter((b) => b.event_id !== eventId),
+      );
     }
   }
 
   /** Removes a bookmark from the message action menu. See {@link handleBookmark}. */
   async function handleUnbookmark(eventId: string) {
-    setBookmarkedEventIds((prev) => {
-      const next = new Set(prev);
-      next.delete(eventId);
-      return next;
-    });
+    const previous = bookmarks;
+    queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, (prev) =>
+      (prev ?? []).filter((b) => b.event_id !== eventId),
+    );
     try {
       await removeBookmark(eventId);
-      // See the matching comment in handleBookmark above.
       await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       console.error(err);
       // Review fix: blindly re-adding the id on failure can be wrong if a
       // concurrent request (e.g. the same removal from `SavedMessagesPanel`
-      // in another tab/window) already succeeded — this optimistic local
-      // state would then disagree with the source of truth. Invalidate the
-      // shared bookmarks query instead, so both surfaces refetch and
-      // reconcile against what's actually persisted, matching the pattern
-      // `SavedMessagesPanel.handleRemove` already uses.
-      queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY }).catch(logAndIgnore);
-      listBookmarks()
-        .then((bookmarks) => {
-          setBookmarkedEventIds(
-            new Set(bookmarks.filter((b) => b.room_id === roomId).map((b) => b.event_id)),
-          );
-        })
-        .catch(logAndIgnore);
+      // in another tab/window) already succeeded — invalidate the shared
+      // bookmarks query instead, so both surfaces refetch and reconcile
+      // against what's actually persisted, matching the pattern
+      // `SavedMessagesPanel.handleRemove` already uses. (`previous` is used
+      // only if that refetch itself fails, to avoid leaving the cache on
+      // the too-eager optimistic removal above forever.)
+      queryClient
+        .invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY })
+        .catch(() => queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous));
     }
   }
 

@@ -418,6 +418,45 @@ impl MatrixState {
         Ok(timeline)
     }
 
+    /// Swaps this room's cached `Timeline` for `timeline`, spawning a fresh
+    /// listener task for it and stopping the previous entry's listener the
+    /// same way an LRU eviction does in `get_or_create_timeline`. Used by
+    /// `load_timeline_around_event`'s event-focused fallback: once that
+    /// builds a `TimelineFocus::Event`-focused `Timeline` (resolved via the
+    /// server's `/context` endpoint rather than bounded client-side
+    /// backward-pagination), later callers for this room — `get_timeline_page`
+    /// included — should see events around that focus, not the room's
+    /// unrelated live tail from before the jump.
+    pub(crate) async fn replace_timeline(
+        &self,
+        app: &AppHandle,
+        client: &Client,
+        room_id: &matrix_sdk::ruma::RoomId,
+        timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
+    ) -> std::sync::Arc<matrix_sdk_ui::Timeline> {
+        let handle = timeline::spawn_timeline_listener(
+            app.clone(),
+            room_id.to_owned(),
+            std::sync::Arc::downgrade(&timeline),
+            client.clone(),
+            client.user_id().map(ToOwned::to_owned),
+        );
+
+        let mut timelines = self.timelines.lock().await;
+        let previous = timelines.push(
+            room_id.to_owned(),
+            (std::sync::Arc::clone(&timeline), handle),
+        );
+        drop(timelines);
+
+        if let Some((_, (_, previous_handle))) = previous {
+            previous_handle.abort();
+            let _ = previous_handle.await;
+        }
+
+        timeline
+    }
+
     /// Drops every live `Timeline` this session holds — called on
     /// logout/deactivate (see `account::clear_local_session`). Without this,
     /// the cache stays keyed by bare `room_id` across accounts: signing into

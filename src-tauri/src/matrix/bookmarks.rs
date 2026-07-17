@@ -118,6 +118,55 @@ async fn resolve_from_timeline(
         })
 }
 
+/// Resolves a bookmark's preview when the room isn't already open this
+/// session — `MatrixState::peek_timeline` returned `None`, e.g. right after
+/// an app restart, before anything has re-opened that room. Review fix:
+/// previously `list_bookmarks` gave up entirely in this case (falling back
+/// to [`UNRESOLVED_PREVIEW`]), which meant a cold session showed "Preview
+/// unavailable" for most bookmarks — defeating the point of a cross-room
+/// saved-messages list.
+///
+/// Builds a short-lived, event-focused `Timeline` (`matrix-sdk-ui`'s
+/// `TimelineFocus::Event`, the same mechanism `load_timeline_around_event`'s
+/// fallback uses for jump-to-message) that resolves the target event via the
+/// server's `/context` endpoint regardless of how far back it is, decrypting
+/// it against this account's persisted crypto store the same way any other
+/// timeline would, then reuses [`resolve_from_timeline`] against it.
+/// Deliberately *not* cached into `MatrixState`'s live-timeline LRU (unlike
+/// the jump-to-message fallback) — a saved-messages list commonly spans many
+/// different rooms, and caching one lookup timeline per resolved bookmark
+/// would evict rooms the user actually has open.
+async fn resolve_via_context(
+    event_id: &str,
+    client: &Client,
+    room_id: &RoomId,
+    media_cache: Option<&super::media::MediaCache>,
+) -> Option<(String, Option<String>, String, u64)> {
+    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
+
+    let room = client.get_room(room_id)?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
+
+    let timeline = room
+        .timeline_builder()
+        .with_focus(TimelineFocus::Event {
+            target: parsed_event_id,
+            // Only the target event's own preview is needed here, not the
+            // surrounding conversation — unlike jump-to-message, which wants
+            // context events too, this just answers "what does this one
+            // bookmarked message say".
+            num_context_events: 0,
+            thread_mode: TimelineEventFocusThreadMode::Automatic {
+                hide_threaded_events: false,
+            },
+        })
+        .build()
+        .await
+        .ok()?;
+
+    resolve_from_timeline(event_id, client, &timeline, media_cache).await
+}
+
 /// Core logic behind [`add_bookmark`]'s validation, taking an
 /// already-resolved `&Timeline` rather than `&MatrixState` — same split as
 /// `timeline::get_timeline_page_impl`, so this can be exercised against a
@@ -150,6 +199,19 @@ pub async fn build_bookmark_entry(
 
 async fn account_key_for_current_user(state: &State<'_, MatrixState>) -> Result<String, String> {
     let client = state.require_client().await?;
+    account_key_for_client(&client)
+}
+
+/// Derives the account key from an already-resolved `Client` rather than
+/// re-reading `MatrixState`'s current client. Review fix: `add_bookmark`
+/// previously called `account_key_for_current_user` (which re-fetches
+/// `state.require_client()`) *after* already resolving its own `client` and
+/// validating the message against that client's timeline. If an account
+/// switch (logout of A, login of B) landed in between those two awaits, the
+/// second fetch could derive B's account key while writing A's room/event
+/// ids — corrupting B's bookmark file with A's data. Deriving the key from
+/// the same `client` snapshot used for validation closes that window.
+fn account_key_for_client(client: &Client) -> Result<String, String> {
     let user_id = client
         .user_id()
         .ok_or_else(|| "not logged in".to_string())?;
@@ -183,7 +245,7 @@ pub async fn add_bookmark(
         .await?;
     let media_cache = state.require_media_cache(&app).await.ok();
 
-    let account_key = account_key_for_current_user(&state).await?;
+    let account_key = account_key_for_client(&client)?;
     let entry = build_bookmark_entry(&room_id, &event_id, &client, &timeline, media_cache).await?;
 
     let lock = persistence::bookmarks_lock(&account_key);
@@ -254,7 +316,11 @@ pub async fn list_bookmarks(
                 if let Some(timeline) = state.peek_timeline(&parsed_room_id).await {
                     resolve_from_timeline(&bookmark.event_id, client, &timeline, media_cache).await
                 } else {
-                    None
+                    // Room isn't open this session — fall back to a direct
+                    // server-side lookup rather than giving up (review fix;
+                    // see `resolve_via_context`'s doc comment).
+                    resolve_via_context(&bookmark.event_id, client, &parsed_room_id, media_cache)
+                        .await
                 }
             }
             _ => None,

@@ -533,18 +533,21 @@ export function ChatShell({
         // already-loaded branch above.
       })
       .catch((err) => {
-        // Same rationale as the `!found` branch above: an errored jump
-        // attempt is also finished, so the dedup ref must not keep blocking
-        // a retry of the same `jumpToEventId` forever. Also clear the
-        // caller's own jump target here (review fix) — otherwise
-        // `RoomsScreen` keeps the stale `jumpToEventId` set, and since
-        // mutating this ref alone doesn't trigger a re-render, a later
-        // room selection could still see this same value re-attempted
-        // against an unrelated room.
+        // Same "is this still the current request" guard as the `.then()`
+        // branch above — review fix: an earlier request's rejection must
+        // not clear a *newer* jump the user has since started (e.g.
+        // reopened Settings and picked a different bookmark while this one
+        // was still failing/pagination-erroring). Only the request whose id
+        // still matches this ref gets to reset it and notify the caller.
         if (loadRequestedForRef.current === jumpToEventId) {
+          // Also clear the caller's own jump target here (review fix) —
+          // otherwise `RoomsScreen` keeps the stale `jumpToEventId` set,
+          // and since mutating this ref alone doesn't trigger a re-render,
+          // a later room selection could still see this same value
+          // re-attempted against an unrelated room.
           loadRequestedForRef.current = null;
+          onJumpHandled?.();
         }
-        onJumpHandled?.();
         logAndIgnore(err);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps

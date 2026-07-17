@@ -3259,6 +3259,84 @@ describe("ChatShell", () => {
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
+  it("calls onJumpHandled when loadTimelineAroundEvent rejects, same as a not-found result", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockRejectedValueOnce(new Error("network error"));
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$flaky"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$flaky"),
+    );
+    // Review fix regression: a rejected load-around must still clear the
+    // caller's `jumpToEventId` (via `onJumpHandled`), not just reset the
+    // internal dedup ref — otherwise `RoomsScreen` would keep retrying a
+    // stale target against later, unrelated room selections.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+  });
+
+  it("does not call onJumpHandled for a stale request's late rejection once a newer jump has started", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    const onJumpHandled = vi.fn();
+    let rejectFirst!: (err: unknown) => void;
+    const firstAttempt = new Promise<boolean>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    loadTimelineAroundEvent.mockReturnValueOnce(firstAttempt);
+    const store = createStore();
+
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$old"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$old"),
+    );
+
+    // A newer jump target supersedes the still-in-flight one above (e.g. the
+    // user reopened Settings and picked a different bookmark) before the
+    // first request has settled.
+    loadTimelineAroundEvent.mockResolvedValueOnce(false);
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$new"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$new"),
+    );
+
+    // The stale first request now rejects late — this must not fire
+    // `onJumpHandled` a second time (or clear anything) on behalf of the
+    // newer, still-registered `$new` target.
+    rejectFirst(new Error("late network error"));
+
+    // The newer ("$new") request resolving `false` is what should actually
+    // trigger `onJumpHandled` here — exactly once, not twice.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+  });
+
   it("keys virtualized rows by message identity, not position", async () => {
     // Regression test: without `computeItemKey`, Virtuoso keys rendered rows
     // by their current index. A full `timeline:update` snapshot can remove
