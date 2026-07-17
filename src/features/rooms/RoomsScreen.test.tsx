@@ -44,7 +44,15 @@ vi.mock("@/features/verification/VerificationOverlay", () => ({
 }));
 
 vi.mock("@/features/settings/SettingsScreen", () => ({
-  SettingsScreen: () => null,
+  SettingsScreen: ({
+    onJumpToBookmark,
+  }: {
+    onJumpToBookmark: (roomId: string, eventId: string) => void;
+  }) => (
+    <button type="button" onClick={() => onJumpToBookmark("!a:example.org", "$bookmarked")}>
+      jump-to-bookmark-in-room-a
+    </button>
+  ),
 }));
 
 vi.mock("@/features/room-info/MembersDrawer", () => ({
@@ -68,13 +76,18 @@ vi.mock("./ChatShell", () => ({
     room: activeRoom,
     onBack,
     onNavigateToRoom,
+    jumpToEventId,
+    onJumpHandled,
   }: {
     room: RoomSummary | null;
     onBack: () => void;
     onNavigateToRoom: (roomIdentifier: string) => void;
+    jumpToEventId?: string | null;
+    onJumpHandled?: () => void;
   }) => (
     <div>
       chat-content:{activeRoom?.room_id ?? "none"}
+      <div>jump-to-event:{jumpToEventId ?? "none"}</div>
       <button type="button" onClick={onBack}>
         back-to-chats
       </button>
@@ -84,6 +97,11 @@ vi.mock("./ChatShell", () => ({
       <button type="button" onClick={() => onNavigateToRoom("#b:example.org")}>
         alias-room-pill
       </button>
+      {onJumpHandled && (
+        <button type="button" onClick={onJumpHandled}>
+          jump-handled
+        </button>
+      )}
     </div>
   ),
 }));
@@ -906,6 +924,36 @@ describe("RoomsScreen", () => {
     fireEvent.click(screen.getAllByText("!b:example.org")[0]);
 
     await screen.findByText("chat-content:!b:example.org");
+  });
+
+  it("clears a bookmark jump for its own room, not a room the user switched to instead (Codex review fix)", async () => {
+    // Review fix regression test: the jump target used to track only the
+    // event id, not which room it was for. Clicking a saved message in room
+    // A, then switching to room B before the jump resolves, used to still
+    // hand room A's event id down to ChatShell once room B became active —
+    // sending it into a load-around call scoped to the wrong room.
+    listRooms.mockResolvedValue([
+      room({ room_id: "!a:example.org" }),
+      room({ room_id: "!b:example.org", name: "Room B" }),
+    ]);
+    render(
+      <RoomsScreen
+        currentUserId="@me:example.org"
+        deepLinkRoomId={null}
+        onDeepLinkConsumed={() => {}}
+        onLoggedOut={() => {}}
+      />,
+    );
+    await screen.findByText("chat-content:!a:example.org");
+
+    fireEvent.click(screen.getByText("jump-to-bookmark-in-room-a"));
+    await screen.findByText("jump-to-event:$bookmarked");
+
+    // Switch to room B before the jump ever resolves.
+    fireEvent.click(screen.getAllByText("!b:example.org")[0]);
+
+    await screen.findByText("chat-content:!b:example.org");
+    expect(screen.getByText("jump-to-event:none")).toBeInTheDocument();
   });
 
   it("accepts an invite, refreshes the snapshot, and opens the joined room", async () => {

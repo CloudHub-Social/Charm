@@ -263,7 +263,19 @@ pub async fn list_bookmarks(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Vec<BookmarkEntry>, String> {
-    let account_key = account_key_for_current_user(&state).await?;
+    // Review fix: this used to derive `account_key` via
+    // `account_key_for_current_user` (its own `state.require_client()` call)
+    // and *separately* re-fetch the client again below to resolve previews.
+    // If an account switch (logout of A, login of B) landed between those
+    // two calls, the second could return B's client while `account_key` and
+    // the loaded `bookmarks` list were still A's — resolving A's bookmarked
+    // room/event ids against B's cached timelines, a cross-account leak for
+    // a feature whose whole premise is per-account isolation. Snapshotting
+    // one `client` up front and reusing it for both the account key and
+    // every preview resolution below (same pattern `add_bookmark` already
+    // uses via `account_key_for_client`) closes that window.
+    let client = state.require_client().await?;
+    let account_key = account_key_for_client(&client)?;
     // Review fix: without taking the same lock `add_bookmark`/`remove_bookmark`
     // hold across their read-modify-write, this read could land mid-write —
     // observing the file after `std::fs::write` has truncated it but before
@@ -276,15 +288,13 @@ pub async fn list_bookmarks(
     };
     bookmarks.sort_by_key(|b| std::cmp::Reverse(b.saved_at_ms));
 
-    let client = state.require_client().await.ok();
-
     let mut entries = Vec::with_capacity(bookmarks.len());
     for bookmark in bookmarks {
-        let resolved = match (&client, RoomId::parse(&bookmark.room_id)) {
-            (Some(client), Ok(parsed_room_id)) => {
+        let resolved = match RoomId::parse(&bookmark.room_id) {
+            Ok(parsed_room_id) => {
                 match state.peek_timeline(&parsed_room_id).await {
                     Some(timeline) => {
-                        resolve_from_timeline(&bookmark.event_id, client, &timeline).await
+                        resolve_from_timeline(&bookmark.event_id, &client, &timeline).await
                     }
                     // Room isn't open this session — leave the preview
                     // unresolved rather than issuing a homeserver `/context`
