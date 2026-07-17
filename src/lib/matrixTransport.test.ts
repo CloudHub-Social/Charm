@@ -162,6 +162,13 @@ describe("matrix web transport", () => {
       undefined,
     ],
     [
+      "can_redact_others",
+      { roomId: "!r:example.org" },
+      "GET",
+      "/api/rooms/!r%3Aexample.org/can-redact-others",
+      undefined,
+    ],
+    [
       "toggle_reaction",
       { roomId: "!r:example.org", targetEventId: "$e", key: "👍" },
       "POST",
@@ -451,6 +458,20 @@ describe("matrix web transport", () => {
       { deviceId: "DEVICE" },
       "POST",
       "/api/verification/devices/DEVICE/request",
+      undefined,
+    ],
+    [
+      "resend_message",
+      { roomId: "!r:example.org", transactionId: "txn-1" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/send-queue/txn-1/resend",
+      undefined,
+    ],
+    [
+      "discard_failed_message",
+      { roomId: "!r:example.org", transactionId: "txn-1" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/send-queue/txn-1/discard",
       undefined,
     ],
   ])("maps %s to the companion server route", async (command, args, method, path, body) => {

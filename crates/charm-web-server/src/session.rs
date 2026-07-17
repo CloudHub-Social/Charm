@@ -43,6 +43,60 @@ pub const IDLE_TIMEOUT_SECS_ENV: &str = "CHARM_WEB_SERVER_SESSION_IDLE_TIMEOUT_S
 /// this is purely a memory-pressure knob, not a security timeout.
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
 
+/// How long the browser should hold onto the session cookie itself —
+/// separate from [`DEFAULT_IDLE_TIMEOUT_SECS`], which only bounds the
+/// in-memory `Client`, not the cookie or the persisted session it points at.
+/// `persistence.rs` has no expiry on a persisted session at all (it lives
+/// until explicit logout), so the cookie must outlive any plausible gap
+/// between visits — otherwise the browser drops it as soon as it closes
+/// (a cookie with no `Max-Age`/`Expires` is a session-only cookie), forcing
+/// a full re-login and, with it, a brand-new Matrix device that needs the
+/// recovery key again even though the server-side crypto store (Spec 25)
+/// was never actually lost. 30 days: a conventional "remember me" window,
+/// comfortably past `EVICTED_PRESENCE_MAX_AGE`'s week-long vacation case.
+pub const SESSION_COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// Minimum gap `routes::refresh_session_cookie` leaves between two
+/// `PersistenceStore::touch_last_seen` calls for the same continuously-live
+/// session — see [`Session::last_persistence_touch_unix`]'s doc comment for
+/// why this exists at all. An hour comfortably keeps `last_seen_unix` within
+/// `SESSION_COOKIE_MAX_AGE_SECS`'s 30-day window for any session seeing at
+/// least one request per day, while capping the write-amplification cost of
+/// a session under continuous heavy traffic to one object-store write an
+/// hour rather than one per request.
+pub const PERSISTENCE_TOUCH_THROTTLE_SECS: u64 = 60 * 60;
+
+/// [`SESSION_COOKIE_MAX_AGE_SECS`] as a [`std::time::Duration`] — the exact
+/// window `routes::session_cookie`'s `Max-Age` header uses. `.max(0)` guards
+/// the `i64`→`u64` cast even though the constant is a positive literal, the
+/// same defensive habit the call sites had before this helper existed. Only
+/// `session_cookie` itself should use this one directly — every
+/// server-side *revocation* decision (`PersistenceStore::is_expired`,
+/// `sweep_expired`, `restore_all`) needs [`session_revocation_grace`]
+/// instead.
+pub fn session_cookie_max_age() -> std::time::Duration {
+    std::time::Duration::from_secs(SESSION_COOKIE_MAX_AGE_SECS.max(0) as u64)
+}
+
+/// [`session_cookie_max_age`] plus [`PERSISTENCE_TOUCH_THROTTLE_SECS`] — the
+/// window every server-side revocation check (`PersistenceStore::is_expired`,
+/// `sweep_expired`, `restore_all`) uses instead of the bare cookie `Max-Age`.
+/// `routes::refresh_session_cookie` extends the browser's cookie by a fresh
+/// `SESSION_COOKIE_MAX_AGE_SECS` on every authenticated request, but only
+/// bumps the server-side `last_seen_unix` at most once per
+/// `PERSISTENCE_TOUCH_THROTTLE_SECS` (to avoid an object-store write on
+/// every single request) — so right before that throttle next allows a
+/// bump, `last_seen_unix` can lag the cookie's own actual freshness by up
+/// to that same window. Checking expiry against the bare `Max-Age` window
+/// would then let a server-side revocation reject or revoke a session the
+/// browser's cookie is still genuinely valid for, forcing an avoidable
+/// re-login (and, since e2ee verification doesn't survive that, a fresh
+/// recovery-key prompt too) purely from the throttle's own bookkeeping lag,
+/// not real inactivity (Codex review finding on #280).
+pub fn session_revocation_grace() -> std::time::Duration {
+    session_cookie_max_age() + std::time::Duration::from_secs(PERSISTENCE_TOUCH_THROTTLE_SECS)
+}
+
 /// How often `main.rs`'s periodic task calls [`SessionStore::sweep_idle`].
 /// Shorter than the idle timeout itself so an idle session isn't kept around
 /// much longer than the timeout implies, but long enough not to churn a
@@ -306,6 +360,83 @@ pub struct Session {
     /// connection is tracked separately (`ws_connections` below) and always
     /// counts as active regardless of this timestamp.
     pub last_active: std::sync::Mutex<std::time::Instant>,
+    /// Separate from [`Self::last_active`] — the last time this session's
+    /// activity was *transport-validated*, not merely "a request with a
+    /// matching cookie reached `require_session`". `last_active` is bumped
+    /// by `SessionStore::get`'s own `touch()` on every such request, which
+    /// includes a same-site subdomain's untrusted "simple" (no-preflight,
+    /// no custom-header) request — `routes::refresh_session_cookie`
+    /// already refuses to slide the *cookie* for exactly that request shape
+    /// (see its own doc comment), but `last_active` alone can't make the
+    /// same distinction, since the touch happens deep inside
+    /// `require_session`, well before that middleware's transport-header/
+    /// `Origin` check ever runs. `SessionStore::is_genuinely_active` reads
+    /// this field instead of `last_active` for exactly that reason:
+    /// without it, an attacker who can get the browser to keep resending
+    /// the victim's cookie on such requests (the cookie is never refreshed,
+    /// but each request still reaches `require_session`'s fast path) could
+    /// keep a pinned-but-abandoned session artificially "genuinely active"
+    /// forever, bypassing `PersistenceStore::sweep_expired`'s revocation
+    /// the same way the cookie-refresh gap did (Codex review finding on
+    /// #280). Bumped only from `routes::refresh_session_cookie`, and only
+    /// once its transport-header-or-allowed-origin check has already
+    /// passed.
+    pub last_validated_active: std::sync::Mutex<std::time::Instant>,
+    /// Unix timestamp of the last time `routes::refresh_session_cookie`
+    /// fired `PersistenceStore::touch_last_seen` for this session — `0`
+    /// (never) initially. Throttles that call to at most once per
+    /// `PERSISTENCE_TOUCH_THROTTLE_SECS`: without it, every single
+    /// authenticated request on a continuously-live session (one that never
+    /// idle-evicts, and so never otherwise revisits `PersistenceStore`)
+    /// would write to the object store, purely to keep `last_seen_unix`
+    /// fresh for a check (`PersistenceStore::sweep_expired`) that already
+    /// skips anything resident in `SessionStore` regardless of that
+    /// timestamp — closing a Sentry-flagged edge case
+    /// (`refresh_session_cookie` extending the *cookie's* lifetime with no
+    /// corresponding server-side signal) without paying a write on every
+    /// request to do it.
+    pub last_persistence_touch_unix: std::sync::atomic::AtomicU64,
+    /// `true` only for a session whose *very first* `PersistenceStore::save`
+    /// (in `routes::finish_login`, immediately after login/register) failed
+    /// — a transient disk/lock error, not a sign anything is actually
+    /// wrong with the session itself. `sync_loop`'s `repersist_if_token_changed`
+    /// keeps retrying that first save in the background
+    /// (`SaveMode::RetryInitialSave`) until it lands; until it does, there
+    /// is genuinely no persisted object for this token yet, so
+    /// `routes::refresh_session_cookie`'s durable touch reports
+    /// `TouchOutcome::NotFound` on every request — indistinguishable, from
+    /// that call alone, from a *different* token whose persisted record
+    /// really was deleted by another instance's logout. Without this flag,
+    /// an earlier revision of `refresh_session_cookie` treated both cases
+    /// identically and force-logged out a brand-new session still waiting
+    /// on its first successful save, defeating the documented
+    /// keep-it-live-and-retry fallback entirely (Codex review finding on
+    /// #280). Cleared back to `false` the moment *any* save actually lands
+    /// — either `routes::refresh_session_cookie`'s durable touch succeeding
+    /// (`TouchOutcome::Touched`), or `sync_loop::repersist_if_token_changed`'s
+    /// own `SaveMode::RetryInitialSave` retry succeeding first, whichever
+    /// happens sooner (a further Codex review finding on #280: without also
+    /// clearing it from the retry-save path, a rolling-deploy/load-balanced
+    /// sequence — retry succeeds, another instance logs the session out,
+    /// this instance's next request arrives after that delete — would still
+    /// misread the resulting `NotFound` as "initial save still pending"
+    /// instead of a real cross-instance logout). `Arc`-wrapped so
+    /// `sync_loop::PersistHandle` can share and clear the exact same flag
+    /// `require_session`/`refresh_session_cookie` read, not a
+    /// `sync_loop`-local copy that would never reach them. `false` for
+    /// every other construction path (restored sessions —
+    /// `restore_by_token`/`restore_all` — already came from a persisted
+    /// record by definition, and a fresh login whose initial save actually
+    /// succeeded has nothing to wait on).
+    ///
+    /// Every `store` clearing this to `false` uses `Ordering::Release` and
+    /// every `load` uses `Ordering::Acquire` — `Relaxed` gives no
+    /// happens-before guarantee at all, so on a weak memory model a request
+    /// task could otherwise observe a stale `true` after
+    /// `sync_loop::repersist_if_token_changed` (a different task) already
+    /// cleared it, and wrongly keep tolerating a genuine `NotFound` as "the
+    /// initial save is still pending" (Sentry finding on #280).
+    pub awaiting_initial_persistence: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Count of this session's currently-connected WebSocket clients (zero,
     /// one, or more — the same "zero or more tabs" shape as `events`
     /// above). `crate::routes::handle_socket` increments this on connect and
@@ -411,6 +542,11 @@ impl Session {
             profile_snapshot: Arc::new(std::sync::Mutex::new(None)),
             presence_snapshots: Arc::new(std::sync::Mutex::new(HashMap::new())),
             last_active: std::sync::Mutex::new(std::time::Instant::now()),
+            last_validated_active: std::sync::Mutex::new(std::time::Instant::now()),
+            last_persistence_touch_unix: std::sync::atomic::AtomicU64::new(0),
+            awaiting_initial_persistence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }
@@ -428,6 +564,24 @@ impl Session {
     /// both.
     fn idle_for(&self) -> std::time::Duration {
         self.last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed()
+    }
+
+    /// Marks this session as *transport-validated* active right now — see
+    /// `last_validated_active`'s doc comment for who calls this and why.
+    pub fn touch_validated(&self) {
+        *self
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+    }
+
+    /// [`Self::idle_for`]'s counterpart for [`Self::last_validated_active`]
+    /// — what `SessionStore::is_genuinely_active` actually reads.
+    fn idle_for_validated(&self) -> std::time::Duration {
+        self.last_validated_active
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .elapsed()
@@ -814,6 +968,47 @@ impl SessionStore {
         Some(Arc::clone(session))
     }
 
+    /// Whether `token`'s session is *genuinely* active right now — not
+    /// merely resident in this map. `persistence::PersistenceStore::sweep_expired`
+    /// uses this (never [`Self::get`]) to decide whether to skip revoking an
+    /// expired session: `get` both mutates (`touch()`s `last_active`, which
+    /// would itself silently reset the very idle clock this check needs to
+    /// read) and treats bare map presence as proof of activity, which
+    /// [`Self::sweep_idle`]'s own exemptions make false — a session with a
+    /// pending verification event or an unpersisted encrypted room stays in
+    /// this map *indefinitely*, with no idle timeout at all, regardless of
+    /// whether a browser has touched it in months. Without this distinction,
+    /// such a session would be permanently exempt from `sweep_expired`'s
+    /// revocation the moment it entered one of those states, bypassing the
+    /// whole retention model for exactly the sessions `sweep_idle` can never
+    /// evict on its own (Codex review finding on #280).
+    ///
+    /// "Genuinely active" here means either an open WebSocket connection —
+    /// safe to keep alive regardless of activity timestamps, same as
+    /// `sweep_idle` itself, since revoking a token still backing a live
+    /// connection would break it out from under the browser mid-session —
+    /// or [`Session::last_validated_active`] (not the plain `last_active`
+    /// `get`/`touch` maintain) within `max_age`. Using the validated
+    /// timestamp specifically, not `last_active`, matters for the same
+    /// reason `routes::refresh_session_cookie` gates the *cookie* refresh on
+    /// a transport-header/`Origin` check: an untrusted same-site subdomain's
+    /// request still reaches `require_session`'s fast path (bumping
+    /// `last_active` via `get`'s own `touch()`) even though that middleware
+    /// refuses to slide anything for it — using `last_active` here would
+    /// let exactly that untrusted traffic keep a pinned-but-abandoned
+    /// session artificially exempt from revocation forever (Codex review
+    /// finding on #280). A session pinned by pending-verification/
+    /// unpersisted-room state alone, with no open connection and no
+    /// *validated* request in over `max_age`, is neither: it's eligible for
+    /// revocation, exactly as if it had already been idle-evicted.
+    pub async fn is_genuinely_active(&self, token: &str, max_age: std::time::Duration) -> bool {
+        let inner = self.inner.read().await;
+        let Some(session) = inner.get(token) else {
+            return false;
+        };
+        session.has_open_connection() || session.idle_for_validated() < max_age
+    }
+
     pub async fn remove(&self, token: &str) -> Option<Arc<Session>> {
         self.inner.write().await.remove(token)
     }
@@ -976,6 +1171,16 @@ impl SessionStore {
 mod tests {
     use super::*;
 
+    #[test]
+    fn session_revocation_grace_exceeds_the_bare_cookie_max_age_by_the_touch_throttle() {
+        assert_eq!(
+            session_revocation_grace(),
+            session_cookie_max_age()
+                + std::time::Duration::from_secs(PERSISTENCE_TOUCH_THROTTLE_SECS)
+        );
+        assert!(session_revocation_grace() > session_cookie_max_age());
+    }
+
     async fn dummy_session(user_id: &str) -> Session {
         let client = Client::builder()
             .homeserver_url("http://localhost:1")
@@ -991,10 +1196,19 @@ mod tests {
     /// Backdates a session's `last_active` so tests don't need to actually
     /// sleep past the idle timeout to exercise eviction.
     fn backdate(session: &Session, ago: std::time::Duration) {
+        let backdated = std::time::Instant::now() - ago;
         *session
             .last_active
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now() - ago;
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        // Also backdates `last_validated_active` — tests using this helper
+        // want "no recent activity at all" in the general sense, and
+        // `is_genuinely_active` specifically reads the validated field, not
+        // `last_active`.
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
     }
 
     #[tokio::test]
@@ -1093,6 +1307,111 @@ mod tests {
              would be nothing left to ever deliver it"
         );
         assert!(store.get(&token).await.is_some());
+    }
+
+    /// Regression test for the actual review finding: a session pinned in
+    /// this map *only* by a pending verification event (never evicted by
+    /// `sweep_idle`, no timeout at all) but with no open connection and no
+    /// real activity in ages must not be reported as "genuinely active" —
+    /// `persistence::PersistenceStore::sweep_expired` relies on this
+    /// distinction to still revoke exactly this kind of stuck-forever
+    /// session once it's past the retention window, instead of treating
+    /// bare map presence as proof of activity forever.
+    #[tokio::test]
+    async fn is_genuinely_active_is_false_for_a_session_only_pinned_by_verification() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+        let token = store
+            .create(dummy_session("@stuck-verifying:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+        session.pending_verification_events.lock().unwrap().push(
+            crate::events::ServerEvent::VerificationRequest(
+                charm_lib::matrix::verification::VerificationRequestSummary {
+                    flow_id: "flow-1".to_string(),
+                    other_user_id: "@other:example.org".to_string(),
+                    other_device_id: "DEVICE".to_string(),
+                },
+            ),
+        );
+
+        assert!(
+            !store.is_genuinely_active(&token, max_age).await,
+            "a session with no open connection, idle well past max_age, must not count as \
+             genuinely active just because a pending verification event keeps it in the map"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_true_for_an_open_connection_regardless_of_idle_time() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+        let token = store
+            .create(dummy_session("@connected:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+        session
+            .ws_connections
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        assert!(
+            store.is_genuinely_active(&token, max_age).await,
+            "an open connection must count as active regardless of idle time — revoking its \
+             token would break the live connection out from under the browser"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_true_for_recent_activity() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        let token = store
+            .create(dummy_session("@recently-active:example.org").await)
+            .await;
+
+        assert!(store.is_genuinely_active(&token, max_age).await);
+    }
+
+    /// Regression test for the actual review finding: `SessionStore::get`'s
+    /// own `touch()` (bumping `last_active`, not `last_validated_active`)
+    /// must never be enough on its own to make `is_genuinely_active` return
+    /// `true` for a session that's otherwise stale — that's exactly the
+    /// untrusted same-site request shape `routes::refresh_session_cookie`
+    /// already refuses to slide the cookie for, and it still reaches
+    /// `require_session`'s fast path regardless.
+    #[tokio::test]
+    async fn is_genuinely_active_ignores_a_plain_get_touch() {
+        let store = SessionStore::new();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        let token = store
+            .create(dummy_session("@get-only:example.org").await)
+            .await;
+        let session = store.get(&token).await.unwrap();
+        backdate(&session, max_age * 2);
+
+        // Simulates an untrusted request reaching `require_session`'s fast
+        // path — `get` touches `last_active`, but never
+        // `last_validated_active`.
+        store.get(&token).await;
+
+        assert!(
+            !store.is_genuinely_active(&token, max_age).await,
+            "a plain SessionStore::get touch must not count as genuine activity"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_genuinely_active_is_false_for_an_unknown_token() {
+        let store = SessionStore::new();
+        assert!(
+            !store
+                .is_genuinely_active("no-such-token", std::time::Duration::from_secs(60))
+                .await
+        );
     }
 
     /// Regression test: `sweep_idle` must capture a session's presence

@@ -23,12 +23,21 @@ sidebar:
   crypto-store snapshots in private object storage, so state survives App
   Platform redeploys as well as ordinary restarts;
 - [PR #257](https://github.com/CloudHub-Social/Charm/pull/257): missing backed-up
-  room keys are downloaded after recovery, restoring historical decryption.
+  room keys are downloaded after recovery, restoring historical decryption;
+- [PR #280](https://github.com/CloudHub-Social/Charm/pull/280): the browser
+  session cookie itself now carries an explicit 30-day `Max-Age`, refreshed on
+  every active request, with a daily server-side sweep revoking and removing
+  any session that goes unused past that window. The persisted crypto store
+  above was never actually lost by this gap — the cookie carrying the token
+  to reach it was the part missing an expiry, so most browsers discarded it
+  on close and forced a full re-login (and a fresh recovery-key prompt) far
+  more often than the persistence work here was ever meant to require.
 
 Current evidence lives in `crates/charm-web-server/src/crypto_store.rs`,
-`crates/charm-web-server/src/crypto_backup.rs`, the restore paths in
-`crates/charm-web-server/src/persistence.rs`, and the `device.verify()` step in
-`src-tauri/src/matrix/verification.rs`.
+`crates/charm-web-server/src/crypto_backup.rs`, the restore paths and
+`sweep_expired`/`touch_last_seen` in `crates/charm-web-server/src/persistence.rs`,
+`session_cookie`/`refresh_session_cookie` in `crates/charm-web-server/src/routes.rs`,
+and the `device.verify()` step in `src-tauri/src/matrix/verification.rs`.
 
 Also cross-reference: issue #143 (closed 2026-07-10) confirmed that `DeviceRow.tsx` hiding "Verify" for the current device is correct, working-as-intended behavior — a related but distinct UI fix already shipped (PR #167, 2026-07-10, hides the entire actions menu — not just the Verify item — for the current device row, since every other item was already gated the same way).
 

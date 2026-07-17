@@ -373,6 +373,19 @@ export function canRedact(roomId: string, targetSender: string): Promise<boolean
   return invoke("can_redact", { roomId, targetSender });
 }
 
+/**
+ * Whether the current user can redact *any other* member's message in this
+ * room. Room-scoped, not sender-scoped: a redact check on someone else's
+ * message only ever depends on the room's power levels and the current
+ * user's own level, never on who sent it — so callers should fetch this once
+ * per room instead of calling {@link canRedact} once per unique sender (see
+ * that function's Rust counterpart, `can_redact_others_impl`, and Sentry
+ * issue CHARM-3 for the N+1 this replaces).
+ */
+export function canRedactOthers(roomId: string): Promise<boolean> {
+  return invoke("can_redact_others", { roomId });
+}
+
 export function toggleReaction(
   roomId: string,
   targetEventId: string,
@@ -384,6 +397,29 @@ export function toggleReaction(
 /** Same transaction-id contract as {@link sendMessage} — see its doc comment. */
 export function sendReply(roomId: string, inReplyToEventId: string, body: string): Promise<string> {
   return invoke("send_reply", { roomId, inReplyToEventId, body });
+}
+
+/**
+ * Retries a failed message send in place via the send queue's own retry
+ * primitive (`SendHandle::unwedge`), rather than re-composing and sending
+ * new content. `transactionId` is the failed local echo's
+ * `RoomMessageSummary.transaction_id` (present while `send_state.state` is
+ * `"error"`).
+ */
+export function resendMessage(roomId: string, transactionId: string): Promise<void> {
+  return invoke("resend_message", { roomId, transactionId });
+}
+
+/**
+ * Discards a failed message send by cancelling its local echo via the send
+ * queue (`SendHandle::abort`) — there's nothing to redact since a failed
+ * send was never accepted by the homeserver. Resolves `true` if the local
+ * echo was actually removed, `false` if it was already gone (e.g. a
+ * previous call already discarded it, or it succeeded in the meantime) —
+ * either way the message should no longer show as failed.
+ */
+export function discardFailedMessage(roomId: string, transactionId: string): Promise<boolean> {
+  return invoke("discard_failed_message", { roomId, transactionId });
 }
 
 // captureOnError: false — UIA-gated. useUiaRetry treats both the initial

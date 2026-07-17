@@ -20,9 +20,23 @@ const webEventListeners = new Map<string, Set<EventCallback<unknown>>>();
 let webSocket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
 let reconnectAttempt = 0;
+let cookieKeepaliveTimer: number | null = null;
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+
+// `refresh_session_cookie` (charm-web-server) only slides the session
+// cookie's Max-Age on an ordinary authenticated HTTP request — a WebSocket
+// handshake counts once, at connect, but pings/events over the open socket
+// afterward can't carry a `Set-Cookie` header, and a tab kept alive purely
+// by `/api/ws` may otherwise never issue another `fetch` for weeks. Without
+// this, a continuously-connected tab's cookie still counts down from
+// connect time and expires under it, forcing a full re-login (and a fresh
+// recovery-key prompt) despite genuinely continuous use. A cheap
+// `/api/auth/me` GET once a day is well inside the 30-day cookie window and
+// piggybacks on the same middleware every other authenticated request
+// already refreshes through.
+const COOKIE_KEEPALIVE_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 export type { UnlistenFn };
 
@@ -178,6 +192,23 @@ function scheduleWebSocketReconnect(): void {
   }, delay);
 }
 
+function startCookieKeepalive(): void {
+  if (cookieKeepaliveTimer !== null) return;
+  cookieKeepaliveTimer = window.setInterval(() => {
+    // Best-effort: a failed keepalive just means the cookie doesn't get
+    // refreshed for another interval, not any observable behavior change —
+    // a genuinely dead session still fails on the next real request the
+    // same way it always would.
+    requestJson<unknown>("GET", "/api/auth/me").catch(() => {});
+  }, COOKIE_KEEPALIVE_INTERVAL_MS);
+}
+
+function stopCookieKeepalive(): void {
+  if (cookieKeepaliveTimer === null) return;
+  window.clearInterval(cookieKeepaliveTimer);
+  cookieKeepaliveTimer = null;
+}
+
 function ensureWebSocket(): void {
   if (
     webSocket &&
@@ -189,11 +220,14 @@ function ensureWebSocket(): void {
   webSocket = socket;
   socket.addEventListener("message", (event) => handleWebSocketMessage(socket, event));
   socket.addEventListener("open", () => {
-    if (webSocket === socket) reconnectAttempt = 0;
+    if (webSocket !== socket) return;
+    reconnectAttempt = 0;
+    startCookieKeepalive();
   });
   socket.addEventListener("close", () => {
     if (webSocket !== socket) return;
     webSocket = null;
+    stopCookieKeepalive();
     scheduleWebSocketReconnect();
   });
   socket.addEventListener("error", () => {
@@ -352,12 +386,31 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         JSON.stringify({ reason: args.reason }),
         "application/json",
       );
+    case "resend_message":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/send-queue/${encodeSegment(
+          String(args.transactionId),
+        )}/resend`,
+      );
+    case "discard_failed_message":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/send-queue/${encodeSegment(
+          String(args.transactionId),
+        )}/discard`,
+      );
     case "can_redact":
       return requestJson<T>(
         "GET",
         `/api/rooms/${encodeSegment(String(args.roomId))}/can-redact${query({
           target_sender: args.targetSender as string,
         })}`,
+      );
+    case "can_redact_others":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/can-redact-others`,
       );
     case "toggle_reaction":
       return requestJson<T>(
@@ -674,6 +727,13 @@ export async function listen<T>(event: string, callback: EventCallback<T>): Prom
       reconnectAttempt = 0;
       webSocket?.close();
       webSocket = null;
+      // Nulling `webSocket` above means the `close` event's own
+      // `stopCookieKeepalive()` call (gated on `webSocket === socket`) never
+      // runs for this explicit teardown — without this, the daily
+      // keepalive would keep refreshing the session cookie for a tab that
+      // intentionally tore down its transport (Codex review finding on
+      // #280).
+      stopCookieKeepalive();
     }
   };
 }

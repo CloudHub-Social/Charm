@@ -57,7 +57,9 @@ const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
-const canRedact = vi.fn().mockResolvedValue(true);
+const resendMessage = vi.fn().mockResolvedValue(undefined);
+const discardFailedMessage = vi.fn().mockResolvedValue(true);
+const canRedactOthers = vi.fn().mockResolvedValue(true);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
@@ -71,6 +73,11 @@ const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
 let typingCallback: ((update: TypingUpdate) => void) | undefined;
+// An array, not a single variable: `useRoomParticipants` (used inside
+// `ChatShell` itself) also calls `onRoomDetailsUpdate`, so a shared
+// last-writer-wins slot would silently drop `useCanRedactMap`'s own
+// listener whenever the other one registered second.
+let roomDetailsCallbacks: Array<(details: { room_id: string }) => void> = [];
 let uploadProgressCallback:
   | ((progress: { txn_id: string; room_id: string; sent: number; total: number }) => void)
   | undefined;
@@ -175,7 +182,9 @@ vi.mock("@/lib/matrix", () => ({
   editMessage: (...args: unknown[]) => editMessage(...args),
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
-  canRedact: (...args: unknown[]) => canRedact(...args),
+  resendMessage: (...args: unknown[]) => resendMessage(...args),
+  discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
+  canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
@@ -198,7 +207,10 @@ vi.mock("@/lib/matrix", () => ({
     uploadProgressCallback = callback;
     return Promise.resolve(() => {});
   }),
-  onRoomDetailsUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onRoomDetailsUpdate: vi.fn((callback: (details: { room_id: string }) => void) => {
+    roomDetailsCallbacks.push(callback);
+    return Promise.resolve(() => {});
+  }),
   // Spec 29: LinkPreviewForMessage reads room encryption state before ever
   // fetching a preview. None of ChatShell's own tests exercise link
   // previews, so default to "encrypted" (the safe suppress-by-default
@@ -329,7 +341,10 @@ describe("ChatShell", () => {
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
     redactEvent.mockReset().mockResolvedValue(undefined);
+    canRedactOthers.mockReset().mockResolvedValue(true);
     toggleReaction.mockReset();
+    resendMessage.mockReset().mockResolvedValue(undefined);
+    discardFailedMessage.mockReset().mockResolvedValue(true);
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
     sendAttachment.mockReset().mockResolvedValue(undefined);
@@ -338,6 +353,7 @@ describe("ChatShell", () => {
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
+    roomDetailsCallbacks = [];
     uploadProgressCallback = undefined;
     virtuosoStartReached = undefined;
     virtuosoAtBottomStateChange = undefined;
@@ -2818,11 +2834,11 @@ describe("ChatShell", () => {
     expect(screen.getAllByText("Alice")).toHaveLength(2);
   });
 
-  it("allows deleting an own message without waiting on the async can_redact resolution", async () => {
-    // canRedact is only ever queried for *other* senders' messages — an own
-    // message must be immediately deletable, not flash hidden until this
-    // (never-resolving, here) promise settles.
-    canRedact.mockImplementation(() => new Promise(() => {}));
+  it("allows deleting an own message without waiting on the async can_redact_others resolution", async () => {
+    // An own message is always immediately deletable regardless of the
+    // room-scoped canRedactOthers result — it must not flash hidden until
+    // this (never-resolving, here) promise settles.
+    canRedactOthers.mockImplementation(() => new Promise(() => {}));
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$mine", sender: "@me:localhost", body: "hi" })],
       next_cursor: null,
@@ -2917,6 +2933,105 @@ describe("ChatShell", () => {
       expect(clipboardWriteText).toHaveBeenCalledWith(
         "https://matrix.to/#/%21room%3Alocalhost/%24event%3Alocalhost?via=localhost",
       ),
+    );
+  });
+
+  it("shows Resend and Discard, not Delete, for a failed send", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    await screen.findByText(/failed to send/);
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    expect(await screen.findByText("Resend")).toBeInTheDocument();
+    expect(screen.getByText("Discard")).toBeInTheDocument();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("does not show Resend or Discard for a normally-sent message", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$sent:localhost", sender: "@me:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    expect(await screen.findByText("Delete")).toBeInTheDocument();
+    expect(screen.queryByText("Resend")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discard")).not.toBeInTheDocument();
+  });
+
+  it("calls resendMessage with the failed local echo's transaction id when Resend is selected", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), makeRoomSummary({ room_id: "!room:localhost" }));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Resend"));
+
+    await waitFor(() =>
+      expect(resendMessage).toHaveBeenCalledWith("!room:localhost", "txn-failed"),
+    );
+  });
+
+  it("calls discardFailedMessage with the failed local echo's transaction id when Discard is selected", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), makeRoomSummary({ room_id: "!room:localhost" }));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Discard"));
+
+    await waitFor(() =>
+      expect(discardFailedMessage).toHaveBeenCalledWith("!room:localhost", "txn-failed"),
     );
   });
 
@@ -3127,11 +3242,11 @@ describe("ChatShell", () => {
     expect(await screen.findByText("Reply")).toBeInTheDocument();
   });
 
-  it("ignores a stale can_redact response for a room the user has since navigated away from", async () => {
+  it("ignores a stale can_redact_others response for a room the user has since navigated away from", async () => {
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
     let resolveRoomACheck: ((allowed: boolean) => void) | undefined;
     let calls = 0;
-    canRedact.mockImplementation(
+    canRedactOthers.mockImplementation(
       () =>
         new Promise((resolve) => {
           // Only capture the *first* call's resolver (room A's) — room B's
@@ -3159,11 +3274,9 @@ describe("ChatShell", () => {
       </JotaiProvider>,
     );
     await screen.findByText("in room A");
-    await vi.waitFor(() =>
-      expect(canRedact).toHaveBeenCalledWith(room.room_id, "@alice:localhost"),
-    );
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledWith(room.room_id));
 
-    // Navigate to room B before room A's canRedact call resolves.
+    // Navigate to room B before room A's canRedactOthers call resolves.
     rerender(
       <JotaiProvider store={store}>
         <ChatShell room={roomB} currentUserId="@me:localhost" />
@@ -3171,9 +3284,8 @@ describe("ChatShell", () => {
     );
     await screen.findByText("in room B");
 
-    // Room A's (stale) response arrives late, saying @alice can be
-    // redacted there — it must not leak into room B's state for the same
-    // sender.
+    // Room A's (stale) response arrives late, saying other senders can be
+    // redacted there — it must not leak into room B's state.
     resolveRoomACheck?.(true);
     await Promise.resolve();
 
@@ -3182,9 +3294,278 @@ describe("ChatShell", () => {
       ctrlKey: false,
       pointerType: "mouse",
     });
-    // canRedact was only ever mocked to resolve for room A's call; room B's
-    // own call is still pending (never resolved in this test), so Delete
-    // must not be shown yet.
+    // canRedactOthers was only ever mocked to resolve for room A's call;
+    // room B's own call is still pending (never resolved in this test), so
+    // Delete must not be shown yet.
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("does not carry an already-resolved room's redact permission into a newly entered room's first render", async () => {
+    // Room A's permission resolves *before* switching — unlike the previous
+    // test, there's no pending promise for a late response to leak from;
+    // this covers the room-scoped permission state itself briefly holding
+    // stale data during the new room's first render, before its own
+    // `useEffect` has a chance to run and re-fetch (Codex review on #287,
+    // P3).
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    let resolveRoomBCheck: ((allowed: boolean) => void) | undefined;
+    canRedactOthers
+      .mockImplementationOnce(() => Promise.resolve(true))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRoomBCheck = resolve;
+          }),
+      );
+    getTimelinePage
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "in room A" })],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "in room B" })],
+        next_cursor: null,
+      });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room A");
+    // Room A's permission has fully resolved (allowed = true) before we
+    // switch rooms.
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room B");
+
+    // Room B's own canRedactOthers call is still pending (captured by
+    // resolveRoomBCheck above, deliberately never resolved yet) — the
+    // Delete affordance must not appear based on room A's leftover `true`.
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+
+    resolveRoomBCheck?.(true);
+    await vi.waitFor(async () => expect(await screen.findByText("Delete")).toBeInTheDocument());
+  });
+
+  it("does not trust a stale resolved permission when the same room is re-entered", async () => {
+    // Same room twice: `allowed=true` on the first visit, then a leave/
+    // return where the fresh fetch is deliberately left pending — covers
+    // the case `roomId` alone can't distinguish (the room id is the same
+    // on both visits), unlike the previous test's cross-room switch
+    // (Codex review on #287, P2).
+    let resolveSecondCheck: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedactOthers.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        resolveSecondCheck = resolve;
+      });
+    });
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    // Leave the room (e.g. to roomB), simulating a demotion happening
+    // while away, then come back to the *same* room.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    // Three activations total (room -> roomB -> room), each fetching once.
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(3));
+
+    // The fresh, re-entry fetch is still pending — Delete must not appear
+    // based on the first visit's leftover `true`.
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+
+    resolveSecondCheck?.(false);
+    await Promise.resolve();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("does not trust a stale resolved permission when re-entering a room via the no-room state", async () => {
+    // Same room, but the leave/return goes through `room={null}` (the
+    // empty state, `roomId=""`) rather than a different room — a distinct
+    // path Codex flagged separately from the roomB case above, since
+    // `roomId` changing to/from "" needed the same activation-token
+    // invalidation as switching between two real rooms (Codex review on
+    // #287, P2).
+    let resolveSecondCheck: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedactOthers.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        resolveSecondCheck = resolve;
+      });
+    });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    // Leave to the no-room state, simulating a demotion happening while
+    // inactive, then reopen the same room.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={null} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(2));
+
+    // The fresh, re-entry fetch is still pending — Delete must not appear
+    // based on the first visit's leftover `true`.
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+
+    resolveSecondCheck?.(false);
+    await Promise.resolve();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("refetches the redact permission when the room's details update", async () => {
+    canRedactOthers.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    // Simulates a power-level change syncing in while the room stays open —
+    // this must re-run the redact-permission check rather than leaving it
+    // stuck at whatever it resolved to when the room was entered.
+    await vi.waitFor(() => expect(roomDetailsCallbacks.length).toBeGreaterThan(0));
+    act(() => {
+      for (const callback of roomDetailsCallbacks) callback({ room_id: room.room_id });
+    });
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(2));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(await screen.findByText("Delete")).toBeInTheDocument();
+  });
+
+  it("does not let a stale initial fetch overwrite a fresher room_details:update refetch that resolves first", async () => {
+    // Two in-flight requests for the *same* activation (initial fetch, then
+    // a room_details:update-triggered refetch) resolving out of order — the
+    // refetch (fresher, since it was issued later, e.g. answering a
+    // demotion) resolves first with `false`; the initial fetch (stale)
+    // resolves after with `true` and must not overwrite it (Codex review on
+    // #287, P2).
+    let resolveInitial: ((allowed: boolean) => void) | undefined;
+    let resolveRefetch: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedactOthers.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          calls += 1;
+          if (calls === 1) resolveInitial = resolve;
+          else resolveRefetch = resolve;
+        }),
+    );
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    await vi.waitFor(() => expect(roomDetailsCallbacks.length).toBeGreaterThan(0));
+    act(() => {
+      for (const callback of roomDetailsCallbacks) callback({ room_id: room.room_id });
+    });
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(2));
+
+    // Refetch (the fresher request) resolves first, saying redact is no
+    // longer allowed.
+    act(() => {
+      resolveRefetch?.(false);
+    });
+    await Promise.resolve();
+
+    // The stale initial request resolves after, saying it *was* allowed —
+    // it must not clobber the fresher `false` just resolved above.
+    act(() => {
+      resolveInitial?.(true);
+    });
+    await Promise.resolve();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
   });
 

@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
-    can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
+    can_redact_impl, can_redact_others_impl, discard_failed_message_impl, edit_message_impl,
+    redact_event_impl, resend_message_impl, send_reply_impl, toggle_reaction_impl,
 };
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
@@ -63,7 +64,7 @@ use matrix_sdk::ruma::api::client::discovery::get_authorization_server_metadata:
 use matrix_sdk::ruma::events::AnyMessageLikeEventContent;
 use matrix_sdk::ruma::RoomId;
 
-use crate::session::Session;
+use crate::session::{self, Session};
 use crate::AppState;
 
 pub const SESSION_COOKIE: &str = "charm_session";
@@ -126,8 +127,20 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/rooms/{room_id}/can-redact", get(can_redact))
         .route(
+            "/api/rooms/{room_id}/can-redact-others",
+            get(can_redact_others),
+        )
+        .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/resend",
+            post(resend_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/discard",
+            post(discard_failed_message),
         )
         .route("/api/rooms/{room_id}/command", post(run_command))
         // -- ephemeral (receipts/typing/read) --
@@ -314,7 +327,904 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(redact_request_uri_for_sentry))
         .layer(sentry_tower::NewSentryLayer::<axum::extract::Request>::new_from_top())
         .layer(cors_layer())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            refresh_session_cookie,
+        ))
         .with_state(state)
+}
+
+tokio::task_local! {
+    /// Set by [`require_session`] whenever it actually resolves a session
+    /// for the current request, read by [`refresh_session_cookie`] to decide
+    /// whether this request earned a cookie refresh — see that function's
+    /// doc comment. A task-local rather than a new parameter threaded
+    /// through `require_session`'s ~30 call sites: every one of those calls
+    /// still runs on the same task `refresh_session_cookie` set this scope
+    /// up on (axum's `from_fn` middleware and the handler it wraps share one
+    /// task per request), so `require_session` can reach it without any
+    /// caller needing to pass it through.
+    static REQUEST_AUTHENTICATED: Arc<std::sync::atomic::AtomicBool>;
+
+    /// Whether *this* request already passed `refresh_session_cookie`'s
+    /// transport-header-or-allowed-origin check — set once, before
+    /// `next.run`, unlike `REQUEST_AUTHENTICATED` (which can only be known
+    /// after the handler runs). Read by `require_session`'s on-demand
+    /// restore path to decide whether to call
+    /// `PersistenceStore::touch_last_seen`: without this, an untrusted
+    /// same-site subdomain's request restoring an idle-evicted session
+    /// would still bump the *persisted* `last_seen_unix` unconditionally,
+    /// even though the cookie itself correctly never gets refreshed for it
+    /// — extending `PersistenceStore::sweep_expired`'s retention window
+    /// from activity the request middleware already decided not to trust
+    /// (Codex review finding on #280).
+    static REQUEST_TRANSPORT_VALIDATED: bool;
+}
+
+/// Slides the session cookie's expiry forward on every request that carries
+/// one resolving to a still-active session — otherwise `Max-Age` (set once,
+/// at login/register; see `session_cookie`) counts down from that one
+/// instant regardless of how continuously the browser keeps using it, and a
+/// user active every single day still gets logged out on day 30 (Codex
+/// review finding on #280).
+///
+/// Runs *after* the handler (`next.run` first), not before: the token this
+/// middleware checks against `state.sessions` needs to reflect any restore
+/// the handler itself may have just performed (`routes::require_session`'s
+/// on-demand persistence fallback), not the state before it ran. A
+/// missing/unknown cookie is left alone — `require_session`'s explicit 401
+/// already covers that, and there's nothing here to refresh.
+///
+/// Skips entirely when the handler's own response already sets
+/// `SESSION_COOKIE` — `login`/`register` (a *different* token than the one
+/// this middleware read from the incoming request) and `logout` (removing
+/// it) both do. Without this check, re-authenticating while the browser
+/// still carried a valid cookie for a *different*, still-live session (an
+/// account switch, or simply logging in again) would have this middleware
+/// append a second `Set-Cookie` refreshing that old token right after the
+/// handler's own `Set-Cookie` for the new one — same name and path, so
+/// common browser behavior keeps whichever header arrives last, silently
+/// discarding the fresh login and leaving the browser pointed at the old
+/// session while the new one sits orphaned server-side (Codex review
+/// finding on #280).
+///
+/// Also skips entirely unless [`require_session`] actually resolved a
+/// session for *this* request (`REQUEST_AUTHENTICATED`, set from inside
+/// `require_session` via `tokio::task_local!` rather than threaded through
+/// every one of its ~30 call sites as an extra parameter). Without this, any
+/// request carrying a valid cookie for a live session — including one that
+/// never calls `require_session` at all, like `GET /api/health` or a 404 —
+/// would still get its `Max-Age` refreshed here, since the only check left
+/// would be "is this token live in `SessionStore`". In the same-site
+/// subdomain threat model `require_allowed_origin`'s own doc comment
+/// already covers (`SameSite=Strict` still attaches the cookie to a
+/// same-site request), that would let an attacker keep a victim's session
+/// alive indefinitely by repeatedly hitting an unauthenticated route,
+/// without the app itself ever actually being used (Codex review finding on
+/// #280).
+///
+/// And requires [`require_web_transport_header`] to pass on the *incoming*
+/// request (checked before `next.run` even starts — its own doc comment
+/// explains why the header itself is unforgeable by a same-site subresource
+/// request), *or* the request's `Origin` to already be
+/// [`origin_is_allowed`]. `REQUEST_AUTHENTICATED` alone still isn't enough:
+/// a same-site subdomain attacker can't reach `/api/health`, but *can*
+/// still get `SameSite=Strict` to attach the victim's cookie to a "simple"
+/// (no preflight) cross-site `<img>`/no-CORS `fetch` at a route that
+/// genuinely does call `require_session` — `GET /api/auth/me` or
+/// `GET /api/rooms`, say — and a real 200 from either would set
+/// `REQUEST_AUTHENTICATED` without the app's own transport layer (which
+/// always attaches this header) ever being involved. Regular CORS
+/// preflight/origin checks don't apply to that request shape at all, which
+/// is exactly the gap this closes (Codex review finding on #280). The
+/// `Origin` alternative exists because `GET /api/ws` is opened via the
+/// browser's `new WebSocket(...)`, which can't attach custom headers at
+/// all — `ws_handler` already enforces the exact same defense by rejecting
+/// the handshake outright unless `Origin` matches
+/// `CHARM_WEB_SERVER_ALLOWED_ORIGIN`, so a WebSocket that got this far has
+/// already proven what the transport header would have (Codex review
+/// finding on #280).
+async fn refresh_session_cookie(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let token = jar.get(SESSION_COOKIE).map(|c| c.value().to_string());
+    // A `GET /api/ws` handshake can't attach `x-charm-operation-id` — it's
+    // opened via the browser's `new WebSocket(...)`, not `matrixTransport.ts`'s
+    // `fetch`-based dispatch — so `require_web_transport_header` alone would
+    // permanently exclude it from ever refreshing the cookie, even though
+    // `ws_handler` already enforces the exact same same-site-subdomain
+    // defense this middleware needs: it rejects the handshake outright
+    // unless `Origin` matches `CHARM_WEB_SERVER_ALLOWED_ORIGIN` (see
+    // `origin_is_allowed`'s doc comment). Accepting either signal here
+    // keeps a Charm tab that's primarily kept alive by its WebSocket, not
+    // repeated `fetch` calls, sliding its cookie the same as any other
+    // authenticated use (Codex review finding on #280).
+    let request_origin = request
+        .headers()
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok().map(str::to_string));
+    let has_transport_header_or_allowed_origin = require_web_transport_header(request.headers())
+        .is_ok()
+        || origin_is_allowed(request_origin.as_deref());
+    let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut response = REQUEST_AUTHENTICATED
+        .scope(
+            Arc::clone(&authenticated),
+            REQUEST_TRANSPORT_VALIDATED
+                .scope(has_transport_header_or_allowed_origin, next.run(request)),
+        )
+        .await;
+    let Some(token) = token else {
+        return response;
+    };
+    if !has_transport_header_or_allowed_origin {
+        return response;
+    }
+    if response_already_sets_session_cookie(&response) {
+        return response;
+    }
+    if !authenticated.load(std::sync::atomic::Ordering::Relaxed) {
+        return response;
+    }
+    if let Some(session) = state.sessions.get(&token).await {
+        // This is the only place `Session::last_validated_active` gets
+        // bumped — deliberately gated on `has_transport_header_or_allowed_origin`
+        // already having passed above, so `SessionStore::is_genuinely_active`
+        // (which reads this, not the `get`-mutated `last_active`) can't be
+        // kept artificially fresh by the same untrusted same-site traffic
+        // this middleware already refuses to refresh a cookie for (Codex
+        // review finding on #280).
+        session.touch_validated();
+        // `false` once this instance discovers the persisted session is
+        // genuinely gone — most likely another instance already processed
+        // this token's logout. In that case this instance must not send a
+        // freshly `Max-Age`-extended cookie for a session another instance
+        // already killed (Codex review finding on #280) — nor keep serving
+        // it locally, so the local entry is dropped (aborting its sync
+        // loop) right alongside. No standalone existence check here
+        // anymore — `require_session` (called earlier in this same request,
+        // inside the handler `next.run` just finished) already performs
+        // one, unthrottled, *before* the handler ran (an earlier revision
+        // of this middleware instead checked existence only here, after the
+        // handler had already executed against a possibly-already-deleted
+        // session — Codex review finding on #280: "reject deleted sessions
+        // before running handlers"). Only the throttled durable-touch write
+        // below still needs its own `NotFound` handling, for the much
+        // narrower window between `require_session`'s check and this
+        // write's own read, later in the same request.
+        let mut refresh_cookie = true;
+        if let Some(persistence) = &state.persistence {
+            let drop_dead_session = !session
+                .awaiting_initial_persistence
+                .load(std::sync::atomic::Ordering::Acquire);
+            // Keep the server-side activity signal `PersistenceStore::sweep_expired`
+            // relies on roughly in step with the cookie's own extended
+            // lifetime — throttled, since this session being resident in
+            // `SessionStore` at all already exempts it from that sweep
+            // regardless (see `sweep_expired`'s doc comment); this is a
+            // belt-and-suspenders *write* for the rare case that exemption
+            // is ever narrowed later, not something every request needs to
+            // pay an object-store write for.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last_touch = session
+                .last_persistence_touch_unix
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
+                match persistence.touch_last_seen_now(&token).await {
+                    Ok(crate::persistence::TouchOutcome::Touched) => {
+                        session
+                            .last_persistence_touch_unix
+                            .store(now, std::sync::atomic::Ordering::Relaxed);
+                        // Proof the object now exists — any further
+                        // `NotFound` for this token is unambiguously a real
+                        // cross-instance logout again, not the initial-save
+                        // retry this flag exists to tolerate.
+                        session
+                            .awaiting_initial_persistence
+                            .store(false, std::sync::atomic::Ordering::Release);
+                    }
+                    Ok(crate::persistence::TouchOutcome::NotFound) => {
+                        // A cross-instance logout landed between
+                        // `require_session`'s own existence check earlier
+                        // in this request and this write's read — narrow,
+                        // but still handled: don't send an extended cookie
+                        // for a session that's actually gone, and drop it
+                        // locally too. See `Session::
+                        // awaiting_initial_persistence`'s doc comment for
+                        // why this is conditional.
+                        if drop_dead_session {
+                            refresh_cookie = false;
+                            if let Some(dead_session) = state.sessions.remove(&token).await {
+                                if let Some(handle) = dead_session
+                                    .sync_handle
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .take()
+                                {
+                                    handle.abort();
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // Skip the refresh (not just the throttle advance)
+                        // rather than sending a fresh `Max-Age`-extended
+                        // cookie for a session whose persisted
+                        // `last_seen_unix` didn't actually move — sending
+                        // it anyway would let the cookie's implied
+                        // freshness silently drift ahead of what's on disk;
+                        // if this session goes idle/pinned or the process
+                        // restarts before a later touch finally succeeds,
+                        // `restore_all`/`sweep_expired` would then reject
+                        // or revoke a cookie the browser still considers
+                        // valid, forcing a re-login (Codex review finding
+                        // on #280). This request itself still succeeds —
+                        // only the `Set-Cookie` header is withheld this one
+                        // time, self-healing on the next successful touch.
+                        refresh_cookie = false;
+                        tracing::warn!(
+                            "failed to durably bump last-seen timestamp before refreshing a \
+                             session cookie, leaving the throttle unadvanced so the next \
+                             request retries: {e}"
+                        );
+                    }
+                }
+            }
+        }
+        if refresh_cookie {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string())
+            {
+                response
+                    .headers_mut()
+                    .append(axum::http::header::SET_COOKIE, value);
+            }
+        }
+    }
+    response
+}
+
+/// Whether `response` already carries a `Set-Cookie: charm_session=...`
+/// header of its own — see [`refresh_session_cookie`]'s doc comment for why
+/// that must suppress this middleware's refresh rather than stack another
+/// `Set-Cookie` on top of it.
+fn response_already_sets_session_cookie(response: &axum::response::Response) -> bool {
+    response
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|s| s.starts_with(&format!("{SESSION_COOKIE}=")))
+        })
+}
+
+#[cfg(test)]
+mod refresh_session_cookie_tests {
+    use super::response_already_sets_session_cookie;
+
+    fn response_with_set_cookie(cookie: &str) -> axum::response::Response {
+        axum::response::Response::builder()
+            .header(axum::http::header::SET_COOKIE, cookie)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    /// Regression test for the actual review finding: re-authenticating
+    /// while the browser still carries a cookie for a *different*,
+    /// still-live session must not have `refresh_session_cookie` append a
+    /// second `Set-Cookie` for the old token on top of the handler's own
+    /// fresh one — same name/path, so whichever the browser keeps is
+    /// effectively random, and clobbering the new login silently orphans it.
+    #[test]
+    fn detects_a_session_cookie_the_handler_already_set() {
+        let response = response_with_set_cookie("charm_session=new-token; Path=/; HttpOnly");
+        assert!(response_already_sets_session_cookie(&response));
+    }
+
+    #[test]
+    fn ignores_an_unrelated_cookie() {
+        let response = response_with_set_cookie("other_cookie=value; Path=/");
+        assert!(!response_already_sets_session_cookie(&response));
+    }
+
+    #[test]
+    fn no_set_cookie_header_at_all_is_not_mistaken_for_one() {
+        let response = axum::response::Response::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert!(!response_already_sets_session_cookie(&response));
+    }
+}
+
+#[cfg(test)]
+mod refresh_session_cookie_gating_tests {
+    use tower::ServiceExt;
+
+    use crate::AppState;
+
+    /// Same shape as `persistence::tests::dummy_live_session` — enough of a
+    /// `Session` to put in `SessionStore` without any real network access.
+    async fn dummy_live_session(user_id: &str) -> crate::session::Session {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        crate::session::Session::new(client, user_id.to_string(), None, false)
+    }
+
+    /// Regression test for the actual review finding:
+    /// `refresh_session_cookie` must not refresh a cookie for a token that's
+    /// live in `SessionStore` unless *this* request's handler actually called
+    /// `require_session` — otherwise a same-site request to an
+    /// unauthenticated route like `/api/health`, carrying a stolen or leaked
+    /// cookie, would keep that session's server-side lifetime extended
+    /// indefinitely without the app ever genuinely being used.
+    #[tokio::test]
+    async fn hitting_an_unauthenticated_route_does_not_refresh_a_live_sessions_cookie() {
+        let state = AppState::default();
+        state
+            .sessions
+            .insert(
+                "attacker-held-token".to_string(),
+                dummy_live_session("@victim:example.invalid").await,
+            )
+            .await;
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/health")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=attacker-held-token",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "an unauthenticated route must never refresh a session cookie, live or not"
+        );
+    }
+
+    /// Regression test for the actual review finding: `REQUEST_AUTHENTICATED`
+    /// alone isn't enough — `SameSite=Strict` still attaches the cookie to a
+    /// same-site subdomain's "simple" (no-preflight) cross-site request, and
+    /// a genuinely authenticated GET route like `/api/auth/me` would set
+    /// `REQUEST_AUTHENTICATED` for that request too, without the app's own
+    /// transport layer (`matrixTransport.ts`'s `requestJson`, which always
+    /// attaches `x-charm-operation-id`) ever being involved. This drives the
+    /// same route *with* a live session but *without* that header and
+    /// asserts the cookie is still not refreshed — regardless of the
+    /// route's own response status, which isn't what's under test here
+    /// (`dummy_live_session`'s bare `Client` has no real `device_id`, so
+    /// `me` itself 401s on that unrelated check; `require_session` inside
+    /// it still succeeds first, which is the only thing that matters for
+    /// `REQUEST_AUTHENTICATED`).
+    #[tokio::test]
+    async fn a_same_site_request_missing_the_transport_header_does_not_refresh_the_cookie() {
+        let state = AppState::default();
+        state
+            .sessions
+            .insert(
+                "attacker-held-token".to_string(),
+                dummy_live_session("@victim:example.invalid").await,
+            )
+            .await;
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=attacker-held-token",
+                    )
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a same-site request missing the app's transport header must never refresh a \
+             session cookie, even against a genuinely authenticated route"
+        );
+    }
+
+    /// Regression test for the Codex review findings on #280 ("Await
+    /// last-seen persistence before refreshing cookies", "Advance touch
+    /// throttle only after a successful write", then "Suppress cookie
+    /// refresh when last-seen write fails"): a failed durable last-seen
+    /// touch must not fail *the request itself* — the in-memory session
+    /// being resident in `SessionStore` at all already exempts it from
+    /// `sweep_expired` regardless of this particular bump succeeding — but
+    /// it must withhold the cookie refresh, not send one anyway. An earlier
+    /// revision of this sent a freshly `Max-Age`-extended cookie even on a
+    /// failed write, letting the cookie's implied freshness silently drift
+    /// ahead of what's actually on disk — if this session then goes
+    /// idle/pinned or the process restarts before a later touch finally
+    /// succeeds, `restore_all`/`sweep_expired` would reject or revoke a
+    /// cookie the browser still considers valid, forcing an unnecessary
+    /// re-login. Must also leave `last_persistence_touch_unix` unadvanced
+    /// on failure — an earlier revision of this consumed the once-an-hour
+    /// throttle unconditionally *before* attempting the write, so a single
+    /// failed touch would hide a genuinely stale `last_seen_unix` for a
+    /// full hour before the next request even tried again. Forces the
+    /// failure by revoking write permission on the persisted session's
+    /// containing directory after its initial save, so the throttled touch
+    /// this request triggers hits a genuine write error rather than a
+    /// `NotFound`/`Precondition` case `touch_last_seen_now` already
+    /// tolerates as a no-op.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_durable_touch_withholds_the_cookie_refresh_but_not_the_request() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-touch-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [61u8; 32]);
+
+        let matrix_session = matrix_sdk::authentication::matrix::MatrixSession {
+            meta: matrix_sdk::SessionMeta {
+                user_id: matrix_sdk::ruma::UserId::parse("@touch-fail:example.invalid").unwrap(),
+                device_id: matrix_sdk::ruma::device_id!("TESTDEVICE").to_owned(),
+            },
+            tokens: matrix_sdk::authentication::SessionTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+            },
+        };
+        store
+            .save(
+                "tok-touch-fail",
+                "https://example.invalid",
+                &matrix_session,
+                None,
+                crate::persistence::SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // Block any further write under the sessions directory so the
+        // throttled durable touch this request triggers fails with a
+        // genuine permission error rather than succeeding or hitting one
+        // of `touch_last_seen_now`'s already-tolerated no-op cases.
+        let sessions_dir = dir.join("sessions");
+        let original_perms = std::fs::metadata(&sessions_dir).unwrap().permissions();
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        state
+            .sessions
+            .insert(
+                "tok-touch-fail".to_string(),
+                dummy_live_session("@touch-fail:example.invalid").await,
+            )
+            .await;
+        // Cloned before `state` moves into the router — `SessionStore` is
+        // cheaply `Clone` (Arc-backed), so this still observes the same
+        // `Session` the request handles.
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-touch-fail")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::fs::set_permissions(&sessions_dir, original_perms).unwrap();
+
+        let session = sessions.get("tok-touch-fail").await.unwrap();
+        assert_eq!(
+            session
+                .last_persistence_touch_unix
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a failed durable touch must not advance the once-an-hour throttle — otherwise \
+             the next request wouldn't retry it for another hour (Codex review finding on \
+             #280)"
+        );
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "the request itself must still complete normally (this route's own 401 here is \
+             from `dummy_live_session`'s bare Client having no real device_id, unrelated to \
+             the persistence touch) — a failed durable touch must not fail the request"
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a failed durable touch must withhold the cookie refresh — sending one anyway \
+             would let the cookie's implied freshness drift ahead of what's actually \
+             durable on disk"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Avoid
+    /// refreshing cookies after the durable session is gone"): in the
+    /// multi-instance path this crate supports, another instance can
+    /// process a logout (deleting the persisted record) in the narrow
+    /// window before this instance's own in-memory `SessionStore` hears
+    /// about it — this instance's next request for that token would then
+    /// find it still resident locally and the throttled touch would report
+    /// `TouchOutcome::NotFound`. That must not be treated the same as a
+    /// confirmed durable touch: refreshing the cookie here would re-install
+    /// a fresh 30-day cookie for a session another instance already killed,
+    /// and this instance must also stop serving it locally rather than
+    /// keep the now-orphaned entry resident. Simulates the race by never
+    /// persisting anything for the token at all — from `touch_last_seen_now`'s
+    /// perspective, "never existed" and "already deleted by another
+    /// instance" look identical, both surfacing as `TouchOutcome::NotFound`.
+    #[tokio::test]
+    async fn a_session_with_no_persisted_record_is_dropped_and_its_cookie_is_not_refreshed() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-not-found-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [64u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        state
+            .sessions
+            .insert(
+                "tok-already-gone".to_string(),
+                dummy_live_session("@already-gone:example.invalid").await,
+            )
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-already-gone")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a session with no persisted record left (already logged out on another \
+             instance) must not have its cookie refreshed"
+        );
+        assert!(
+            sessions.get("tok-already-gone").await.is_none(),
+            "and must be dropped from this instance's own SessionStore too, rather than \
+             staying resident and authenticating locally after another instance already \
+             killed it"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Avoid
+    /// refreshing cookies while deletion checks are throttled"): a
+    /// cross-instance deletion must be caught even when
+    /// `last_persistence_touch_unix` is fresh enough that the once-an-hour
+    /// durable-touch *write* would otherwise be skipped entirely — the
+    /// `PersistenceStore::exists` existence check runs unthrottled, on
+    /// every authenticated+validated request, specifically so a stale
+    /// instance can't keep re-installing a cookie for a session another
+    /// instance already killed for up to a whole throttle window.
+    #[tokio::test]
+    async fn a_session_with_no_persisted_record_is_dropped_even_within_the_touch_throttle_window() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-not-found-throttled-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [66u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@already-gone-throttled:example.invalid").await;
+        // Fresh enough that the throttled durable-touch write below would
+        // be skipped entirely — this session's cross-instance deletion must
+        // still be caught by the unthrottled existence check.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        session
+            .last_persistence_touch_unix
+            .store(now, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-already-gone-throttled".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-already-gone-throttled",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a session with no persisted record must not have its cookie refreshed, even \
+             within the durable-touch throttle window"
+        );
+        assert!(
+            sessions.get("tok-already-gone-throttled").await.is_none(),
+            "and must be dropped even though the throttled write path never ran"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Don't drop
+    /// sessions still awaiting initial persistence"): a session whose very
+    /// first `PersistenceStore::save` (in `finish_login`) failed has no
+    /// persisted object yet by design — `sync_loop` is still retrying that
+    /// save in the background — and `TouchOutcome::NotFound` on this
+    /// session's first authenticated request is the expected, ordinary
+    /// state, not evidence of a cross-instance logout. It must not be
+    /// dropped from `SessionStore` on sight, unlike the sibling
+    /// `a_session_with_no_persisted_record_is_dropped_and_its_cookie_is_not_refreshed`
+    /// test's session, which has no such excuse.
+    #[tokio::test]
+    async fn a_session_still_awaiting_its_initial_save_is_not_dropped_on_not_found() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-awaiting-initial-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [65u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@awaiting-initial:example.invalid").await;
+        session
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-awaiting-initial".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-awaiting-initial",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            sessions.get("tok-awaiting-initial").await.is_some(),
+            "a session still awaiting its very first successful save must not be dropped \
+             just because that save hasn't landed yet — sync_loop's own RetryInitialSave \
+             retry is the documented fallback for this, not a forced logout"
+        );
+        assert!(
+            response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "and its cookie should still refresh normally while it waits"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Check expiry
+    /// before accepting resident sessions"): `require_session`'s fast path
+    /// (`state.sessions.get`) used to authenticate any resident session
+    /// unconditionally — `PersistenceStore::is_expired` only ever ran for
+    /// the idle-evicted branch below it. A session pinned in memory by
+    /// `SessionStore::sweep_idle`'s pending-verification/unpersisted-room
+    /// exemptions (never idle-evicted, so never reaching that branch) could
+    /// stay resident and keep authenticating through this fast path
+    /// forever, past `session_revocation_grace`, completely bypassing the
+    /// server-side retention window. Sets up exactly that: a live,
+    /// not-genuinely-active session (backdated `last_active`/
+    /// `last_validated_active`) whose persisted record is also stale, and
+    /// asserts a request now gets rejected instead of authenticated.
+    #[tokio::test]
+    async fn a_stale_pinned_session_is_rejected_by_the_fast_path_not_just_the_idle_evicted_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-require-session-stale-pinned-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [67u8; 32]);
+        let sixty_days = 60 * 24 * 60 * 60;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::persistence::save_with_last_seen_for_test(
+            &store,
+            "tok-stale-pinned",
+            now.saturating_sub(sixty_days),
+        )
+        .await;
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@stale-pinned:example.invalid").await;
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session.last_active.lock().unwrap() = backdated;
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        state
+            .sessions
+            .insert("tok-stale-pinned".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-stale-pinned")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a stale-but-pinned resident session must be rejected by require_session's fast \
+             path once it's past session_revocation_grace, not authenticated forever just \
+             because it's still in SessionStore"
+        );
+        assert!(
+            sessions.get("tok-stale-pinned").await.is_none(),
+            "and dropped from SessionStore, rather than being re-checked (and re-rejected) \
+             on every subsequent request forever"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Reject
+    /// deleted sessions before running handlers"): a *genuinely active*
+    /// session (open WebSocket connection) is exempt from the staleness
+    /// check above, but must not be exempt from a genuine cross-instance
+    /// deletion — a browser using the app right now can still have been
+    /// logged out from another device/instance. This session has no
+    /// persisted record at all (simulating "another instance already
+    /// deleted it") despite an open connection, and the request must still
+    /// be rejected by `require_session`'s fast path itself — not merely by
+    /// `refresh_session_cookie` afterward, which would mean this exact
+    /// request's own handler already ran against the stale session before
+    /// the rejection took effect.
+    #[tokio::test]
+    async fn a_genuinely_active_session_is_still_rejected_on_a_confirmed_deletion() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-require-session-active-deleted-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [68u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@active-deleted:example.invalid").await;
+        // Genuinely active: an open WebSocket connection, which is what
+        // `is_genuinely_active` checks first (before even looking at
+        // `last_validated_active`) — see that function's doc comment.
+        session
+            .ws_connections
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-active-deleted".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-active-deleted",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a confirmed cross-instance deletion must reject the request even for a \
+             genuinely active session — an open connection exempts a session from the \
+             staleness check, not from a real deletion"
+        );
+        assert!(
+            sessions.get("tok-active-deleted").await.is_none(),
+            "and the session must be dropped locally too"
+        );
+    }
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
@@ -514,7 +1424,13 @@ async fn finish_login(
     let mut initial_save_succeeded = false;
     if let (Some(persistence), Some(matrix_session)) = (&state.persistence, &matrix_session) {
         match persistence
-            .save(&token, homeserver_url, matrix_session, crypto)
+            .save(
+                &token,
+                homeserver_url,
+                matrix_session,
+                crypto,
+                crate::persistence::SaveMode::FreshLogin,
+            )
             .await
         {
             Ok(()) => {
@@ -529,6 +1445,16 @@ async fn finish_login(
             Err(e) => tracing::warn!("failed to persist session: {e}"),
         }
     }
+    // See `Session::awaiting_initial_persistence`'s doc comment —
+    // `routes::refresh_session_cookie`'s durable touch can't yet tell
+    // "no persisted object because the initial save is still retrying" from
+    // "no persisted object because another instance already logged this
+    // token out" without this (Codex review finding on #280).
+    if !initial_save_succeeded {
+        stored
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
 
     let persist = if let (Some(store), Some(matrix_session)) = (&state.persistence, &matrix_session)
     {
@@ -539,6 +1465,7 @@ async fn finish_login(
             initial_access_token: initial_save_succeeded
                 .then(|| matrix_session.tokens.access_token.clone()),
             crypto: stored.persisted_crypto.clone(),
+            awaiting_initial_persistence: stored.awaiting_initial_persistence.clone(),
         })
     } else {
         None
@@ -737,7 +1664,12 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> Result<impl IntoRe
 
 /// Server-issued session cookie: HttpOnly (unreadable to page JS), Secure
 /// unless explicitly disabled (HTTPS-only transport by default — see below),
-/// SameSite=Strict (never sent on cross-site navigations/requests).
+/// SameSite=Strict (never sent on cross-site navigations/requests), and an
+/// explicit `Max-Age` (see [`session::SESSION_COOKIE_MAX_AGE_SECS`]) — without
+/// one this is a session-only cookie that most browsers discard on close,
+/// forcing a full re-login (and, with it, a new Matrix device that needs the
+/// recovery key again) far sooner than the persisted session backing it
+/// actually expires.
 ///
 /// `Secure` cookies are never stored or sent by browsers over plain HTTP —
 /// `main.rs` itself only ever serves plain HTTP (TLS termination is expected
@@ -752,7 +1684,50 @@ fn session_cookie(token: String) -> Cookie<'static> {
         .secure(secure)
         .same_site(SameSite::Strict)
         .path("/")
+        .max_age(time::Duration::seconds(
+            session::SESSION_COOKIE_MAX_AGE_SECS,
+        ))
         .build()
+}
+
+#[cfg(test)]
+mod session_cookie_tests {
+    use super::session_cookie;
+
+    /// Regression test: a cookie with no `Max-Age`/`Expires` is a
+    /// browser-session cookie that most browsers discard on close, forcing a
+    /// full re-login (and a brand-new Matrix device needing the recovery key
+    /// again) far sooner than the persisted session it points at actually
+    /// expires. `max_age()` must be set and must be positive.
+    #[test]
+    fn session_cookie_has_a_positive_max_age() {
+        let cookie = session_cookie("test-token".to_string());
+
+        let max_age = cookie.max_age().expect("session cookie must set Max-Age");
+        assert!(max_age.whole_seconds() > 0);
+    }
+
+    #[test]
+    fn session_cookie_max_age_matches_the_documented_constant() {
+        let cookie = session_cookie("test-token".to_string());
+
+        let max_age = cookie.max_age().expect("session cookie must set Max-Age");
+        assert_eq!(
+            max_age.whole_seconds(),
+            crate::session::SESSION_COOKIE_MAX_AGE_SECS
+        );
+    }
+}
+
+/// Marks [`REQUEST_AUTHENTICATED`] for the current request, from within
+/// [`require_session`]'s success paths only. A no-op (not a panic) outside
+/// `refresh_session_cookie`'s task-local scope — every real request goes
+/// through that middleware, but the test router built directly in this
+/// module's own unit tests doesn't, and `require_session` shouldn't need to
+/// know or care.
+fn mark_request_authenticated() {
+    let _ = REQUEST_AUTHENTICATED
+        .try_with(|marker| marker.store(true, std::sync::atomic::Ordering::Relaxed));
 }
 
 /// Resolves the caller's session from their cookie, or a 401 if it's
@@ -766,7 +1741,71 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
     if let Some(session) = state.sessions.get(&token).await {
+        // This fast path used to authenticate any resident session
+        // unconditionally — neither of the checks below ran for it at all,
+        // only for the *idle-evicted* branch further down. A session
+        // pinned in memory by `SessionStore::sweep_idle`'s
+        // pending-verification/unpersisted-room exemptions (never
+        // idle-evicted, so never reaching that branch) could stay resident
+        // and keep authenticating here forever — either well past
+        // `session_revocation_grace`, or even after being logged out on
+        // another instance entirely, with `refresh_session_cookie` bumping
+        // `last_seen_unix` and re-extending its cookie on the way out —
+        // completely bypassing the server-side retention window this whole
+        // persistence layer exists to enforce (Codex review finding on
+        // #280).
+        if let Some(persistence) = &state.persistence {
+            // Deletion check — unthrottled, every request, and *before*
+            // the handler below ever runs, regardless of whether this
+            // session is genuinely active. `refresh_session_cookie`'s own
+            // equivalent check only runs *after* `next.run`, so by the
+            // time it discovers a cross-instance logout, this request's
+            // own handler has already executed against the stale session —
+            // rejecting only the *next* request, not the one that actually
+            // observes the deletion (Codex review finding on #280). An
+            // open WebSocket connection or recent validated activity is
+            // not exempt from a genuine deletion, only from the separate
+            // staleness check below — a browser using the app right now
+            // can still have been logged out from another device.
+            // `awaiting_initial_persistence` still applies here for the
+            // same reason it does in `refresh_session_cookie` — see that
+            // field's doc comment. A read error fails open (`unwrap_or`),
+            // matching `refresh_session_cookie`'s own tolerance for a
+            // transient hiccup rather than forcing a logout on one.
+            let deleted = !session
+                .awaiting_initial_persistence
+                .load(std::sync::atomic::Ordering::Acquire)
+                && !persistence.exists(&token).await.unwrap_or(true);
+            // Staleness check — skipped entirely (no persistence read at
+            // all) for a session that's genuinely active (open connection
+            // or recent validated activity, same distinction
+            // `PersistenceStore::sweep_expired` uses, not bare presence):
+            // that's the one case cheap enough to avoid paying for on every
+            // request of a session actually in active use.
+            let stale = !deleted
+                && !state
+                    .sessions
+                    .is_genuinely_active(&token, session::session_revocation_grace())
+                    .await
+                && persistence
+                    .is_expired(&token, session::session_revocation_grace())
+                    .await;
+            if deleted || stale {
+                if let Some(dead_session) = state.sessions.remove(&token).await {
+                    if let Some(handle) = dead_session
+                        .sync_handle
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                    {
+                        handle.abort();
+                    }
+                }
+                return Err(ApiError::unauthorized("unknown or expired session"));
+            }
+        }
         session.touch();
+        mark_request_authenticated();
         return Ok(session);
     }
 
@@ -804,6 +1843,19 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // though the cached value was sitting right there the whole time. Only
     // consumed (`forget_evicted_presence`, below) once the restore this
     // presence was seeded into has actually succeeded.
+    // Checked *before* the real restore below — see
+    // `PersistenceStore::is_expired`'s doc comment for why an idle-evicted
+    // session already past the retention window must be rejected here, not
+    // just left for the next daily sweep: without this, a client that keeps
+    // presenting an already-expired cookie could stay resurrected
+    // indefinitely, since a successful restore's own `touch_last_seen`
+    // would reset its clock right back to "now" every time.
+    if persistence
+        .is_expired(&token, session::session_revocation_grace())
+        .await
+    {
+        return Err(ApiError::unauthorized("unknown or expired session"));
+    }
     let evicted_presence = state.sessions.peek_evicted_presence(&token);
     let Some((homeserver_url, session, initial_response, initial_access_token)) =
         persistence.restore_by_token(&token, evicted_presence).await
@@ -813,6 +1865,27 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     if evicted_presence.is_some() {
         state.sessions.forget_evicted_presence(&token);
     }
+    // This request is restoring a session that was idle-evicted from
+    // memory — the one activity signal `PersistenceStore::sweep_expired`
+    // can't get any other way (see that function's doc comment). Fired,
+    // not awaited: it's a courtesy timestamp bump, not something this
+    // response should wait on.
+    //
+    // Gated on `REQUEST_TRANSPORT_VALIDATED`, same as `Session::
+    // last_validated_active` (see that field's doc comment) and for the
+    // same reason: without this, an untrusted same-site subdomain's
+    // request — restoring an idle-evicted session is still possible for
+    // it, since `require_session` runs before `refresh_session_cookie`'s
+    // own gate — would bump the *persisted* `last_seen_unix`
+    // unconditionally, extending `sweep_expired`'s retention window from
+    // activity that middleware already decided not to trust enough to even
+    // refresh the cookie for (Codex review finding on #280).
+    if REQUEST_TRANSPORT_VALIDATED
+        .try_with(|v| *v)
+        .unwrap_or(false)
+    {
+        persistence.touch_last_seen(&token);
+    }
     session.touch();
     let persist = Some(crate::sync_loop::PersistHandle {
         store: Arc::clone(persistence),
@@ -820,6 +1893,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         homeserver_url,
         initial_access_token: Some(initial_access_token),
         crypto: session.persisted_crypto.clone(),
+        awaiting_initial_persistence: session.awaiting_initial_persistence.clone(),
     });
     let handle = crate::sync_loop::spawn(
         session.client.clone(),
@@ -840,11 +1914,13 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
     // of this session (this request, `sync_loop`'s spawned task, any other
     // concurrent request racing the same restore) is looking at the same
     // instance.
-    state
+    let session = state
         .sessions
         .get(&token)
         .await
-        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))
+        .ok_or_else(|| ApiError::unauthorized("unknown or expired session"))?;
+    mark_request_authenticated();
+    Ok(session)
 }
 
 // ---------------------------------------------------------------------
@@ -1195,6 +2271,21 @@ async fn can_redact(
     Ok(Json(can))
 }
 
+/// Room-scoped counterpart of [`can_redact`] — see `can_redact_others_impl`'s
+/// doc comment (Sentry issue CHARM-3) for why the frontend now calls this
+/// once per room instead of `can_redact` once per unique message sender.
+async fn can_redact_others(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    let can = can_redact_others_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(can))
+}
+
 #[derive(Debug, Deserialize)]
 struct ReactRequest {
     key: String,
@@ -1211,6 +2302,40 @@ async fn toggle_reaction(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(result))
+}
+
+async fn resend_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Zero-body POST, so (like `redact_event`) it's a CORS "simple request"
+    // that never triggers a preflight the origin allowlist could otherwise
+    // block — a cross-*site* page could still submit it with this session's
+    // `SameSite=Strict` cookie attached if it knows a failed transaction id,
+    // without this check.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    resend_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn discard_failed_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // See `resend_message`'s comment on the same guard.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let removed = discard_failed_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(removed))
 }
 
 #[derive(Debug, Deserialize)]

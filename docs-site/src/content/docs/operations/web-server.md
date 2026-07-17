@@ -52,6 +52,20 @@ The server issues an opaque `HttpOnly`, `SameSite=Strict` cookie and maps it to
 one `matrix_sdk::Client`. Sessions and caches are isolated per token/account.
 The browser never receives the Matrix access token.
 
+The cookie carries an explicit 30-day `Max-Age`
+(`session::SESSION_COOKIE_MAX_AGE_SECS`) rather than expiring at browser
+close: without one, most browsers discard it as soon as the browser fully
+quits, forcing a full re-login — and, since e2ee verification is tied to the
+device, a fresh recovery-key prompt — far sooner than the persisted session
+backing it actually goes away. The cookie is refreshed with a new 30-day
+window on every authenticated request that resolves to a still-active
+session, so continuous use never runs out the clock; only real inactivity for
+the full 30 days does. A companion background sweep (once daily) revokes the
+Matrix access token and deletes the persisted session and crypto store for
+any session that has gone unused past that window, so a browser that lost or
+never presented the cookie again doesn't leave server-side state valid
+indefinitely.
+
 Without `CHARM_WEB_SERVER_MASTER_KEY`, sessions are memory-only and a restart
 requires login again. Supplying a base64-encoded 32-byte key enables
 AES-256-GCM encrypted session persistence under `CHARM_WEB_SERVER_DATA_DIR`.

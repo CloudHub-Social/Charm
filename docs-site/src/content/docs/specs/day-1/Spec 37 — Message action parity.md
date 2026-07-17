@@ -13,11 +13,17 @@ Extends Spec 03 (message actions), which shipped a deliberately minimal action m
 
 **In progress.** Independently releasable slices behind the default-off
 `message_action_parity` flag now provide a **Copy link** action for server-backed,
-decrypted events and a confirmation dialog with an optional reason before message
-redaction. The permalink produces the fully percent-encoded room/event form required
-by the [Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
-and the redaction reason uses the existing desktop and web transport support. The
-remaining actions in this document are still planned.
+decrypted events, a confirmation dialog with an optional reason before message
+redaction, and **Resend/Discard** for a failed send. The permalink produces the
+fully percent-encoded room/event form required by the
+[Matrix matrix.to navigation specification](https://spec.matrix.org/latest/appendices/#matrixto-navigation),
+and the redaction reason uses the existing desktop and web transport support.
+Resend/discard call new `resend_message`/`discard_failed_message` Tauri commands
+that operate directly on matrix-rust-sdk's own send-queue local-echo handle
+(`SendHandle::unwedge`/`abort`) for the failed local echo's transaction id — not a
+re-composed re-send — and appear in the action menu (in place of Delete, which a
+failed local echo can't support anyway) only while a message's `send_state.state`
+is `"error"`. The remaining actions in this document are still planned.
 
 ## Problem & why now
 

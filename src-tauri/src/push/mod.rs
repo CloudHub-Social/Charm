@@ -745,8 +745,20 @@ pub async fn handle_push(app: &AppHandle, message: PushMessage) -> Result<(), Pu
     let (client, _completion_guard) = match running_client {
         Some(client) => (client, None),
         None => {
-            let guard = matrix_state.login_completion_lock.lock().await;
+            // Acquired in this order — `restore_store_lock` before
+            // `login_completion_lock` — to match `login`/`register`, which
+            // must hold `restore_store_lock` from before the account's MXID
+            // is even known through the whole homeserver round trip (that
+            // can run tens of seconds) and only take
+            // `login_completion_lock` afterward. The reverse order here
+            // used to be an ABBA deadlock waiting to happen: a login in
+            // flight holding `restore_store_lock` while waiting on
+            // `login_completion_lock`, racing a push that had already taken
+            // `login_completion_lock` and was waiting on
+            // `restore_store_lock` — neither could ever complete (Codex
+            // review on #288, P1).
             let restore_store_guard = auth::restore_store_lock().lock().await;
+            let guard = matrix_state.login_completion_lock.lock().await;
             let client = restore_any_client(app)
                 .await?
                 .ok_or_else(|| "no restorable session to handle this push against".to_string())?;
