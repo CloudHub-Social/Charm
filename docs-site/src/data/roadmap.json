@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T00:15:40.257Z",
+  "generatedAt": "2026-07-17T00:47:51.664Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
@@ -10,13 +10,6 @@
     "planned": 37
   },
   "attention": [
-    {
-      "type": "pull-request",
-      "number": 282,
-      "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/282",
-      "detail": "Day-1 Spec 37 · ready for review"
-    },
     {
       "type": "issue",
       "number": 48,
@@ -1029,9 +1022,9 @@
           "number": 282,
           "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/282",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-17T00:13:52Z"
+          "updatedAt": "2026-07-17T00:21:33Z"
         },
         {
           "number": 277,

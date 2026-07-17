@@ -11,19 +11,34 @@ sidebar:
 
 ## Implementation status
 
-**Phase 1 in progress.** Pin/unpin, drag-free reorder (Move up/down), and a
-per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down) landed on
-`SpaceRail.tsx`, with pinned order and unpinned state persisted client-side via
-a new `spaceRailPrefs` atom. Unpinned spaces stay visible below a divider
-rather than disappearing, since there is not yet another space-browsing
-surface to keep them reachable from once hidden — a deliberate deviation from
-this spec's original "remains reachable via Home/search" framing, revisit once
-a real space browser exists.
+**Phases 1 and 2 shipped; `Settings` deferred.** Pin/unpin, reorder
+(Move up/down), and a per-space context menu (Open Lobby, Invite, Pin/Unpin,
+Move up/down, Add Existing, Mark/Unmark Suggested, Remove, Leave) are live on
+`SpaceRail.tsx`. Pinned order and unpinned state persist client-side via a new
+`spaceRailPrefs` atom — not yet synced via account data (still open, see
+below). Unpinned spaces stay visible below a divider rather than
+disappearing, since there is not yet another space-browsing surface to keep
+them reachable from once hidden — a deliberate deviation from this spec's
+original "remains reachable via Home/search" framing, revisit once a real
+space browser exists.
 
-Not yet built: `Settings`, `Leave`, `Set/Unset Suggested`, `Remove`, and `Add
-Existing` (phase 2) — these depend on Spec 33's `m.space.child` write path
-and/or the not-yet-built space-settings surface, per the phasing below.
-Account-data sync (vs. today's local-only persistence) is also still open.
+New Rust commands back the state-mutating menu items: `leave_room`,
+`add_existing_space_child`, `remove_space_child` (empty-content
+`m.space.child` per MSC1772), and `set_space_child_suggested`
+(read-modify-write preserving the existing `via`/`order`). `Remove` and
+`Set/Unset Suggested` only appear on spaces with a known parent (the rail's
+immediate-parent context, not full ancestor awareness). Leave shows a
+confirmation dialog first; Add Existing is a searchable picker over already-
+joined rooms/spaces, excluding the target space, its ancestors, and its
+current children to prevent cycles/duplicates.
+
+`Settings` is not built — it depends on Spec 33's "space settings surface"
+UI-parity addition, which doesn't exist yet; the menu simply omits the item
+until it does. Power-level gating on the new menu actions (per the spec's
+original design note) is also not yet implemented — every joined member sees
+every action regardless of their actual permission in the room, and a
+send failure surfaces only as the underlying IPC error, not a pre-emptive
+disabled state. Account-data sync for pin/order state remains open too.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy

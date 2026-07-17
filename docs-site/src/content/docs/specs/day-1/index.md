@@ -96,7 +96,7 @@ here.
 | 60 | [iOS platform integrations](/specs/day-1/spec-60--ios-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 61 | [Android platform integrations](/specs/day-1/spec-61--android-platform-integrations/) | **Planned** | No matching merged implementation found |
 | 62 | [Desktop platform integrations](/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/) | **Planned** | No matching merged implementation found |
-| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Phase 1 (pin/unpin, reorder, context menu) implemented; phase 2 (Settings, Leave, Set Suggested, Remove, Add Existing) remains |
+| 63 | [Sidebar and space management](/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/) | **In progress** | Pin/unpin, reorder, Leave, Remove, Set/Unset Suggested, and Add Existing implemented; `Settings` menu item deferred to Spec 33's not-yet-built space-settings surface, power-level gating not yet implemented |
 
 ## Cross-cutting rules
 
