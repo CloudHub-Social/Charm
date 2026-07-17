@@ -386,6 +386,20 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         JSON.stringify({ reason: args.reason }),
         "application/json",
       );
+    case "resend_message":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/send-queue/${encodeSegment(
+          String(args.transactionId),
+        )}/resend`,
+      );
+    case "discard_failed_message":
+      return requestJson<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/send-queue/${encodeSegment(
+          String(args.transactionId),
+        )}/discard`,
+      );
     case "can_redact":
       return requestJson<T>(
         "GET",

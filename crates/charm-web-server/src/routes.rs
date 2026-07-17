@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use charm_lib::matrix::account::UiaCommandError;
 use charm_lib::matrix::account_data::{get_account_data_impl, set_account_data_impl};
 use charm_lib::matrix::actions::{
-    can_redact_impl, edit_message_impl, redact_event_impl, send_reply_impl, toggle_reaction_impl,
+    can_redact_impl, discard_failed_message_impl, edit_message_impl, redact_event_impl,
+    resend_message_impl, send_reply_impl, toggle_reaction_impl,
 };
 use charm_lib::matrix::auth::{DiscoverHomeserverResponse, LoginRequest, RegisterRequest};
 use charm_lib::matrix::commands::run_command_impl;
@@ -128,6 +129,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/rooms/{room_id}/events/{event_id}/react",
             post(toggle_reaction),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/resend",
+            post(resend_message),
+        )
+        .route(
+            "/api/rooms/{room_id}/send-queue/{transaction_id}/discard",
+            post(discard_failed_message),
         )
         .route("/api/rooms/{room_id}/command", post(run_command))
         // -- ephemeral (receipts/typing/read) --
@@ -1294,20 +1303,13 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    // `include_message_preview: false` and a fresh, scratch registration
-    // set — the web client has no equivalent of desktop's
-    // `RoomListMessagePreview` feature-flag catalog yet, so this is always
-    // false here and `preview_registered_rooms` is guaranteed to stay
-    // empty every call regardless of whether it's shared across calls or
-    // not (see `rooms::forget_stale_preview_registrations`'s doc comment).
+    // The `room_list_message_preview` flag isn't wired into web sessions yet
+    // (no feature-flag evaluation exists in this crate at all), so this is
+    // always `false` — a fresh, never-populated `Mutex` per call is
+    // therefore correct: nothing ever registers with `LatestEvents` from
+    // this path, so there's nothing to track across calls or forget.
     Ok(Json(
-        snapshot_rooms(
-            &session.client,
-            None,
-            false,
-            &std::sync::Mutex::new(std::collections::HashSet::new()),
-        )
-        .await,
+        snapshot_rooms(&session.client, None, false, &std::sync::Mutex::default()).await,
     ))
 }
 
@@ -1652,6 +1654,40 @@ async fn toggle_reaction(
         .await
         .map_err(ApiError::bad_request)?;
     Ok(Json(result))
+}
+
+async fn resend_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Zero-body POST, so (like `redact_event`) it's a CORS "simple request"
+    // that never triggers a preflight the origin allowlist could otherwise
+    // block — a cross-*site* page could still submit it with this session's
+    // `SameSite=Strict` cookie attached if it knows a failed transaction id,
+    // without this check.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    resend_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn discard_failed_message(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, transaction_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // See `resend_message`'s comment on the same guard.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    let removed = discard_failed_message_impl(&session.client, &room_id, &transaction_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(Json(removed))
 }
 
 #[derive(Debug, Deserialize)]
