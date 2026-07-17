@@ -427,6 +427,15 @@ impl MatrixState {
     /// backward-pagination), later callers for this room — `get_timeline_page`
     /// included — should see events around that focus, not the room's
     /// unrelated live tail from before the jump.
+    ///
+    /// Review fix: the previous version spawned the *new* listener before
+    /// taking the lock and stopping the *previous* one — leaving a window
+    /// where both were alive at once, each emitting its own `timeline:update`
+    /// (the old listener still surfacing the room's unrelated live tail, the
+    /// new one the event-focused view), which could show up as a flicker on
+    /// the frontend since neither is a duplicate the dedup logic there would
+    /// catch. Now the previous listener is located, aborted, and awaited
+    /// *before* the new one is spawned, so there's no overlap.
     pub(crate) async fn replace_timeline(
         &self,
         app: &AppHandle,
@@ -434,6 +443,15 @@ impl MatrixState {
         room_id: &matrix_sdk::ruma::RoomId,
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
     ) -> std::sync::Arc<matrix_sdk_ui::Timeline> {
+        // Pop (not just peek) the previous entry and drop the lock before
+        // awaiting its abort — same reasoning as below: never hold this
+        // mutex across an `.await` on another task.
+        let previous = self.timelines.lock().await.pop(room_id);
+        if let Some((_, previous_handle)) = previous {
+            previous_handle.abort();
+            let _ = previous_handle.await;
+        }
+
         let handle = timeline::spawn_timeline_listener(
             app.clone(),
             room_id.to_owned(),
@@ -442,17 +460,10 @@ impl MatrixState {
             client.user_id().map(ToOwned::to_owned),
         );
 
-        let mut timelines = self.timelines.lock().await;
-        let previous = timelines.push(
+        self.timelines.lock().await.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle),
         );
-        drop(timelines);
-
-        if let Some((_, (_, previous_handle))) = previous {
-            previous_handle.abort();
-            let _ = previous_handle.await;
-        }
 
         timeline
     }
