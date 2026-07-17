@@ -4,10 +4,26 @@ title: "Charm 2.0 Spec — Sidebar and space management (pin, reorder, context
 type: spec
 project: Charm 2.0
 created: "2026-07-16"
-status: draft
+status: in-progress
 sidebar:
   label: "Sidebar & space management"
 ---
+
+## Implementation status
+
+**Phase 1 in progress.** Pin/unpin, drag-free reorder (Move up/down), and a
+per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down) landed on
+`SpaceRail.tsx`, with pinned order and unpinned state persisted client-side via
+a new `spaceRailPrefs` atom. Unpinned spaces stay visible below a divider
+rather than disappearing, since there is not yet another space-browsing
+surface to keep them reachable from once hidden — a deliberate deviation from
+this spec's original "remains reachable via Home/search" framing, revisit once
+a real space browser exists.
+
+Not yet built: `Settings`, `Leave`, `Set/Unset Suggested`, `Remove`, and `Add
+Existing` (phase 2) — these depend on Spec 33's `m.space.child` write path
+and/or the not-yet-built space-settings surface, per the phasing below.
+Account-data sync (vs. today's local-only persistence) is also still open.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy

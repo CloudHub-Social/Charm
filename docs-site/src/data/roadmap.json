@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T00:04:20.307Z",
+  "generatedAt": "2026-07-17T00:15:40.257Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
     "follow-up": 8,
-    "in-progress": 0,
-    "planned": 38
+    "in-progress": 1,
+    "planned": 37
   },
   "attention": [
     {
@@ -111,8 +111,8 @@
       "counts": {
         "shipped": 6,
         "follow-up": 5,
-        "in-progress": 0,
-        "planned": 25
+        "in-progress": 1,
+        "planned": 24
       }
     },
     {
@@ -1031,7 +1031,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/282",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-16T22:09:13Z"
+          "updatedAt": "2026-07-17T00:13:52Z"
         },
         {
           "number": 277,
@@ -1377,7 +1377,7 @@
       "number": 63,
       "title": "\"Charm 2.0 Spec — Sidebar and space management (pin, reorder, context",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "planned",
+      "status": "in-progress",
       "pullRequests": [],
       "issues": []
     },
