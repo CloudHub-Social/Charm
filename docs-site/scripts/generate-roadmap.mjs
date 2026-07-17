@@ -176,10 +176,6 @@ function titleClaimsAnyOtherSpec(item, spec) {
 	return specs.some((other) => other.id !== spec.id && mentionsSpecInTitle(item, other));
 }
 
-function mentionsSpec(item, spec) {
-	return mentionsSpecInTitle(item, spec) || mentionsSpecInBody(item, spec);
-}
-
 function specLabel(specId) {
 	return specId.replace(/^day-([12])-(\d{2})$/, 'Day-$1 Spec $2');
 }
@@ -274,7 +270,11 @@ const hydratedSpecs = specs.map((spec) => {
 		.map(publicPullRequest)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const linkedIssues = issues
-		.filter((issue) => mentionsSpec(issue, spec))
+		.filter(
+			(issue) =>
+				mentionsSpecInTitle(issue, spec) ||
+				(!titleClaimsAnyOtherSpec(issue, spec) && mentionsSpecInBody(issue, spec)),
+		)
 		.map(publicIssue)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 
