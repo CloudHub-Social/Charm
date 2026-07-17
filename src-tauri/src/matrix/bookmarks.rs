@@ -105,15 +105,23 @@ fn now_ms() -> u64 {
 /// (add-time validation — the message must be currently loaded to be
 /// bookmarked at all) and [`list_bookmarks`] (best-effort read-time
 /// resolution when the room happens to already be open).
+///
+/// Review fix: this used to take a `media_cache` and forward it into
+/// `items_to_summaries`, which resolves each sender's avatar thumbnail
+/// (downloading on a cache miss) as a side effect of building the summary —
+/// even though neither caller here ever reads the resulting avatar fields
+/// off a `BookmarkEntry`/`RoomMessageSummary`. That meant merely opening
+/// Saved Messages (`list_bookmarks`) could issue media downloads for every
+/// bookmarked sender, contradicting its own "purely local" contract. Always
+/// passes `None` now — no avatar resolution, no media traffic.
 async fn resolve_from_timeline(
     event_id: &str,
     client: &Client,
     timeline: &matrix_sdk_ui::Timeline,
-    media_cache: Option<&super::media::MediaCache>,
 ) -> Option<(String, Option<String>, String, u64)> {
     let (items, _stream) = timeline.subscribe().await;
     let own_user_id = client.user_id().map(ToOwned::to_owned);
-    let summaries = items_to_summaries(&items, own_user_id.as_deref(), client, media_cache).await;
+    let summaries = items_to_summaries(&items, own_user_id.as_deref(), client, None).await;
     summaries
         .into_iter()
         .find(|m| m.event_id == event_id)
@@ -139,10 +147,9 @@ pub async fn build_bookmark_entry(
     event_id: &str,
     client: &Client,
     timeline: &matrix_sdk_ui::Timeline,
-    media_cache: Option<&super::media::MediaCache>,
 ) -> Result<BookmarkEntry, String> {
     let (sender, sender_display_name, body_preview, timestamp_ms) =
-        resolve_from_timeline(event_id, client, timeline, media_cache)
+        resolve_from_timeline(event_id, client, timeline)
             .await
             .ok_or_else(|| "message not currently loaded in this room's timeline".to_string())?;
 
@@ -203,10 +210,9 @@ pub async fn add_bookmark(
     let timeline = state
         .get_or_create_timeline(&app, &client, &parsed_room_id)
         .await?;
-    let media_cache = state.require_media_cache(&app).await.ok();
 
     let account_key = account_key_for_client(&client)?;
-    let entry = build_bookmark_entry(&room_id, &event_id, &client, &timeline, media_cache).await?;
+    let entry = build_bookmark_entry(&room_id, &event_id, &client, &timeline).await?;
 
     let lock = persistence::bookmarks_lock(&account_key);
     let _guard = lock.lock().await;
@@ -267,7 +273,6 @@ pub async fn list_bookmarks(
     bookmarks.sort_by_key(|b| std::cmp::Reverse(b.saved_at_ms));
 
     let client = state.require_client().await.ok();
-    let media_cache = state.require_media_cache(&app).await.ok();
 
     let mut entries = Vec::with_capacity(bookmarks.len());
     for bookmark in bookmarks {
@@ -275,8 +280,7 @@ pub async fn list_bookmarks(
             (Some(client), Ok(parsed_room_id)) => {
                 match state.peek_timeline(&parsed_room_id).await {
                     Some(timeline) => {
-                        resolve_from_timeline(&bookmark.event_id, client, &timeline, media_cache)
-                            .await
+                        resolve_from_timeline(&bookmark.event_id, client, &timeline).await
                     }
                     // Room isn't open this session — leave the preview
                     // unresolved rather than issuing a homeserver `/context`

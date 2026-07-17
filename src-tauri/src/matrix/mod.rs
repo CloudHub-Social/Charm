@@ -42,12 +42,27 @@ const MAX_LIVE_TIMELINES: usize = 20;
 /// opened-room/unopened-room notification race window at once.
 const MAX_NOTIFIED_EVENT_IDS: usize = 200;
 
-/// A live per-room `Timeline` paired with its listener task's `JoinHandle` —
-/// see `MatrixState::timelines`'s doc comment for why the handle is kept
-/// alongside the `Arc`.
+/// A per-room `Timeline` paired with its listener task's `JoinHandle` — see
+/// `MatrixState::timelines`'s doc comment for why the handle is kept
+/// alongside the `Arc` — plus whether this entry is a `TimelineFocus::Event`
+/// view (`replace_timeline`) rather than the room's ordinary live tail
+/// (`get_or_create_timeline`).
+///
+/// Review fix: `is_timeline_open` used to treat *any* cached entry as "this
+/// room is being handled elsewhere, skip the unopened-room notification
+/// path" — but a `TimelineFocus::Event`-focused `Timeline` (left behind by a
+/// Saved Messages jump-to-message) doesn't receive new live sync events the
+/// way a `TimelineFocus::Live` one does, so its listener never fires
+/// `maybe_notify_new_message` for messages that arrive after the jump. That
+/// silently dropped notifications for the room until something evicted the
+/// focused entry. `is_focused` lets `is_timeline_open` (and
+/// `get_or_create_timeline`, which now also self-heals a focused entry back
+/// to live the next time the room is genuinely queried) tell the two cases
+/// apart.
 type TimelineEntry = (
     std::sync::Arc<matrix_sdk_ui::Timeline>,
     tokio::task::JoinHandle<()>,
+    bool,
 );
 
 /// Holds the active matrix-rust-sdk client for the running session.
@@ -349,7 +364,7 @@ impl MatrixState {
             .lock()
             .await
             .peek(room_id)
-            .map(|(timeline, _)| std::sync::Arc::clone(timeline))
+            .map(|(timeline, _, _)| std::sync::Arc::clone(timeline))
     }
 
     /// Returns the live `Timeline` for `room_id`, building (and spawning its
@@ -365,7 +380,16 @@ impl MatrixState {
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        if let Some((existing, _)) = self.timelines.lock().await.get(room_id) {
+        // Review fix: a cached entry left over from a Saved Messages jump
+        // (`replace_timeline`, `is_focused = true`) is a `TimelineFocus::Event`
+        // view, not the room's live tail — returning it here as if it were
+        // the ordinary live timeline would keep silently starving this room
+        // of live updates/notifications indefinitely. Only a live entry can
+        // be returned as-is; a focused one falls through to rebuild a fresh
+        // live timeline below, self-healing the room back to normal the next
+        // time it's genuinely queried (e.g. reopened, or `get_timeline_page`
+        // called for it).
+        if let Some((existing, _, false)) = self.timelines.lock().await.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
@@ -379,7 +403,8 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        if let Some((existing, _)) = timelines.get(room_id) {
+        // Same focused-entry exclusion as above.
+        if let Some((existing, _, false)) = timelines.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
@@ -390,22 +415,23 @@ impl MatrixState {
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
-        // `push` returns the LRU-evicted entry (if any capacity eviction
-        // happened) rather than just dropping it — a dropped `JoinHandle`
-        // detaches its task instead of stopping it, which would leave that
-        // room's listener (and its own `Client` clone) running for up to
-        // `LIVENESS_CHECK_INTERVAL` after eviction, the same open-handle
-        // hazard `clear_timelines` exists to avoid on logout/relocation.
+        // `push` returns the LRU-evicted (or, per the review fix above,
+        // possibly a displaced *focused*) entry rather than just dropping
+        // it — a dropped `JoinHandle` detaches its task instead of stopping
+        // it, which would leave that room's listener (and its own `Client`
+        // clone) running for up to `LIVENESS_CHECK_INTERVAL` after eviction,
+        // the same open-handle hazard `clear_timelines` exists to avoid on
+        // logout/relocation.
         let evicted = timelines.push(
             room_id.to_owned(),
-            (std::sync::Arc::clone(&timeline), handle),
+            (std::sync::Arc::clone(&timeline), handle, false),
         );
         // Dropped before awaiting the evicted handle below: holding the
         // cache's own lock while awaiting an unrelated task's abort would
         // block every other `get_or_create_timeline`/`is_timeline_open`
         // caller for however long that task takes to unwind, for no reason.
         drop(timelines);
-        if let Some((_, (_, evicted_handle))) = evicted {
+        if let Some((_, (_, evicted_handle, _))) = evicted {
             evicted_handle.abort();
             // Genuinely wait for it to stop (see `abort_current_sync_loop`'s
             // identical rationale) — otherwise a caller relying on eviction
@@ -447,7 +473,7 @@ impl MatrixState {
         // awaiting its abort — same reasoning as below: never hold this
         // mutex across an `.await` on another task.
         let previous = self.timelines.lock().await.pop(room_id);
-        if let Some((_, previous_handle)) = previous {
+        if let Some((_, previous_handle, _)) = previous {
             previous_handle.abort();
             let _ = previous_handle.await;
         }
@@ -469,11 +495,16 @@ impl MatrixState {
         // eviction handling exists to avoid), leaving it to keep emitting
         // `timeline:update` against a live tail concurrently with this
         // event-focused view.
+        //
+        // Marked `is_focused = true`: this entry is a `TimelineFocus::Event`
+        // view, not the room's live tail — see `is_timeline_open` and
+        // `get_or_create_timeline`'s own doc comments for why that
+        // distinction matters (notifications and self-healing back to live).
         let displaced = self.timelines.lock().await.push(
             room_id.to_owned(),
-            (std::sync::Arc::clone(&timeline), handle),
+            (std::sync::Arc::clone(&timeline), handle, true),
         );
-        if let Some((_, (_, displaced_handle))) = displaced {
+        if let Some((_, (_, displaced_handle, _))) = displaced {
             displaced_handle.abort();
             let _ = displaced_handle.await;
         }
@@ -497,7 +528,16 @@ impl MatrixState {
     /// `peek`, not `get`: this must not perturb the LRU's recency ordering as
     /// a side effect of merely checking membership.
     pub(crate) async fn is_timeline_open(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
-        self.timelines.lock().await.peek(room_id).is_some()
+        // Review fix: a focused (`TimelineFocus::Event`) entry left behind
+        // by a Saved Messages jump doesn't receive new live sync events the
+        // way the room's ordinary live timeline does, so its listener never
+        // fires `maybe_notify_new_message` for anything arriving after the
+        // jump — only a genuinely live entry means "this room's own listener
+        // has it covered, skip the unopened-room notification path here".
+        matches!(
+            self.timelines.lock().await.peek(room_id),
+            Some((_, _, false))
+        )
     }
 
     /// Records that a local notification is about to be fired for
@@ -539,7 +579,7 @@ impl MatrixState {
     pub(crate) async fn clear_timelines(&self) {
         let mut timelines = self.timelines.lock().await;
         let mut handles = Vec::new();
-        while let Some((_, (_, handle))) = timelines.pop_lru() {
+        while let Some((_, (_, handle, _))) = timelines.pop_lru() {
             handle.abort();
             handles.push(handle);
         }

@@ -78,7 +78,7 @@ async fn build_bookmark_entry_snapshots_the_loaded_message() {
 
     let event_id = wait_for_event_id(&timeline, "bookmark me").await;
 
-    let entry = build_bookmark_entry(room.room_id().as_str(), &event_id, &client, &timeline, None)
+    let entry = build_bookmark_entry(room.room_id().as_str(), &event_id, &client, &timeline)
         .await
         .expect("bookmark the loaded message");
 
@@ -98,7 +98,6 @@ async fn build_bookmark_entry_errors_for_an_event_not_in_the_timeline() {
         "$definitely-not-loaded",
         &client,
         &timeline,
-        None,
     )
     .await;
 
