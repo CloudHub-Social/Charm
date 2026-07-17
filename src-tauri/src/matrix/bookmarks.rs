@@ -7,20 +7,26 @@
 //!
 //! Review fix: an earlier version of this module persisted the message's
 //! sender/body-preview/timestamp to the on-disk bookmarks file at save time.
-//! That file (`<app_data>/bookmarks/<account_key>.json`) is a bare,
-//! unencrypted JSON file — fine for opaque ids, but persisting a decrypted
-//! message body from an *encrypted room* into it leaks plaintext content
-//! from the encrypted timeline into unencrypted app-data storage that could
-//! be read from disk or a backup, independent of the room's own encryption.
-//! [`StoredBookmark`] now only ever persists `(room_id, event_id,
-//! saved_at_ms)` — no message content, decrypted or not. The richer
-//! [`BookmarkEntry`] the frontend actually renders (with sender/preview/
-//! timestamp) is resolved at *read* time in [`list_bookmarks`], the same way
-//! `ChatShell`'s jump-to-message resolves a bookmark's target event: from
-//! the room's already-decrypted in-memory `Timeline` if it's currently open
-//! (`MatrixState::peek_timeline`), falling back to a placeholder preview
-//! (never a re-fetch of history, and never anything written back to disk)
-//! when it isn't.
+//! Persisting a decrypted message body from an *encrypted room* would leak
+//! plaintext content from the encrypted timeline into app-data storage,
+//! independent of the room's own encryption. [`StoredBookmark`] now only
+//! ever persists `(room_id, event_id, saved_at_ms)` — no message content,
+//! decrypted or not. The richer [`BookmarkEntry`] the frontend actually
+//! renders (with sender/preview/timestamp) is resolved at *read* time in
+//! [`list_bookmarks`], the same way `ChatShell`'s jump-to-message resolves a
+//! bookmark's target event: from the room's already-decrypted in-memory
+//! `Timeline` if it's currently open (`MatrixState::peek_timeline`), falling
+//! back to a placeholder preview (never a re-fetch of history, and never
+//! anything written back to disk) when it isn't.
+//!
+//! Review fix: even with content stripped, `(room_id, event_id)` pairs are
+//! themselves sensitive Matrix metadata — which events in which rooms a user
+//! chose to save — and the file (`<app_data>/bookmarks/<account_key>.json`)
+//! previously stored them as bare plaintext JSON, readable from disk or a
+//! backup outside the account's SQLCipher-encrypted store. It's now
+//! AES-256-GCM-encrypted at rest, keyed from the account's existing
+//! SQLCipher store passphrase (see `persistence::bookmarks_encryption_key`)
+//! rather than provisioning a second per-account secret.
 
 use matrix_sdk::ruma::RoomId;
 use matrix_sdk::Client;

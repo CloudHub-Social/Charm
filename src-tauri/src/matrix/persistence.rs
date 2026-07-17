@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use rand::distr::Alphanumeric;
@@ -1289,14 +1291,69 @@ pub fn has_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<bool, S
 
 /// Where a single account's local bookmarks table (Spec 12: personal, private
 /// "saved messages" — never a Matrix account-data event, see the module doc
-/// on `add_bookmark`) lives on disk: one JSON file per [`account_key`], same
-/// `<root>/<subdir>/<account_key>` layout as [`onboarding_flag_path_at`], so
-/// two accounts signed into the same Charm install never see each other's
-/// bookmarks.
+/// on `add_bookmark`) lives on disk: one AES-256-GCM-encrypted file per
+/// [`account_key`], same `<root>/<subdir>/<account_key>` layout as
+/// [`onboarding_flag_path_at`], so two accounts signed into the same Charm
+/// install never see each other's bookmarks. `.json` kept as the extension
+/// even though the on-disk bytes are ciphertext, not JSON — the plaintext it
+/// decrypts to is JSON, and callers/tests reason about it that way.
 fn bookmarks_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> {
     let dir = root.join("bookmarks");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join(format!("{account_key}.json")))
+}
+
+/// Derives the AES-256-GCM key used to encrypt `account_key`'s bookmarks
+/// file at rest, from that account's existing SQLCipher store passphrase
+/// (see [`get_or_create_passphrase`]) — reusing the keychain-backed secret
+/// already provisioned per account rather than provisioning and managing a
+/// second one. Domain-separated via a fixed label before hashing, so this
+/// key can never collide with the passphrase's own use as a SQLCipher key
+/// or with any other derivation that might reuse the same passphrase in the
+/// future.
+fn bookmarks_encryption_key(account_key: &str) -> Result<aes_gcm::Key<Aes256Gcm>, String> {
+    let passphrase = get_or_create_passphrase(account_key)?;
+    let digest = Sha256::digest(format!("bookmarks-encryption-key:{passphrase}").as_bytes());
+    Ok(aes_gcm::Key::<Aes256Gcm>::from(<[u8; 32]>::from(digest)))
+}
+
+/// AES-GCM nonces are 96 bits; a fresh random one is generated for every
+/// [`encrypt_bookmarks`] call (never reused for a given key — nonce reuse
+/// under GCM breaks confidentiality) and stored alongside the ciphertext
+/// since the reader needs it back to decrypt.
+const NONCE_LEN: usize = 12;
+
+/// Encrypts `plaintext` (the serialized bookmarks JSON) for `account_key`,
+/// returning `nonce || ciphertext` ready to write to disk as-is — see
+/// [`decrypt_bookmarks`] for the inverse.
+fn encrypt_bookmarks(account_key: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let key = bookmarks_encryption_key(account_key)?;
+    let cipher = Aes256Gcm::new(&key);
+    let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
+    let nonce = Nonce::from(nonce_bytes);
+    let mut ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| format!("failed to encrypt bookmarks: {e}"))?;
+    let mut out = nonce_bytes.to_vec();
+    out.append(&mut ciphertext);
+    Ok(out)
+}
+
+/// Inverse of [`encrypt_bookmarks`]: splits the stored `nonce || ciphertext`
+/// bytes and decrypts back to the plaintext bookmarks JSON.
+fn decrypt_bookmarks(account_key: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() < NONCE_LEN {
+        return Err("bookmarks file is too short to contain a valid nonce".to_string());
+    }
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
+    let nonce_bytes: [u8; NONCE_LEN] = nonce_bytes
+        .try_into()
+        .map_err(|_| "bookmarks file has an invalid nonce length".to_string())?;
+    let key = bookmarks_encryption_key(account_key)?;
+    let cipher = Aes256Gcm::new(&key);
+    cipher
+        .decrypt(&Nonce::from(nonce_bytes), ciphertext)
+        .map_err(|e| format!("failed to decrypt bookmarks: {e}"))
 }
 
 /// Process-wide map of per-account mutexes guarding read-modify-write access
@@ -1346,11 +1403,12 @@ pub fn load_bookmarks_at<T: serde::de::DeserializeOwned>(
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
+    let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if raw.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+    let plaintext = decrypt_bookmarks(account_key, &raw)?;
+    serde_json::from_slice(&plaintext).map_err(|e| e.to_string())
 }
 
 /// Overwrites `account_key`'s bookmarks list wholesale — callers read the
@@ -1377,8 +1435,9 @@ pub fn save_bookmarks_at<T: serde::Serialize>(
     bookmarks: &[T],
 ) -> Result<(), String> {
     let path = bookmarks_path_at(root, account_key)?;
-    let json = serde_json::to_string(bookmarks).map_err(|e| e.to_string())?;
-    write_atomically(&path, json.as_bytes())
+    let json = serde_json::to_vec(bookmarks).map_err(|e| e.to_string())?;
+    let encrypted = encrypt_bookmarks(account_key, &json)?;
+    write_atomically(&path, &encrypted)
 }
 
 /// Writes `contents` to `path` by first writing a sibling `.tmp` file, then
