@@ -1147,13 +1147,18 @@ async fn load_focused_event_timeline(
     // account's focused `Timeline` into the process-wide, room-id-keyed
     // cache — a later open of that same room id under the new session would
     // then render or emit updates sourced from the old account. This is a
-    // cheap early-exit check only (by user id — `Client` has no cheap
-    // identity comparison); `replace_timeline` itself performs the
+    // cheap early-exit check only; `replace_timeline` itself performs the
     // authoritative re-check immediately before installing anything, since
     // it has its own internal await (stopping the previous listener) that
     // this check alone can't cover.
+    //
+    // Review fix: compares `device_id()`, not `user_id()` — a `user_id()`
+    // comparison alone would pass for a logout-then-re-login into the
+    // *same* account, even though that mints a fresh session (new device,
+    // revoked old tokens). `device_id()` is unique per login session, so it
+    // also catches that case, not just a switch to a different account.
     let still_active = match state.require_client().await {
-        Ok(current) => current.user_id() == client.user_id(),
+        Ok(current) => current.device_id() == client.device_id(),
         Err(_) => false,
     };
     if !still_active {

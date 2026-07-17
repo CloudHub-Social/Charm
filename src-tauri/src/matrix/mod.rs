@@ -611,12 +611,22 @@ impl MatrixState {
         // leak class the pre-check exists to close, just reopened by this
         // function's own internal await. Re-checking here, immediately
         // before installing anything, closes that second window too.
+        //
+        // Review fix: comparing only `user_id()` doesn't catch signing out
+        // and back into the *same* account while this was in flight — a
+        // fresh login gets a new `Client`/session (new device id, new sync
+        // token, the old session's tokens revoked) but the same user id, so
+        // a `user_id()`-only check would pass and still install a listener
+        // built from the revoked session. `device_id()` is unique per login
+        // session (password/SSO/QR each mint a fresh device), so comparing
+        // it instead also catches same-account re-logins, not just
+        // cross-account switches.
         let still_active = self
             .client
             .lock()
             .await
             .as_ref()
-            .is_some_and(|current| current.user_id() == client.user_id());
+            .is_some_and(|current| current.device_id() == client.device_id());
         if !still_active {
             self.transitioning_timelines.lock().await.remove(room_id);
             return None;
