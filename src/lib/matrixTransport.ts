@@ -407,6 +407,11 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
           target_sender: args.targetSender as string,
         })}`,
       );
+    case "can_redact_others":
+      return requestJson<T>(
+        "GET",
+        `/api/rooms/${encodeSegment(String(args.roomId))}/can-redact-others`,
+      );
     case "toggle_reaction":
       return requestJson<T>(
         "POST",

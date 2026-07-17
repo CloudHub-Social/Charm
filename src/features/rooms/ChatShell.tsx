@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
-import { canRedact, type RoomSummary } from "@/lib/matrix";
+import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -98,65 +98,113 @@ function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
 /**
  * Per-message affordance state: whether the current user sent it, and
  * whether they're allowed to redact it (own messages always; others gated
- * by the room's redact power level via `can_redact`). Fetched lazily per
- * sender the first time that sender appears in `senders`, since power
- * levels don't change often and this avoids an IPC round-trip per message.
+ * by the room's redact power level). A redact check on someone else's
+ * message depends only on the room's power levels and the current user's
+ * own level — never on who actually sent it (see `can_redact_others_impl`'s
+ * doc comment) — so this fetches `canRedactOthers` once per room rather than
+ * once per unique sender. The prior per-sender `canRedact` version was a
+ * pure N+1: every additional sender in a room repeated an identical query
+ * (Sentry issue CHARM-3, Seer-confirmed root cause in this hook).
  * Resolution happens in an effect (not during render) so it can safely call
  * `setState` without triggering React's render-loop guard.
  */
 function useCanRedactMap(roomId: string, currentUserId: string, senders: readonly string[]) {
-  const [canRedactBySender, setCanRedactBySender] = useState<Record<string, boolean>>({});
-  // Stable across renders that don't actually change the sender set, so the
-  // effect below only re-runs when a genuinely new sender shows up.
-  const uniqueSenderKey = [...new Set(senders)].toSorted().join(",");
-  // Tracks the room a `canRedact` call was actually issued for, so its
-  // resolution can be checked against whatever room is current by the time
-  // it lands — without this, a slow response for a room the user has since
-  // navigated away from can overwrite a *different*, already-current room's
-  // permission result for the same sender (redact power levels are
-  // per-room, so a shared sender across two rooms would otherwise get one
-  // room's answer applied to the other).
-  const requestedRoomIdRef = useRef(roomId);
-  requestedRoomIdRef.current = roomId;
-  // Tracks "room_id\0sender" keys already requested (or answered), as a
-  // plain ref rather than reading `canRedactBySender` from inside the
-  // `setState` updater below — StrictMode double-invokes updater functions
-  // to surface exactly this kind of side effect, and `canRedact(...)` being
-  // called from inside one meant the `if (sender in prev)` guard couldn't
-  // actually prevent the resulting duplicate IPC call.
-  const requestedRef = useRef<Set<string>>(new Set());
+  // A monotonic token bumped every time `roomId` changes, including
+  // *returning* to a room previously visited — `roomId` alone isn't
+  // sufficient to key a trusted resolved value, since it's reused on
+  // re-entry: if the user was demoted from redact power while away, the
+  // earlier visit's `allowed=true` would otherwise be trusted again as
+  // soon as the room is reselected, for the whole window before the fresh
+  // fetch below resolves (Codex review on #287, P2 — a follow-up on the
+  // cross-room leak this hook already guards against). Bumped via React's
+  // documented "adjusting state during render" pattern
+  // (react.dev/learn/you-might-not-need-an-effect), not an effect, so the
+  // stale value is invalidated before this render is ever painted rather
+  // than after — the same reasoning that motivated deriving
+  // `canRedactOthersInRoom` from render at all instead of an effect reset.
+  const [activation, setActivation] = useState(() => ({ roomId, token: 0 }));
+  if (activation.roomId !== roomId) {
+    setActivation({ roomId, token: activation.token + 1 });
+  }
 
-  // Redact power levels are per-room, but this cache is keyed only by
-  // sender — so switching to a different room must clear it, or a sender
-  // who appeared in the previous room keeps that room's cached permission
-  // instead of being re-queried for the new one.
+  // Tagged with the activation it resolved *for* (not the room, and not a
+  // plain boolean) — derived against the current activation at render time
+  // below, rather than reset by a passive effect. An effect-based reset
+  // doesn't run until *after* the new room's first paint, so that first
+  // render would still see the *previous* activation's resolved value: a
+  // room where redact was allowed, immediately followed by one where it
+  // isn't (or the same room re-entered after a demotion), could briefly
+  // show — and let the user submit — a Delete action the server then
+  // rejects (Codex review on #287, P3, and the P2 above extending it to
+  // same-room re-entry).
+  const [resolvedPermission, setResolvedPermission] = useState<{
+    token: number;
+    allowed: boolean;
+  } | null>(null);
+  const canRedactOthersInRoom =
+    resolvedPermission?.token === activation.token ? resolvedPermission.allowed : false;
+  // Tracks the activation a `canRedactOthers` call was actually issued for,
+  // so its resolution can be checked against whatever activation is
+  // current by the time it lands — without this, a slow response for a
+  // room the user has since navigated away from (or back to, bumping the
+  // token again) can overwrite a *different*, already-current activation's
+  // permission result.
+  const activationTokenRef = useRef(activation.token);
+  activationTokenRef.current = activation.token;
+
   useEffect(() => {
-    setCanRedactBySender({});
-    requestedRef.current = new Set();
-  }, [roomId]);
+    // No room selected (ChatShell's empty state, before its `if (!room)`
+    // early return further down) — `canRedactOthers("")` would fail on
+    // both the Rust IPC path (`RoomId::parse("")`) and the web transport
+    // (`/api/rooms//can-redact-others`), surfacing as a spurious
+    // backend/Sentry error on nothing but opening/closing a room (Codex
+    // review on #287, P2).
+    if (!roomId) return undefined;
 
-  useEffect(() => {
-    const unresolved = uniqueSenderKey === "" ? [] : uniqueSenderKey.split(",");
-    const requestedForRoomId = roomId;
-
-    for (const sender of unresolved) {
-      if (sender === currentUserId) {
-        setCanRedactBySender((prev) => (prev[sender] ? prev : { ...prev, [sender]: true }));
-        continue;
-      }
-      const requestKey = `${roomId}\0${sender}`;
-      if (requestedRef.current.has(requestKey)) continue;
-      requestedRef.current.add(requestKey);
-      canRedact(roomId, sender)
+    const requestedToken = activation.token;
+    // A per-request sequence number, distinct from `activation.token`: the
+    // token alone only distinguishes *activations* (room changes), not
+    // multiple in-flight requests *within* the same activation. The initial
+    // fetch below and a later `room_details:update`-triggered refetch share
+    // one token, so without this, the initial request resolving *after* the
+    // refetch (e.g. the refetch answering a demotion faster) would overwrite
+    // the fresher, already-current result with its own stale one (Codex
+    // review on #287, P2). Only the highest sequence number seen so far is
+    // ever applied, regardless of resolution order.
+    let latestRequestSeq = 0;
+    const fetchPermission = () => {
+      latestRequestSeq += 1;
+      const requestSeq = latestRequestSeq;
+      canRedactOthers(roomId)
         .then((allowed) => {
-          if (requestedRoomIdRef.current !== requestedForRoomId) return;
-          setCanRedactBySender((current) => ({ ...current, [sender]: allowed }));
+          if (activationTokenRef.current !== requestedToken) return;
+          if (requestSeq !== latestRequestSeq) return;
+          setResolvedPermission({ token: requestedToken, allowed });
         })
         .catch(logAndIgnore);
-    }
-  }, [roomId, currentUserId, uniqueSenderKey]);
+    };
+    fetchPermission();
 
-  return canRedactBySender;
+    // Re-fetches on `room_details:update`, not just on room entry: a power
+    // level change (promotion/demotion) while the room stays open used to
+    // leave `canRedactOthersInRoom` stuck at whatever it was when the room
+    // was entered, silently hiding or wrongly showing the Delete affordance
+    // until the user switched rooms (Codex review on #287, P2).
+    const unlistenPromise = onRoomDetailsUpdate((details) => {
+      if (details.room_id === roomId) fetchPermission();
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(logAndIgnore);
+    };
+  }, [roomId, activation.token]);
+
+  return useMemo(() => {
+    const bySender: Record<string, boolean> = {};
+    for (const sender of senders) {
+      bySender[sender] = sender === currentUserId || canRedactOthersInRoom;
+    }
+    return bySender;
+  }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
 export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
@@ -545,7 +593,10 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   function isGroupBreakAt(index: number): boolean {
     return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
   }
-  const senders = messages.map((m) => m.sender);
+  // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
+  // a `useMemo` dependency — a fresh array every render would defeat that
+  // memoization entirely (Sentry review on #287, LOW).
+  const senders = useMemo(() => messages.map((m) => m.sender), [messages]);
   // Best-effort display-name lookup for read-receipt tooltips ("Read by
   // {name}") — built from senders already present in the loaded timeline
   // rather than a dedicated member-list fetch, since a reader is virtually

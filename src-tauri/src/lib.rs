@@ -1451,6 +1451,7 @@ pub fn run() {
             matrix::actions::edit_message,
             matrix::actions::redact_event,
             matrix::actions::can_redact,
+            matrix::actions::can_redact_others,
             matrix::actions::toggle_reaction,
             matrix::actions::send_reply,
             matrix::actions::resend_message,
