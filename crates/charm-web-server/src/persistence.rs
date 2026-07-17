@@ -643,13 +643,32 @@ impl PersistenceStore {
     /// clock — letting a non-browser client (or a stolen cookie) that keeps
     /// presenting an already-expired token stay resurrected indefinitely
     /// instead of ever actually hitting the retention limit (Codex review
-    /// finding on #280). `false` (not expired) for a never-persisted or
-    /// unreadable token, or one with `last_seen_unix: None` — both fall
-    /// through to `restore_by_token`'s own, more thorough handling of those
-    /// same cases.
+    /// finding on #280). `false` (not expired) for a never-persisted token
+    /// or one with `last_seen_unix: None` — both fall through to
+    /// `restore_by_token`'s own, more thorough handling of those same
+    /// cases.
+    ///
+    /// `true` (fail closed, i.e. treated as expired) for a *read* error —
+    /// deliberately not the same `false` a genuinely missing entry gets.
+    /// `require_session` calls this immediately before `restore_by_token`,
+    /// and a transient read failure here has no reason to also fail the
+    /// very next read a few lines later: without this distinction, an
+    /// already-expired-but-not-yet-swept token whose expiry check happened
+    /// to hit a transient error would fall through as "not expired", then
+    /// have `restore_by_token`'s own (successful) read restore it anyway —
+    /// resetting its retention clock right back to "now" via the restore's
+    /// `touch_last_seen`, exactly the resurrection this check exists to
+    /// prevent (Codex review finding on #280).
     pub async fn is_expired(&self, token: &str, max_age: std::time::Duration) -> bool {
-        let Some(entry) = self.read_one(token).await else {
-            return false;
+        let entry = match self.read_one_with_version_result(token).await {
+            Ok(Some((entry, _))) => entry,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(
+                    "treating a persisted session as expired: failed to read it to check: {e}"
+                );
+                return true;
+            }
         };
         entry_is_expired(entry.last_seen_unix, now_unix(), max_age.as_secs())
     }
@@ -3349,6 +3368,46 @@ mod tests {
         .await;
 
         assert!(store.is_expired("tok-overdue", max_age).await);
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Fail closed
+    /// when the expiry read fails"): a transient read error must make
+    /// `is_expired` report `true` (fail closed), not `false` the way a
+    /// genuinely missing entry does. `routes::require_session` calls this
+    /// immediately before `restore_by_token`'s own read — collapsing a
+    /// read error here to "not expired" would let an already-expired
+    /// session that merely hit a transient read hiccup fall through to a
+    /// successful restore a few lines later, which resets its retention
+    /// clock right back to "now" via that restore's `touch_last_seen`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn is_expired_fails_closed_on_a_transient_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("is-expired-transient-read-error");
+        let store = PersistenceStore::new_for_test(&dir, [60u8; 32]);
+        let now = now_unix();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        save_with_last_seen(
+            &store,
+            "tok-unreadable",
+            now.saturating_sub(max_age.as_secs() + 1),
+        )
+        .await;
+
+        let file_path = object_file_path(&dir, "tok-unreadable");
+        let original_perms = std::fs::metadata(&file_path).unwrap().permissions();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = store.is_expired("tok-unreadable", max_age).await;
+
+        std::fs::set_permissions(&file_path, original_perms).unwrap();
+
+        assert!(
+            result,
+            "a transient read error must be treated as expired (fail closed), not as \
+             \"not expired\" the way a genuinely missing entry is"
+        );
     }
 
     #[tokio::test]
