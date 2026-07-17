@@ -487,7 +487,14 @@ pub async fn add_existing_space_child_impl(
     if has_live_child_via(&space, &parsed_child_id).await? {
         return Err(format!("{child_room_id} is already a child of {space_id}"));
     }
-    if live_hierarchy_contains(client, &parsed_child_id, space_id).await? {
+    // A cycle can only run through a *space* child — a normal room has no
+    // children of its own to eventually loop back to `space_id` through, so
+    // there's nothing to check. Also sidesteps a real-world failure mode:
+    // the `/hierarchy` endpoint below is defined for space room IDs, and
+    // some homeservers reject it outright for an ordinary room, which would
+    // otherwise break Add Existing for every non-space room (Codex review,
+    // #290).
+    if child_room.is_space() && live_hierarchy_contains(client, &parsed_child_id, space_id).await? {
         return Err(format!(
             "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
         ));
@@ -1046,10 +1053,11 @@ mod tests {
             .await;
         server.sync_joined_room(&client, child_id).await;
 
-        // The live duplicate/cycle checks now query the server directly
-        // (see `has_live_child_via`/`live_hierarchy_contains`), so this
-        // needs mocks for both even on the success path: no live edge yet,
-        // and `child_id`'s own live hierarchy doesn't contain `space_id`.
+        // The live duplicate check now queries the server directly (see
+        // `has_live_child_via`) — the live *cycle* check is skipped
+        // entirely here since `child_id` is a plain (non-space) room, which
+        // can't have children of its own to loop back through (see the
+        // dedicated test below for that guard).
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path(format!(
                 "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
@@ -1057,22 +1065,6 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
                 "errcode": "M_NOT_FOUND",
                 "error": "Event not found.",
-            })))
-            .mount(server.server())
-            .await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path(format!(
-                "/_matrix/client/v1/rooms/{child_id}/hierarchy"
-            )))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
-                "rooms": [{
-                    "room_id": child_id,
-                    "num_joined_members": 1,
-                    "world_readable": false,
-                    "guest_can_join": false,
-                    "join_rule": "invite",
-                    "children_state": [],
-                }],
             })))
             .mount(server.server())
             .await;
@@ -1097,6 +1089,81 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the existing room to be added as a child, got {result:?}"
+        );
+    }
+
+    /// A cycle can only run through a *space* child — a plain room has no
+    /// children to loop back through — so `add_existing_space_child_impl`
+    /// must not call the `/hierarchy` endpoint (defined for space room IDs)
+    /// against a non-space child at all. Some homeservers reject that
+    /// endpoint outright for an ordinary room, which would otherwise break
+    /// Add Existing for every non-space room (Codex review, #290). Modeled
+    /// here by mounting the hierarchy endpoint to fail if called at all —
+    /// the add still succeeding proves it wasn't.
+    #[tokio::test]
+    async fn add_existing_space_child_impl_skips_the_hierarchy_check_for_a_non_space_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+        // A plain (non-space) joined room.
+        server.sync_joined_room(&client, child_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+        // Some homeservers 400 this endpoint for a non-space room id — if
+        // `add_existing_space_child_impl` called it anyway, this mock would
+        // make that failure visible as a rejected add.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{child_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(400).set_body_json(json!({
+                "errcode": "M_UNRECOGNIZED",
+                "error": "Root room is not a space",
+            })))
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_added" })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected adding a non-space room to succeed without calling /hierarchy, got {result:?}"
         );
     }
 
