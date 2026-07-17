@@ -481,6 +481,24 @@ async fn refresh_session_cookie(
         // `sweep_expired`'s doc comment); this is a belt-and-suspenders bump
         // for the rare case that exemption is ever narrowed later, not
         // something every request needs to pay an object-store write for.
+        //
+        // Awaited (`touch_last_seen_now`), not the fire-and-forget
+        // `touch_last_seen` used elsewhere: this call sits directly in front
+        // of the `Set-Cookie` append below, which extends the browser's
+        // cookie by a fresh `SESSION_COOKIE_MAX_AGE_SECS`. Firing the
+        // durable timestamp bump in the background and moving straight on
+        // to send that extended cookie would let a crash or object-store
+        // write failure land in the gap between the two — leaving the
+        // browser holding a cookie claiming 30 more days of validity while
+        // `last_seen_unix` on disk never actually moved, so a later
+        // restart's `restore_all`/`sweep_expired` would reject that
+        // still-present cookie as expired (Codex review finding on #280).
+        // A failed touch still lets the cookie refresh proceed — logged, not
+        // fatal to the request — since the in-memory session being resident
+        // in `SessionStore` at all already exempts it from `sweep_expired`
+        // regardless (see that function's doc comment); this bump is
+        // belt-and-suspenders, not the only thing standing between a
+        // transient write hiccup and a forced logout.
         if let Some(persistence) = &state.persistence {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -493,7 +511,12 @@ async fn refresh_session_cookie(
                 session
                     .last_persistence_touch_unix
                     .store(now, std::sync::atomic::Ordering::Relaxed);
-                persistence.touch_last_seen(&token);
+                if let Err(e) = persistence.touch_last_seen_now(&token).await {
+                    tracing::warn!(
+                        "failed to durably bump last-seen timestamp before refreshing a \
+                         session cookie: {e}"
+                    );
+                }
             }
         }
         if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string()) {
@@ -669,6 +692,98 @@ mod refresh_session_cookie_gating_tests {
                 .contains_key(axum::http::header::SET_COOKIE),
             "a same-site request missing the app's transport header must never refresh a \
              session cookie, even against a genuinely authenticated route"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Await
+    /// last-seen persistence before refreshing cookies"): a failed durable
+    /// last-seen touch must not prevent this middleware from still
+    /// refreshing the session cookie — the touch is now awaited (not
+    /// fire-and-forget) so it completes *before* the cookie is sent, but a
+    /// transient write failure there is deliberately tolerated (logged, not
+    /// propagated) rather than degrading the request, since the in-memory
+    /// session being resident in `SessionStore` at all already exempts it
+    /// from `sweep_expired` regardless of this particular bump succeeding.
+    /// Forces the failure by revoking write permission on the persisted
+    /// session's containing directory after its initial save, so the
+    /// throttled touch this request triggers hits a genuine write error
+    /// rather than a `NotFound`/`Precondition` case `touch_last_seen_now`
+    /// already tolerates as a no-op.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_durable_touch_does_not_prevent_the_cookie_from_still_refreshing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-touch-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [61u8; 32]);
+
+        let matrix_session = matrix_sdk::authentication::matrix::MatrixSession {
+            meta: matrix_sdk::SessionMeta {
+                user_id: matrix_sdk::ruma::UserId::parse("@touch-fail:example.invalid").unwrap(),
+                device_id: matrix_sdk::ruma::device_id!("TESTDEVICE").to_owned(),
+            },
+            tokens: matrix_sdk::authentication::SessionTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+            },
+        };
+        store
+            .save(
+                "tok-touch-fail",
+                "https://example.invalid",
+                &matrix_session,
+                None,
+                crate::persistence::SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // Block any further write under the sessions directory so the
+        // throttled durable touch this request triggers fails with a
+        // genuine permission error rather than succeeding or hitting one
+        // of `touch_last_seen_now`'s already-tolerated no-op cases.
+        let sessions_dir = dir.join("sessions");
+        let original_perms = std::fs::metadata(&sessions_dir).unwrap().permissions();
+        std::fs::set_permissions(&sessions_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        state
+            .sessions
+            .insert(
+                "tok-touch-fail".to_string(),
+                dummy_live_session("@touch-fail:example.invalid").await,
+            )
+            .await;
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-touch-fail")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        std::fs::set_permissions(&sessions_dir, original_perms).unwrap();
+
+        assert!(
+            response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a failed durable touch must not prevent the session cookie from still being \
+             refreshed"
         );
     }
 }

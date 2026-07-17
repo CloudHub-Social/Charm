@@ -1185,7 +1185,19 @@ impl PersistenceStore {
     /// `Ok(())`, not an error, if the entry was removed by a racing logout
     /// before this could even acquire the lock or read it — same tolerance
     /// `read_one`/`read_all` already give a missing entry.
-    async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
+    ///
+    /// `pub(crate)`, not private: `routes::refresh_session_cookie` also
+    /// calls this directly (awaited, not fire-and-forget like
+    /// [`Self::touch_last_seen`]) so the durable timestamp bump completes
+    /// *before* that middleware appends a freshly `Max-Age`-extended
+    /// `Set-Cookie` header — otherwise a crash or write failure landing in
+    /// the gap between the fire-and-forget spawn and the response being
+    /// sent could leave the browser holding a cookie claiming 30 more days
+    /// of validity while the persisted `last_seen_unix` never actually
+    /// moved, so a restart's `restore_all`/`sweep_expired` would then
+    /// reject that still-present cookie as expired (Codex review finding
+    /// on #280).
+    pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         let Some((mut entry, version)) = self.read_one_with_version(token).await else {
