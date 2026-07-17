@@ -194,6 +194,33 @@ export function RoomList({
     () => new Set(scopedRooms.map((room) => room.room_id)),
     [scopedRooms],
   );
+  // `roomListItemPropsEqual` deliberately excludes callback props from its
+  // comparison (RoomList creates fresh closures every render regardless of
+  // whether captured values changed, so comparing them would defeat the
+  // memoization entirely). That's safe as long as a stale closure still
+  // *behaves* correctly if React skips a re-render and reuses it — which a
+  // closure over `scopedRoomIds`/`onSelectSearchResult` directly would not:
+  // a search result row could stay memoized across a scope change and fire
+  // the wrong branch on click (Codex review on #288, P2). Refs sidestep
+  // this: any closure created from `handleSelectSearchResult`, however old,
+  // always reads the current scope when it's actually invoked.
+  const scopedRoomIdsRef = useRef(scopedRoomIds);
+  scopedRoomIdsRef.current = scopedRoomIds;
+  const onSelectSearchResultRef = useRef(onSelectSearchResult);
+  onSelectSearchResultRef.current = onSelectSearchResult;
+  const handleSelectSearchResult = useCallback(
+    (room: RoomSummary) => {
+      const inScope = scopedRoomIdsRef.current.has(room.room_id);
+      if (!inScope && onSelectSearchResultRef.current) {
+        onSelectSearchResultRef.current(room);
+      } else {
+        onSelectRoom(room.room_id);
+      }
+      setSearchQuery("");
+      setSearchEverywhere(false);
+    },
+    [onSelectRoom],
+  );
   const visibleScopedRooms = useMemo(
     () => (unreadOnly ? filterRoomsToUnread(scopedRooms, activeRoomId) : scopedRooms),
     [unreadOnly, scopedRooms, activeRoomId],
@@ -327,24 +354,15 @@ export function RoomList({
         key={room.room_id}
         room={room}
         active={room.room_id === activeRoomId}
-        onSelect={() => {
-          const inScope = scopedRoomIds.has(room.room_id);
-          if (!inScope && onSelectSearchResult) {
-            onSelectSearchResult(room);
-          } else {
-            onSelectRoom(room.room_id);
-          }
-          // Clear search state directly here rather than relying solely on
-          // the mode/selectedSpaceId reset effect below: `onSelectSearchResult`
-          // can land back on the *same* mode/space (e.g. a space still
-          // loading its hierarchy misjudges an in-scope room as an
-          // out-of-scope result, so `selectRoomInVisibleMode` re-selects the
-          // same space id), which is a no-op state update that never
-          // triggers that effect, leaving the search box and "Search
-          // everywhere" stuck on.
-          setSearchQuery("");
-          setSearchEverywhere(false);
-        }}
+        // Clearing search state here (inside `handleSelectSearchResult`)
+        // rather than relying solely on the mode/selectedSpaceId reset
+        // effect below matters because `onSelectSearchResult` can land back
+        // on the *same* mode/space (e.g. a space still loading its
+        // hierarchy misjudges an in-scope room as an out-of-scope result,
+        // so `selectRoomInVisibleMode` re-selects the same space id), which
+        // is a no-op state update that never triggers that effect, leaving
+        // the search box and "Search everywhere" stuck on.
+        onSelect={() => handleSelectSearchResult(room)}
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
         }
@@ -955,9 +973,21 @@ function DraggableRoomRow({
     },
   );
 
+  // A `ResizeObserver`, not a one-shot read, because this ref callback's
+  // own identity is stable across re-renders (see `dragHandleProps` below)
+  // so React won't re-invoke it when only the row's rendered *content*
+  // changes — e.g. a `last_message_preview` arriving asynchronously and
+  // adding a second line of text (Codex review on #288, P2). The observer
+  // keeps `rowHeights` current regardless of what caused the resize.
   const measureRow = useCallback(
     (node: HTMLElement | null) => {
-      if (node) rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+      if (!node) return undefined;
+      rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+      const observer = new ResizeObserver(() => {
+        rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+      });
+      observer.observe(node);
+      return () => observer.disconnect();
     },
     [room.room_id, rowHeights],
   );

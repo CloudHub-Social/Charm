@@ -162,8 +162,43 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
 
+/// A `tmp-*` directory younger than this is never swept, regardless of how
+/// long the sweep itself has been running (Codex review on #288, P1). This
+/// sweep now runs as a spawned background task rather than blocking window
+/// creation (see its call site in `lib.rs`'s `.setup()`), so it can still be
+/// mid-`read_dir` when a login/register/SSO/QR flow creates its own `tmp-*`
+/// store — the sweep has no way to distinguish "orphaned by a past crash"
+/// from "a login in progress right now" other than age. `login`/`register`
+/// additionally hold `restore_store_lock` for their whole duration as a
+/// second, redundant guard (belt-and-suspenders, and documents intent at
+/// those call sites), but SSO and QR login can't reasonably do the same —
+/// their temp store's lifetime spans a separate long-running task waiting on
+/// a browser redirect or QR scan, potentially minutes, and holding this lock
+/// for that whole window would block anything else that needs it for no
+/// benefit (the sweep only ever runs once, in the first few seconds after
+/// launch). This grace period is the fix that actually covers all four
+/// flows uniformly: a store created moments ago is essentially always still
+/// in active use, however long its owning flow ultimately takes to finish —
+/// old enough to have survived from a *previous* session (which is the only
+/// thing this sweep is meant to clean up) reliably means older than this by
+/// a huge margin. 5 minutes is generous slack for a slow/busy launch (many
+/// stale directories, a loaded disk) while still being far shorter than any
+/// realistic previous-session gap.
+const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE)
+}
+
+/// Core logic behind [`sweep_orphan_temp_stores_at`], taking the minimum age
+/// explicitly so tests can use a near-zero threshold instead of waiting on
+/// real wall-clock time.
+fn sweep_orphan_temp_stores_at_with_min_age(
+    root: &Path,
+    min_age: std::time::Duration,
+) -> Result<(), String> {
+    let now = std::time::SystemTime::now();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let Ok(entry) = entry else { continue };
         let Ok(file_type) = entry.file_type() else {
@@ -176,6 +211,29 @@ pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
             continue;
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
+            // Best-effort, with two distinct failure modes handled
+            // differently:
+            // - mtime unreadable at all: err toward sweeping it, matching
+            //   the pre-existing behavior for every other failure mode in
+            //   this best-effort cleanup pass — an unreadable mtime is
+            //   itself unusual enough to suggest genuine filesystem trouble
+            //   rather than a live directory.
+            // - mtime reads as *later* than `now` (clock skew, or a write
+            //   landing between reading `now` and stat'ing this entry): err
+            //   toward treating it as fresh — `duration_since` returning
+            //   `Err` here means "younger than `now`, however you slice it,"
+            //   which is the one thing this check exists to protect against
+            //   sweeping.
+            let is_fresh = match entry.metadata().and_then(|metadata| metadata.modified()) {
+                Ok(modified) => match now.duration_since(modified) {
+                    Ok(age) => age < min_age,
+                    Err(_) => true,
+                },
+                Err(_) => false,
+            };
+            if is_fresh {
+                continue;
+            }
             discard_temp_store(&entry.path(), &name);
         } else if let Some(account_key) = name.strip_suffix(STALE_BACKUP_SUFFIX) {
             recover_or_discard_stale_backup(root, account_key, &name, &entry.path());
@@ -1411,7 +1469,7 @@ mod tests {
         std::fs::create_dir_all(&backup_path).unwrap();
         let _ = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
 
         assert!(!temp_path.exists());
         assert!(!backup_path.exists());
@@ -1431,6 +1489,36 @@ mod tests {
     }
 
     #[test]
+    fn sweep_orphan_temp_stores_skips_a_temp_dir_younger_than_the_min_age() {
+        // Codex review on #288, P1: a `tmp-*` directory created moments ago
+        // is almost certainly a login/register/SSO/QR flow still in
+        // progress, not something orphaned by a past crash — sweeping it
+        // anyway raced exactly this scenario for SSO/QR, whose temp store
+        // outlives a separate long-running task this sweep has no way to
+        // see. A generous min_age (real-world: `ORPHAN_TEMP_STORE_MIN_AGE`)
+        // protects any freshly-created store regardless of which flow made
+        // it or how long that flow ultimately takes to finish.
+        let root = ScratchRoot::new("sweep-fresh");
+        let temp_key = temp_store_key();
+        let temp_path = store_path_at(&root.0, &temp_key).unwrap();
+        let _ = get_or_create_passphrase(&temp_key).unwrap();
+
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::from_secs(300))
+            .unwrap();
+
+        assert!(
+            temp_path.exists(),
+            "a freshly-created temp store must survive the sweep"
+        );
+        let temp_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
+        assert!(
+            temp_entry.get_password().is_ok(),
+            "its passphrase must survive the sweep too"
+        );
+    }
+
+    #[test]
     fn sweep_orphan_temp_stores_restores_uncommitted_stale_backup() {
         let root = ScratchRoot::new("sweep-restore");
         let account_key = account_key("@charm-persistence-test-sweep-restore:localhost");
@@ -1447,7 +1535,7 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
 
         // The backup is restored to the account's path, not discarded.
         assert!(!backup_path.exists());
@@ -1490,7 +1578,7 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
 
         // The uncommitted store is discarded; the backup takes its place.
         assert!(!backup_path.exists());
