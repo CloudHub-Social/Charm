@@ -682,6 +682,105 @@ describe("RoomList", () => {
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
   });
 
+  it("offers Remove for a favourited row visible in the hierarchy fetch before parent_space_ids has synced", async () => {
+    // Add Existing's `/hierarchy` refetch can surface an already-favourited
+    // room before the next `/sync` updates its `parent_space_ids` — the
+    // hierarchy snapshot is the more current source here (Codex review on
+    // #290, P2), so Remove must still be offered and target the right
+    // space even though `parent_space_ids` doesn't list it yet.
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: [],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
+  });
+
+  it("targets a favourited row's immediate nested-space parent, not the top-level selected space", async () => {
+    // A descendant several levels deep in the hierarchy has its own
+    // immediate parent, distinct from the top-level `selectedSpaceId` —
+    // `parent_space_ids` alone can't tell these apart (Codex review on
+    // #290, P2), only the hierarchy tree's own shape can.
+    featureFlagMocks.spaceRailManagement = true;
+    const rootSpace = makeRoomSummary({ room_id: "!root:localhost", is_space: true, name: "Root" });
+    const nestedSpace = makeRoomSummary({
+      room_id: "!nested:localhost",
+      is_space: true,
+      name: "Nested",
+      parent_space_ids: ["!root:localhost"],
+    });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!nested:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!nested:localhost",
+          name: "Nested",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!fav-child:localhost",
+              name: "Pinned chat",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "invite",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [rootSpace, nestedSpace, favouriteChild],
+          mode: "space",
+          selectedSpace: rootSpace,
+        })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!nested:localhost", "!fav-child:localhost");
+  });
+
   it("discards a manual hierarchy refetch that resolves after the user has switched to a different space", async () => {
     featureFlagMocks.spaceRailManagement = true;
     const spaceA = makeRoomSummary({

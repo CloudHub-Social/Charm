@@ -191,6 +191,23 @@ export function RoomList({
     () => countVisibleHierarchyNodes(filteredSpaceHierarchy, roomById),
     [filteredSpaceHierarchy, roomById],
   );
+  // Maps each descendant's room id to its *immediate* parent's id, per the
+  // freshly-fetched `/hierarchy` snapshot — not `room.parent_space_ids`
+  // (Codex review on #290, P2). Two gaps that check alone has: a tagged
+  // (favourite/low-priority) room Add Existing just published can appear in
+  // this hierarchy fetch before the next `/sync` updates its
+  // `parent_space_ids`, so the local-only check would miss it entirely; and
+  // for a descendant under a *nested* space, `parent_space_ids` doesn't say
+  // which immediate parent to detach from (only the hierarchy's own tree
+  // shape does — the room's top-level `selectedSpaceId` membership isn't
+  // its actual removal target for a deeper node).
+  const hierarchyParentById = useMemo(
+    () =>
+      mode === "space" && selectedSpaceId
+        ? hierarchyParentByRoomId(spaceHierarchy, selectedSpaceId)
+        : new Map<string, string>(),
+    [mode, selectedSpaceId, spaceHierarchy],
+  );
   const scopedRooms = useMemo(
     () =>
       getScopedRooms({
@@ -422,45 +439,50 @@ export function RoomList({
     // Reordering a filtered subset would compute positions against missing
     // rows and silently corrupt the full section order once "All" is restored.
     const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
-    return sectionRooms.map((room, index) => (
-      <DraggableRoomRow
-        key={room.room_id}
-        room={room}
-        index={index}
-        sectionRooms={sectionRooms}
-        canReorder={canReorder}
-        rowHeights={rowHeightsRef.current}
-        active={room.room_id === activeRoomId}
-        onSelect={() => onSelectRoom(room.room_id)}
-        onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
-        // Favourite/low-priority rooms bypass the hierarchy view entirely
-        // (see `isHiddenHierarchyRoom`) and render through this same
-        // section-rows path even in space mode — so this is the only place
-        // those tagged rows can pick up `Remove from space`; the untagged
-        // hierarchy rows get theirs from `renderHierarchy` instead.
-        onRemoveFromSpace={
-          spaceRailManagementEnabled &&
-          mode === "space" &&
-          selectedSpaceId &&
-          room.parent_space_ids.includes(selectedSpaceId)
-            ? () => {
-                setRemoveError(null);
-                removeSpaceChild(selectedSpaceId, room.room_id)
-                  .then(refetchSpaceHierarchy)
-                  .catch((err) => setRemoveError(err instanceof Error ? err.message : String(err)));
-              }
-            : undefined
-        }
-        removeFromSpaceTargetId={
-          spaceRailManagementEnabled &&
-          mode === "space" &&
-          selectedSpaceId &&
-          room.parent_space_ids.includes(selectedSpaceId)
-            ? selectedSpaceId
-            : undefined
-        }
-      />
-    ));
+    return sectionRooms.map((room, index) => {
+      // Favourite/low-priority rooms bypass the hierarchy view entirely (see
+      // `isHiddenHierarchyRoom`) and render through this same section-rows
+      // path even in space mode — so this is the only place those tagged
+      // rows can pick up `Remove from space`; the untagged hierarchy rows
+      // get theirs from `renderHierarchy` instead. Prefers the freshly
+      // fetched `/hierarchy` snapshot's own parent over `parent_space_ids`
+      // (Codex review on #290, P2): a tagged room Add Existing just
+      // published can appear in that snapshot before the next `/sync`
+      // updates `parent_space_ids`, and a descendant under a nested space
+      // needs its *immediate* parent, which `parent_space_ids` alone
+      // doesn't distinguish from the top-level selected space.
+      const removeFromSpaceTargetId =
+        spaceRailManagementEnabled && mode === "space" && selectedSpaceId
+          ? (hierarchyParentById.get(room.room_id) ??
+            (room.parent_space_ids.includes(selectedSpaceId) ? selectedSpaceId : undefined))
+          : undefined;
+      return (
+        <DraggableRoomRow
+          key={room.room_id}
+          room={room}
+          index={index}
+          sectionRooms={sectionRooms}
+          canReorder={canReorder}
+          rowHeights={rowHeightsRef.current}
+          active={room.room_id === activeRoomId}
+          onSelect={() => onSelectRoom(room.room_id)}
+          onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
+          onRemoveFromSpace={
+            removeFromSpaceTargetId
+              ? () => {
+                  setRemoveError(null);
+                  removeSpaceChild(removeFromSpaceTargetId, room.room_id)
+                    .then(refetchSpaceHierarchy)
+                    .catch((err) =>
+                      setRemoveError(err instanceof Error ? err.message : String(err)),
+                    );
+                }
+              : undefined
+          }
+          removeFromSpaceTargetId={removeFromSpaceTargetId}
+        />
+      );
+    });
   }
 
   // Deliberately not renderSectionRooms/DraggableRoomRow: search results are
@@ -911,6 +933,25 @@ function getScopedRooms({
 
 function flattenHierarchy(nodes: SpaceHierarchyNode[]): SpaceHierarchyNode[] {
   return nodes.flatMap((node) => [node, ...flattenHierarchy(node.children)]);
+}
+
+/** Maps every descendant room id in `nodes` to its immediate parent's id —
+ * `parentId` is the id each top-level node in `nodes` is a direct child of. */
+function hierarchyParentByRoomId(
+  nodes: SpaceHierarchyNode[],
+  parentId: string,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const node of nodes) {
+    map.set(node.child.room_id, parentId);
+    for (const [childId, childParentId] of hierarchyParentByRoomId(
+      node.children,
+      node.child.room_id,
+    )) {
+      map.set(childId, childParentId);
+    }
+  }
+  return map;
 }
 
 function getFullSectionRooms(visibleSectionRooms: RoomSummary[], fullSectionRooms: RoomSummary[]) {
