@@ -581,6 +581,16 @@ pub async fn set_space_child_suggested_impl(
             _ => None,
         })
         .ok_or_else(|| format!("{child_room_id} is not currently a child of {space_id}"))?;
+    // Mirrors `remove_space_child_impl`'s live-edge check — an empty `via` is
+    // the unredacted representation of a revoked child link (what
+    // `remove_space_child_impl` itself writes), so it must be rejected the
+    // same way a missing/redacted event is, rather than letting `suggested`
+    // be flipped on a link that no longer actually connects the two rooms.
+    if content.via.is_empty() {
+        return Err(format!(
+            "{child_room_id} is not currently a child of {space_id}"
+        ));
+    }
     content.suggested = suggested;
 
     space
@@ -1378,6 +1388,45 @@ mod tests {
         assert!(
             result.is_err(),
             "expected marking a non-child as suggested to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_rejects_a_revoked_child_link() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        // `remove_space_child_impl` writes exactly this: an Original event
+        // with an empty `via`, not a redaction — the child link is revoked
+        // but the event itself is neither missing nor redacted.
+        let revoked_child_event = factory
+            .event(SpaceChildEventContent::new(vec![]))
+            .state_key(child_id.to_string());
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id)
+                    .add_state_event(create_event)
+                    .add_state_event(revoked_child_event),
+            )
+            .await;
+
+        let result =
+            set_space_child_suggested_impl(&client, space_id.as_str(), child_id.as_str(), true)
+                .await;
+        assert!(
+            result.is_err(),
+            "expected marking a revoked (empty-via) child link as suggested to be rejected, got {result:?}"
         );
     }
 }
