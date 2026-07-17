@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T16:46:20.350Z",
+  "generatedAt": "2026-07-17T00:04:20.307Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
     "follow-up": 8,
     "in-progress": 0,
-    "planned": 37
+    "planned": 38
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 282,
+      "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/282",
+      "detail": "Day-1 Spec 37 · ready for review"
+    },
     {
       "type": "issue",
       "number": 48,
@@ -98,13 +105,14 @@
         "day-1-59",
         "day-1-60",
         "day-1-61",
-        "day-1-62"
+        "day-1-62",
+        "day-1-63"
       ],
       "counts": {
         "shipped": 6,
         "follow-up": 5,
         "in-progress": 0,
-        "planned": 24
+        "planned": 25
       }
     },
     {
@@ -1018,6 +1026,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 282,
+          "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/282",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-16T22:09:13Z"
+        },
+        {
           "number": 277,
           "title": "feat(rooms): confirm message redaction",
           "url": "https://github.com/CloudHub-Social/Charm/pull/277",
@@ -1231,6 +1247,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 283,
+          "title": "feat(rooms): add last-message preview to room-list rows (Spec 54)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/283",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-16T19:46:04Z"
+        },
+        {
           "number": 278,
           "title": "feat(rooms): show ambient unread counts",
           "url": "https://github.com/CloudHub-Social/Charm/pull/278",
@@ -1343,6 +1367,16 @@
       "number": 62,
       "title": "Desktop platform integrations (macOS and Windows)",
       "route": "/specs/day-1/spec-62--desktop-platform-integrations-macos-and-windows/",
+      "status": "planned",
+      "pullRequests": [],
+      "issues": []
+    },
+    {
+      "id": "day-1-63",
+      "tier": "day-1",
+      "number": 63,
+      "title": "\"Charm 2.0 Spec — Sidebar and space management (pin, reorder, context",
+      "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
       "status": "planned",
       "pullRequests": [],
       "issues": []
