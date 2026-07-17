@@ -185,9 +185,19 @@ export function useMessageActions({
       // `SavedMessagesPanel.handleRemove` already uses. (`previous` is used
       // only if that refetch itself fails, to avoid leaving the cache on
       // the too-eager optimistic removal above forever.)
-      queryClient
-        .invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY })
-        .catch(() => queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous));
+      //
+      // Review fix: `previous` can itself be `undefined` — the bookmarks
+      // query is disabled (and its data undefined) whenever `roomId` is
+      // null, which a room-leave racing this same in-flight unbookmark can
+      // trigger. Restoring `undefined` here would blow away whatever's
+      // actually in the cache (e.g. from a concurrent successful refetch)
+      // rather than leaving it alone, so only restore when there's an
+      // actual snapshot to restore.
+      queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY }).catch(() => {
+        if (previous !== undefined) {
+          queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous);
+        }
+      });
     }
   }
 

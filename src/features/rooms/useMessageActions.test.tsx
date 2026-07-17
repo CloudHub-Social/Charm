@@ -179,6 +179,47 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
     await waitFor(() => expect(result.current.bookmarkedEventIds.has("$a")).toBe(true));
   });
 
+  it("does not overwrite the bookmarks cache with undefined when the pre-optimistic snapshot was itself undefined (Sentry review fix)", async () => {
+    // `bookmarks` (and so the `previous` snapshot `handleUnbookmark` captures
+    // at call time) is `undefined` whenever the query has no data yet — e.g.
+    // its initial fetch failed, or (per the review finding) it raced a
+    // room-close that disabled the query. Simulate that with a
+    // permanently-failing `listBookmarks`, so the initial fetch never
+    // populates `bookmarks` at all.
+    mockListBookmarks.mockReset().mockRejectedValue(new Error("down"));
+    mockRemoveBookmark.mockRejectedValue(new Error("network error"));
+    const queryClient = new QueryClient();
+    const { result } = renderHook(
+      () =>
+        useMessageActions({
+          roomId: "!room:localhost",
+          setReplyTarget: vi.fn(),
+          setEditingEventId: vi.fn(),
+        }),
+      {
+        wrapper: ({ children }) => (
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        ),
+      },
+    );
+    await waitFor(() => expect(mockListBookmarks).toHaveBeenCalled());
+    expect(result.current.bookmarkedEventIds.size).toBe(0);
+
+    // remove_bookmark fails, and the recovery refetch (also `listBookmarks`)
+    // fails too, so the catch block's fallback runs with `previous ===
+    // undefined`.
+    await act(async () => {
+      await result.current.handleUnbookmark("$a");
+    });
+
+    const cached = queryClient.getQueryData<BookmarkEntry[]>(["bookmarks"]);
+    // Before the fix, the fallback unconditionally called
+    // `setQueryData(BOOKMARKS_QUERY_KEY, previous)` with `previous ===
+    // undefined`, clobbering whatever the optimistic removal above had just
+    // written (`[]`) back to `undefined`.
+    expect(cached).toEqual([]);
+  });
+
   it("clears bookmarkedEventIds when there is no active room", async () => {
     const { result } = setup(null);
     expect(result.current.bookmarkedEventIds.size).toBe(0);
