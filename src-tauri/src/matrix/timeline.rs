@@ -1146,11 +1146,12 @@ async fn load_focused_event_timeline(
     // logged out of) and would otherwise go ahead and install that stale
     // account's focused `Timeline` into the process-wide, room-id-keyed
     // cache — a later open of that same room id under the new session would
-    // then render or emit updates sourced from the old account. Re-check
-    // that the currently active client is still the same one this task
-    // started with (by user id — `Client` has no cheap identity comparison)
-    // immediately before installing anything, and no-op instead of racing a
-    // stale account into a live session's cache.
+    // then render or emit updates sourced from the old account. This is a
+    // cheap early-exit check only (by user id — `Client` has no cheap
+    // identity comparison); `replace_timeline` itself performs the
+    // authoritative re-check immediately before installing anything, since
+    // it has its own internal await (stopping the previous listener) that
+    // this check alone can't cover.
     let still_active = match state.require_client().await {
         Ok(current) => current.user_id() == client.user_id(),
         Err(_) => false,
@@ -1159,8 +1160,13 @@ async fn load_focused_event_timeline(
         return Ok(false);
     }
 
-    state.replace_timeline(app, client, room_id, focused).await;
-    Ok(true)
+    // `replace_timeline` returns `None` if its own re-check finds the
+    // active client no longer matches by the time it's ready to install —
+    // treat that identically to "not found", not as a successful jump.
+    Ok(state
+        .replace_timeline(app, client, room_id, focused)
+        .await
+        .is_some())
 }
 
 async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {

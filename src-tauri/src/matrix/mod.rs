@@ -562,13 +562,19 @@ impl MatrixState {
     /// the frontend since neither is a duplicate the dedup logic there would
     /// catch. Now the previous listener is located, aborted, and awaited
     /// *before* the new one is spawned, so there's no overlap.
+    ///
+    /// Returns `None` without installing anything if, by the time the
+    /// previous listener has fully stopped, the active client is no longer
+    /// the same one `client` was captured from (see the review fix below) —
+    /// callers should treat that the same as "this jump/replacement no
+    /// longer applies", not as success.
     pub(crate) async fn replace_timeline(
         &self,
         app: &AppHandle,
         client: &Client,
         room_id: &matrix_sdk::ruma::RoomId,
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
-    ) -> std::sync::Arc<matrix_sdk_ui::Timeline> {
+    ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
         // Review fix: this used to only `.abort()` the previous listener *in
         // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
         // stayed correct) and defer the actual `.await` of its shutdown until
@@ -589,6 +595,31 @@ impl MatrixState {
         if let Some((_, previous_handle, _)) = previous {
             previous_handle.abort();
             let _ = previous_handle.await;
+        }
+
+        // Review fix: the caller's own pre-check (comparing the active
+        // client against the one it captured, before ever calling this
+        // function) only guards the window *before* this call — it says
+        // nothing about a logout/account-switch landing during the
+        // `previous_handle.await` above, which can take a while (it's a
+        // genuine wait for the old listener task to fully unwind, not just
+        // an abort signal). `clear_local_session` clears `self.client` and
+        // this whole `timelines` cache on logout, but this task is still
+        // holding the caller's now-stale `Client` clone and would otherwise
+        // go ahead and install a listener built from it into the process-
+        // wide, room-id-keyed cache regardless — the same cross-account
+        // leak class the pre-check exists to close, just reopened by this
+        // function's own internal await. Re-checking here, immediately
+        // before installing anything, closes that second window too.
+        let still_active = self
+            .client
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|current| current.user_id() == client.user_id());
+        if !still_active {
+            self.transitioning_timelines.lock().await.remove(room_id);
+            return None;
         }
 
         let handle = timeline::spawn_timeline_listener(
@@ -623,7 +654,7 @@ impl MatrixState {
             let _ = displaced_handle.await;
         }
 
-        timeline
+        Some(timeline)
     }
 
     /// Drops every live `Timeline` this session holds — called on
