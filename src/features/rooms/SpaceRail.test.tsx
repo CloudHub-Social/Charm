@@ -13,6 +13,11 @@ const setSpaceChildSuggested = vi.fn().mockResolvedValue(undefined);
 const addExistingSpaceChild = vi.fn().mockResolvedValue(undefined);
 const leaveRoom = vi.fn().mockResolvedValue(undefined);
 const inviteMember = vi.fn().mockResolvedValue(undefined);
+// No account-data record for these tests' fixtures — `useSpaceRailPrefsSync`
+// treats that the same as "not signed into a real backend yet" and falls
+// back to (and stays on) the local-storage cache.
+const getAccountData = vi.fn().mockResolvedValue(null);
+const setAccountData = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixLib>()),
@@ -21,6 +26,8 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
   addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
   leaveRoom: (...args: unknown[]) => leaveRoom(...args),
   inviteMember: (...args: unknown[]) => inviteMember(...args),
+  getAccountData: (...args: unknown[]) => getAccountData(...args),
+  setAccountData: (...args: unknown[]) => setAccountData(...args),
 }));
 
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {

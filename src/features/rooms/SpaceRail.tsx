@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   ContextMenu,
@@ -32,7 +32,8 @@ import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
 import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
 import { LeaveSpaceDialog } from "./LeaveSpaceDialog";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
-import { moveSpaceInOrder, orderSpaceIds, spaceRailPrefsAtom } from "./spaceRailPrefs";
+import { moveSpaceInOrder, orderSpaceIds } from "./spaceRailPrefs";
+import { useSpaceRailPrefsSync } from "./useSpaceRailPrefsSync";
 
 export type RoomListMode = "home" | "dms" | "space";
 
@@ -58,7 +59,7 @@ export function SpaceRail({
   onCreateJoin,
 }: SpaceRailProps) {
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
-  const [prefs, setPrefs] = useAtom(spaceRailPrefsAtom);
+  const [prefs, setPrefs] = useSpaceRailPrefsSync();
   const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
   const [leaveTarget, setLeaveTarget] = useState<{ spaceId: string; name: string } | null>(null);
   const [addExistingTarget, setAddExistingTarget] = useState<{

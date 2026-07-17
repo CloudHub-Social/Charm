@@ -12,11 +12,31 @@ export interface SpaceRailPrefs {
 
 const DEFAULT_PREFS: SpaceRailPrefs = { order: [], unpinned: [] };
 
-/** Persisted client-side (not yet synced via account data — see Spec 63). */
+/**
+ * Global account-data event type for the rail's pin/order state (Spec 63) —
+ * no version suffix in the type string itself, matching every other
+ * `social.cloudhub.charm`-namespaced identifier in this codebase (see
+ * `onboardingAccountData.ts`).
+ */
+export const SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE = "social.cloudhub.charm.space_rail_prefs";
+
+/** Local-only cache: instant on cold start, before the account-data round
+ * trip in `useSpaceRailPrefsSync` resolves; kept in sync with it afterward. */
 export const spaceRailPrefsAtom = atomWithStorage<SpaceRailPrefs>(
   "charm.spaceRailPrefs",
   DEFAULT_PREFS,
 );
+
+export function isSpaceRailPrefs(value: unknown): value is SpaceRailPrefs {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    Array.isArray(candidate.order) &&
+    candidate.order.every((id) => typeof id === "string") &&
+    Array.isArray(candidate.unpinned) &&
+    candidate.unpinned.every((id) => typeof id === "string")
+  );
+}
 
 export function orderSpaceIds(spaceIds: string[], order: string[]): string[] {
   const rank = new Map(order.map((id, index) => [id, index]));
