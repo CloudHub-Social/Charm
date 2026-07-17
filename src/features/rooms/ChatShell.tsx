@@ -296,7 +296,7 @@ export function ChatShell({
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
-  } = useChatTimeline(room, roomSettingsOpen);
+  } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of

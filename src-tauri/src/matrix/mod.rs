@@ -621,6 +621,18 @@ impl MatrixState {
         // session (password/SSO/QR each mint a fresh device), so comparing
         // it instead also catches same-account re-logins, not just
         // cross-account switches.
+        //
+        // Review fix: checking here and *then* separately re-acquiring
+        // `self.timelines` for the `push` below left one more window open —
+        // `self.timelines.lock().await` is itself a suspension point, and if
+        // it has to wait (e.g. `clear_timelines` racing this call for the
+        // same lock, which is exactly what a concurrent logout does), the
+        // check above could still be stale by the time this task resumes
+        // and actually pushes. Holding `self.timelines`'s guard across both
+        // the check and the push closes this atomically: `clear_timelines`
+        // needs that same lock to clear the cache, so it can't run between
+        // this check and this push once the guard is held.
+        let mut timelines = self.timelines.lock().await;
         let still_active = self
             .client
             .lock()
@@ -628,6 +640,7 @@ impl MatrixState {
             .as_ref()
             .is_some_and(|current| current.device_id() == client.device_id());
         if !still_active {
+            drop(timelines);
             self.transitioning_timelines.lock().await.remove(room_id);
             return None;
         }
@@ -654,10 +667,11 @@ impl MatrixState {
         // view, not the room's live tail — see `is_timeline_open` and
         // `get_or_create_timeline`'s own doc comments for why that
         // distinction matters (notifications and self-healing back to live).
-        let displaced = self.timelines.lock().await.push(
+        let displaced = timelines.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle, true),
         );
+        drop(timelines);
         self.transitioning_timelines.lock().await.remove(room_id);
         if let Some((_, (_, displaced_handle, _))) = displaced {
             displaced_handle.abort();

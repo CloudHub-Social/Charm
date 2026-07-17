@@ -19,7 +19,11 @@ import { messageRowKey } from "./messageRowShared";
 // `scrollHeight`/`scrollTop` delta math entirely.
 const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
 
-export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: boolean) {
+export function useChatTimeline(
+  room: RoomSummary | null,
+  roomSettingsOpen: boolean,
+  hasPendingJump = false,
+) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -345,8 +349,19 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
+    // Review fix: a Saved Messages jump opens this room to scroll to an
+    // older bookmarked message, not the live tail. Blindly mark-reading the
+    // whole room here (as a normal room-open otherwise does) would send a
+    // read receipt/fully-read marker for the room's latest event and clear
+    // its unread state even though the user is about to view — and hasn't
+    // actually seen — messages newer than the bookmark. Skip the blanket
+    // mark-read for this open (still consuming the dedup key above, so it
+    // doesn't fire retroactively once the jump resolves either);
+    // `markReadIfAtBottom` below still marks read normally if/when the user
+    // actually scrolls down to the live tail themselves.
+    if (hasPendingJump) return;
     markRoomRead(room.room_id).catch(logAndIgnore);
-  }, [room, roomSettingsOpen]);
+  }, [room, roomSettingsOpen, hasPendingJump]);
 
   // Marks the room read once the true bottom of the timeline is visible —
   // driven by Virtuoso's own `atBottomStateChange` (see
@@ -356,6 +371,12 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   function markReadIfAtBottom() {
     if (!room || !latestEventId) return;
     if (roomSettingsOpen) return;
+    // Review fix: `isAtBottomRef` defaults to `true` (assumes the live tail
+    // until Virtuoso reports otherwise), so this would otherwise still mark
+    // read on the very first render of a bookmark-jump open — before
+    // Virtuoso has had a chance to report the post-jump scroll position at
+    // all. Same reasoning as the room-open effect above.
+    if (hasPendingJump) return;
     if (!isAtBottomRef.current) return;
     if (lastMarkedReadEventId.current === latestEventId) return;
     lastMarkedReadEventId.current = latestEventId;
@@ -369,7 +390,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   useEffect(() => {
     markReadIfAtBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `markReadIfAtBottom` closes over refs, not state.
-  }, [room, latestEventId, roomSettingsOpen]);
+  }, [room, latestEventId, roomSettingsOpen, hasPendingJump]);
 
   function handleAtBottomStateChange(atBottom: boolean) {
     isAtBottomRef.current = atBottom;

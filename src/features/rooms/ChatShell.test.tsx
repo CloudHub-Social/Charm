@@ -3216,6 +3216,36 @@ describe("ChatShell", () => {
     );
   });
 
+  it("does not mark the room read on open while a bookmark jump to older history is pending (Codex review fix)", async () => {
+    // The bookmarked message isn't in the initial page — the room-open
+    // effect must not blanket mark-read while `loadTimelineAroundEvent` is
+    // still resolving, since the user is jumping to older history, not
+    // viewing (and hasn't seen) the live tail this would otherwise report
+    // as read.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "latest" })],
+      next_cursor: null,
+    });
+    let resolveLoadAround: ((found: boolean) => void) | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("latest");
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    expect(markRoomRead).not.toHaveBeenCalled();
+    resolveLoadAround?.(false);
+  });
+
   it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
