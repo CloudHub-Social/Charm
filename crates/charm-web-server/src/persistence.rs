@@ -1211,46 +1211,78 @@ impl PersistenceStore {
     pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
-        // The `Result`-returning read, not `read_one_with_version` — a
-        // transient read error must propagate as `Err` here too, not get
-        // silently collapsed into the same `Ok(())` "nothing to touch" a
-        // genuine `NotFound` takes. `routes::refresh_session_cookie` relies
-        // on that `Err` to skip advancing its once-an-hour throttle, so a
-        // hiccuped read doesn't get treated the same as a confirmed durable
-        // bump and end up hiding a real `last_seen_unix` staleness for
-        // another hour (Codex review finding on #280).
-        let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
-            return Ok(());
-        };
-        entry.last_seen_unix = Some(now_unix());
-        let path = object_path_for_token(&entry.token);
-        let blob = self.encrypt(&entry, &path)?;
-        let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-        let opts = object_store::PutOptions {
-            mode: object_store::PutMode::Update(version),
-            ..Default::default()
-        };
-        match self
-            .store
-            .put_opts(&path, PutPayload::from(json.clone()), opts)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(object_store::Error::Precondition { .. }) => {
-                tracing::info!(
-                    "skipped last-seen touch for a persisted session: object changed or was \
-                     removed since it was read (likely a racing logout on another instance)"
-                );
-                Ok(())
-            }
-            Err(object_store::Error::NotImplemented) => self
+        // Bounded retry on a `Precondition` conflict, not an automatic
+        // `Ok(())` — in the multi-instance path this whole store supports,
+        // that conflict isn't only a racing logout/delete (which this loop
+        // still tells apart cleanly: the *next* re-read below finds nothing
+        // and returns `Ok(())` on its own, same tolerance `read_one`/
+        // `read_all` already give a missing entry). It can just as easily
+        // be a concurrent `SaveMode::Resave` from another instance's
+        // `sync_loop` after a token refresh, which preserves whatever
+        // `last_seen_unix` this touch just read — silently giving up there
+        // would let `refresh_session_cookie` treat the touch as durable and
+        // advance its throttle/send a freshly `Max-Age`-extended cookie
+        // anyway, even though the persisted timestamp never actually moved
+        // (Codex review finding on #280): a restart's `restore_all`/
+        // `sweep_expired` could then reject that still-present cookie as
+        // expired. Re-reading fresh each attempt (not reusing the entry
+        // from a failed attempt) is what makes this retry safe — same
+        // pattern [`Self::save`]'s own retry loop uses.
+        const MAX_TOUCH_ATTEMPTS: u32 = 5;
+        for attempt in 0..MAX_TOUCH_ATTEMPTS {
+            // The `Result`-returning read, not `read_one_with_version` — a
+            // transient read error must propagate as `Err` here too, not get
+            // silently collapsed into the same `Ok(())` "nothing to touch" a
+            // genuine `NotFound` takes. `routes::refresh_session_cookie` relies
+            // on that `Err` to skip advancing its once-an-hour throttle, so a
+            // hiccuped read doesn't get treated the same as a confirmed durable
+            // bump and end up hiding a real `last_seen_unix` staleness for
+            // another hour (Codex review finding on #280).
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(());
+            };
+            entry.last_seen_unix = Some(now_unix());
+            let path = object_path_for_token(&entry.token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            let opts = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
                 .store
-                .put(&path, PutPayload::from(json))
+                .put_opts(&path, PutPayload::from(json.clone()), opts)
                 .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. })
+                    if attempt + 1 < MAX_TOUCH_ATTEMPTS =>
+                {
+                    tracing::info!(
+                        "retrying a last-seen touch after a benign version conflict \
+                         (attempt {}/{MAX_TOUCH_ATTEMPTS})",
+                        attempt + 1
+                    );
+                }
+                Err(object_store::Error::Precondition { .. }) => {
+                    return Err(
+                        "exhausted retries touching last-seen timestamp after repeated \
+                         version conflicts"
+                            .to_string(),
+                    );
+                }
+                Err(object_store::Error::NotImplemented) => {
+                    return self
+                        .store
+                        .put(&path, PutPayload::from(json))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string());
+                }
+                Err(e) => return Err(e.to_string()),
+            }
         }
+        unreachable!("the loop above always returns on its final attempt")
     }
 
     /// Best-effort activity-timestamp bump for `token`'s persisted session —
@@ -3100,6 +3132,70 @@ mod tests {
         assert!(
             entry.last_seen_unix.unwrap() > old,
             "touch_last_seen should have bumped last_seen_unix forward"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Retry
+    /// last-seen touches after benign version conflicts"): a `Precondition`
+    /// conflict inside `touch_last_seen_now` must be retried, not
+    /// automatically treated as success — in the multi-instance path this
+    /// store supports, that conflict isn't only a racing logout (already
+    /// covered by the sibling `touch_last_seen_does_not_resurrect_*` tests);
+    /// it can just as easily be a concurrent, non-deleting write from
+    /// another instance (e.g. a `SaveMode::Resave` after a token refresh).
+    /// Silently giving up there would let `routes::refresh_session_cookie`
+    /// treat the touch as durable and advance its throttle even though
+    /// `last_seen_unix` never actually moved. Runs two real concurrent
+    /// writers against a shared `InMemory` backend (which supports
+    /// conditional writes, unlike `LocalFileSystem`) and asserts the touch
+    /// still lands rather than being silently dropped by the race.
+    #[tokio::test]
+    async fn touch_last_seen_now_retries_past_a_benign_concurrent_conflict() {
+        let key_bytes = [63u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-touch-conflict",
+                "https://example.invalid",
+                &dummy_session("@touch-conflict:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // Two independent `PersistenceStore`s (no shared in-process lock,
+        // same as two real instances) racing a write against the same
+        // token: process A's durable touch races process B's own touch.
+        // Neither should cause the other's write to vanish — process A's
+        // touch must retry past process B's conflicting write and still
+        // land.
+        let (touch_result, _) = tokio::join!(
+            process_a.touch_last_seen_now("tok-touch-conflict"),
+            process_b.touch_last_seen_now("tok-touch-conflict"),
+        );
+
+        assert!(
+            touch_result.is_ok(),
+            "a benign concurrent conflict must not cause touch_last_seen_now to give up \
+             instead of retrying: {touch_result:?}"
+        );
+        assert!(
+            process_a
+                .read_one("tok-touch-conflict")
+                .await
+                .unwrap()
+                .last_seen_unix
+                .is_some(),
+            "the object must still exist with a last_seen_unix set after both touches"
         );
     }
 
