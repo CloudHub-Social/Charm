@@ -1986,4 +1986,51 @@ describe("RoomList", () => {
     expect(screen.getByText("Alpha orphan")).toBeInTheDocument();
     expect(screen.queryByText("Loading space…")).not.toBeInTheDocument();
   });
+
+  it("clears the loading state when a manual refetch overtakes the still-pending initial load", async () => {
+    // The mount-time load never resolves on its own — standing in for it
+    // still being in flight when a sibling SpaceRail's Add Existing/Remove
+    // bumps `hierarchyRefreshToken`. That refetch claims the newer request
+    // id, so the stale initial load's own `finally` sees itself as stale
+    // and skips clearing `spaceLoading` — the refetch itself must clear it
+    // instead, or the lobby stays stuck on "Loading space…" forever even
+    // though `spaceHierarchy` already updated (Codex review, #290).
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockReturnValueOnce(new Promise(() => {})); // never resolves
+    listSpaceHierarchy.mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    await waitFor(() => expect(screen.getByText("Loading space…")).toBeInTheDocument());
+
+    rerender(withToken(1));
+
+    await waitFor(() => expect(screen.queryByText("Loading space…")).not.toBeInTheDocument());
+  });
 });

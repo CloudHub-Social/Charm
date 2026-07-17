@@ -396,7 +396,20 @@ export function RoomList({
         // reachable) succeeded.
         setSpaceError(null);
       })
-      .catch(logAndIgnore);
+      .catch(logAndIgnore)
+      .finally(() => {
+        // If this refetch overtook the initial mount-time load (e.g. a
+        // sibling SpaceRail's Add Existing/Remove bumped the request id
+        // while that load was still in flight), that load's own `finally`
+        // sees itself as stale and skips clearing `spaceLoading` — this is
+        // the only path left to do it, or the lobby stays stuck on
+        // "Loading space…" even after this refetch settles (Codex review,
+        // #290). Doesn't check `currentScopeRef` like the `.then()` above:
+        // even if the user has since navigated away, `spaceLoading` isn't
+        // scoped to a particular space, so it's still correct to clear it
+        // once whatever fetch was still "current" for it has settled.
+        if (hierarchyRequestIdRef.current === requestId) setSpaceLoading(false);
+      });
   }
 
   // `hierarchyRefreshToken` is the "Add Existing" side of the same gap —
