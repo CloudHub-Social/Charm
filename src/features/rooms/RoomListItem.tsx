@@ -32,6 +32,16 @@ interface RoomListItemProps {
    * counterpart to `SpaceRail`'s own `Remove from space` action, which only
    * covers sub-space rows, not regular rooms filed under a space. */
   onRemoveFromSpace?: () => void;
+  /** The space id `onRemoveFromSpace` (if present) would detach `room` from —
+   * not read by this component, only compared in `roomListItemPropsEqual`.
+   * `onRemoveFromSpace`'s own identity can't stand in for this: `RoomList`
+   * creates a fresh closure over the current `selectedSpaceId`/`parentSpaceId`
+   * on every render (like its other callback props, whose identity churn is
+   * deliberately ignored below), so a mounted row that keeps showing the same
+   * *room* while the surrounding lobby's target space changes — e.g. the same
+   * room visible under two different spaces, and the user switches lobbies —
+   * would otherwise keep the stale closure and detach from the wrong space. */
+  removeFromSpaceTargetId?: string;
   /** Spread onto the root element by the drag-reorder gesture in `RoomList.tsx`. */
   dragHandleProps?: Record<string, unknown>;
   style?: CSSProperties;
@@ -222,6 +232,13 @@ export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListIt
   // don't change, so without this check the row would keep showing (or
   // hiding) the action until some unrelated prop forced a re-render.
   if (Boolean(prev.onRemoveFromSpace) !== Boolean(next.onRemoveFromSpace)) return false;
+  // Presence alone misses the narrower case where the same room is visible
+  // under two different spaces and the user switches from one lobby to the
+  // other: `onRemoveFromSpace` stays present in both renders, but the
+  // closure it captured targets whichever space was selected when *this*
+  // row last re-rendered. Comparing the target id forces a refresh so the
+  // row picks up the new closure instead of detaching from the wrong space.
+  if (prev.removeFromSpaceTargetId !== next.removeFromSpaceTargetId) return false;
 
   const a = prev.room;
   const b = next.room;

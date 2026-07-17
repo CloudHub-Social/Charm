@@ -463,9 +463,29 @@ describe("roomListItemPropsEqual", () => {
     expect(roomListItemPropsEqual(withHandler, withoutHandler)).toBe(false);
   });
 
-  it("treats two different onRemoveFromSpace callbacks as equal, matching other callback props", () => {
+  it("treats two different onRemoveFromSpace callbacks as equal when the target space is unchanged", () => {
     const prev = { ...baseProps, onRemoveFromSpace: vi.fn() };
     const next = { ...baseProps, onRemoveFromSpace: vi.fn() };
     expect(roomListItemPropsEqual(prev, next)).toBe(true);
+  });
+
+  it("treats a changed removeFromSpaceTargetId as unequal even though onRemoveFromSpace stays present", () => {
+    // The same room can be visible under two different spaces — if the user
+    // switches from one space's lobby to the other, `onRemoveFromSpace`
+    // stays present in both renders (so the presence check alone wouldn't
+    // catch this), but the closure now targets a different space. Without
+    // comparing `removeFromSpaceTargetId`, the stale row could detach the
+    // room from the wrong space when the action is selected.
+    const prev = {
+      ...baseProps,
+      onRemoveFromSpace: vi.fn(),
+      removeFromSpaceTargetId: "!space-a:localhost",
+    };
+    const next = {
+      ...baseProps,
+      onRemoveFromSpace: vi.fn(),
+      removeFromSpaceTargetId: "!space-b:localhost",
+    };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
   });
 });

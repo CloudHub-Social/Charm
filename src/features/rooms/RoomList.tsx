@@ -451,6 +451,14 @@ export function RoomList({
               }
             : undefined
         }
+        removeFromSpaceTargetId={
+          spaceRailManagementEnabled &&
+          mode === "space" &&
+          selectedSpaceId &&
+          room.parent_space_ids.includes(selectedSpaceId)
+            ? selectedSpaceId
+            : undefined
+        }
       />
     ));
   }
@@ -978,6 +986,9 @@ function renderHierarchy(
                   )
             : undefined
         }
+        removeFromSpaceTargetId={
+          options.spaceManagementEnabled && !node.child.is_space ? parentSpaceId : undefined
+        }
       />,
       ...renderHierarchy(node.children, options, node.child.room_id, depth + 1, nodeKey),
     ];
@@ -1009,6 +1020,7 @@ interface HierarchyRowProps {
   onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
   onRemoveFromSpace?: () => void;
+  removeFromSpaceTargetId?: string;
 }
 
 function HierarchyRow({
@@ -1021,6 +1033,7 @@ function HierarchyRow({
   onSelectSpace,
   onJoin,
   onRemoveFromSpace,
+  removeFromSpaceTargetId,
 }: HierarchyRowProps) {
   const indent = `${Math.min(depth, 6) * 16}px`;
   if (joinedRoom?.is_space) {
@@ -1063,6 +1076,7 @@ function HierarchyRow({
           onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
           onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
           onRemoveFromSpace={onRemoveFromSpace}
+          removeFromSpaceTargetId={removeFromSpaceTargetId}
         />
       </div>
     );
@@ -1095,6 +1109,7 @@ interface DraggableRoomRowProps {
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
   onRemoveFromSpace?: () => void;
+  removeFromSpaceTargetId?: string;
 }
 
 function DraggableRoomRow({
@@ -1107,6 +1122,7 @@ function DraggableRoomRow({
   onSelect,
   onReorder,
   onRemoveFromSpace,
+  removeFromSpaceTargetId,
 }: DraggableRoomRowProps) {
   const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -1212,6 +1228,7 @@ function DraggableRoomRow({
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       onRemoveFromSpace={onRemoveFromSpace}
+      removeFromSpaceTargetId={removeFromSpaceTargetId}
       dragHandleProps={dragHandleProps}
       style={style}
     />
