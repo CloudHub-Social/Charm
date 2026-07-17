@@ -11,16 +11,17 @@ sidebar:
 
 ## Implementation status
 
-**Phases 1 and 2 shipped; `Settings` deferred.** Pin/unpin, reorder
-(Move up/down), and a per-space context menu (Open Lobby, Invite, Pin/Unpin,
-Move up/down, Add Existing, Mark/Unmark Suggested, Remove, Leave) are live on
-`SpaceRail.tsx`. Pinned order and unpinned state persist client-side via a new
-`spaceRailPrefs` atom — not yet synced via account data (still open, see
-below). Unpinned spaces stay visible below a divider rather than
-disappearing, since there is not yet another space-browsing surface to keep
-them reachable from once hidden — a deliberate deviation from this spec's
-original "remains reachable via Home/search" framing, revisit once a real
-space browser exists.
+**Shipped, except `Settings`.** Pin/unpin, reorder (Move up/down), and a
+per-space context menu (Open Lobby, Invite, Pin/Unpin, Move up/down, Add
+Existing, Mark/Unmark Suggested, Remove, Leave) are live on `SpaceRail.tsx`.
+Pinned order and unpinned state persist locally via a `spaceRailPrefs` atom
+and sync across devices via account data (`useSpaceRailPrefsSync`, reusing
+Spec 12's generic `get_account_data`/`set_account_data` commands — no new
+Rust surface needed for this part). Unpinned spaces stay visible below a
+divider rather than disappearing, since there is not yet another
+space-browsing surface to keep them reachable from once hidden — a
+deliberate deviation from this spec's original "remains reachable via
+Home/search" framing, revisit once a real space browser exists.
 
 New Rust commands back the state-mutating menu items: `leave_room`,
 `add_existing_space_child`, `remove_space_child` (empty-content
@@ -34,11 +35,15 @@ current children to prevent cycles/duplicates.
 
 `Settings` is not built — it depends on Spec 33's "space settings surface"
 UI-parity addition, which doesn't exist yet; the menu simply omits the item
-until it does. Power-level gating on the new menu actions (per the spec's
-original design note) is also not yet implemented — every joined member sees
-every action regardless of their actual permission in the room, and a
-send failure surfaces only as the underlying IPC error, not a pre-emptive
-disabled state. Account-data sync for pin/order state remains open too.
+until it does.
+
+**Known gap:** power-level gating on the new menu actions (per the spec's
+original design note) is not implemented — every joined member sees every
+action regardless of their actual permission in the room, and a send failure
+surfaces only as the underlying IPC error, not a pre-emptive disabled state.
+Reuse Spec 07's existing power-level check pattern (`room_admin.rs`'s
+`RoomPermissions`) when this is picked up; it needs a per-space equivalent
+threaded into `SpaceRail`, which doesn't currently fetch power levels at all.
 
 **Workstream:** likely 2 PRs (see Effort estimate). Addendum to Spec 19 (space
 hierarchy and room-list rebuild) and Spec 33 (space nesting and hierarchy
