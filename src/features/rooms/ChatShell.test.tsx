@@ -73,6 +73,11 @@ const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
 let typingCallback: ((update: TypingUpdate) => void) | undefined;
+// An array, not a single variable: `useRoomParticipants` (used inside
+// `ChatShell` itself) also calls `onRoomDetailsUpdate`, so a shared
+// last-writer-wins slot would silently drop `useCanRedactMap`'s own
+// listener whenever the other one registered second.
+let roomDetailsCallbacks: Array<(details: { room_id: string }) => void> = [];
 let uploadProgressCallback:
   | ((progress: { txn_id: string; room_id: string; sent: number; total: number }) => void)
   | undefined;
@@ -202,7 +207,10 @@ vi.mock("@/lib/matrix", () => ({
     uploadProgressCallback = callback;
     return Promise.resolve(() => {});
   }),
-  onRoomDetailsUpdate: vi.fn(() => Promise.resolve(() => {})),
+  onRoomDetailsUpdate: vi.fn((callback: (details: { room_id: string }) => void) => {
+    roomDetailsCallbacks.push(callback);
+    return Promise.resolve(() => {});
+  }),
   // Spec 29: LinkPreviewForMessage reads room encryption state before ever
   // fetching a preview. None of ChatShell's own tests exercise link
   // previews, so default to "encrypted" (the safe suppress-by-default
@@ -333,6 +341,7 @@ describe("ChatShell", () => {
     sendMessage.mockReset().mockResolvedValue("txn-1");
     sendReply.mockReset().mockResolvedValue("txn-1");
     redactEvent.mockReset().mockResolvedValue(undefined);
+    canRedactOthers.mockReset().mockResolvedValue(true);
     toggleReaction.mockReset();
     resendMessage.mockReset().mockResolvedValue(undefined);
     discardFailedMessage.mockReset().mockResolvedValue(true);
@@ -344,6 +353,7 @@ describe("ChatShell", () => {
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
+    roomDetailsCallbacks = [];
     uploadProgressCallback = undefined;
     virtuosoStartReached = undefined;
     virtuosoAtBottomStateChange = undefined;
@@ -3288,6 +3298,39 @@ describe("ChatShell", () => {
     // room B's own call is still pending (never resolved in this test), so
     // Delete must not be shown yet.
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("refetches the redact permission when the room's details update", async () => {
+    canRedactOthers.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    // Simulates a power-level change syncing in while the room stays open —
+    // this must re-run the redact-permission check rather than leaving it
+    // stuck at whatever it resolved to when the room was entered.
+    await vi.waitFor(() => expect(roomDetailsCallbacks.length).toBeGreaterThan(0));
+    act(() => {
+      for (const callback of roomDetailsCallbacks) callback({ room_id: room.room_id });
+    });
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(2));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(await screen.findByText("Delete")).toBeInTheDocument();
   });
 
   it("enables the attach button and opens the file dialog on click", async () => {

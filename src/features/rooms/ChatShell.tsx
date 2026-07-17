@@ -29,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, type RoomSummary } from "@/lib/matrix";
+import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -126,14 +126,30 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
     // (`/api/rooms//can-redact-others`), surfacing as a spurious
     // backend/Sentry error on nothing but opening/closing a room (Codex
     // review on #287, P2).
-    if (!roomId) return;
+    if (!roomId) return undefined;
+
     const requestedForRoomId = roomId;
-    canRedactOthers(roomId)
-      .then((allowed) => {
-        if (requestedRoomIdRef.current !== requestedForRoomId) return;
-        setCanRedactOthersInRoom(allowed);
-      })
-      .catch(logAndIgnore);
+    const fetchPermission = () => {
+      canRedactOthers(roomId)
+        .then((allowed) => {
+          if (requestedRoomIdRef.current !== requestedForRoomId) return;
+          setCanRedactOthersInRoom(allowed);
+        })
+        .catch(logAndIgnore);
+    };
+    fetchPermission();
+
+    // Re-fetches on `room_details:update`, not just on room entry: a power
+    // level change (promotion/demotion) while the room stays open used to
+    // leave `canRedactOthersInRoom` stuck at whatever it was when the room
+    // was entered, silently hiding or wrongly showing the Delete affordance
+    // until the user switched rooms (Codex review on #287, P2).
+    const unlistenPromise = onRoomDetailsUpdate((details) => {
+      if (details.room_id === requestedForRoomId) fetchPermission();
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(logAndIgnore);
+    };
   }, [roomId]);
 
   return useMemo(() => {
