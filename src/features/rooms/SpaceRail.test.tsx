@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import type { BadgeState } from "@/lib/matrix";
 import { SpaceRail } from "./SpaceRail";
@@ -65,6 +65,10 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
 }
 
 describe("SpaceRail", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
     renderRail();
 
@@ -306,5 +310,70 @@ describe("SpaceRail", () => {
     expect(props.onSelectHome).toHaveBeenCalledOnce();
     expect(props.onSelectDms).toHaveBeenCalledOnce();
     expect(props.onCreateJoin).toHaveBeenCalledOnce();
+  });
+
+  it("opens a context menu on a top-level space with Open lobby, Invite, and Pin actions", () => {
+    const props = renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+
+    expect(screen.getByRole("menuitem", { name: /Open lobby/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Invite/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Unpin from sidebar/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: /Open lobby/ }));
+    expect(props.onSelectSpace).toHaveBeenCalledWith("!space:localhost");
+  });
+
+  it("does not offer pin/reorder actions on a nested (non-top-level) space", () => {
+    renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+
+    expect(screen.queryByRole("menuitem", { name: /Pin to sidebar/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Unpin from sidebar/ })).not.toBeInTheDocument();
+  });
+
+  it("unpins a top-level space from the rail via its context menu, keeping it visible below a divider", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Unpin from sidebar/ }));
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.getByRole("menuitem", { name: /Pin to sidebar/ })).toBeInTheDocument();
+  });
+
+  it("reorders pinned top-level spaces via Move up/Move down", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({ room_id: "!space-a:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!space-b:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+
+    const spaceButtons = () => screen.getAllByRole("button", { name: /^(Alpha|Beta)$/ });
+    expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Alpha",
+      "Beta",
+    ]);
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Beta" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move up" }));
+
+    expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Beta",
+      "Alpha",
+    ]);
+  });
+
+  it("opens the Invite dialog for a space from its context menu", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Invite/ }));
+
+    expect(screen.getByRole("dialog", { name: "Invite to Team" })).toBeInTheDocument();
   });
 });

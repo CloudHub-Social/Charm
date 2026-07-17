@@ -1,13 +1,22 @@
-import { ChevronDown, Home, Plus, Users } from "lucide-react";
+import { ChevronDown, Home, LogIn, Pin, PinOff, Plus, UserPlus, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import type { RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
+import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { moveSpaceInOrder, orderSpaceIds, spaceRailPrefsAtom } from "./spaceRailPrefs";
 
 export type RoomListMode = "home" | "dms" | "space";
 
@@ -33,6 +42,8 @@ export function SpaceRail({
   onCreateJoin,
 }: SpaceRailProps) {
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
+  const [prefs, setPrefs] = useAtom(spaceRailPrefsAtom);
+  const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
     useMemo(() => {
@@ -69,6 +80,46 @@ export function SpaceRail({
         directRooms: rooms.filter((room) => room.is_direct),
       };
     }, [rooms]);
+  const unpinnedIds = useMemo(() => new Set(prefs.unpinned), [prefs.unpinned]);
+  const pinnedTopLevelSpaces = useMemo(() => {
+    const pinned = topLevelSpaces.filter((space) => !unpinnedIds.has(space.room_id));
+    const order = orderSpaceIds(
+      pinned.map((space) => space.room_id),
+      prefs.order,
+    );
+    const byId = new Map(pinned.map((space) => [space.room_id, space]));
+    return order
+      .map((id) => byId.get(id))
+      .filter((space): space is RoomSummary => space !== undefined);
+  }, [topLevelSpaces, unpinnedIds, prefs.order]);
+  const unpinnedTopLevelSpaces = useMemo(
+    () => topLevelSpaces.filter((space) => unpinnedIds.has(space.room_id)),
+    [topLevelSpaces, unpinnedIds],
+  );
+
+  function setPinned(spaceId: string, pinned: boolean) {
+    setPrefs((prev) => ({
+      ...prev,
+      unpinned: pinned
+        ? prev.unpinned.filter((id) => id !== spaceId)
+        : prev.unpinned.includes(spaceId)
+          ? prev.unpinned
+          : [...prev.unpinned, spaceId],
+    }));
+  }
+
+  function moveSpace(spaceId: string, direction: "up" | "down") {
+    setPrefs((prev) => ({
+      ...prev,
+      order: moveSpaceInOrder(
+        pinnedTopLevelSpaces.map((space) => space.room_id),
+        prev.order,
+        spaceId,
+        direction,
+      ),
+    }));
+  }
+
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
   const homeBadge = useMemo(() => getHomeBadge(rooms, showAllRooms), [rooms, showAllRooms]);
@@ -102,43 +153,94 @@ export function SpaceRail({
     };
   }
 
-  function renderSpaceEntry(space: RoomSummary, ancestorIds = new Set<string>()) {
+  function renderSpaceEntry(
+    space: RoomSummary,
+    topLevel: boolean,
+    ancestorIds = new Set<string>(),
+  ) {
     const nextAncestorIds = new Set(ancestorIds);
     nextAncestorIds.add(space.room_id);
     const children = childSpacesByParent.get(space.room_id) ?? [];
     const visibleChildren = children.filter((child) => !nextAncestorIds.has(child.room_id));
     const folderOpen = openFolders[space.room_id] ?? false;
     const counts = spaceBadge(space.room_id);
+    const label = displayName(space.room_id, space.name);
+    const pinned = topLevel && !unpinnedIds.has(space.room_id);
+    const pinnedIndex = topLevel
+      ? pinnedTopLevelSpaces.findIndex((s) => s.room_id === space.room_id)
+      : -1;
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
-        <div className="relative flex h-11 w-14 items-center justify-center">
-          {visibleChildren.length > 0 && (
-            <button
-              type="button"
-              aria-label={`${folderOpen ? "Collapse" : "Expand"} ${displayName(
-                space.room_id,
-                space.name,
-              )}`}
-              className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
-            >
-              <ChevronDown
-                aria-hidden="true"
-                className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div className="relative flex h-11 w-14 items-center justify-center">
+              {visibleChildren.length > 0 && (
+                <button
+                  type="button"
+                  aria-label={`${folderOpen ? "Collapse" : "Expand"} ${label}`}
+                  className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                  onClick={() =>
+                    setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))
+                  }
+                >
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
+                  />
+                </button>
+              )}
+              <SpaceButton
+                space={space}
+                active={activeMode === "space" && activeSpaceId === space.room_id}
+                unread={counts.unread}
+                highlight={counts.highlight}
+                onClick={() => onSelectSpace(space.room_id)}
               />
-            </button>
-          )}
-          <SpaceButton
-            space={space}
-            active={activeMode === "space" && activeSpaceId === space.room_id}
-            unread={counts.unread}
-            highlight={counts.highlight}
-            onClick={() => onSelectSpace(space.room_id)}
-          />
-        </div>
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent>
+            <ContextMenuItem onSelect={() => onSelectSpace(space.room_id)}>
+              <LogIn aria-hidden="true" />
+              Open lobby
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
+            >
+              <UserPlus aria-hidden="true" />
+              Invite
+            </ContextMenuItem>
+            {topLevel && (
+              <>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => setPinned(space.room_id, !pinned)}>
+                  {pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                  {pinned ? "Unpin from sidebar" : "Pin to sidebar"}
+                </ContextMenuItem>
+                {pinned && (
+                  <>
+                    <ContextMenuItem
+                      disabled={pinnedIndex <= 0}
+                      onSelect={() => moveSpace(space.room_id, "up")}
+                    >
+                      Move up
+                    </ContextMenuItem>
+                    <ContextMenuItem
+                      disabled={
+                        pinnedIndex === -1 || pinnedIndex >= pinnedTopLevelSpaces.length - 1
+                      }
+                      onSelect={() => moveSpace(space.room_id, "down")}
+                    >
+                      Move down
+                    </ContextMenuItem>
+                  </>
+                )}
+              </>
+            )}
+          </ContextMenuContent>
+        </ContextMenu>
         {folderOpen && visibleChildren.length > 0 && (
           <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
-            {visibleChildren.map((child) => renderSpaceEntry(child, nextAncestorIds))}
+            {visibleChildren.map((child) => renderSpaceEntry(child, false, nextAncestorIds))}
           </div>
         )}
       </div>
@@ -200,13 +302,28 @@ export function SpaceRail({
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1">
-            {topLevelSpaces.map((space) => renderSpaceEntry(space))}
+            {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true))}
+            {unpinnedTopLevelSpaces.length > 0 && (
+              <>
+                <div className="my-1 h-px w-8 bg-border" />
+                <div className="flex flex-col items-center gap-2 opacity-60">
+                  {unpinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true))}
+                </div>
+              </>
+            )}
           </div>
         </nav>
         <RailIconButton label="Create or join space" active={false} onClick={onCreateJoin}>
           <Plus aria-hidden="true" />
         </RailIconButton>
       </aside>
+      <InviteToSpaceDialog
+        spaceId={inviteTarget?.spaceId ?? null}
+        spaceName={inviteTarget?.name ?? null}
+        onOpenChange={(open) => {
+          if (!open) setInviteTarget(null);
+        }}
+      />
     </TooltipProvider>
   );
 }
