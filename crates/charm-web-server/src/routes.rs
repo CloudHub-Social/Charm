@@ -1294,7 +1294,21 @@ async fn list_rooms(
     jar: CookieJar,
 ) -> Result<impl IntoResponse, ApiError> {
     let session = require_session(&state, &jar).await?;
-    Ok(Json(snapshot_rooms(&session.client, None).await))
+    // `include_message_preview: false` and a fresh, scratch registration
+    // set — the web client has no equivalent of desktop's
+    // `RoomListMessagePreview` feature-flag catalog yet, so this is always
+    // false here and `preview_registered_rooms` is guaranteed to stay
+    // empty every call regardless of whether it's shared across calls or
+    // not (see `rooms::forget_stale_preview_registrations`'s doc comment).
+    Ok(Json(
+        snapshot_rooms(
+            &session.client,
+            None,
+            false,
+            &std::sync::Mutex::new(std::collections::HashSet::new()),
+        )
+        .await,
+    ))
 }
 
 async fn accept_invite(

@@ -437,8 +437,16 @@ async fn emit_room_list_and_badge(
 ) {
     // No media cache in this crate yet (matches sub-PR A's `snapshot_rooms`
     // calls in `routes.rs`) — room avatars carry their bare `mxc://` url but
-    // no locally resolved thumbnail path.
-    let snapshot = rooms::snapshot_rooms(client, None).await;
+    // no locally resolved thumbnail path. `include_message_preview: false`
+    // and a fresh, scratch registration set for the same reason as
+    // `routes::list_rooms` — see that call site's comment.
+    let snapshot = rooms::snapshot_rooms(
+        client,
+        None,
+        false,
+        &std::sync::Mutex::new(std::collections::HashSet::new()),
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     emit_snapshot(events, last_snapshot, ServerEvent::RoomList(snapshot));
     emit_snapshot(events, last_snapshot, ServerEvent::Badge(badge));
