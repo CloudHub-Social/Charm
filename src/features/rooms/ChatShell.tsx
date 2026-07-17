@@ -162,10 +162,23 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
     if (!roomId) return undefined;
 
     const requestedToken = activation.token;
+    // A per-request sequence number, distinct from `activation.token`: the
+    // token alone only distinguishes *activations* (room changes), not
+    // multiple in-flight requests *within* the same activation. The initial
+    // fetch below and a later `room_details:update`-triggered refetch share
+    // one token, so without this, the initial request resolving *after* the
+    // refetch (e.g. the refetch answering a demotion faster) would overwrite
+    // the fresher, already-current result with its own stale one (Codex
+    // review on #287, P2). Only the highest sequence number seen so far is
+    // ever applied, regardless of resolution order.
+    let latestRequestSeq = 0;
     const fetchPermission = () => {
+      latestRequestSeq += 1;
+      const requestSeq = latestRequestSeq;
       canRedactOthers(roomId)
         .then((allowed) => {
           if (activationTokenRef.current !== requestedToken) return;
+          if (requestSeq !== latestRequestSeq) return;
           setResolvedPermission({ token: requestedToken, allowed });
         })
         .catch(logAndIgnore);

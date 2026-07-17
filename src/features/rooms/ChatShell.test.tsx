@@ -3509,6 +3509,66 @@ describe("ChatShell", () => {
     expect(await screen.findByText("Delete")).toBeInTheDocument();
   });
 
+  it("does not let a stale initial fetch overwrite a fresher room_details:update refetch that resolves first", async () => {
+    // Two in-flight requests for the *same* activation (initial fetch, then
+    // a room_details:update-triggered refetch) resolving out of order — the
+    // refetch (fresher, since it was issued later, e.g. answering a
+    // demotion) resolves first with `false`; the initial fetch (stale)
+    // resolves after with `true` and must not overwrite it (Codex review on
+    // #287, P2).
+    let resolveInitial: ((allowed: boolean) => void) | undefined;
+    let resolveRefetch: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedactOthers.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          calls += 1;
+          if (calls === 1) resolveInitial = resolve;
+          else resolveRefetch = resolve;
+        }),
+    );
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    await vi.waitFor(() => expect(roomDetailsCallbacks.length).toBeGreaterThan(0));
+    act(() => {
+      for (const callback of roomDetailsCallbacks) callback({ room_id: room.room_id });
+    });
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(2));
+
+    // Refetch (the fresher request) resolves first, saying redact is no
+    // longer allowed.
+    act(() => {
+      resolveRefetch?.(false);
+    });
+    await Promise.resolve();
+
+    // The stale initial request resolves after, saying it *was* allowed —
+    // it must not clobber the fresher `false` just resolved above.
+    act(() => {
+      resolveInitial?.(true);
+    });
+    await Promise.resolve();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
   it("enables the attach button and opens the file dialog on click", async () => {
     openFileDialog.mockResolvedValue("/Users/me/cat.png");
     renderChatShell();
