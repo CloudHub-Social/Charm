@@ -861,8 +861,6 @@ pub async fn complete_sso_login(
         return Err("SSO callback does not match the pending login attempt".to_string());
     }
     let pending = pending_sso.take().expect("checked Some above");
-    drop(pending_sso);
-    let client = pending.client;
 
     // See `MatrixState::completing_sso_temp_store_keys`'s doc comment
     // (Codex review on #288, P2): tracks this store as still in flight from
@@ -871,6 +869,15 @@ pub async fn complete_sso_login(
     // pass to race. `struct`+`Drop`, not a `defer!`-style macro (this crate
     // has none) — removes itself on every return, including the early ones,
     // without needing a matching cleanup call at each site.
+    //
+    // Inserted here — *before* `drop(pending_sso)` below, still holding
+    // that lock — not after it, which left an identical handoff gap one
+    // level down: releasing the `pending_sso` guard can wake a sweep
+    // waiting on that same lock on another worker thread, and if this
+    // insertion hadn't happened yet, the sweep would see the key in
+    // neither set (Codex review on #288, P2, same finding as
+    // `start_sso_login`'s ordering fix, now applied to this function's own
+    // internal handoff).
     struct SsoCompletionGuard<'a> {
         matrix_state: &'a MatrixState,
         store_key: String,
@@ -893,6 +900,9 @@ pub async fn complete_sso_login(
         matrix_state: &state,
         store_key: pending.store_key.clone(),
     };
+
+    drop(pending_sso);
+    let client = pending.client;
 
     if let Err(e) = complete_sso_login_with_callback(&client, &callback_url).await {
         // The account was never learned, so this temp store would
