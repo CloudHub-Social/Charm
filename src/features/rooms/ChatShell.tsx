@@ -109,27 +109,48 @@ function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
  * `setState` without triggering React's render-loop guard.
  */
 function useCanRedactMap(roomId: string, currentUserId: string, senders: readonly string[]) {
-  // Tagged with the room it resolved *for*, not a plain boolean — derived
-  // against the current `roomId` at render time below, rather than reset by
-  // a passive effect. An effect-based reset (`setCanRedactOthersInRoom(false)`
-  // on room change) doesn't run until *after* the new room's first paint, so
-  // that first render would still see the *previous* room's resolved value:
-  // a room where redact was allowed, immediately followed by one where it
-  // isn't, could briefly show (and let the user submit) a Delete action the
-  // server then rejects (Codex review on #287, P3).
+  // A monotonic token bumped every time `roomId` changes, including
+  // *returning* to a room previously visited — `roomId` alone isn't
+  // sufficient to key a trusted resolved value, since it's reused on
+  // re-entry: if the user was demoted from redact power while away, the
+  // earlier visit's `allowed=true` would otherwise be trusted again as
+  // soon as the room is reselected, for the whole window before the fresh
+  // fetch below resolves (Codex review on #287, P2 — a follow-up on the
+  // cross-room leak this hook already guards against). Bumped via React's
+  // documented "adjusting state during render" pattern
+  // (react.dev/learn/you-might-not-need-an-effect), not an effect, so the
+  // stale value is invalidated before this render is ever painted rather
+  // than after — the same reasoning that motivated deriving
+  // `canRedactOthersInRoom` from render at all instead of an effect reset.
+  const [activation, setActivation] = useState(() => ({ roomId, token: 0 }));
+  if (activation.roomId !== roomId) {
+    setActivation({ roomId, token: activation.token + 1 });
+  }
+
+  // Tagged with the activation it resolved *for* (not the room, and not a
+  // plain boolean) — derived against the current activation at render time
+  // below, rather than reset by a passive effect. An effect-based reset
+  // doesn't run until *after* the new room's first paint, so that first
+  // render would still see the *previous* activation's resolved value: a
+  // room where redact was allowed, immediately followed by one where it
+  // isn't (or the same room re-entered after a demotion), could briefly
+  // show — and let the user submit — a Delete action the server then
+  // rejects (Codex review on #287, P3, and the P2 above extending it to
+  // same-room re-entry).
   const [resolvedPermission, setResolvedPermission] = useState<{
-    roomId: string;
+    token: number;
     allowed: boolean;
   } | null>(null);
   const canRedactOthersInRoom =
-    resolvedPermission?.roomId === roomId ? resolvedPermission.allowed : false;
-  // Tracks the room a `canRedactOthers` call was actually issued for, so its
-  // resolution can be checked against whatever room is current by the time
-  // it lands — without this, a slow response for a room the user has since
-  // navigated away from can overwrite a *different*, already-current room's
+    resolvedPermission?.token === activation.token ? resolvedPermission.allowed : false;
+  // Tracks the activation a `canRedactOthers` call was actually issued for,
+  // so its resolution can be checked against whatever activation is
+  // current by the time it lands — without this, a slow response for a
+  // room the user has since navigated away from (or back to, bumping the
+  // token again) can overwrite a *different*, already-current activation's
   // permission result.
-  const requestedRoomIdRef = useRef(roomId);
-  requestedRoomIdRef.current = roomId;
+  const activationTokenRef = useRef(activation.token);
+  activationTokenRef.current = activation.token;
 
   useEffect(() => {
     // No room selected (ChatShell's empty state, before its `if (!room)`
@@ -140,12 +161,12 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
     // review on #287, P2).
     if (!roomId) return undefined;
 
-    const requestedForRoomId = roomId;
+    const requestedToken = activation.token;
     const fetchPermission = () => {
       canRedactOthers(roomId)
         .then((allowed) => {
-          if (requestedRoomIdRef.current !== requestedForRoomId) return;
-          setResolvedPermission({ roomId: requestedForRoomId, allowed });
+          if (activationTokenRef.current !== requestedToken) return;
+          setResolvedPermission({ token: requestedToken, allowed });
         })
         .catch(logAndIgnore);
     };
@@ -157,12 +178,12 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
     // was entered, silently hiding or wrongly showing the Delete affordance
     // until the user switched rooms (Codex review on #287, P2).
     const unlistenPromise = onRoomDetailsUpdate((details) => {
-      if (details.room_id === requestedForRoomId) fetchPermission();
+      if (details.room_id === roomId) fetchPermission();
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(logAndIgnore);
     };
-  }, [roomId]);
+  }, [roomId, activation.token]);
 
   return useMemo(() => {
     const bySender: Record<string, boolean> = {};

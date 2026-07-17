@@ -3359,6 +3359,65 @@ describe("ChatShell", () => {
     await vi.waitFor(async () => expect(await screen.findByText("Delete")).toBeInTheDocument());
   });
 
+  it("does not trust a stale resolved permission when the same room is re-entered", async () => {
+    // Same room twice: `allowed=true` on the first visit, then a leave/
+    // return where the fresh fetch is deliberately left pending — covers
+    // the case `roomId` alone can't distinguish (the room id is the same
+    // on both visits), unlike the previous test's cross-room switch
+    // (Codex review on #287, P2).
+    let resolveSecondCheck: ((allowed: boolean) => void) | undefined;
+    let calls = 0;
+    canRedactOthers.mockImplementation(() => {
+      calls += 1;
+      if (calls === 1) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        resolveSecondCheck = resolve;
+      });
+    });
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("hi");
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    // Leave the room (e.g. to roomB), simulating a demotion happening
+    // while away, then come back to the *same* room.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    // Three activations total (room -> roomB -> room), each fetching once.
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(3));
+
+    // The fresh, re-entry fetch is still pending — Delete must not appear
+    // based on the first visit's leftover `true`.
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+
+    resolveSecondCheck?.(false);
+    await Promise.resolve();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
   it("refetches the redact permission when the room's details update", async () => {
     canRedactOthers.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     getTimelinePage.mockResolvedValueOnce({
