@@ -1904,6 +1904,46 @@ async fn restore_one(
     Ok((session, initial_response))
 }
 
+/// Directly overwrites `token`'s persisted object with a chosen
+/// `last_seen_unix`, bypassing `save`'s always-`now_unix()` timestamp — the
+/// only way a test can construct a session that looks stale without
+/// waiting real wall-clock time. `pub(crate)`, not private to this file's
+/// own `mod tests`: `routes.rs`'s tests need the same capability to
+/// construct a persisted-but-stale entry for `require_session`'s fast-path
+/// expiry check.
+#[cfg(test)]
+pub(crate) async fn save_with_last_seen_for_test(
+    store: &PersistenceStore,
+    token: &str,
+    last_seen_unix: u64,
+) {
+    let entry = PersistedSession {
+        token: token.to_string(),
+        homeserver_url: "https://example.invalid".to_string(),
+        session: MatrixSession {
+            meta: matrix_sdk::SessionMeta {
+                user_id: matrix_sdk::ruma::UserId::parse("@test-user:example.invalid").unwrap(),
+                device_id: matrix_sdk::ruma::device_id!("TESTDEVICE").to_owned(),
+            },
+            tokens: matrix_sdk::authentication::SessionTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+            },
+        },
+        crypto_store_key: None,
+        crypto_passphrase: None,
+        last_seen_unix: Some(last_seen_unix),
+    };
+    let path = object_path_for_token(token);
+    let blob = store.encrypt(&entry, &path).unwrap();
+    let json = serde_json::to_vec(&blob).unwrap();
+    store
+        .store
+        .put(&path, PutPayload::from(json))
+        .await
+        .unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1081,6 +1081,84 @@ mod refresh_session_cookie_gating_tests {
             "and its cookie should still refresh normally while it waits"
         );
     }
+
+    /// Regression test for the Codex review finding on #280 ("Check expiry
+    /// before accepting resident sessions"): `require_session`'s fast path
+    /// (`state.sessions.get`) used to authenticate any resident session
+    /// unconditionally — `PersistenceStore::is_expired` only ever ran for
+    /// the idle-evicted branch below it. A session pinned in memory by
+    /// `SessionStore::sweep_idle`'s pending-verification/unpersisted-room
+    /// exemptions (never idle-evicted, so never reaching that branch) could
+    /// stay resident and keep authenticating through this fast path
+    /// forever, past `session_revocation_grace`, completely bypassing the
+    /// server-side retention window. Sets up exactly that: a live,
+    /// not-genuinely-active session (backdated `last_active`/
+    /// `last_validated_active`) whose persisted record is also stale, and
+    /// asserts a request now gets rejected instead of authenticated.
+    #[tokio::test]
+    async fn a_stale_pinned_session_is_rejected_by_the_fast_path_not_just_the_idle_evicted_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-require-session-stale-pinned-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [67u8; 32]);
+        let sixty_days = 60 * 24 * 60 * 60;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        crate::persistence::save_with_last_seen_for_test(
+            &store,
+            "tok-stale-pinned",
+            now.saturating_sub(sixty_days),
+        )
+        .await;
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@stale-pinned:example.invalid").await;
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session.last_active.lock().unwrap() = backdated;
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        state
+            .sessions
+            .insert("tok-stale-pinned".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-stale-pinned")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a stale-but-pinned resident session must be rejected by require_session's fast \
+             path once it's past session_revocation_grace, not authenticated forever just \
+             because it's still in SessionStore"
+        );
+        assert!(
+            sessions.get("tok-stale-pinned").await.is_none(),
+            "and dropped from SessionStore, rather than being re-checked (and re-rejected) \
+             on every subsequent request forever"
+        );
+    }
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
@@ -1596,6 +1674,45 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .map(|c| c.value().to_string())
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
     if let Some(session) = state.sessions.get(&token).await {
+        // This fast path used to authenticate any resident session
+        // unconditionally — the `is_expired` check a few lines below only
+        // ever ran for the *idle-evicted* branch. A session pinned in
+        // memory by `SessionStore::sweep_idle`'s pending-verification/
+        // unpersisted-room exemptions (never idle-evicted, so never
+        // reaching that branch) could stay resident and keep authenticating
+        // here forever, well past `session_revocation_grace`, with
+        // `refresh_session_cookie` even bumping `last_seen_unix` and
+        // re-extending its cookie on the way out — completely bypassing
+        // the server-side retention window this whole persistence layer
+        // exists to enforce (Codex review finding on #280). Checked only
+        // for a session that isn't genuinely active (same distinction
+        // `PersistenceStore::sweep_expired` uses, not bare presence) — a
+        // session with an open connection or recent validated activity is
+        // never subject to this at all, and skipping the persistence read
+        // entirely for that common case avoids paying it on every request
+        // for a session that's actually in active use.
+        if let Some(persistence) = &state.persistence {
+            if !state
+                .sessions
+                .is_genuinely_active(&token, session::session_revocation_grace())
+                .await
+                && persistence
+                    .is_expired(&token, session::session_revocation_grace())
+                    .await
+            {
+                if let Some(dead_session) = state.sessions.remove(&token).await {
+                    if let Some(handle) = dead_session
+                        .sync_handle
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .take()
+                    {
+                        handle.abort();
+                    }
+                }
+                return Err(ApiError::unauthorized("unknown or expired session"));
+            }
+        }
         session.touch();
         mark_request_authenticated();
         return Ok(session);
