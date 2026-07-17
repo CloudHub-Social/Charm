@@ -609,7 +609,7 @@ describe("ChatShell", () => {
     // back to live, since the room id itself never changes to re-trigger
     // the room-open `forceLive` fetch.
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
-    loadTimelineAroundEvent.mockResolvedValue(true);
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
     const { rerender } = render(
       <JotaiProvider store={createStore()}>
         <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
@@ -661,7 +661,7 @@ describe("ChatShell", () => {
     // doesn't land until after the user has already switched to room B.
     // Room B's own messages must not be clobbered by room A's late,
     // now-stale response.
-    loadTimelineAroundEvent.mockResolvedValue(true);
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
     let resolveRoomAReset: ((page: unknown) => void) | undefined;
     getTimelinePage.mockImplementation(() => Promise.resolve({ messages: [], next_cursor: null }));
     const store = createStore();
@@ -766,6 +766,57 @@ describe("ChatShell", () => {
     await screen.findByText("second");
     getTimelinePage.mockClear();
 
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    expect(getTimelinePage).not.toHaveBeenCalled();
+  });
+
+  it("does not re-fetch on Jump to Present when a bookmark jump resolved via the cheap live-pagination path, not the focused-view fallback (Sentry review fix)", async () => {
+    // loadTimelineAroundEvent's `found: true` covers two very different
+    // paths: the common one (found via the already-cached live timeline or
+    // bounded backward-pagination — no focused-view swap) and the rarer
+    // server `/context` fallback (which does swap the cache to a focused
+    // view). Only the latter needs a later Jump to Present to force a live
+    // re-fetch; forcing one for the former disrupts Virtuoso's scroll for
+    // no reason.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
+    const { rerender } = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+    rerender(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    getTimelinePage.mockClear();
+
+    fireAtBottomStateChange(true);
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
     const pill = await screen.findByRole("button", { name: "1 new message" });
     fireEvent.click(pill);
 
@@ -3398,7 +3449,9 @@ describe("ChatShell", () => {
       messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "latest" })],
       next_cursor: null,
     });
-    let resolveLoadAround: ((found: boolean) => void) | undefined;
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
     loadTimelineAroundEvent.mockReturnValue(
       new Promise((resolve) => {
         resolveLoadAround = resolve;
@@ -3415,7 +3468,7 @@ describe("ChatShell", () => {
     );
 
     expect(markRoomRead).not.toHaveBeenCalled();
-    resolveLoadAround?.(false);
+    resolveLoadAround?.({ found: false, installed_focused_view: false });
   });
 
   it("stays suppressed if Virtuoso reports the initial live-tail snapshot as atBottom while a bookmark jump is still pending (Codex review fix)", async () => {
@@ -3568,7 +3621,7 @@ describe("ChatShell", () => {
 
   it("loads the timeline around a not-yet-loaded bookmark, then scrolls once it lands", async () => {
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
-    loadTimelineAroundEvent.mockResolvedValue(true);
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
     render(
       <JotaiProvider store={createStore()}>
         <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
@@ -3600,7 +3653,7 @@ describe("ChatShell", () => {
 
   it("calls onJumpHandled without scrolling when a bookmark is never found", async () => {
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
-    loadTimelineAroundEvent.mockResolvedValue(false);
+    loadTimelineAroundEvent.mockResolvedValue({ found: false, installed_focused_view: false });
     const onJumpHandled = vi.fn();
     render(
       <JotaiProvider store={createStore()}>
@@ -3628,7 +3681,9 @@ describe("ChatShell", () => {
     // room B would be permanently blocked by room A's still-set key, and no
     // new `loadTimelineAroundEvent` call would ever fire for room B.
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
-    let resolveRoomARequest: ((found: boolean) => void) | undefined;
+    let resolveRoomARequest:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
     loadTimelineAroundEvent.mockImplementation(
       () =>
         new Promise((resolve) => {
@@ -3697,7 +3752,7 @@ describe("ChatShell", () => {
     // point wouldn't retroactively apply to a timer already scheduled on
     // the real clock.
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
-    loadTimelineAroundEvent.mockResolvedValue(true);
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
     const onJumpHandled = vi.fn();
     render(
       <JotaiProvider store={createStore()}>
@@ -3722,9 +3777,11 @@ describe("ChatShell", () => {
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
     const onJumpHandled = vi.fn();
     let rejectFirst!: (err: unknown) => void;
-    const firstAttempt = new Promise<boolean>((_resolve, reject) => {
-      rejectFirst = reject;
-    });
+    const firstAttempt = new Promise<{ found: boolean; installed_focused_view: boolean }>(
+      (_resolve, reject) => {
+        rejectFirst = reject;
+      },
+    );
     loadTimelineAroundEvent.mockReturnValueOnce(firstAttempt);
     const store = createStore();
 
@@ -3744,7 +3801,7 @@ describe("ChatShell", () => {
     // A newer jump target supersedes the still-in-flight one above (e.g. the
     // user reopened Settings and picked a different bookmark) before the
     // first request has settled.
-    loadTimelineAroundEvent.mockResolvedValueOnce(false);
+    loadTimelineAroundEvent.mockResolvedValueOnce({ found: false, installed_focused_view: false });
     view.rerender(
       <JotaiProvider store={store}>
         <ChatShell

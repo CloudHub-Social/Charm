@@ -33,7 +33,7 @@ function setup(
     setEditingEventId: (eventId: string | null) => void;
   }> = {},
 ) {
-  const queryClient = new QueryClient();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderHook(
     () =>
       useMessageActions({
@@ -188,7 +188,7 @@ describe("useMessageActions bookmarks (Spec 12)", () => {
     // populates `bookmarks` at all.
     mockListBookmarks.mockReset().mockRejectedValue(new Error("down"));
     mockRemoveBookmark.mockRejectedValue(new Error("network error"));
-    const queryClient = new QueryClient();
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { result } = renderHook(
       () =>
         useMessageActions({

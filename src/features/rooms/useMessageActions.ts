@@ -193,11 +193,21 @@ export function useMessageActions({
       // actually in the cache (e.g. from a concurrent successful refetch)
       // rather than leaving it alone, so only restore when there's an
       // actual snapshot to restore.
-      queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY }).catch(() => {
-        if (previous !== undefined) {
-          queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous);
-        }
-      });
+      //
+      // Review fix: `invalidateQueries` resolves once its triggered refetch
+      // has *settled* — successfully or not — it does not reject just
+      // because the underlying queryFn failed, so the `.catch()` this used
+      // to hang off it never actually ran on a genuine recovery-refetch
+      // failure (verified empirically: it silently resolves even when
+      // `listBookmarks` itself rejects). The query's own resulting status
+      // is the only reliable signal.
+      await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
+      if (
+        queryClient.getQueryState(BOOKMARKS_QUERY_KEY)?.status === "error" &&
+        previous !== undefined
+      ) {
+        queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous);
+      }
     }
   }
 

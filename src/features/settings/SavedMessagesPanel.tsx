@@ -95,6 +95,7 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
     // uses for the in-room action menu — this list is the other place a
     // bookmark can be removed from (per the spec's "Removing a bookmark"
     // section).
+    const previous = bookmarks;
     queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, (prev) =>
       (prev ?? []).filter((b) => b.event_id !== eventId),
     );
@@ -107,7 +108,25 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
       await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       logAndIgnore(err);
+      // Review fix: if the recovery refetch below *also* fails (not just
+      // `removeBookmark` itself), the optimistic removal above was left in
+      // place forever with nothing to reconcile it. `invalidateQueries`
+      // resolves once its triggered refetch has *settled* — successfully or
+      // not — it does not reject just because the underlying queryFn
+      // failed, so a `.catch()`/try-await around it (what an earlier
+      // version of this fix, and `useMessageActions.handleUnbookmark`,
+      // both did) never actually runs on a genuine recovery-refetch
+      // failure. The query's own resulting status is the only reliable
+      // signal. Only then does the pre-optimistic snapshot get restored,
+      // and only if it's actually defined (the shared query can have no
+      // data yet for reasons unrelated to this removal).
       await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
+      if (
+        queryClient.getQueryState(BOOKMARKS_QUERY_KEY)?.status === "error" &&
+        previous !== undefined
+      ) {
+        queryClient.setQueryData<BookmarkEntry[]>(BOOKMARKS_QUERY_KEY, previous);
+      }
     }
   }
 

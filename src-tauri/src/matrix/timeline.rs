@@ -1014,6 +1014,27 @@ pub async fn get_timeline_page_impl(
 const MAX_LOAD_AROUND_ITERATIONS: usize = 20;
 const EVENTS_PER_BATCH: u16 = 50;
 
+/// Result of [`load_timeline_around_event`] — richer than a plain `found`
+/// bool so the frontend can tell *how* the event was found. Review fix: the
+/// common case (the event is within the room's already-cached live
+/// timeline, or reachable by the bounded `paginate_backwards` scan below)
+/// never touches [`load_focused_event_timeline`]'s server-side `/context`
+/// fallback at all — no focused-view swap happens, so the room's cached
+/// `Timeline` is still the live one. A plain `bool` return gave the
+/// frontend no way to distinguish that from the rarer case where the
+/// fallback *did* run and did swap the cache to a focused view, which is
+/// the only case where a later "Jump to Present" needs to force the room
+/// back to live — `ChatShell` was otherwise treating every successful jump
+/// as if it might have focused the view, forcing an unnecessary re-fetch
+/// (and the scroll-animation disruption that comes with replacing
+/// `messages`) for the much more common non-focusing case.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct JumpToEventResult {
+    pub found: bool,
+    pub installed_focused_view: bool,
+}
+
 /// Spec 12's minimal "load timeline around an arbitrary event id" capability
 /// — needed so jumping to a bookmarked message from the Saved Messages view
 /// works even when that message isn't in the room's currently-loaded
@@ -1032,17 +1053,18 @@ const EVENTS_PER_BATCH: u16 = 50;
 /// [`load_focused_event_timeline`], which resolves the event via the
 /// server's `/context` endpoint directly — no client-side scanning bound.
 ///
-/// Returns whether `event_id` was found. `false` now only means the event is
-/// genuinely not reachable from the current sync state (e.g. a stale
-/// bookmark for an event since removed from the room's DAG the local store
-/// can see), not merely "further back than we were willing to page through".
+/// Returns whether `event_id` was found. `found: false` now only means the
+/// event is genuinely not reachable from the current sync state (e.g. a
+/// stale bookmark for an event since removed from the room's DAG the local
+/// store can see), not merely "further back than we were willing to page
+/// through".
 #[tauri::command]
 pub async fn load_timeline_around_event(
     app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     event_id: String,
-) -> Result<bool, String> {
+) -> Result<JumpToEventResult, String> {
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
@@ -1065,7 +1087,10 @@ pub async fn load_timeline_around_event(
         .await?;
 
     if timeline_contains_event(&timeline, &event_id).await {
-        return Ok(true);
+        return Ok(JumpToEventResult {
+            found: true,
+            installed_focused_view: false,
+        });
     }
 
     for _ in 0..MAX_LOAD_AROUND_ITERATIONS {
@@ -1074,7 +1099,10 @@ pub async fn load_timeline_around_event(
             .await
             .map_err(|e| e.to_string())?;
         if timeline_contains_event(&timeline, &event_id).await {
-            return Ok(true);
+            return Ok(JumpToEventResult {
+                found: true,
+                installed_focused_view: false,
+            });
         }
         if hit_start {
             // Review fix: this used to report not-found immediately here,
@@ -1099,7 +1127,19 @@ pub async fn load_timeline_around_event(
     // history — the event may simply be deeper than we're willing to page
     // through client-side. Fall back to a direct server-side lookup instead
     // of reporting failure.
-    load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id).await
+    let found =
+        load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
+            .await?;
+    Ok(JumpToEventResult {
+        found,
+        // Only `true` when the fallback both found the event *and* actually
+        // won the race to install its focused timeline — see
+        // `load_focused_event_timeline`'s own re-checks (stale
+        // account/session, superseded jump target) for the cases where it
+        // returns `found: true` from a stale early-exit without installing
+        // anything.
+        installed_focused_view: found,
+    })
 }
 
 /// Fallback for [`load_timeline_around_event`] once the live timeline's

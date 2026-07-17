@@ -10,6 +10,7 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
+import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
@@ -134,6 +135,7 @@ export type {
   EventReceipt,
   HistoryVisibilityKind,
   JoinRuleKind,
+  JumpToEventResult,
   LoginRequest,
   LoginResponse,
   MediaContent,
@@ -340,10 +342,18 @@ export function getTimelinePage(
  * older history into the room's live timeline (the same `paginate_backwards`
  * primitive `getTimelinePage` uses, pushed to the frontend via the existing
  * `timeline:update` listener) until `eventId` is loaded, or gives up.
- * Resolves to whether the event was found — `false` means it's further back
- * than this will paginate to, or no longer reachable.
+ * `found: false` means it's further back than this will paginate to, or no
+ * longer reachable. `installedFocusedView` is only `true` when the rarer
+ * server-side `/context` fallback ran *and* actually swapped the room's
+ * cached timeline to a focused view — the common case (found via the
+ * already-cached live timeline or bounded backward-pagination) never
+ * touches that path, so callers should only force a live re-fetch (e.g. on
+ * "Jump to Present") when this is `true`.
  */
-export function loadTimelineAroundEvent(roomId: string, eventId: string): Promise<boolean> {
+export function loadTimelineAroundEvent(
+  roomId: string,
+  eventId: string,
+): Promise<JumpToEventResult> {
   return invoke("load_timeline_around_event", { roomId, eventId });
 }
 

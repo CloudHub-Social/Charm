@@ -518,14 +518,18 @@ export function ChatShell({
   // guards against re-firing it on every subsequent `messages` update while
   // that request is still in flight.
   const loadRequestedForRef = useRef<string | null>(null);
-  // Review fix: set when a jump for *this room* actually calls
-  // `loadTimelineAroundEvent` below — the one path that can end up
-  // installing a `TimelineFocus::Event` backend timeline (via its Rust
-  // `/context`-lookup fallback) in place of the room's live one. A jump
-  // resolved entirely from the already-loaded page (the `index >= 0` branch
-  // above) never touches that path at all. Read by `handleJumpToPresent` to
-  // decide whether it's worth forcing a live re-fetch — see its own
-  // comment for why that must stay conditional rather than unconditional.
+  // Review fix: set from `loadTimelineAroundEvent`'s own
+  // `installed_focused_view` flag — *not* preemptively before calling it.
+  // An earlier version set this unconditionally whenever the call was made
+  // at all, but most jumps resolve via the cheap already-cached-live-
+  // timeline or bounded-backward-pagination paths, neither of which ever
+  // installs a `TimelineFocus::Event` backend timeline — only the rarer
+  // server `/context` fallback does. Setting it regardless meant
+  // `handleJumpToPresent` forced an unnecessary live re-fetch (replacing
+  // `messages` and disrupting Virtuoso's scroll) for the much more common
+  // non-focusing case. Read by `handleJumpToPresent` to decide whether it's
+  // worth forcing that re-fetch — see its own comment for why that must
+  // stay conditional rather than unconditional.
   const mightHaveFocusedViewRef = useRef(false);
   // Review fix: fallback for a `found: true` `loadTimelineAroundEvent`
   // result whose corresponding `timeline:update` never lands (or is
@@ -570,9 +574,8 @@ export function ChatShell({
     if (!initialLoadSettled) return;
     if (loadRequestedForRef.current === requestKey) return;
     loadRequestedForRef.current = requestKey;
-    mightHaveFocusedViewRef.current = true;
     loadTimelineAroundEvent(room.room_id, jumpToEventId)
-      .then((found) => {
+      .then(({ found, installed_focused_view }) => {
         // Only act on this request if it's still the current one — cleared
         // (to `null`) the moment the already-loaded branch above fires for
         // this same jump, which can still happen before this promise
@@ -580,6 +583,9 @@ export function ChatShell({
         // double-call `onJumpHandled` once this stale promise finally
         // settles.
         if (loadRequestedForRef.current !== requestKey) return;
+        if (installed_focused_view) {
+          mightHaveFocusedViewRef.current = true;
+        }
         // A `false` result means the event isn't reachable at all (further
         // back than the pagination cap, or no longer in this room's
         // history) — nothing more to try, so give up rather than leaving

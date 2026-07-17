@@ -119,6 +119,23 @@ describe("SavedMessagesPanel", () => {
     expect(await screen.findByText("hello there")).toBeInTheDocument();
   });
 
+  it("restores the pre-optimistic bookmarks list if removeBookmark fails and the recovery refetch also fails (Sentry review fix)", async () => {
+    // The previous test's recovery relies on the recovery refetch
+    // (invalidateQueries -> listBookmarks) still returning the bookmark —
+    // this one exercises the case where *that* refetch also fails, which
+    // needs the direct pre-optimistic-snapshot fallback to restore the UI.
+    listBookmarks.mockResolvedValueOnce([makeBookmark({ event_id: "$a" })]);
+    removeBookmark.mockRejectedValue(new Error("network error"));
+    renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
+
+    await screen.findByText("hello there");
+    listBookmarks.mockRejectedValue(new Error("also down"));
+    fireEvent.click(screen.getByRole("button", { name: "Remove bookmark" }));
+
+    await waitFor(() => expect(removeBookmark).toHaveBeenCalledWith("$a"));
+    expect(await screen.findByText("hello there")).toBeInTheDocument();
+  });
+
   it("shows a loading indicator before bookmarks resolve", async () => {
     let resolveBookmarks: (bookmarks: BookmarkEntry[]) => void = () => {};
     listBookmarks.mockReturnValue(
