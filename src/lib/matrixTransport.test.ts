@@ -474,6 +474,34 @@ describe("matrix web transport", () => {
       "/api/rooms/!r%3Aexample.org/send-queue/txn-1/discard",
       undefined,
     ],
+    [
+      "leave_room",
+      { roomId: "!r:example.org" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/leave",
+      undefined,
+    ],
+    [
+      "add_existing_space_child",
+      { spaceId: "!space:example.org", childRoomId: "!child:example.org" },
+      "POST",
+      "/api/rooms/!space%3Aexample.org/space-children/!child%3Aexample.org",
+      undefined,
+    ],
+    [
+      "remove_space_child",
+      { spaceId: "!space:example.org", childRoomId: "!child:example.org" },
+      "DELETE",
+      "/api/rooms/!space%3Aexample.org/space-children/!child%3Aexample.org",
+      undefined,
+    ],
+    [
+      "set_space_child_suggested",
+      { spaceId: "!space:example.org", childRoomId: "!child:example.org", suggested: true },
+      "PUT",
+      "/api/rooms/!space%3Aexample.org/space-children/!child%3Aexample.org/suggested",
+      { suggested: true },
+    ],
   ])("maps %s to the companion server route", async (command, args, method, path, body) => {
     await invoke(command, args);
 

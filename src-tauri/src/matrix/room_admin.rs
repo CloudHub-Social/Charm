@@ -245,7 +245,7 @@ fn user_power_level_to_i64(level: UserPowerLevel) -> i64 {
     }
 }
 
-fn require_room(client: &Client, room_id: &str) -> Result<Room, String> {
+pub(crate) fn require_room(client: &Client, room_id: &str) -> Result<Room, String> {
     let id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
     client
         .get_room(&id)
@@ -850,6 +850,23 @@ pub async fn remove_alt_alias_impl(
     Ok(())
 }
 
+/// Leaves a room (or space, since a space is just a room with
+/// `room_type: m.space`) on the caller's own behalf. Distinct from
+/// [`kick_member`], which removes a *different* member — this always acts on
+/// the signed-in user.
+#[tauri::command]
+pub async fn leave_room(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+    let client = state.require_client().await?;
+    leave_room_impl(&client, &room_id).await
+}
+
+/// Core logic behind [`leave_room`].
+pub async fn leave_room_impl(client: &Client, room_id: &str) -> Result<(), String> {
+    let room = require_room(client, room_id)?;
+    room.leave().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use matrix_sdk::test_utils::mocks::MatrixMockServer;
@@ -1291,6 +1308,43 @@ mod tests {
         assert!(
             result.is_err(),
             "expected a malformed alias to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn leave_room_impl_sends_a_leave_request_for_the_given_room() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/leave"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = leave_room_impl(&client, room_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected the room to be left, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn leave_room_impl_errors_for_an_unknown_room() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let result = leave_room_impl(&client, "!not-joined:example.org").await;
+        assert!(
+            result.is_err(),
+            "expected leaving a room the client hasn't synced/joined to error, got {result:?}"
         );
     }
 }

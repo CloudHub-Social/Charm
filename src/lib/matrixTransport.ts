@@ -358,6 +358,30 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         room_alias_name: args.roomAliasName,
         public: args.public,
       });
+    case "leave_room":
+      return requestBytes<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/leave`);
+    case "add_existing_space_child":
+      return requestBytes<T>(
+        "POST",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-children/${encodeSegment(
+          String(args.childRoomId),
+        )}`,
+      );
+    case "remove_space_child":
+      return requestBytes<T>(
+        "DELETE",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-children/${encodeSegment(
+          String(args.childRoomId),
+        )}`,
+      );
+    case "set_space_child_suggested":
+      return requestJson<T>(
+        "PUT",
+        `/api/rooms/${encodeSegment(String(args.spaceId))}/space-children/${encodeSegment(
+          String(args.childRoomId),
+        )}/suggested`,
+        { suggested: args.suggested },
+      );
     case "send_message":
       return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/send`, {
         body: args.body,

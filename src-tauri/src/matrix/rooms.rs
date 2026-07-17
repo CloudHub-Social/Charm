@@ -322,7 +322,9 @@ fn parse_room(client: &Client, room_id: &str) -> Result<Room, String> {
 /// that never actually listed them), so parenthood here is defined by the
 /// space's own child list, matching the client-side "which space's children
 /// include this room" semantics `RoomList.tsx` groups by.
-async fn parent_space_ids(client: &Client) -> std::collections::HashMap<String, Vec<String>> {
+pub(crate) async fn parent_space_ids(
+    client: &Client,
+) -> std::collections::HashMap<String, Vec<String>> {
     use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
 
     let mut parents: std::collections::HashMap<String, Vec<String>> =
@@ -342,6 +344,21 @@ async fn parent_space_ids(client: &Client) -> std::collections::HashMap<String, 
             let Ok(event) = raw_event.deserialize() else {
                 continue;
             };
+            // A revoked child (per MSC1772: an empty-content — hence
+            // empty-`via` — `m.space.child`, as `remove_space_child` sends)
+            // or a redacted one carries no `via` either way. Either means
+            // "no longer a child" — without this check, a removed child
+            // would keep showing up under its old parent until the space's
+            // own child list is otherwise rebuilt.
+            let has_via = matches!(
+                &event,
+                matrix_sdk::deserialized_responses::SyncOrStrippedState::Sync(
+                    matrix_sdk::ruma::events::SyncStateEvent::Original(original)
+                ) if !original.content.via.is_empty()
+            );
+            if !has_via {
+                continue;
+            }
             parents
                 .entry(event.state_key().to_string())
                 .or_default()
@@ -1268,5 +1285,46 @@ mod tests {
 
         assert_eq!(stale, expected);
         assert!(registered.lock().unwrap().is_empty());
+    }
+
+    /// A revoked (empty-content, per MSC1772) `m.space.child` — what
+    /// `spaces::remove_space_child_impl` sends — must not still count as a
+    /// parent link, or a "removed" child would keep showing up under its old
+    /// parent (and, via `spaces::is_ancestor`, keep blocking re-adding it
+    /// elsewhere) until the space's own child list is otherwise rebuilt.
+    #[tokio::test]
+    async fn parent_space_ids_ignores_a_revoked_child_edge() {
+        use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
+        use matrix_sdk::test_utils::mocks::MatrixMockServer;
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        // Empty `via` — the shape `remove_space_child_impl` actually sends
+        // to revoke a child link.
+        let revoked_child_event = factory
+            .event(SpaceChildEventContent::new(vec![]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id)
+            .add_state_event(create_event)
+            .add_state_event(revoked_child_event);
+        server.sync_room(&client, room_builder).await;
+
+        let parents = parent_space_ids(&client).await;
+        assert!(
+            parents.get(child_id.as_str()).is_none_or(Vec::is_empty),
+            "expected a revoked child link to not count as a parent relationship, got {parents:?}"
+        );
     }
 }

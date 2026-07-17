@@ -1,13 +1,40 @@
-import { ChevronDown, Home, Plus, Users } from "lucide-react";
+import {
+  ChevronDown,
+  DoorOpen,
+  FolderPlus,
+  Home,
+  LogIn,
+  LogOut,
+  Pin,
+  PinOff,
+  Plus,
+  Star,
+  StarOff,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
-import type { RoomSummary } from "@/lib/matrix";
+import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
+import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
+import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
+import { LeaveSpaceDialog } from "./LeaveSpaceDialog";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { moveSpaceInOrder, orderSpaceIds } from "./spaceRailPrefs";
+import { useSpaceRailPrefsSync } from "./useSpaceRailPrefsSync";
 
 export type RoomListMode = "home" | "dms" | "space";
 
@@ -16,10 +43,19 @@ interface SpaceRailProps {
   activeMode: RoomListMode;
   activeSpaceId: string | null;
   showAllRooms: boolean;
+  /** Scopes locally cached pin/order state (`useSpaceRailPrefsSync`) to the
+   * signed-in account, so switching accounts on the same device never
+   * inherits — or overwrites — a different account's rail preferences. */
+  currentUserId: string;
   onSelectHome: () => void;
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
   onCreateJoin: () => void;
+  /** Called after "Add Existing" or "Remove from space" successfully edits a
+   * space's children — lets a sibling `RoomList` showing that space's lobby
+   * (a separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
+   * current) refresh immediately. */
+  onSpaceChildrenChanged?: () => void;
 }
 
 export function SpaceRail({
@@ -27,12 +63,34 @@ export function SpaceRail({
   activeMode,
   activeSpaceId,
   showAllRooms,
+  currentUserId,
   onSelectHome,
   onSelectDms,
   onSelectSpace,
   onCreateJoin,
+  onSpaceChildrenChanged,
 }: SpaceRailProps) {
+  const managementEnabled = useFlag("space_rail_management");
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
+  const [prefs, setPrefs] = useSpaceRailPrefsSync(currentUserId);
+  const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<{ spaceId: string; name: string } | null>(null);
+  const [addExistingTarget, setAddExistingTarget] = useState<{
+    spaceId: string;
+    name: string;
+  } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
+    };
+  }, []);
+  function reportActionError(err: unknown) {
+    setActionError(err instanceof Error ? err.message : String(err));
+    if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
+    actionErrorTimeoutRef.current = setTimeout(() => setActionError(null), 5000);
+  }
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
     useMemo(() => {
@@ -69,6 +127,56 @@ export function SpaceRail({
         directRooms: rooms.filter((room) => room.is_direct),
       };
     }, [rooms]);
+  // Behind the `space_rail_management` flag: with it off, every top-level
+  // space stays pinned in its natural (room-list) order, matching this
+  // component's pre-Spec-63 behavior exactly — `prefs` never influences
+  // rendering, and the sync effects in `useSpaceRailPrefsSync` become inert
+  // reads/writes of a value nothing displays.
+  const unpinnedIds = useMemo(
+    () => (managementEnabled ? new Set(prefs.unpinned) : new Set<string>()),
+    [managementEnabled, prefs.unpinned],
+  );
+  const pinnedTopLevelSpaces = useMemo(() => {
+    if (!managementEnabled) return topLevelSpaces;
+    const pinned = topLevelSpaces.filter((space) => !unpinnedIds.has(space.room_id));
+    const order = orderSpaceIds(
+      pinned.map((space) => space.room_id),
+      prefs.order,
+    );
+    const byId = new Map(pinned.map((space) => [space.room_id, space]));
+    return order
+      .map((id) => byId.get(id))
+      .filter((space): space is RoomSummary => space !== undefined);
+  }, [managementEnabled, topLevelSpaces, unpinnedIds, prefs.order]);
+  const unpinnedTopLevelSpaces = useMemo(
+    () =>
+      managementEnabled ? topLevelSpaces.filter((space) => unpinnedIds.has(space.room_id)) : [],
+    [managementEnabled, topLevelSpaces, unpinnedIds],
+  );
+
+  function setPinned(spaceId: string, pinned: boolean) {
+    setPrefs((prev) => ({
+      ...prev,
+      unpinned: pinned
+        ? prev.unpinned.filter((id) => id !== spaceId)
+        : prev.unpinned.includes(spaceId)
+          ? prev.unpinned
+          : [...prev.unpinned, spaceId],
+    }));
+  }
+
+  function moveSpace(spaceId: string, direction: "up" | "down") {
+    setPrefs((prev) => ({
+      ...prev,
+      order: moveSpaceInOrder(
+        pinnedTopLevelSpaces.map((space) => space.room_id),
+        prev.order,
+        spaceId,
+        direction,
+      ),
+    }));
+  }
+
   const directUnreadCount = directRooms.filter((room) => room.has_unread).length;
   const directHighlightCount = directRooms.reduce((sum, room) => sum + room.unread_count, 0);
   const homeBadge = useMemo(() => getHomeBadge(rooms, showAllRooms), [rooms, showAllRooms]);
@@ -102,43 +210,147 @@ export function SpaceRail({
     };
   }
 
-  function renderSpaceEntry(space: RoomSummary, ancestorIds = new Set<string>()) {
+  function renderSpaceEntry(
+    space: RoomSummary,
+    topLevel: boolean,
+    parentId: string | null,
+    ancestorIds = new Set<string>(),
+  ) {
     const nextAncestorIds = new Set(ancestorIds);
     nextAncestorIds.add(space.room_id);
     const children = childSpacesByParent.get(space.room_id) ?? [];
     const visibleChildren = children.filter((child) => !nextAncestorIds.has(child.room_id));
     const folderOpen = openFolders[space.room_id] ?? false;
     const counts = spaceBadge(space.room_id);
+    const label = displayName(space.room_id, space.name);
+    const pinned = topLevel && !unpinnedIds.has(space.room_id);
+    const pinnedIndex = topLevel
+      ? pinnedTopLevelSpaces.findIndex((s) => s.room_id === space.room_id)
+      : -1;
+    const entryTrigger = (
+      <div className="relative flex h-11 w-14 items-center justify-center">
+        {visibleChildren.length > 0 && (
+          <button
+            type="button"
+            aria-label={`${folderOpen ? "Collapse" : "Expand"} ${label}`}
+            className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
+          >
+            <ChevronDown
+              aria-hidden="true"
+              className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
+            />
+          </button>
+        )}
+        <SpaceButton
+          space={space}
+          active={activeMode === "space" && activeSpaceId === space.room_id}
+          unread={counts.unread}
+          highlight={counts.highlight}
+          onClick={() => onSelectSpace(space.room_id)}
+        />
+      </div>
+    );
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
-        <div className="relative flex h-11 w-14 items-center justify-center">
-          {visibleChildren.length > 0 && (
-            <button
-              type="button"
-              aria-label={`${folderOpen ? "Collapse" : "Expand"} ${displayName(
-                space.room_id,
-                space.name,
-              )}`}
-              className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
-            >
-              <ChevronDown
-                aria-hidden="true"
-                className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
-              />
-            </button>
-          )}
-          <SpaceButton
-            space={space}
-            active={activeMode === "space" && activeSpaceId === space.room_id}
-            unread={counts.unread}
-            highlight={counts.highlight}
-            onClick={() => onSelectSpace(space.room_id)}
-          />
-        </div>
+        {managementEnabled ? (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>{entryTrigger}</ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => onSelectSpace(space.room_id)}>
+                <LogIn aria-hidden="true" />
+                Open lobby
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
+              >
+                <UserPlus aria-hidden="true" />
+                Invite
+              </ContextMenuItem>
+              {topLevel && (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => setPinned(space.room_id, !pinned)}>
+                    {pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                    {pinned ? "Unpin from sidebar" : "Pin to sidebar"}
+                  </ContextMenuItem>
+                  {pinned && (
+                    <>
+                      <ContextMenuItem
+                        disabled={pinnedIndex <= 0}
+                        onSelect={() => moveSpace(space.room_id, "up")}
+                      >
+                        Move up
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        disabled={
+                          pinnedIndex === -1 || pinnedIndex >= pinnedTopLevelSpaces.length - 1
+                        }
+                        onSelect={() => moveSpace(space.room_id, "down")}
+                      >
+                        Move down
+                      </ContextMenuItem>
+                    </>
+                  )}
+                </>
+              )}
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
+              >
+                <FolderPlus aria-hidden="true" />
+                Add existing…
+              </ContextMenuItem>
+              {parentId && (
+                <>
+                  <ContextMenuItem
+                    onSelect={() =>
+                      setSpaceChildSuggested(parentId, space.room_id, true).catch(reportActionError)
+                    }
+                  >
+                    <Star aria-hidden="true" />
+                    Mark as suggested
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onSelect={() =>
+                      setSpaceChildSuggested(parentId, space.room_id, false).catch(
+                        reportActionError,
+                      )
+                    }
+                  >
+                    <StarOff aria-hidden="true" />
+                    Unmark as suggested
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onSelect={() =>
+                      removeSpaceChild(parentId, space.room_id)
+                        .then(onSpaceChildrenChanged)
+                        .catch(reportActionError)
+                    }
+                  >
+                    <DoorOpen aria-hidden="true" />
+                    Remove from space
+                  </ContextMenuItem>
+                </>
+              )}
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
+              >
+                <LogOut aria-hidden="true" />
+                Leave
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        ) : (
+          entryTrigger
+        )}
         {folderOpen && visibleChildren.length > 0 && (
           <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
-            {visibleChildren.map((child) => renderSpaceEntry(child, nextAncestorIds))}
+            {visibleChildren.map((child) =>
+              renderSpaceEntry(child, false, space.room_id, nextAncestorIds),
+            )}
           </div>
         )}
       </div>
@@ -147,6 +359,14 @@ export function SpaceRail({
 
   return (
     <TooltipProvider>
+      {actionError && (
+        <div
+          role="alert"
+          className="fixed bottom-3 left-3 z-50 max-w-xs rounded-md border border-destructive/50 bg-background px-3 py-2 text-sm text-destructive shadow-md"
+        >
+          {actionError}
+        </div>
+      )}
       <aside className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-muted/25 py-3">
         <nav className="flex min-h-0 flex-1 flex-col items-center gap-2" aria-label="Spaces">
           <RailIconButton
@@ -200,15 +420,79 @@ export function SpaceRail({
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1">
-            {topLevelSpaces.map((space) => renderSpaceEntry(space))}
+            {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
+            {unpinnedTopLevelSpaces.length > 0 && (
+              <>
+                <div className="my-1 h-px w-8 bg-border" />
+                <div className="flex flex-col items-center gap-2 opacity-60">
+                  {unpinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
+                </div>
+              </>
+            )}
           </div>
         </nav>
         <RailIconButton label="Create or join space" active={false} onClick={onCreateJoin}>
           <Plus aria-hidden="true" />
         </RailIconButton>
       </aside>
+      <InviteToSpaceDialog
+        spaceId={inviteTarget?.spaceId ?? null}
+        spaceName={inviteTarget?.name ?? null}
+        onOpenChange={(open) => {
+          if (!open) setInviteTarget(null);
+        }}
+      />
+      <LeaveSpaceDialog
+        spaceId={leaveTarget?.spaceId ?? null}
+        spaceName={leaveTarget?.name ?? null}
+        onOpenChange={(open) => {
+          if (!open) setLeaveTarget(null);
+        }}
+        onLeft={(spaceId) => {
+          // The rail's own `activeSpaceId` prop won't update until the
+          // parent re-renders with the left space gone from `rooms` — if
+          // that was the space currently open, redirect out of it now
+          // rather than leaving the room list stuck showing a space the
+          // user no longer has access to.
+          if (spaceId === activeSpaceId) onSelectHome();
+        }}
+      />
+      <AddExistingToSpaceDialog
+        spaceId={addExistingTarget?.spaceId ?? null}
+        spaceName={addExistingTarget?.name ?? null}
+        rooms={rooms}
+        excludedIds={
+          addExistingTarget
+            ? addExistingChildExclusions(addExistingTarget.spaceId, rooms, parentSpaceIdsByChild)
+            : new Set()
+        }
+        onOpenChange={(open) => {
+          if (!open) setAddExistingTarget(null);
+        }}
+        onAdded={onSpaceChildrenChanged}
+      />
     </TooltipProvider>
   );
+}
+
+/** Rooms/spaces that can't be added as a child of `spaceId` without creating
+ * a duplicate or a cycle: the space itself, its ancestors, and its current
+ * direct children. */
+function addExistingChildExclusions(
+  spaceId: string,
+  rooms: RoomSummary[],
+  parentSpaceIdsByChild: Map<string, string[]>,
+) {
+  const excluded = new Set<string>([
+    spaceId,
+    ...collectAncestorSpaceIds(spaceId, parentSpaceIdsByChild),
+  ]);
+  for (const room of rooms) {
+    if (room.parent_space_ids.includes(spaceId)) {
+      excluded.add(room.room_id);
+    }
+  }
+  return excluded;
 }
 
 interface RailIconButtonProps {

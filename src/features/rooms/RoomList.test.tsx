@@ -5,17 +5,20 @@ import { createStore, Provider } from "jotai";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
+import type { RoomListMode } from "./SpaceRail";
 import { makeRoomSummary } from "./testFixtures";
 
 const featureFlagMocks = vi.hoisted(() => ({
   roomListUnreadFilter: false,
   roomListMessagePreview: false,
+  spaceRailManagement: false,
 }));
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => {
     if (key === "room_list_unread_filter") return featureFlagMocks.roomListUnreadFilter;
     if (key === "room_list_message_preview") return featureFlagMocks.roomListMessagePreview;
+    if (key === "space_rail_management") return featureFlagMocks.spaceRailManagement;
     return false;
   },
 }));
@@ -61,6 +64,7 @@ const setRoomMarkedUnread = vi.fn().mockResolvedValue(undefined);
 const setRoomManualOrder = vi.fn().mockResolvedValue(undefined);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const listSpaceHierarchy = vi.fn().mockResolvedValue([]);
+const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
 const joinRoom = vi.fn().mockResolvedValue(undefined);
 const knockRoom = vi.fn().mockResolvedValue(undefined);
 // Never resolves — these tests don't care about the header profile chip
@@ -83,6 +87,7 @@ vi.mock("@/lib/matrix", () => ({
   setRoomManualOrder: (...args: unknown[]) => setRoomManualOrder(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   listSpaceHierarchy: (...args: unknown[]) => listSpaceHierarchy(...args),
+  removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
@@ -132,6 +137,7 @@ afterEach(() => {
   localStorage.clear();
   featureFlagMocks.roomListUnreadFilter = false;
   featureFlagMocks.roomListMessagePreview = false;
+  featureFlagMocks.spaceRailManagement = false;
 });
 
 describe("RoomList", () => {
@@ -379,6 +385,649 @@ describe("RoomList", () => {
     expect(await screen.findByText("Public room")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
+  });
+
+  it("wires Remove from space for a joined room row inside a space's lobby", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child:localhost");
+  });
+
+  it("refetches the space hierarchy after a successful Remove from space, so the row disappears immediately", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const hierarchyWithChild = [
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite" as const,
+          is_space: false,
+        },
+        children: [],
+      },
+    ];
+    listSpaceHierarchy.mockResolvedValueOnce(hierarchyWithChild).mockResolvedValueOnce([]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Team chat")).not.toBeInTheDocument());
+  });
+
+  it("surfaces an error instead of failing silently when Remove from space is rejected", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    removeSpaceChild.mockRejectedValueOnce(new Error("insufficient power level"));
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
+  });
+
+  it("clears a Remove-from-space error when the user leaves that space's context", async () => {
+    // A Remove failure is specific to the space it happened in — it
+    // shouldn't keep rendering as a banner once the user navigates to
+    // Home, DMs, or a different space (Codex review, #290).
+    featureFlagMocks.spaceRailManagement = true;
+    removeSpaceChild.mockRejectedValueOnce(new Error("insufficient power level"));
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const otherSpace = makeRoomSummary({
+      room_id: "!other:localhost",
+      is_space: true,
+      name: "Other",
+    });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withSelectedSpace = (selectedSpace: typeof space) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space, otherSpace, joinedChild],
+              mode: "space",
+              selectedSpace,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withSelectedSpace(space));
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
+
+    rerender(withSelectedSpace(otherSpace));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("refetches the space hierarchy after Add Existing adds a room, via the hierarchyRefreshToken prop", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!new-child:localhost",
+          name: "Newly added",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    rerender(withToken(1));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Newly added")).toBeInTheDocument();
+  });
+
+  it("uses the current mode/space, not a stale closure, when hierarchyRefreshToken changes after switching into space mode", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!new-child:localhost",
+          name: "Newly added",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (mode: RoomListMode, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode,
+              selectedSpace: mode === "space" ? space : null,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    // Mounts in Home — mode/selectedSpaceId change in a *separate* later
+    // render from the eventual token bump, matching the stale-closure
+    // scenario a reviewer raised (and which this test disproves: a plain
+    // function declaration re-created every render, called from an effect
+    // that fires on the render where the token actually changed, always
+    // sees that render's own `mode`/`selectedSpaceId`, not an earlier one).
+    const { rerender } = render(withProps("home", 0));
+
+    rerender(withProps("space", 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    rerender(withProps("space", 1));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Newly added")).toBeInTheDocument();
+  });
+
+  it("does not offer Remove from space while space_rail_management is off", async () => {
+    featureFlagMocks.spaceRailManagement = false;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    expect(screen.queryByText("Remove from space")).not.toBeInTheDocument();
+  });
+
+  it("wires Remove from space for a favourited room row, which bypasses the hierarchy view", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    // `getScopedRooms` scopes favourites in space mode by hierarchy
+    // membership, not `parent_space_ids` alone — the favourite row is
+    // rendered separately from (and in addition to) this hierarchy fetch.
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
+  });
+
+  it("refetches the space hierarchy after removing a favourited row too, not just untagged hierarchy rows", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+  });
+
+  it("offers Remove for a favourited row visible in the hierarchy fetch before parent_space_ids has synced", async () => {
+    // Add Existing's `/hierarchy` refetch can surface an already-favourited
+    // room before the next `/sync` updates its `parent_space_ids` — the
+    // hierarchy snapshot is the more current source here (Codex review on
+    // #290, P2), so Remove must still be offered and target the right
+    // space even though `parent_space_ids` doesn't list it yet.
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: [],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
+  });
+
+  it("targets a favourited row's immediate nested-space parent, not the top-level selected space", async () => {
+    // A descendant several levels deep in the hierarchy has its own
+    // immediate parent, distinct from the top-level `selectedSpaceId` —
+    // `parent_space_ids` alone can't tell these apart (Codex review on
+    // #290, P2), only the hierarchy tree's own shape can.
+    featureFlagMocks.spaceRailManagement = true;
+    const rootSpace = makeRoomSummary({ room_id: "!root:localhost", is_space: true, name: "Root" });
+    const nestedSpace = makeRoomSummary({
+      room_id: "!nested:localhost",
+      is_space: true,
+      name: "Nested",
+      parent_space_ids: ["!root:localhost"],
+    });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!nested:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!nested:localhost",
+          name: "Nested",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: true,
+        },
+        children: [
+          {
+            child: {
+              room_id: "!fav-child:localhost",
+              name: "Pinned chat",
+              topic: null,
+              num_joined_members: 1,
+              join_rule: "invite",
+              is_space: false,
+            },
+            children: [],
+          },
+        ],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({
+          rooms: [rootSpace, nestedSpace, favouriteChild],
+          mode: "space",
+          selectedSpace: rootSpace,
+        })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!nested:localhost", "!fav-child:localhost");
+  });
+
+  it("discards a manual hierarchy refetch that resolves after the user has switched to a different space", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const spaceA = makeRoomSummary({
+      room_id: "!space-a:localhost",
+      is_space: true,
+      name: "Team A",
+    });
+    const spaceB = makeRoomSummary({
+      room_id: "!space-b:localhost",
+      is_space: true,
+      name: "Team B",
+    });
+    const childOfA = makeRoomSummary({
+      room_id: "!child-a:localhost",
+      name: "Chat A",
+      parent_space_ids: ["!space-a:localhost"],
+    });
+    let resolveRefetch: (value: unknown) => void = () => {};
+    listSpaceHierarchy
+      .mockResolvedValueOnce([
+        {
+          child: {
+            room_id: "!child-a:localhost",
+            name: "Chat A",
+            topic: null,
+            num_joined_members: 1,
+            join_rule: "invite",
+            is_space: false,
+          },
+          children: [],
+        },
+      ])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRefetch = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([]);
+
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (selectedSpace: typeof spaceA, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [spaceA, spaceB, childOfA],
+              mode: "space",
+              selectedSpace,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withProps(spaceA, 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    // A manual refetch (e.g. from Add Existing) starts for space A but never
+    // settles before the user switches to space B.
+    rerender(withProps(spaceA, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+
+    rerender(withProps(spaceB, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(3));
+
+    // Now the stale space-A request finally resolves — it must not clobber
+    // space B's (empty) hierarchy with space A's rooms.
+    resolveRefetch([
+      {
+        child: {
+          room_id: "!child-a:localhost",
+          name: "Chat A",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
+  });
+
+  it("discards a manual refetch triggered from a stale render after the user has switched spaces", async () => {
+    // Covers the `currentScopeRef` fix in `refetchSpaceHierarchy`: a mutation
+    // (e.g. Remove from space) kicked off while space A was selected can
+    // resolve its `.then()` callback after the user has since switched to
+    // space B. The stale closure's own `mode`/`selectedSpaceId` values are
+    // no longer enough — the callback must consult current scope at
+    // resolution time, not issue time, even for a *manually triggered*
+    // refetch (not just the auto-fetch-on-selection covered by the test
+    // above).
+    featureFlagMocks.spaceRailManagement = true;
+    const spaceA = makeRoomSummary({
+      room_id: "!space-a:localhost",
+      is_space: true,
+      name: "Team A",
+    });
+    const spaceB = makeRoomSummary({
+      room_id: "!space-b:localhost",
+      is_space: true,
+      name: "Team B",
+    });
+    const childOfA = makeRoomSummary({
+      room_id: "!child-a:localhost",
+      name: "Chat A",
+      parent_space_ids: ["!space-a:localhost"],
+    });
+
+    let resolveManualRefetch: (value: unknown) => void = () => {};
+    listSpaceHierarchy
+      // Initial auto-fetch for space A.
+      .mockResolvedValueOnce([
+        {
+          child: {
+            room_id: "!child-a:localhost",
+            name: "Chat A",
+            topic: null,
+            num_joined_members: 1,
+            join_rule: "invite",
+            is_space: false,
+          },
+          children: [],
+        },
+      ])
+      // A manual refetch (bumping hierarchyRefreshToken) kicked off while
+      // space A was still selected — never settles before the switch.
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveManualRefetch = resolve;
+          }),
+      )
+      // Auto-fetch for space B once the user switches.
+      .mockResolvedValueOnce([]);
+
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (selectedSpace: typeof spaceA, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [spaceA, spaceB, childOfA],
+              mode: "space",
+              selectedSpace,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withProps(spaceA, 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    // A manual refetch is triggered (e.g. a sibling SpaceRail row's Remove
+    // from space succeeding) while space A is still selected — this is the
+    // render whose closure the fix must NOT rely on.
+    rerender(withProps(spaceA, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+
+    // The user switches to space B before that manual refetch resolves.
+    rerender(withProps(spaceB, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(3));
+
+    // The stale manual refetch (issued for space A) now resolves — it must
+    // not clobber space B's (empty) hierarchy with space A's rooms, even
+    // though it was a manually-triggered refetch rather than an
+    // auto-fetch-on-selection.
+    resolveManualRefetch([
+      {
+        child: {
+          room_id: "!child-a:localhost",
+          name: "Chat A",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
   });
 
   it("does not start a second hierarchy join while another is pending", async () => {
@@ -743,6 +1392,40 @@ describe("RoomList", () => {
 
     expect(await screen.findByText("Error: hierarchy unavailable")).toBeInTheDocument();
     expect(screen.queryByText("No rooms yet")).not.toBeInTheDocument();
+  });
+
+  it("clears a stale hierarchy load error once a manual refetch succeeds", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy
+      .mockRejectedValueOnce(new Error("hierarchy unavailable"))
+      .mockResolvedValueOnce([]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    expect(await screen.findByText("Error: hierarchy unavailable")).toBeInTheDocument();
+
+    // Connectivity recovers and a mutation (Add Existing/Remove) triggers a
+    // manual refetch, which succeeds this time.
+    rerender(withToken(1));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Error: hierarchy unavailable")).not.toBeInTheDocument(),
+    );
   });
 
   it("shows all non-DM rooms from Home when Show all rooms is enabled", () => {
@@ -1358,5 +2041,52 @@ describe("RoomList", () => {
 
     expect(screen.getByText("Alpha orphan")).toBeInTheDocument();
     expect(screen.queryByText("Loading space…")).not.toBeInTheDocument();
+  });
+
+  it("clears the loading state when a manual refetch overtakes the still-pending initial load", async () => {
+    // The mount-time load never resolves on its own — standing in for it
+    // still being in flight when a sibling SpaceRail's Add Existing/Remove
+    // bumps `hierarchyRefreshToken`. That refetch claims the newer request
+    // id, so the stale initial load's own `finally` sees itself as stale
+    // and skips clearing `spaceLoading` — the refetch itself must clear it
+    // instead, or the lobby stays stuck on "Loading space…" forever even
+    // though `spaceHierarchy` already updated (Codex review, #290).
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockReturnValueOnce(new Promise(() => {})); // never resolves
+    listSpaceHierarchy.mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    await waitFor(() => expect(screen.getByText("Loading space…")).toBeInTheDocument());
+
+    rerender(withToken(1));
+
+    await waitFor(() => expect(screen.queryByText("Loading space…")).not.toBeInTheDocument());
   });
 });

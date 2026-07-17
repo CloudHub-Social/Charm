@@ -36,11 +36,11 @@ use charm_lib::matrix::profiles::{get_own_profile_impl, OwnProfile};
 use charm_lib::matrix::room_admin::{
     add_room_alias_impl, ban_member_impl, build_room_details, check_room_alias_available_impl,
     enable_room_encryption_impl, get_room_local_aliases_impl, get_room_member_list_impl,
-    invite_member_impl, kick_member_impl, remove_alt_alias_impl, remove_room_alias_impl,
-    remove_room_avatar_impl, set_canonical_alias_impl, set_member_power_level_impl,
-    set_room_history_visibility_impl, set_room_join_rule_impl, set_room_name_impl,
-    set_room_power_level_thresholds_impl, set_room_topic_impl, unban_member_impl,
-    HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
+    invite_member_impl, kick_member_impl, leave_room_impl, remove_alt_alias_impl,
+    remove_room_alias_impl, remove_room_avatar_impl, set_canonical_alias_impl,
+    set_member_power_level_impl, set_room_history_visibility_impl, set_room_join_rule_impl,
+    set_room_name_impl, set_room_power_level_thresholds_impl, set_room_topic_impl,
+    unban_member_impl, HistoryVisibilityKind, JoinRuleKind, PowerLevelThresholds,
 };
 use charm_lib::matrix::rooms::{
     accept_invite_impl, decline_invite_impl, resolve_alias, set_room_favourite_impl,
@@ -51,7 +51,8 @@ use charm_lib::matrix::send::{
     attachment_info_for, build_message_content, send_and_capture_transaction_id,
 };
 use charm_lib::matrix::spaces::{
-    create_space_impl, join_room_impl, knock_room_impl, list_space_hierarchy_impl,
+    add_existing_space_child_impl, create_space_impl, join_room_impl, knock_room_impl,
+    list_space_hierarchy_impl, remove_space_child_impl, set_space_child_suggested_impl,
 };
 use charm_lib::matrix::timeline::get_timeline_page_impl;
 use charm_lib::matrix::verification::{
@@ -114,6 +115,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/rooms/{room_id}/invite/accept", post(accept_invite))
         .route("/api/rooms/{room_id}/invite/decline", post(decline_invite))
         .route("/api/rooms/{room_id}/hierarchy", get(list_space_hierarchy))
+        .route("/api/rooms/{room_id}/leave", post(leave_room))
+        .route(
+            "/api/rooms/{room_id}/space-children/{child_room_id}",
+            post(add_existing_space_child).delete(remove_space_child),
+        )
+        .route(
+            "/api/rooms/{room_id}/space-children/{child_room_id}/suggested",
+            put(set_space_child_suggested),
+        )
         // -- messaging --
         .route("/api/rooms/{room_id}/send", post(send_message))
         .route("/api/rooms/{room_id}/reply", post(send_reply))
@@ -2106,6 +2116,69 @@ async fn create_space(
     .await
     .map_err(ApiError::bad_request)?;
     Ok(Json(room_id))
+}
+
+async fn leave_room(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path(room_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor — same CORS "simple request" gap as `invite_member`.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    leave_room_impl(&session.client, &room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn add_existing_space_child(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, child_room_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor — same CORS "simple request" gap as `invite_member`.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    add_existing_space_child_impl(&session.client, &room_id, &child_room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_space_child(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    headers: axum::http::HeaderMap,
+    Path((room_id, child_room_id)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    // No body extractor — same CORS "simple request" gap as `invite_member`.
+    require_allowed_origin(&headers)?;
+    let session = require_session(&state, &jar).await?;
+    remove_space_child_impl(&session.client, &room_id, &child_room_id)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSpaceChildSuggestedRequest {
+    suggested: bool,
+}
+
+async fn set_space_child_suggested(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path((room_id, child_room_id)): Path<(String, String)>,
+    Json(request): Json<SetSpaceChildSuggestedRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = require_session(&state, &jar).await?;
+    set_space_child_suggested_impl(&session.client, &room_id, &child_room_id, request.suggested)
+        .await
+        .map_err(ApiError::bad_request)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Debug, Deserialize)]

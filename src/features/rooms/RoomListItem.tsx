@@ -26,6 +26,22 @@ interface RoomListItemProps {
   onToggleMuted?: () => void;
   onMarkRead?: () => void;
   onMarkUnread?: () => void;
+  /** Detaches `room` from the space whose lobby this row is rendered in —
+   * only passed when the row is shown inside a space's room list (not Home
+   * or DMs) and `room` is actually a child of that space. This is the
+   * counterpart to `SpaceRail`'s own `Remove from space` action, which only
+   * covers sub-space rows, not regular rooms filed under a space. */
+  onRemoveFromSpace?: () => void;
+  /** The space id `onRemoveFromSpace` (if present) would detach `room` from —
+   * not read by this component, only compared in `roomListItemPropsEqual`.
+   * `onRemoveFromSpace`'s own identity can't stand in for this: `RoomList`
+   * creates a fresh closure over the current `selectedSpaceId`/`parentSpaceId`
+   * on every render (like its other callback props, whose identity churn is
+   * deliberately ignored below), so a mounted row that keeps showing the same
+   * *room* while the surrounding lobby's target space changes — e.g. the same
+   * room visible under two different spaces, and the user switches lobbies —
+   * would otherwise keep the stale closure and detach from the wrong space. */
+  removeFromSpaceTargetId?: string;
   /** Spread onto the root element by the drag-reorder gesture in `RoomList.tsx`. */
   dragHandleProps?: Record<string, unknown>;
   style?: CSSProperties;
@@ -40,6 +56,7 @@ function RoomListItemImpl({
   onToggleMuted,
   onMarkRead,
   onMarkUnread,
+  onRemoveFromSpace,
   dragHandleProps,
   style,
 }: RoomListItemProps) {
@@ -141,7 +158,12 @@ function RoomListItemImpl({
   );
 
   const hasMenuActions =
-    onToggleFavourite || onToggleLowPriority || onToggleMuted || onMarkRead || onMarkUnread;
+    onToggleFavourite ||
+    onToggleLowPriority ||
+    onToggleMuted ||
+    onMarkRead ||
+    onMarkUnread ||
+    onRemoveFromSpace;
   if (!hasMenuActions) {
     return button;
   }
@@ -168,6 +190,12 @@ function RoomListItemImpl({
         {(onMarkRead || onMarkUnread) && <ContextMenuSeparator />}
         {onMarkRead && <ContextMenuItem onSelect={onMarkRead}>Mark as read</ContextMenuItem>}
         {onMarkUnread && <ContextMenuItem onSelect={onMarkUnread}>Mark as unread</ContextMenuItem>}
+        {onRemoveFromSpace && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onRemoveFromSpace}>Remove from space</ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -196,6 +224,21 @@ export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListIt
   if (prev.active !== next.active) return false;
   if (prev.style !== next.style) return false;
   if (prev.dragHandleProps !== next.dragHandleProps) return false;
+  // Unlike the other callback props, this one's mere *presence* gates
+  // whether the "Remove from space" menu item renders at all (see below) —
+  // toggling the `space_rail_management` flag flips `RoomList`'s
+  // `onRemoveFromSpace={flag ? handler : undefined}` between a function and
+  // `undefined` for an already-mounted row whose other compared fields
+  // don't change, so without this check the row would keep showing (or
+  // hiding) the action until some unrelated prop forced a re-render.
+  if (Boolean(prev.onRemoveFromSpace) !== Boolean(next.onRemoveFromSpace)) return false;
+  // Presence alone misses the narrower case where the same room is visible
+  // under two different spaces and the user switches from one lobby to the
+  // other: `onRemoveFromSpace` stays present in both renders, but the
+  // closure it captured targets whichever space was selected when *this*
+  // row last re-rendered. Comparing the target id forces a refresh so the
+  // row picks up the new closure instead of detaching from the wrong space.
+  if (prev.removeFromSpaceTargetId !== next.removeFromSpaceTargetId) return false;
 
   const a = prev.room;
   const b = next.room;

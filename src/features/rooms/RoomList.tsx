@@ -18,6 +18,7 @@ import {
   joinRoom,
   knockRoom,
   listSpaceHierarchy,
+  removeSpaceChild,
   setRoomFavourite,
   setRoomLowPriority,
   setRoomManualOrder,
@@ -80,6 +81,11 @@ interface RoomListProps {
   onShowAllRoomsChange: (showAll: boolean) => void;
   onAcceptInvite?: (roomId: string) => Promise<void>;
   onDeclineInvite?: (roomId: string) => Promise<void>;
+  /** Bumped by the caller after "Add Existing" (owned by a sibling
+   * `SpaceRail`) files a room/space under the selected space — the open
+   * lobby's own `/hierarchy` fetch below doesn't otherwise know a mutation
+   * happened, since `mode`/`selectedSpaceId` haven't changed. */
+  hierarchyRefreshToken?: number;
 }
 
 const noopInviteAction = (): Promise<void> => Promise.resolve();
@@ -112,6 +118,7 @@ export function RoomList({
   onShowAllRoomsChange,
   onAcceptInvite = noopInviteAction,
   onDeclineInvite = noopInviteAction,
+  hierarchyRefreshToken,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -135,6 +142,11 @@ export function RoomList({
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  // Space-child mutations aren't power-level-gated in the UI (Remove from
+  // space is offered unconditionally), so a rejection — missing power
+  // level, offline, a since-removed link — is a normal reachable outcome
+  // that needs to be visible, not silently dropped.
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
   // Rows aren't a fixed height (the message-preview flag grows some rows a
@@ -152,6 +164,10 @@ export function RoomList({
   // by DND (see `shell::compute_badge_state`'s own doc comment).
   const focusModeFlagEnabled = useFlag("focus_mode");
   const roomListUnreadFilterFlagEnabled = useFlag("room_list_unread_filter");
+  // Same flag `SpaceRail`'s own space-management actions are gated behind —
+  // "Remove from space" on a regular room row is the counterpart to that
+  // menu's `Remove` for sub-space rows, so it ships/rolls out together.
+  const spaceRailManagementEnabled = useFlag("space_rail_management");
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
@@ -174,6 +190,23 @@ export function RoomList({
   const visibleHierarchyCount = useMemo(
     () => countVisibleHierarchyNodes(filteredSpaceHierarchy, roomById),
     [filteredSpaceHierarchy, roomById],
+  );
+  // Maps each descendant's room id to its *immediate* parent's id, per the
+  // freshly-fetched `/hierarchy` snapshot — not `room.parent_space_ids`
+  // (Codex review on #290, P2). Two gaps that check alone has: a tagged
+  // (favourite/low-priority) room Add Existing just published can appear in
+  // this hierarchy fetch before the next `/sync` updates its
+  // `parent_space_ids`, so the local-only check would miss it entirely; and
+  // for a descendant under a *nested* space, `parent_space_ids` doesn't say
+  // which immediate parent to detach from (only the hierarchy's own tree
+  // shape does — the room's top-level `selectedSpaceId` membership isn't
+  // its actual removal target for a deeper node).
+  const hierarchyParentById = useMemo(
+    () =>
+      mode === "space" && selectedSpaceId
+        ? hierarchyParentByRoomId(spaceHierarchy, selectedSpaceId)
+        : new Map<string, string>(),
+    [mode, selectedSpaceId, spaceHierarchy],
   );
   const scopedRooms = useMemo(
     () =>
@@ -299,33 +332,107 @@ export function RoomList({
     return filterSpaceChildrenByQuery(unjoinedChildren, searchQuery);
   }, [isSearching, unreadOnly, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
 
+  // Every hierarchy fetch (the mount/mode-switch effect below, plus any
+  // manual `refetchSpaceHierarchy` call after a mutation) claims the next
+  // id and only applies its result if it's still the *latest* one issued —
+  // not just "not stale for its own effect run". Without a single shared
+  // counter, an older mount-time request that happens to resolve after a
+  // newer post-mutation refetch (or vice versa) could win the race and
+  // silently overwrite the more current result.
+  const hierarchyRequestIdRef = useRef(0);
+
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
+      hierarchyRequestIdRef.current += 1;
       setSpaceHierarchy([]);
       setSpaceError(null);
       setJoinError(null);
       setSpaceLoading(false);
-      return undefined;
+      // A Remove-from-space failure from a prior space shouldn't keep
+      // rendering as a banner after the user navigates to Home, DMs, or a
+      // different space — this error is specific to whatever space it
+      // happened in, unlike a join failure the user might still want to
+      // retry from the same view.
+      setRemoveError(null);
+      return;
     }
-    let stale = false;
+    const requestId = ++hierarchyRequestIdRef.current;
     setSpaceLoading(true);
     setSpaceError(null);
     setJoinError(null);
     setSpaceHierarchy([]);
+    setRemoveError(null);
     listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
-        if (!stale) setSpaceHierarchy(result);
+        if (hierarchyRequestIdRef.current === requestId) setSpaceHierarchy(result);
       })
       .catch((err) => {
-        if (!stale) setSpaceError(String(err));
+        if (hierarchyRequestIdRef.current === requestId) setSpaceError(String(err));
       })
       .finally(() => {
-        if (!stale) setSpaceLoading(false);
+        if (hierarchyRequestIdRef.current === requestId) setSpaceLoading(false);
       });
-    return () => {
-      stale = true;
-    };
   }, [mode, selectedSpaceId]);
+
+  // `spaceHierarchy` is a point-in-time `/hierarchy` snapshot, not something
+  // Matrix sync keeps current — an `m.space.child` write (Remove from space,
+  // Add Existing) doesn't retrigger the effect above on its own, since
+  // `mode`/`selectedSpaceId` haven't changed. Called after those mutations
+  // settle so the open lobby's row list reflects the edit immediately
+  // instead of only after the user navigates away and back.
+  function refetchSpaceHierarchy() {
+    // Reads `currentScopeRef` rather than closing over `mode`/`selectedSpaceId`
+    // directly — this function is often invoked from a `.then()` attached to
+    // a mutation kicked off in an earlier render (e.g. `onRemoveFromSpace`
+    // for a row that belonged to a space the user has since navigated away
+    // from). Using the closed-over values would fetch (and let win, via
+    // `hierarchyRequestIdRef`) a *stale* space's hierarchy over whatever the
+    // user is actually looking at now.
+    const scope = currentScopeRef.current;
+    if (scope.mode !== "space" || !scope.selectedSpaceId) return;
+    const requestedSpaceId = scope.selectedSpaceId;
+    const requestId = ++hierarchyRequestIdRef.current;
+    listSpaceHierarchy(requestedSpaceId)
+      .then((result) => {
+        if (hierarchyRequestIdRef.current !== requestId) return;
+        if (currentScopeRef.current.selectedSpaceId !== requestedSpaceId) return;
+        setSpaceHierarchy(result);
+        // A prior load failure shouldn't keep masking a hierarchy that has
+        // since recovered — e.g. connectivity returned and this refetch
+        // (triggered by a successful mutation, which implies the server is
+        // reachable) succeeded.
+        setSpaceError(null);
+      })
+      .catch(logAndIgnore)
+      .finally(() => {
+        // If this refetch overtook the initial mount-time load (e.g. a
+        // sibling SpaceRail's Add Existing/Remove bumped the request id
+        // while that load was still in flight), that load's own `finally`
+        // sees itself as stale and skips clearing `spaceLoading` — this is
+        // the only path left to do it, or the lobby stays stuck on
+        // "Loading space…" even after this refetch settles (Codex review,
+        // #290). Doesn't check `currentScopeRef` like the `.then()` above:
+        // even if the user has since navigated away, `spaceLoading` isn't
+        // scoped to a particular space, so it's still correct to clear it
+        // once whatever fetch was still "current" for it has settled.
+        if (hierarchyRequestIdRef.current === requestId) setSpaceLoading(false);
+      });
+  }
+
+  // `hierarchyRefreshToken` is the "Add Existing" side of the same gap —
+  // owned by a sibling `SpaceRail`, so it can't call `refetchSpaceHierarchy`
+  // directly; the caller bumps this token instead. Skips the very first run
+  // (the mount-time fetch effect above already covers that) so mounting
+  // already in space mode doesn't fire a redundant duplicate fetch.
+  const hierarchyRefreshMountedRef = useRef(false);
+  useEffect(() => {
+    if (!hierarchyRefreshMountedRef.current) {
+      hierarchyRefreshMountedRef.current = true;
+      return;
+    }
+    refetchSpaceHierarchy();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hierarchyRefreshToken]);
 
   // A query typed in one context (Home, DMs, a specific space) shouldn't
   // silently keep filtering an unrelated one after the user switches scope —
@@ -352,19 +459,50 @@ export function RoomList({
     // Reordering a filtered subset would compute positions against missing
     // rows and silently corrupt the full section order once "All" is restored.
     const canReorder = !unreadOnly && hasSameRoomOrder(sectionRooms, fullSectionRooms);
-    return sectionRooms.map((room, index) => (
-      <DraggableRoomRow
-        key={room.room_id}
-        room={room}
-        index={index}
-        sectionRooms={sectionRooms}
-        canReorder={canReorder}
-        rowHeights={rowHeightsRef.current}
-        active={room.room_id === activeRoomId}
-        onSelect={() => onSelectRoom(room.room_id)}
-        onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
-      />
-    ));
+    return sectionRooms.map((room, index) => {
+      // Favourite/low-priority rooms bypass the hierarchy view entirely (see
+      // `isHiddenHierarchyRoom`) and render through this same section-rows
+      // path even in space mode — so this is the only place those tagged
+      // rows can pick up `Remove from space`; the untagged hierarchy rows
+      // get theirs from `renderHierarchy` instead. Prefers the freshly
+      // fetched `/hierarchy` snapshot's own parent over `parent_space_ids`
+      // (Codex review on #290, P2): a tagged room Add Existing just
+      // published can appear in that snapshot before the next `/sync`
+      // updates `parent_space_ids`, and a descendant under a nested space
+      // needs its *immediate* parent, which `parent_space_ids` alone
+      // doesn't distinguish from the top-level selected space.
+      const removeFromSpaceTargetId =
+        spaceRailManagementEnabled && mode === "space" && selectedSpaceId
+          ? (hierarchyParentById.get(room.room_id) ??
+            (room.parent_space_ids.includes(selectedSpaceId) ? selectedSpaceId : undefined))
+          : undefined;
+      return (
+        <DraggableRoomRow
+          key={room.room_id}
+          room={room}
+          index={index}
+          sectionRooms={sectionRooms}
+          canReorder={canReorder}
+          rowHeights={rowHeightsRef.current}
+          active={room.room_id === activeRoomId}
+          onSelect={() => onSelectRoom(room.room_id)}
+          onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
+          onRemoveFromSpace={
+            removeFromSpaceTargetId
+              ? () => {
+                  setRemoveError(null);
+                  removeSpaceChild(removeFromSpaceTargetId, room.room_id)
+                    .then(refetchSpaceHierarchy)
+                    .catch((err) =>
+                      setRemoveError(err instanceof Error ? err.message : String(err)),
+                    );
+                }
+              : undefined
+          }
+          removeFromSpaceTargetId={removeFromSpaceTargetId}
+        />
+      );
+    });
   }
 
   // Deliberately not renderSectionRooms/DraggableRoomRow: search results are
@@ -684,6 +822,11 @@ export function RoomList({
               {(spaceError || joinError) && (
                 <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
               )}
+              {removeError && (
+                <p role="alert" className="px-3 py-2 text-sm text-destructive">
+                  {removeError}
+                </p>
+              )}
               <RoomListSection
                 title="Invites"
                 count={invitedRooms.length}
@@ -716,14 +859,21 @@ export function RoomList({
                   expanded={isExpanded("spaceRooms")}
                   onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
                 >
-                  {renderHierarchy(filteredSpaceHierarchy, {
-                    roomById,
-                    activeRoomId,
-                    onSelectRoom,
-                    onSelectSpace,
-                    onJoin: handleJoin,
-                    pendingRoomId,
-                  })}
+                  {renderHierarchy(
+                    filteredSpaceHierarchy,
+                    {
+                      roomById,
+                      activeRoomId,
+                      onSelectRoom,
+                      onSelectSpace,
+                      onJoin: handleJoin,
+                      pendingRoomId,
+                      spaceManagementEnabled: spaceRailManagementEnabled,
+                      onRemoved: refetchSpaceHierarchy,
+                      onRemoveError: setRemoveError,
+                    },
+                    selectedSpace.room_id,
+                  )}
                 </RoomListSection>
               ) : (
                 sections.spaceGroups.map(({ space, rooms: spaceRooms }) => {
@@ -805,6 +955,25 @@ function flattenHierarchy(nodes: SpaceHierarchyNode[]): SpaceHierarchyNode[] {
   return nodes.flatMap((node) => [node, ...flattenHierarchy(node.children)]);
 }
 
+/** Maps every descendant room id in `nodes` to its immediate parent's id —
+ * `parentId` is the id each top-level node in `nodes` is a direct child of. */
+function hierarchyParentByRoomId(
+  nodes: SpaceHierarchyNode[],
+  parentId: string,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const node of nodes) {
+    map.set(node.child.room_id, parentId);
+    for (const [childId, childParentId] of hierarchyParentByRoomId(
+      node.children,
+      node.child.room_id,
+    )) {
+      map.set(childId, childParentId);
+    }
+  }
+  return map;
+}
+
 function getFullSectionRooms(visibleSectionRooms: RoomSummary[], fullSectionRooms: RoomSummary[]) {
   const visibleRoomIds = new Set(visibleSectionRooms.map((room) => room.room_id));
   return fullSectionRooms.filter((room) => visibleRoomIds.has(room.room_id));
@@ -830,7 +999,26 @@ function renderHierarchy(
     onSelectSpace: (id: string) => void;
     onJoin: (child: SpaceChild) => void;
     pendingRoomId: string | null;
+    /** Enables the "Remove from space" row action — the same
+     * `space_rail_management` flag `SpaceRail`'s own management actions are
+     * gated behind, since this is the counterpart to its `Remove` for
+     * sub-space rows. */
+    spaceManagementEnabled: boolean;
+    /** Called after a successful removal — `spaceHierarchy` is a point-in-time
+     * snapshot Matrix sync doesn't keep current, so the caller needs to
+     * explicitly refetch it for the removed row to disappear immediately. */
+    onRemoved: () => void;
+    /** Called with a message when a removal is rejected (e.g. missing power
+     * level) — this action isn't power-level-gated in the UI, so a rejection
+     * is a normal reachable outcome that needs to be visible. */
+    onRemoveError: (message: string) => void;
   },
+  /** The id of the space each node in `nodes` is a direct child of — root
+   * spaces are children of the currently selected space; recursing into a
+   * node's own `children` passes that node's own room id down, so `Remove
+   * from space` always detaches from the row's *actual* immediate parent,
+   * not the top-level selected space. */
+  parentSpaceId: string,
   depth = 0,
   path = "root",
 ): ReactElement[] {
@@ -849,8 +1037,21 @@ function renderHierarchy(
         onSelectRoom={options.onSelectRoom}
         onSelectSpace={options.onSelectSpace}
         onJoin={options.onJoin}
+        onRemoveFromSpace={
+          options.spaceManagementEnabled && !node.child.is_space
+            ? () =>
+                removeSpaceChild(parentSpaceId, node.child.room_id)
+                  .then(options.onRemoved)
+                  .catch((err) =>
+                    options.onRemoveError(err instanceof Error ? err.message : String(err)),
+                  )
+            : undefined
+        }
+        removeFromSpaceTargetId={
+          options.spaceManagementEnabled && !node.child.is_space ? parentSpaceId : undefined
+        }
       />,
-      ...renderHierarchy(node.children, options, depth + 1, nodeKey),
+      ...renderHierarchy(node.children, options, node.child.room_id, depth + 1, nodeKey),
     ];
   });
 }
@@ -879,6 +1080,8 @@ interface HierarchyRowProps {
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
+  onRemoveFromSpace?: () => void;
+  removeFromSpaceTargetId?: string;
 }
 
 function HierarchyRow({
@@ -890,6 +1093,8 @@ function HierarchyRow({
   onSelectRoom,
   onSelectSpace,
   onJoin,
+  onRemoveFromSpace,
+  removeFromSpaceTargetId,
 }: HierarchyRowProps) {
   const indent = `${Math.min(depth, 6) * 16}px`;
   if (joinedRoom?.is_space) {
@@ -931,6 +1136,8 @@ function HierarchyRow({
           }
           onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
           onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
+          onRemoveFromSpace={onRemoveFromSpace}
+          removeFromSpaceTargetId={removeFromSpaceTargetId}
         />
       </div>
     );
@@ -962,6 +1169,8 @@ interface DraggableRoomRowProps {
   active: boolean;
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
+  onRemoveFromSpace?: () => void;
+  removeFromSpaceTargetId?: string;
 }
 
 function DraggableRoomRow({
@@ -973,6 +1182,8 @@ function DraggableRoomRow({
   active,
   onSelect,
   onReorder,
+  onRemoveFromSpace,
+  removeFromSpaceTargetId,
 }: DraggableRoomRowProps) {
   const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -1077,6 +1288,8 @@ function DraggableRoomRow({
       }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
+      onRemoveFromSpace={onRemoveFromSpace}
+      removeFromSpaceTargetId={removeFromSpaceTargetId}
       dragHandleProps={dragHandleProps}
       style={style}
     />

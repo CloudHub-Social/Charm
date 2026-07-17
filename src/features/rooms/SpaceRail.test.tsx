@@ -1,11 +1,41 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
+import type * as MatrixLib from "@/lib/matrix";
 import type { BadgeState } from "@/lib/matrix";
 import { SpaceRail } from "./SpaceRail";
 import { makeRoomSummary } from "./testFixtures";
+
+const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
+const setSpaceChildSuggested = vi.fn().mockResolvedValue(undefined);
+const addExistingSpaceChild = vi.fn().mockResolvedValue(undefined);
+const leaveRoom = vi.fn().mockResolvedValue(undefined);
+const inviteMember = vi.fn().mockResolvedValue(undefined);
+// No account-data record for these tests' fixtures — `useSpaceRailPrefsSync`
+// treats that the same as "not signed into a real backend yet" and falls
+// back to (and stays on) the local-storage cache.
+const getAccountData = vi.fn().mockResolvedValue(null);
+const setAccountData = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("@/lib/matrix", async (importOriginal) => ({
+  ...(await importOriginal<typeof MatrixLib>()),
+  removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
+  setSpaceChildSuggested: (...args: unknown[]) => setSpaceChildSuggested(...args),
+  addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
+  leaveRoom: (...args: unknown[]) => leaveRoom(...args),
+  inviteMember: (...args: unknown[]) => inviteMember(...args),
+  getAccountData: (...args: unknown[]) => getAccountData(...args),
+  setAccountData: (...args: unknown[]) => setAccountData(...args),
+}));
+
+// `space_rail_management` defaults off; these tests exercise the feature
+// itself, so it's enabled here the same way `ChatShell.test.tsx` enables
+// its own flags. The one test that specifically checks the flagged-off
+// fallback (below) overrides this per-test.
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
 
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {
   badgeState?: BadgeState;
@@ -50,6 +80,7 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
     activeMode: "home" as const,
     activeSpaceId: null,
     showAllRooms: false,
+    currentUserId: "@e2e:localhost",
     onSelectHome: vi.fn(),
     onSelectDms: vi.fn(),
     onSelectSpace: vi.fn(),
@@ -65,6 +96,11 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
 }
 
 describe("SpaceRail", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    mockUseFlag.mockReturnValue(true);
+  });
+
   it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
     renderRail();
 
@@ -306,5 +342,184 @@ describe("SpaceRail", () => {
     expect(props.onSelectHome).toHaveBeenCalledOnce();
     expect(props.onSelectDms).toHaveBeenCalledOnce();
     expect(props.onCreateJoin).toHaveBeenCalledOnce();
+  });
+
+  it("opens a context menu on a top-level space with Open lobby, Invite, and Pin actions", () => {
+    const props = renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+
+    expect(screen.getByRole("menuitem", { name: /Open lobby/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Invite/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Unpin from sidebar/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: /Open lobby/ }));
+    expect(props.onSelectSpace).toHaveBeenCalledWith("!space:localhost");
+  });
+
+  it("does not offer pin/reorder actions on a nested (non-top-level) space", () => {
+    renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+
+    expect(screen.queryByRole("menuitem", { name: /Pin to sidebar/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Unpin from sidebar/ })).not.toBeInTheDocument();
+  });
+
+  it("unpins a top-level space from the rail via its context menu, keeping it visible below a divider", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Unpin from sidebar/ }));
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.getByRole("menuitem", { name: /Pin to sidebar/ })).toBeInTheDocument();
+  });
+
+  it("reorders pinned top-level spaces via Move up/Move down", () => {
+    renderRail({
+      rooms: [
+        makeRoomSummary({ room_id: "!space-a:localhost", name: "Alpha", is_space: true }),
+        makeRoomSummary({ room_id: "!space-b:localhost", name: "Beta", is_space: true }),
+      ],
+    });
+
+    const spaceButtons = () => screen.getAllByRole("button", { name: /^(Alpha|Beta)$/ });
+    expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Alpha",
+      "Beta",
+    ]);
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Beta" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Move up" }));
+
+    expect(spaceButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Beta",
+      "Alpha",
+    ]);
+  });
+
+  it("opens the Invite dialog for a space from its context menu", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Invite/ }));
+
+    expect(screen.getByRole("dialog", { name: "Invite to Team" })).toBeInTheDocument();
+  });
+
+  it("opens a Leave confirmation dialog rather than leaving immediately", async () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+
+    expect(screen.getByRole("dialog", { name: "Leave Team?" })).toBeInTheDocument();
+    expect(leaveRoom).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    expect(leaveRoom).toHaveBeenCalledWith("!space:localhost");
+    await screen.findByRole("navigation", { name: "Spaces" });
+  });
+
+  it("redirects home after leaving the currently active space", async () => {
+    const props = renderRail({ activeMode: "space", activeSpaceId: "!space:localhost" });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+
+    await waitFor(() => expect(props.onSelectHome).toHaveBeenCalledOnce());
+  });
+
+  it("does not redirect when leaving a space other than the active one", async () => {
+    const props = renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+
+    await waitFor(() => expect(leaveRoom).toHaveBeenCalledWith("!space:localhost"));
+    expect(props.onSelectHome).not.toHaveBeenCalled();
+  });
+
+  it("opens the Add Existing dialog for a space from its context menu", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add existing/ }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Add existing room or space to Team" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Remove and Set/Unset Suggested only on a space with a parent", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.queryByRole("menuitem", { name: /Remove from space/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Mark as suggested/ })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child-space:localhost");
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Mark as suggested" }));
+    expect(setSpaceChildSuggested).toHaveBeenCalledWith(
+      "!space:localhost",
+      "!child-space:localhost",
+      true,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unmark as suggested" }));
+    expect(setSpaceChildSuggested).toHaveBeenCalledWith(
+      "!space:localhost",
+      "!child-space:localhost",
+      false,
+    );
+  });
+
+  it("calls onSpaceChildrenChanged after successfully removing a nested space, so a sibling RoomList can refresh", async () => {
+    const onSpaceChildrenChanged = vi.fn();
+    renderRail({ onSpaceChildrenChanged });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+
+    await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
+  });
+
+  it("surfaces a visible error when removing a space child fails instead of failing silently", async () => {
+    removeSpaceChild.mockRejectedValueOnce(new Error("lacking power level"));
+    renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("lacking power level");
+  });
+
+  it("renders the plain pre-Spec-63 rail with no context menu when space_rail_management is off", () => {
+    mockUseFlag.mockReturnValue(false);
+    renderRail();
+
+    // Every top-level space (including one this fixture would otherwise
+    // treat as pinned-by-default) renders in its natural order, with no
+    // pin/unpin divider and no right-click affordance.
+    expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
   });
 });

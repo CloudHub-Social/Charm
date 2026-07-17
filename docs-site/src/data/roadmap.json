@@ -1,15 +1,43 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-16T16:46:20.350Z",
+  "generatedAt": "2026-07-17T03:12:16.919Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 30,
-    "follow-up": 8,
-    "in-progress": 0,
-    "planned": 37
+    "shipped": 29,
+    "follow-up": 9,
+    "in-progress": 4,
+    "planned": 34
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 290,
+      "title": "Sidebar and space management: pin, reorder, context menu, add existing (Spec 63)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/290",
+      "detail": "Day-1 Spec 63 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 294,
+      "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/294",
+      "detail": "Day-1 Spec 12 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 293,
+      "title": "feat(rooms): message pinning (Spec day-2/04)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/293",
+      "detail": "Day-2 Spec 12 · ready for review"
+    },
+    {
+      "type": "pull-request",
+      "number": 291,
+      "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/291",
+      "detail": "Day-1 Spec 40 · ready for review"
+    },
     {
       "type": "issue",
       "number": 48,
@@ -53,8 +81,8 @@
         "day-1-27"
       ],
       "counts": {
-        "shipped": 24,
-        "follow-up": 3,
+        "shipped": 23,
+        "follow-up": 4,
         "in-progress": 0,
         "planned": 0
       }
@@ -98,13 +126,14 @@
         "day-1-59",
         "day-1-60",
         "day-1-61",
-        "day-1-62"
+        "day-1-62",
+        "day-1-63"
       ],
       "counts": {
         "shipped": 6,
         "follow-up": 5,
-        "in-progress": 0,
-        "planned": 24
+        "in-progress": 2,
+        "planned": 23
       }
     },
     {
@@ -129,8 +158,8 @@
       "counts": {
         "shipped": 0,
         "follow-up": 0,
-        "in-progress": 0,
-        "planned": 13
+        "in-progress": 2,
+        "planned": 11
       }
     }
   ],
@@ -360,8 +389,16 @@
       "number": 12,
       "title": "First-run onboarding",
       "route": "/specs/day-1/spec-12--first-run-onboarding/",
-      "status": "shipped",
+      "status": "follow-up",
       "pullRequests": [
+        {
+          "number": 294,
+          "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/294",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T02:37:43Z"
+        },
         {
           "number": 30,
           "title": "Spec 12: First-run onboarding",
@@ -1018,6 +1055,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 282,
+          "title": "feat(rooms): resend/discard a failed message send (Spec 37 item 7)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/282",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-17T00:21:33Z"
+        },
+        {
           "number": 277,
           "title": "feat(rooms): confirm message redaction",
           "url": "https://github.com/CloudHub-Social/Charm/pull/277",
@@ -1062,8 +1107,25 @@
       "number": 40,
       "title": "Presence and receipt privacy controls",
       "route": "/specs/day-1/spec-40--presence-and-receipt-privacy-controls/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 292,
+          "title": "feat(privacy): presence and receipt privacy controls (Spec 40)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/292",
+          "state": "closed",
+          "draft": false,
+          "updatedAt": "2026-07-17T01:34:22Z"
+        },
+        {
+          "number": 291,
+          "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/291",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T01:27:02Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1231,6 +1293,14 @@
       "status": "follow-up",
       "pullRequests": [
         {
+          "number": 283,
+          "title": "feat(rooms): add last-message preview to room-list rows (Spec 54)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/283",
+          "state": "merged",
+          "draft": false,
+          "updatedAt": "2026-07-16T19:46:04Z"
+        },
+        {
           "number": 278,
           "title": "feat(rooms): show ambient unread counts",
           "url": "https://github.com/CloudHub-Social/Charm/pull/278",
@@ -1348,6 +1418,25 @@
       "issues": []
     },
     {
+      "id": "day-1-63",
+      "tier": "day-1",
+      "number": 63,
+      "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
+      "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 290,
+          "title": "Sidebar and space management: pin, reorder, context menu, add existing (Spec 63)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/290",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T02:54:00Z"
+        }
+      ],
+      "issues": []
+    },
+    {
       "id": "day-2-01",
       "tier": "day-2",
       "number": 1,
@@ -1383,8 +1472,17 @@
       "number": 4,
       "title": "Message pinning",
       "route": "/specs/day-2/spec-04--message-pinning/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 294,
+          "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/294",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T02:37:43Z"
+        }
+      ],
       "issues": []
     },
     {
@@ -1463,8 +1561,17 @@
       "number": 12,
       "title": "Bookmarks and saved messages",
       "route": "/specs/day-2/spec-12--bookmarks-and-saved-messages/",
-      "status": "planned",
-      "pullRequests": [],
+      "status": "in-progress",
+      "pullRequests": [
+        {
+          "number": 293,
+          "title": "feat(rooms): message pinning (Spec day-2/04)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/293",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T01:51:57Z"
+        }
+      ],
       "issues": []
     },
     {

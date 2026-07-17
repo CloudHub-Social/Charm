@@ -49,6 +49,7 @@ const meta = {
     activeMode: "home",
     activeSpaceId: null,
     showAllRooms: false,
+    currentUserId: "@storybook:localhost",
     onSelectHome: () => {},
     onSelectDms: () => {},
     onSelectSpace: () => {},

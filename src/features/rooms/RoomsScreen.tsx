@@ -81,6 +81,12 @@ export function RoomsScreen({
   const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
   const [showAllRooms, setShowAllRooms] = useState(false);
   const [createJoinDialogOpen, setCreateJoinDialogOpen] = useState(false);
+  // Bumped after `SpaceRail`'s "Add Existing" or "Remove from space" flows
+  // edit a space's children — `RoomList`'s own hierarchy view is a
+  // point-in-time `/hierarchy` snapshot Matrix sync doesn't keep current, so
+  // this is the signal that tells it to refetch immediately rather than only
+  // on the next mode/space switch.
+  const [hierarchyRefreshToken, setHierarchyRefreshToken] = useState(0);
   const [resolvedDeepLinkTarget, setResolvedDeepLinkTarget] = useState<string | null>(null);
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
@@ -430,10 +436,12 @@ export function RoomsScreen({
             activeMode={roomListMode}
             activeSpaceId={selectedSpaceId}
             showAllRooms={showAllRooms}
+            currentUserId={currentUserId}
             onSelectHome={selectHome}
             onSelectDms={selectDms}
             onSelectSpace={selectSpace}
             onCreateJoin={() => setCreateJoinDialogOpen(true)}
+            onSpaceChildrenChanged={() => setHierarchyRefreshToken((token) => token + 1)}
           />
         }
         activeRoomId={activeRoom?.room_id ?? null}
@@ -456,6 +464,7 @@ export function RoomsScreen({
             onShowAllRoomsChange={setShowAllRooms}
             onAcceptInvite={handleAcceptInvite}
             onDeclineInvite={handleDeclineInvite}
+            hierarchyRefreshToken={hierarchyRefreshToken}
           />
         }
         content={

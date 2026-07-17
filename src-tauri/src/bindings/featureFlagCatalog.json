@@ -64,5 +64,11 @@
     "default": false,
     "description": "Show a compact last-message preview with sender label under each room-list row.",
     "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "space_rail_management",
+    "default": false,
+    "description": "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave).",
+    "owner": "Spec 63 (sidebar and space management)"
   }
 ]

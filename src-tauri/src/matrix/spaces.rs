@@ -5,14 +5,19 @@
 
 use matrix_sdk::ruma::api::client::room::create_room;
 use matrix_sdk::ruma::api::client::space::get_hierarchy;
+use matrix_sdk::ruma::api::client::state::get_state_event_for_key;
+use matrix_sdk::ruma::api::error::ErrorKind;
+use matrix_sdk::ruma::events::space::child::SpaceChildEventContent;
+use matrix_sdk::ruma::events::StateEventType;
 use matrix_sdk::ruma::room::{JoinRuleSummary, RoomType};
 use matrix_sdk::ruma::{uint, OwnedRoomOrAliasId, RoomId};
-use matrix_sdk::Client;
+use matrix_sdk::{Client, Room};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tauri::State;
 use ts_rs::TS;
 
+use super::room_admin::require_room;
 use super::MatrixState;
 
 const RECURSIVE_HIERARCHY_MAX_DEPTH: u32 = 50;
@@ -143,6 +148,23 @@ async fn fetch_hierarchy_chunks(
             return Ok(chunks);
         };
     }
+}
+
+/// True if `room_id` appears anywhere in `ancestor_id`'s live recursive
+/// hierarchy, per the server's `/hierarchy` endpoint (the same one
+/// `list_space_hierarchy` uses) — i.e. `ancestor_id` is already an ancestor
+/// of `room_id`. Used by [`add_existing_space_child_impl`] to guard against
+/// adding `ancestor_id` as a child of `room_id`, which would otherwise form
+/// a cycle; queries the server directly rather than the local
+/// `parent_space_ids` derived from this client's own sync-populated store,
+/// for the same staleness reason as `live_child_content`.
+async fn live_hierarchy_contains(
+    client: &Client,
+    ancestor_id: &RoomId,
+    room_id: &str,
+) -> Result<bool, String> {
+    let chunks = fetch_hierarchy_chunks(client, ancestor_id.to_owned(), false).await?;
+    Ok(chunks.iter().any(|chunk| chunk.summary.room_id == room_id))
 }
 
 fn next_hierarchy_page_token(
@@ -380,6 +402,294 @@ pub async fn create_space_impl(
     Ok(room.room_id().to_string())
 }
 
+/// Adds an already-joined room or space as a child of `space_id` (Spec 63's
+/// "Add Existing" flow) — sends `m.space.child` on the space's state,
+/// pointing at `child_room_id`. Distinct from [`create_space`], which makes
+/// a brand-new room; this files an existing one under the space instead.
+#[tauri::command]
+pub async fn add_existing_space_child(
+    state: State<'_, MatrixState>,
+    space_id: String,
+    child_room_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    add_existing_space_child_impl(&client, &space_id, &child_room_id).await
+}
+
+/// Core logic behind [`add_existing_space_child`].
+pub async fn add_existing_space_child_impl(
+    client: &Client,
+    space_id: &str,
+    child_room_id: &str,
+) -> Result<(), String> {
+    let space = require_room(client, space_id)?;
+    if !space.is_space() {
+        return Err(format!("{space_id} is not a space"));
+    }
+    let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
+    if child_room_id == space_id {
+        return Err(format!("{space_id} cannot be a child of itself"));
+    }
+    // Only a room the caller has actually joined may be published as a
+    // child — otherwise this would let the caller expose a pending invite's
+    // room id (which they haven't joined, and may not be entitled to
+    // publish) to every member of `space_id`. Checked here too, not just in
+    // the frontend picker's own filter, since this command is reachable
+    // directly over IPC.
+    let child_room = match client.get_room(&parsed_child_id) {
+        Some(room) if room.state() == matrix_sdk::RoomState::Joined => room,
+        _ => return Err(format!("{child_room_id} has not been joined")),
+    };
+    // Mirrors `AddExistingToSpaceDialog`'s own candidate filter — checked
+    // here too, not just in the frontend picker, since this command is
+    // reachable directly over IPC. A DM's room id is otherwise exposed to
+    // every member of `space_id` once published as a child. Fails closed on
+    // a lookup error (e.g. a transient store failure) rather than treating
+    // it as "not a DM" — this guard is the only thing standing between a
+    // caller and leaking a DM's room id here, so an inconclusive answer must
+    // not be silently treated as a pass.
+    match child_room.is_direct().await {
+        Ok(true) => {
+            return Err(format!(
+                "{child_room_id} is a direct message and cannot be added to a space"
+            ));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return Err(format!(
+                "could not determine if {child_room_id} is a direct message: {e}"
+            ))
+        }
+    }
+    // Local-store fast path: cheap, and catches the common case without a
+    // network round trip — but not authoritative on its own (see the live
+    // checks below), since this client's own sync may be behind another
+    // device's recent edit.
+    let parents_by_room = super::rooms::parent_space_ids(client).await;
+    if let Some(existing_children) = parents_by_room.get(child_room_id) {
+        if existing_children.iter().any(|parent| parent == space_id) {
+            return Err(format!("{child_room_id} is already a child of {space_id}"));
+        }
+    }
+    if is_ancestor(space_id, child_room_id, &parents_by_room) {
+        return Err(format!(
+            "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
+        ));
+    }
+    // Authoritative live checks, queried against the *server* rather than
+    // this client's local sync-populated store — mirrors the live-edge
+    // checks `remove_space_child_impl`/`set_space_child_suggested_impl` use
+    // for the same reason: another device may have added or removed a
+    // parent edge that hasn't reached this client's own `/sync` yet, and
+    // the local-store checks above alone could miss a duplicate or a cycle
+    // in that window, letting this command create a genuinely cyclic
+    // hierarchy (Codex review, #290).
+    if has_live_child_via(&space, &parsed_child_id).await? {
+        return Err(format!("{child_room_id} is already a child of {space_id}"));
+    }
+    // A cycle can only run through a *space* child — a normal room has no
+    // children of its own to eventually loop back to `space_id` through, so
+    // there's nothing to check. Also sidesteps a real-world failure mode:
+    // the `/hierarchy` endpoint below is defined for space room IDs, and
+    // some homeservers reject it outright for an ordinary room, which would
+    // otherwise break Add Existing for every non-space room (Codex review,
+    // #290).
+    if child_room.is_space() && live_hierarchy_contains(client, &parsed_child_id, space_id).await? {
+        return Err(format!(
+            "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
+        ));
+    }
+    // Every client that later reads this edge needs at least one candidate
+    // server to route the join through — an empty `via` (which a missing
+    // `user_id`, e.g. a session lost mid-request, would otherwise silently
+    // produce) makes the edge unusable rather than merely degraded, so this
+    // is a hard error rather than falling back to an empty list.
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?;
+    let via = vec![user_id.server_name().to_owned()];
+    space
+        .send_state_event_for_key(&parsed_child_id, SpaceChildEventContent::new(via))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// True if `candidate_ancestor_id` is reachable by walking up `room_id`'s
+/// parent chain (per `parents_by_room`, itself built from every joined
+/// space's own `m.space.child` list — see its doc comment for why that's the
+/// authoritative direction rather than the child-side `m.space.parent`).
+/// Cycle-guarded against a malformed/cyclic parent graph already existing in
+/// synced state.
+fn is_ancestor(
+    room_id: &str,
+    candidate_ancestor_id: &str,
+    parents_by_room: &std::collections::HashMap<String, Vec<String>>,
+) -> bool {
+    let mut visited = HashSet::new();
+    let mut stack: Vec<String> = parents_by_room.get(room_id).cloned().unwrap_or_default();
+    while let Some(current) = stack.pop() {
+        if current == candidate_ancestor_id {
+            return true;
+        }
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        if let Some(parents) = parents_by_room.get(&current) {
+            stack.extend(parents.iter().cloned());
+        }
+    }
+    false
+}
+
+/// `child_id`'s current `m.space.child` content in `space`, or `None` if
+/// there's no live edge (never set, or redacted down to nothing). Queries
+/// the *server* directly rather than this client's local sync-populated
+/// store, and is the shared basis for every caller here that needs to check
+/// or preserve the edge's live state — `remove_space_child_impl`'s
+/// live-edge check and `set_space_child_suggested_impl`'s read-modify-write
+/// both go through this rather than the store, since either can act on an
+/// edge before this client's own `/sync` has caught up with it (a caller
+/// right after `RoomList` refetches `/hierarchy` post-Add-Existing, or after
+/// another client's own concurrent edit) — a store-only read would let a
+/// stale local copy either wrongly reject a live edge, or silently
+/// resurrect/clobber one with content that's no longer current.
+///
+/// A `404`/`M_NOT_FOUND` from the server, or content that fails to
+/// deserialize as `SpaceChildEventContent` (the shape a redacted event's
+/// content — which per MSC1772 has no `via` left — takes, since `via` has
+/// no default and isn't present), both mean "no live edge" and return
+/// `Ok(None)`. Any other error (a network failure, an unexpected server
+/// response) is propagated as-is rather than silently treated as "not a
+/// child", since that would let a transient failure produce a
+/// wrong-but-confident rejection.
+async fn live_child_content(
+    space: &Room,
+    child_id: &RoomId,
+) -> Result<Option<SpaceChildEventContent>, String> {
+    let request = get_state_event_for_key::v3::Request::new(
+        space.room_id().to_owned(),
+        StateEventType::SpaceChild,
+        child_id.to_string(),
+    );
+    match space.client().send(request).await {
+        Ok(response) => Ok(response
+            .into_content()
+            .deserialize_as_unchecked::<SpaceChildEventContent>()
+            .ok()),
+        Err(e) if e.client_api_error_kind() == Some(&ErrorKind::NotFound) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// True if `child_id`'s `m.space.child` state in `space` currently carries a
+/// non-empty `via` — i.e. is a live, unrevoked child link. See
+/// [`live_child_content`] for how "live" is determined.
+async fn has_live_child_via(space: &Room, child_id: &RoomId) -> Result<bool, String> {
+    Ok(live_child_content(space, child_id)
+        .await?
+        .is_some_and(|content| !content.via.is_empty()))
+}
+
+/// Detaches `child_room_id` from `space_id`'s hierarchy — sends an empty
+/// `m.space.child` state event (per MSC1772, an empty/missing `via` marks the
+/// child link revoked), without leaving the child room/space itself and
+/// without touching any of its other parent relationships.
+#[tauri::command]
+pub async fn remove_space_child(
+    state: State<'_, MatrixState>,
+    space_id: String,
+    child_room_id: String,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    remove_space_child_impl(&client, &space_id, &child_room_id).await
+}
+
+/// Core logic behind [`remove_space_child`].
+pub async fn remove_space_child_impl(
+    client: &Client,
+    space_id: &str,
+    child_room_id: &str,
+) -> Result<(), String> {
+    let space = require_room(client, space_id)?;
+    if !space.is_space() {
+        return Err(format!("{space_id} is not a space"));
+    }
+    let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
+
+    // Mirrors `set_space_child_suggested_impl`'s existing-child check — sending
+    // an empty `m.space.child` at a state key with no live child edge (never
+    // set, or already redacted) would be a silent no-op rather than an error,
+    // hiding a stale/duplicate removal from the caller. Queried against the
+    // *server*, not the local sync-populated store: `RoomList` can refetch
+    // `/hierarchy` and render a room Add Existing just published as a child
+    // before this client's own `/sync` has caught up, so a store-only lookup
+    // here would wrongly reject an immediate Remove on that still-unsynced
+    // row (Codex review, #290).
+    let has_live_via = has_live_child_via(&space, &parsed_child_id).await?;
+    if !has_live_via {
+        return Err(format!(
+            "{child_room_id} is not currently a child of {space_id}"
+        ));
+    }
+
+    space
+        .send_state_event_raw("m.space.child", child_room_id, serde_json::json!({}))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Marks (or unmarks) `child_room_id` as a "suggested" child of `space_id` —
+/// a hint that clients can surface it more eagerly (e.g. auto-expanded) to
+/// new joiners of the space. Preserves the child edge's existing `via`/
+/// `order` fields, only flipping `suggested`; errors if `child_room_id` isn't
+/// currently a child of `space_id` at all, since there's nothing to mark.
+#[tauri::command]
+pub async fn set_space_child_suggested(
+    state: State<'_, MatrixState>,
+    space_id: String,
+    child_room_id: String,
+    suggested: bool,
+) -> Result<(), String> {
+    let client = state.require_client().await?;
+    set_space_child_suggested_impl(&client, &space_id, &child_room_id, suggested).await
+}
+
+/// Core logic behind [`set_space_child_suggested`].
+pub async fn set_space_child_suggested_impl(
+    client: &Client,
+    space_id: &str,
+    child_room_id: &str,
+    suggested: bool,
+) -> Result<(), String> {
+    let space = require_room(client, space_id)?;
+    if !space.is_space() {
+        return Err(format!("{space_id} is not a space"));
+    }
+    let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
+
+    // Read-modify-write, so this needs the *current* server-side content to
+    // preserve — not the local sync-populated store, which another client's
+    // concurrent remove/edit of this same edge (after our last sync) could
+    // leave stale here. Writing back a stale `via`/`order` while flipping
+    // `suggested` could silently recreate an edge another client just
+    // removed, or clobber their update (Codex review, #290). See
+    // `live_child_content` for why an empty `via` and a missing/redacted
+    // event both collapse to the same "not currently a child" outcome.
+    let mut content = live_child_content(&space, &parsed_child_id)
+        .await?
+        .filter(|content| !content.via.is_empty())
+        .ok_or_else(|| format!("{child_room_id} is not currently a child of {space_id}"))?;
+    content.suggested = suggested;
+
+    space
+        .send_state_event_for_key(&parsed_child_id, content)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Sends a knock request for a `join_rule: knock` child room — offered by
 /// the space browser instead of a Join button when
 /// [`SpaceChild::join_rule`] is [`SpaceJoinRule::Knock`].
@@ -411,6 +721,7 @@ pub async fn knock_room_impl(
 mod tests {
     use super::*;
     use matrix_sdk::ruma::room::JoinRuleSummary;
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
     use serde_json::{from_value as from_json_value, json};
 
     fn child(room_id: &str, is_space: bool) -> SpaceChild {
@@ -713,5 +1024,904 @@ mod tests {
         assert_eq!(tree[1].child.room_id, "!sub-b:example.org");
         assert_eq!(tree[1].children.len(), 1);
         assert_eq!(tree[1].children[0].child.room_id, "!room:example.org");
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_sends_via_for_the_signed_in_users_server() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        // The mock client's default signed-in user is `@example:localhost`
+        // (see `matrix_sdk::test_utils::client::mock_session_meta`) — `via`
+        // is expected to be that user's own homeserver.
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+        server.sync_joined_room(&client, child_id).await;
+
+        // The live duplicate check now queries the server directly (see
+        // `has_live_child_via`) — the live *cycle* check is skipped
+        // entirely here since `child_id` is a plain (non-space) room, which
+        // can't have children of its own to loop back through (see the
+        // dedicated test below for that guard).
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({
+                "via": ["localhost"],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_added" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected the existing room to be added as a child, got {result:?}"
+        );
+    }
+
+    /// A cycle can only run through a *space* child — a plain room has no
+    /// children to loop back through — so `add_existing_space_child_impl`
+    /// must not call the `/hierarchy` endpoint (defined for space room IDs)
+    /// against a non-space child at all. Some homeservers reject that
+    /// endpoint outright for an ordinary room, which would otherwise break
+    /// Add Existing for every non-space room (Codex review, #290). Modeled
+    /// here by mounting the hierarchy endpoint to fail if called at all —
+    /// the add still succeeding proves it wasn't.
+    #[tokio::test]
+    async fn add_existing_space_child_impl_skips_the_hierarchy_check_for_a_non_space_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+        // A plain (non-space) joined room.
+        server.sync_joined_room(&client, child_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+        // Some homeservers 400 this endpoint for a non-space room id — if
+        // `add_existing_space_child_impl` called it anyway, this mock would
+        // make that failure visible as a rejected add.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{child_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(400).set_body_json(json!({
+                "errcode": "M_UNRECOGNIZED",
+                "error": "Root room is not a space",
+            })))
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_added" })),
+            )
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected adding a non-space room to succeed without calling /hierarchy, got {result:?}"
+        );
+    }
+
+    /// The live cycle check backing `add_existing_space_child_impl` queries
+    /// the *server*, not this client's local sync-populated store — covers
+    /// the case a Codex review flagged on #290: another device may have
+    /// added a parent edge that hasn't reached this client's own `/sync`
+    /// yet, so the local `parent_space_ids`-based pre-check alone would miss
+    /// a cycle that the live server hierarchy already reflects.
+    #[tokio::test]
+    async fn add_existing_space_child_impl_sees_a_cycle_the_local_store_missed() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        // Root and Child are both known locally with no edge between them
+        // yet — so the local pre-check sees no cycle — but the *server*
+        // already has Root as a descendant of Child (another device added
+        // it after this client's last sync).
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let root_create_event = EventFactory::new()
+            .room(root_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(root_id).add_state_event(root_create_event),
+            )
+            .await;
+        let child_create_event = EventFactory::new()
+            .room(child_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(child_id).add_state_event(child_create_event),
+            )
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state/m.space.child/{root_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+        // The server's live hierarchy for Child already includes Root as a
+        // descendant — this is what the local store hasn't caught up to.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{root_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "rooms": [
+                    {
+                        "room_id": root_id,
+                        "num_joined_members": 1,
+                        "world_readable": false,
+                        "guest_can_join": false,
+                        "join_rule": "invite",
+                        "room_type": "m.space",
+                        "children_state": [],
+                    },
+                    {
+                        "room_id": child_id,
+                        "num_joined_members": 1,
+                        "world_readable": false,
+                        "guest_can_join": false,
+                        "join_rule": "invite",
+                        "room_type": "m.space",
+                        "children_state": [],
+                    },
+                ],
+            })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, child_id.as_str(), root_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected the server-visible cycle (missed by the local store) to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_room_that_has_not_been_joined() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let uninvolved_id = matrix_sdk::ruma::room_id!("!unjoined:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+        // `uninvolved_id` is never synced at all — the client has no local
+        // knowledge of it, matching a pending invite it hasn't accepted.
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), uninvolved_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected a room the client hasn't joined to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_direct_message_room() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let dm_id = matrix_sdk::ruma::room_id!("!dm:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+
+        server
+            .mock_sync()
+            .ok_and_run(&client, |builder| {
+                builder.add_joined_room(JoinedRoomBuilder::new(dm_id));
+                builder.add_global_account_data(
+                    EventFactory::new()
+                        .direct()
+                        .add_user((*ALICE).into(), dm_id),
+                );
+            })
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), dm_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected a direct-message room to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_target_that_is_not_a_space() {
+        let not_a_space_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // A plain (non-space) joined room — no `m.room.create` `room_type`.
+        server.sync_joined_room(&client, not_a_space_id).await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let result =
+            add_existing_space_child_impl(&client, not_a_space_id.as_str(), child_id.as_str())
+                .await;
+        assert!(
+            result.is_err(),
+            "expected adding a child under a non-space room to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_adding_a_space_as_its_own_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), space_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected adding a space as its own child to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_an_already_existing_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let factory = EventFactory::new().room(root_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(root_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        let result =
+            add_existing_space_child_impl(&client, root_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected re-adding an already-existing child to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_an_ancestor_as_a_child_cycle() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        // Root already has Child as its child (root --child--> child). Trying
+        // to add Root as a child of Child would close the loop.
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // `child_id` plays the space-parameter role in the call below (Root
+        // is being added as a child *of* Child), so it must be a space too.
+        let child_create_event = EventFactory::new()
+            .room(child_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(child_id).add_state_event(child_create_event),
+            )
+            .await;
+
+        let factory = EventFactory::new().room(root_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(root_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        let result =
+            add_existing_space_child_impl(&client, child_id.as_str(), root_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected adding an ancestor as a child to be rejected as a cycle, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn is_ancestor_walks_multiple_levels_and_guards_against_cycles() {
+        let parents_by_room: HashMap<String, Vec<String>> = HashMap::from([
+            ("grandchild".to_string(), vec!["child".to_string()]),
+            ("child".to_string(), vec!["root".to_string()]),
+            ("root".to_string(), vec!["grandchild".to_string()]),
+        ]);
+
+        assert!(is_ancestor("grandchild", "root", &parents_by_room));
+        assert!(is_ancestor("grandchild", "child", &parents_by_room));
+        assert!(!is_ancestor("grandchild", "unrelated", &parents_by_room));
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_sends_an_empty_content_to_revoke_the_child_link() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        // The live-edge check now queries the server directly (not the local
+        // sync-populated store — see `has_live_child_via`), so this needs its
+        // own GET mock even though `sync_room` above already seeded the store.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "via": ["example.org"] })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_removed" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = remove_space_child_impl(&client, space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected the child link to be revoked with empty content, got {result:?}"
+        );
+    }
+
+    /// The live-edge check backing `remove_space_child_impl` queries the
+    /// *server*, not this client's local sync-populated store — covers the
+    /// case a Codex review flagged on #290: a room `RoomList` just rendered
+    /// via a `/hierarchy` refetch (e.g. right after Add Existing) may not
+    /// have reached this client's own `/sync` yet, so the store alone would
+    /// wrongly report no live edge even though the server already has one.
+    #[tokio::test]
+    async fn remove_space_child_impl_succeeds_on_a_child_edge_not_yet_in_the_local_store() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        // The synced room state has no `m.space.child` for `child_id` at
+        // all — standing in for a client whose `/sync` hasn't caught up yet.
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+
+        // But the server itself already has the live edge (e.g. Add
+        // Existing's write has already landed there).
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "via": ["example.org"] })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({})))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_removed" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result = remove_space_child_impl(&client, space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_ok(),
+            "expected the server-backed check to see the live edge the local store hasn't synced yet, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_rejects_a_malformed_child_id() {
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, space_id).await;
+
+        let result = remove_space_child_impl(&client, space_id.as_str(), "not-a-room-id").await;
+        assert!(
+            result.is_err(),
+            "expected a malformed child id to be rejected before any network call, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_rejects_a_target_that_is_not_a_space() {
+        let not_a_space_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // A plain (non-space) joined room — no `m.room.create` `room_type`.
+        server.sync_joined_room(&client, not_a_space_id).await;
+
+        let result =
+            remove_space_child_impl(&client, not_a_space_id.as_str(), child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected removing a child from a non-space room to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_space_child_impl_rejects_a_room_that_is_not_currently_a_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let not_a_child_id = matrix_sdk::ruma::room_id!("!stranger:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id).add_state_event(create_event);
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{not_a_child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            remove_space_child_impl(&client, space_id.as_str(), not_a_child_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected removing a room with no live child edge to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_rejects_a_target_that_is_not_a_space() {
+        let not_a_space_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // A plain (non-space) joined room — no `m.room.create` `room_type`.
+        server.sync_joined_room(&client, not_a_space_id).await;
+
+        let result = set_space_child_suggested_impl(
+            &client,
+            not_a_space_id.as_str(),
+            child_id.as_str(),
+            true,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected marking a child as suggested on a non-space room to be rejected, got {result:?}"
+        );
+    }
+
+    /// `set_space_child_suggested_impl` must preserve the existing child
+    /// edge's `via`/`order` fields, only flipping `suggested` — this is the
+    /// behavior that distinguishes it from just re-sending a fresh
+    /// `SpaceChildEventContent`, which would silently drop `order`.
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_preserves_via_and_order() {
+        use matrix_sdk::ruma::SpaceChildOrder;
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let mut content =
+            SpaceChildEventContent::new(vec![matrix_sdk::ruma::owned_server_name!("example.org")]);
+        content.order = SpaceChildOrder::parse("aaa").ok();
+        let event = factory.event(content).state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id)
+            .add_state_event(create_event)
+            .add_state_event(event);
+        server.sync_room(&client, room_builder).await;
+
+        // The read-modify-write's live-content read now queries the server
+        // directly (not the local sync-populated store — see
+        // `live_child_content`), so this needs its own GET mock even though
+        // `sync_room` above already seeded the store.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "via": ["example.org"],
+                "order": "aaa",
+            })))
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .and(wiremock::matchers::body_json(json!({
+                "via": ["example.org"],
+                "order": "aaa",
+                "suggested": true,
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({ "event_id": "$child_suggested" })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let result =
+            set_space_child_suggested_impl(&client, space_id.as_str(), child_id.as_str(), true)
+                .await;
+        assert!(
+            result.is_ok(),
+            "expected suggested to flip while via/order survive, got {result:?}"
+        );
+    }
+
+    /// `set_space_child_suggested_impl`'s read-modify-write must see another
+    /// client's concurrent edit rather than a stale local copy — covers the
+    /// case a Codex review flagged on #290: if the local sync-populated
+    /// store still has the old content, preserving it while flipping
+    /// `suggested` could silently resurrect a removed link or clobber a
+    /// concurrent update. Standing in for that here: the store has a live
+    /// edge, but the server (queried directly) reports the edge already
+    /// revoked.
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_sees_a_concurrent_removal_the_local_store_missed() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let child_event = factory
+            .event(SpaceChildEventContent::new(vec![
+                matrix_sdk::ruma::owned_server_name!("example.org"),
+            ]))
+            .state_key(child_id.to_string());
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        let room_builder = JoinedRoomBuilder::new(space_id)
+            .add_state_event(create_event)
+            .add_state_event(child_event);
+        server.sync_room(&client, room_builder).await;
+
+        // Another client removed the edge after our last sync — the server
+        // now reports an empty `via`, even though the local store (seeded
+        // above) still has the old, live content.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({ "via": [] })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            set_space_child_suggested_impl(&client, space_id.as_str(), child_id.as_str(), true)
+                .await;
+        assert!(
+            result.is_err(),
+            "expected the concurrent removal (visible only via the server-backed check) to be respected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_errors_when_not_currently_a_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let not_a_child_id = matrix_sdk::ruma::room_id!("!stranger:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{not_a_child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+
+        let result = set_space_child_suggested_impl(
+            &client,
+            space_id.as_str(),
+            not_a_child_id.as_str(),
+            true,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected marking a non-child as suggested to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_space_child_suggested_impl_rejects_a_revoked_child_link() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let factory = EventFactory::new().room(space_id).sender(&ALICE);
+        let create_event = factory
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        // `remove_space_child_impl` writes exactly this: an Original event
+        // with an empty `via`, not a redaction — the child link is revoked
+        // but the event itself is neither missing nor redacted.
+        let revoked_child_event = factory
+            .event(SpaceChildEventContent::new(vec![]))
+            .state_key(child_id.to_string());
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id)
+                    .add_state_event(create_event)
+                    .add_state_event(revoked_child_event),
+            )
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({ "via": [] })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            set_space_child_suggested_impl(&client, space_id.as_str(), child_id.as_str(), true)
+                .await;
+        assert!(
+            result.is_err(),
+            "expected marking a revoked (empty-via) child link as suggested to be rejected, got {result:?}"
+        );
     }
 }
