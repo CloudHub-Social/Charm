@@ -14,6 +14,7 @@ const rooms = [
   makeRoomSummary({ room_id: "!design:localhost", name: "Design" }),
   makeRoomSummary({ room_id: "!eng:localhost", name: "Engineering", is_space: true }),
   makeRoomSummary({ room_id: "!dm:localhost", name: "Alice", is_direct: true }),
+  makeRoomSummary({ room_id: "!invited:localhost", name: "Pending Invite", membership: "invite" }),
 ];
 
 function renderDialog(overrides: Partial<Parameters<typeof AddExistingToSpaceDialog>[0]> = {}) {
@@ -47,6 +48,13 @@ describe("AddExistingToSpaceDialog", () => {
     expect(screen.getByRole("button", { name: /Design/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Engineering/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Alice/ })).not.toBeInTheDocument();
+  });
+
+  it("excludes rooms that are only pending invites, not joined yet", () => {
+    renderDialog();
+
+    expect(screen.getByRole("button", { name: /Design/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Pending Invite/ })).not.toBeInTheDocument();
   });
 
   it("marks space candidates with a Space label", () => {

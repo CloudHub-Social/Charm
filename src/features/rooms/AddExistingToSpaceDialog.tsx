@@ -31,7 +31,9 @@ export function AddExistingToSpaceDialog({
   const candidates = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return rooms
-      .filter((room) => !room.is_direct && !excludedIds.has(room.room_id))
+      .filter(
+        (room) => !room.is_direct && room.membership === "join" && !excludedIds.has(room.room_id),
+      )
       .filter((room) =>
         displayName(room.room_id, room.name).toLowerCase().includes(normalizedQuery),
       )

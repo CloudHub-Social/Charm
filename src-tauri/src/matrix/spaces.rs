@@ -409,6 +409,16 @@ pub async fn add_existing_space_child_impl(
     if child_room_id == space_id {
         return Err(format!("{space_id} cannot be a child of itself"));
     }
+    // Only a room the caller has actually joined may be published as a
+    // child — otherwise this would let the caller expose a pending invite's
+    // room id (which they haven't joined, and may not be entitled to
+    // publish) to every member of `space_id`. Checked here too, not just in
+    // the frontend picker's own filter, since this command is reachable
+    // directly over IPC.
+    match client.get_room(&parsed_child_id).map(|room| room.state()) {
+        Some(matrix_sdk::RoomState::Joined) => {}
+        _ => return Err(format!("{child_room_id} has not been joined")),
+    }
     let parents_by_room = super::rooms::parent_space_ids(client).await;
     if let Some(existing_children) = parents_by_room.get(child_room_id) {
         if existing_children.iter().any(|parent| parent == space_id) {
@@ -901,6 +911,7 @@ mod tests {
 
         server.mock_room_state_encryption().plain().mount().await;
         server.sync_joined_room(&client, space_id).await;
+        server.sync_joined_room(&client, child_id).await;
 
         wiremock::Mock::given(wiremock::matchers::method("PUT"))
             .and(wiremock::matchers::path(format!(
@@ -922,6 +933,26 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the existing room to be added as a child, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_room_that_has_not_been_joined() {
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let uninvolved_id = matrix_sdk::ruma::room_id!("!unjoined:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, space_id).await;
+        // `uninvolved_id` is never synced at all — the client has no local
+        // knowledge of it, matching a pending invite it hasn't accepted.
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), uninvolved_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected a room the client hasn't joined to be rejected, got {result:?}"
         );
     }
 
