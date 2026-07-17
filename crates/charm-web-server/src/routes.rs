@@ -474,106 +474,119 @@ async fn refresh_session_cookie(
         // this middleware already refuses to refresh a cookie for (Codex
         // review finding on #280).
         session.touch_validated();
-        // Keep the server-side activity signal `PersistenceStore::sweep_expired`
-        // relies on roughly in step with the cookie's own extended lifetime —
-        // throttled, since this session being resident in `SessionStore` at
-        // all already exempts it from that sweep regardless (see
-        // `sweep_expired`'s doc comment); this is a belt-and-suspenders bump
-        // for the rare case that exemption is ever narrowed later, not
-        // something every request needs to pay an object-store write for.
-        //
-        // Awaited (`touch_last_seen_now`), not the fire-and-forget
-        // `touch_last_seen` used elsewhere: this call sits directly in front
-        // of the `Set-Cookie` append below, which extends the browser's
-        // cookie by a fresh `SESSION_COOKIE_MAX_AGE_SECS`. Firing the
-        // durable timestamp bump in the background and moving straight on
-        // to send that extended cookie would let a crash or object-store
-        // write failure land in the gap between the two — leaving the
-        // browser holding a cookie claiming 30 more days of validity while
-        // `last_seen_unix` on disk never actually moved, so a later
-        // restart's `restore_all`/`sweep_expired` would reject that
-        // still-present cookie as expired (Codex review finding on #280).
-        // A failed touch still lets the cookie refresh proceed — logged, not
-        // fatal to the request — since the in-memory session being resident
-        // in `SessionStore` at all already exempts it from `sweep_expired`
-        // regardless (see that function's doc comment); this bump is
-        // belt-and-suspenders, not the only thing standing between a
-        // transient write hiccup and a forced logout. `last_persistence_touch_unix`
-        // is only advanced *after* a confirmed successful write, not
-        // unconditionally before attempting it — an earlier revision of
-        // this consumed the once-an-hour throttle regardless of outcome, so
-        // a single failed touch would silently hide a genuinely stale
-        // `last_seen_unix` for a full hour before the next request even
-        // tried again (Codex review finding on #280).
-        // `false` once the throttled touch below finds the persisted
-        // session is genuinely gone — most likely another instance already
-        // processed this token's logout in the narrow window since this
-        // instance's own in-memory `SessionStore` last heard about it. In
-        // that case this instance must not send a freshly `Max-Age`-extended
-        // cookie for a session another instance already killed (Codex
-        // review finding on #280) — nor keep serving it locally, so the
-        // local entry is dropped (aborting its sync loop) right alongside.
+        // `false` once this instance discovers the persisted session is
+        // genuinely gone — most likely another instance already processed
+        // this token's logout. In that case this instance must not send a
+        // freshly `Max-Age`-extended cookie for a session another instance
+        // already killed (Codex review finding on #280) — nor keep serving
+        // it locally, so the local entry is dropped (aborting its sync
+        // loop) right alongside. `drop_dead_session` below is shared by
+        // both the unthrottled existence check and the throttled touch's
+        // own (much rarer) `NotFound` case, so both take the same
+        // `awaiting_initial_persistence`-aware path.
         let mut refresh_cookie = true;
         if let Some(persistence) = &state.persistence {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let last_touch = session
-                .last_persistence_touch_unix
+            let drop_dead_session = !session
+                .awaiting_initial_persistence
                 .load(std::sync::atomic::Ordering::Relaxed);
-            if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
-                match persistence.touch_last_seen_now(&token).await {
-                    Ok(crate::persistence::TouchOutcome::Touched) => {
-                        session
-                            .last_persistence_touch_unix
-                            .store(now, std::sync::atomic::Ordering::Relaxed);
-                        // Proof the object now exists — any further
-                        // `NotFound` for this token is unambiguously a real
-                        // cross-instance logout again, not the initial-save
-                        // retry this flag exists to tolerate. See
-                        // `Session::awaiting_initial_persistence`'s doc
-                        // comment.
-                        session
-                            .awaiting_initial_persistence
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(crate::persistence::TouchOutcome::NotFound) => {
-                        // A session whose very first `PersistenceStore::save`
-                        // (in `finish_login`) failed has no persisted object
-                        // yet by design — `sync_loop` is still retrying that
-                        // save in the background (`SaveMode::RetryInitialSave`)
-                        // — and `NotFound` here is the expected, ordinary
-                        // state until that retry lands, not evidence of a
-                        // cross-instance logout. Dropping the session on
-                        // sight would turn a transient first-save failure
-                        // into a forced logout, defeating the documented
-                        // keep-it-live-and-retry fallback entirely (Codex
-                        // review finding on #280). See `Session::
-                        // awaiting_initial_persistence`'s doc comment.
-                        if !session
-                            .awaiting_initial_persistence
-                            .load(std::sync::atomic::Ordering::Relaxed)
+            // Unthrottled, unlike the durable touch/write below — a plain
+            // read, run on *every* authenticated+validated request, not
+            // just once an hour. Without this, a stale instance could keep
+            // re-installing a fresh cookie for (and keep locally serving) a
+            // session another instance already killed for up to the whole
+            // `PERSISTENCE_TOUCH_THROTTLE_SECS` window between throttled
+            // touches (Codex review finding on #280) — a cross-instance
+            // deletion needs to be caught on the very next request, and a
+            // read is far cheaper than the write this deliberately stays
+            // split from.
+            match persistence.exists(&token).await {
+                Ok(true) => {}
+                Ok(false) if drop_dead_session => {
+                    refresh_cookie = false;
+                    if let Some(dead_session) = state.sessions.remove(&token).await {
+                        if let Some(handle) = dead_session
+                            .sync_handle
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .take()
                         {
-                            refresh_cookie = false;
-                            if let Some(dead_session) = state.sessions.remove(&token).await {
-                                if let Some(handle) = dead_session
-                                    .sync_handle
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .take()
-                                {
-                                    handle.abort();
+                            handle.abort();
+                        }
+                    }
+                }
+                // See `Session::awaiting_initial_persistence`'s doc comment
+                // — a session still waiting on its very first successful
+                // save has no persisted object yet by design, so a missing
+                // object here is the expected, ordinary state, not evidence
+                // of a cross-instance logout.
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to check whether a persisted session still exists before \
+                         refreshing its cookie, letting the refresh proceed: {e}"
+                    );
+                }
+            }
+            // Keep the server-side activity signal `PersistenceStore::sweep_expired`
+            // relies on roughly in step with the cookie's own extended
+            // lifetime — throttled (unlike the existence check above),
+            // since this session being resident in `SessionStore` at all
+            // already exempts it from that sweep regardless (see
+            // `sweep_expired`'s doc comment); this is a belt-and-suspenders
+            // *write* for the rare case that exemption is ever narrowed
+            // later, not something every request needs to pay an
+            // object-store write for.
+            if refresh_cookie {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let last_touch = session
+                    .last_persistence_touch_unix
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
+                    match persistence.touch_last_seen_now(&token).await {
+                        Ok(crate::persistence::TouchOutcome::Touched) => {
+                            session
+                                .last_persistence_touch_unix
+                                .store(now, std::sync::atomic::Ordering::Relaxed);
+                            // Proof the object now exists — any further
+                            // `NotFound`/`exists() == false` for this token
+                            // is unambiguously a real cross-instance logout
+                            // again, not the initial-save retry this flag
+                            // exists to tolerate.
+                            session
+                                .awaiting_initial_persistence
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Ok(crate::persistence::TouchOutcome::NotFound) => {
+                            // Rare: the object existed for the `exists()`
+                            // check moments ago but is gone by the time this
+                            // write ran — another instance's logout landed
+                            // in between. Same handling as the unthrottled
+                            // check above, just reached from the write side
+                            // instead.
+                            if drop_dead_session {
+                                refresh_cookie = false;
+                                if let Some(dead_session) = state.sessions.remove(&token).await {
+                                    if let Some(handle) = dead_session
+                                        .sync_handle
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .take()
+                                    {
+                                        handle.abort();
+                                    }
                                 }
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "failed to durably bump last-seen timestamp before refreshing a \
-                             session cookie, leaving the throttle unadvanced so the next \
-                             request retries: {e}"
-                        );
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to durably bump last-seen timestamp before refreshing \
+                                 a session cookie, leaving the throttle unadvanced so the next \
+                                 request retries: {e}"
+                            );
+                        }
                     }
                 }
             }
@@ -933,6 +946,75 @@ mod refresh_session_cookie_gating_tests {
             "and must be dropped from this instance's own SessionStore too, rather than \
              staying resident and authenticating locally after another instance already \
              killed it"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Avoid
+    /// refreshing cookies while deletion checks are throttled"): a
+    /// cross-instance deletion must be caught even when
+    /// `last_persistence_touch_unix` is fresh enough that the once-an-hour
+    /// durable-touch *write* would otherwise be skipped entirely — the
+    /// `PersistenceStore::exists` existence check runs unthrottled, on
+    /// every authenticated+validated request, specifically so a stale
+    /// instance can't keep re-installing a cookie for a session another
+    /// instance already killed for up to a whole throttle window.
+    #[tokio::test]
+    async fn a_session_with_no_persisted_record_is_dropped_even_within_the_touch_throttle_window() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-not-found-throttled-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [66u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@already-gone-throttled:example.invalid").await;
+        // Fresh enough that the throttled durable-touch write below would
+        // be skipped entirely — this session's cross-instance deletion must
+        // still be caught by the unthrottled existence check.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        session
+            .last_persistence_touch_unix
+            .store(now, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-already-gone-throttled".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-already-gone-throttled",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a session with no persisted record must not have its cookie refreshed, even \
+             within the durable-touch throttle window"
+        );
+        assert!(
+            sessions.get("tok-already-gone-throttled").await.is_none(),
+            "and must be dropped even though the throttled write path never ran"
         );
     }
 

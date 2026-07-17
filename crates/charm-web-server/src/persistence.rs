@@ -644,6 +644,23 @@ impl PersistenceStore {
         }
     }
 
+    /// Plain existence check — a single object-store read, no write, no
+    /// per-token lock. `routes::refresh_session_cookie` calls this on
+    /// *every* authenticated+validated request, unlike the durable
+    /// `last_seen_unix` touch/write below (throttled to at most once per
+    /// `PERSISTENCE_TOUCH_THROTTLE_SECS`, since a write costs real money and
+    /// latency on every request of a continuously-live session): a
+    /// cross-instance deletion — another instance already processed this
+    /// token's logout — needs to be caught on the very next request, not
+    /// only once an hour, or a stale instance could keep re-installing a
+    /// fresh cookie for (and keep locally serving) a session another
+    /// instance already killed for up to that whole throttle window (Codex
+    /// review finding on #280). A read is far cheaper than the write this
+    /// deliberately stays split from.
+    pub(crate) async fn exists(&self, token: &str) -> Result<bool, String> {
+        Ok(self.read_one_with_version_result(token).await?.is_some())
+    }
+
     /// Cheap, no-`Client`-required check for whether `token`'s persisted
     /// session is already past `max_age` — a single object-store read, not
     /// a homeserver round trip. Called from `routes::require_session`
