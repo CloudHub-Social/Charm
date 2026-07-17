@@ -62,6 +62,11 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
     );
     try {
       await removeBookmark(eventId);
+      // Keep the shared bookmarks query in sync with other surfaces (e.g. a
+      // mounted `ChatShell`'s message action menu via `useMessageActions`)
+      // that read from the same query key, matching `useMessageActions`'s
+      // own handleBookmark/handleUnbookmark pattern.
+      await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
     } catch (err) {
       logAndIgnore(err);
       await queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });

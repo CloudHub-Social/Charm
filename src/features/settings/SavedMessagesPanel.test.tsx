@@ -86,7 +86,14 @@ describe("SavedMessagesPanel", () => {
   });
 
   it("removes a bookmark optimistically and calls removeBookmark", async () => {
-    listBookmarks.mockResolvedValue([makeBookmark({ event_id: "$a" })]);
+    // On success, `handleRemove` invalidates the shared bookmarks query
+    // (Spec 12 review fix — keeps other surfaces like a mounted
+    // `ChatShell`'s message action menu in sync), which refetches via
+    // `listBookmarks`; the second resolved value below stands in for the
+    // real `list_bookmarks` round-trip now reflecting the removal.
+    listBookmarks
+      .mockResolvedValueOnce([makeBookmark({ event_id: "$a" })])
+      .mockResolvedValue([]);
     renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
 
     await screen.findByText("hello there");

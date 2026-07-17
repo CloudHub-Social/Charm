@@ -118,55 +118,6 @@ async fn resolve_from_timeline(
         })
 }
 
-/// Resolves a bookmark's preview when the room isn't already open this
-/// session — `MatrixState::peek_timeline` returned `None`, e.g. right after
-/// an app restart, before anything has re-opened that room. Review fix:
-/// previously `list_bookmarks` gave up entirely in this case (falling back
-/// to [`UNRESOLVED_PREVIEW`]), which meant a cold session showed "Preview
-/// unavailable" for most bookmarks — defeating the point of a cross-room
-/// saved-messages list.
-///
-/// Builds a short-lived, event-focused `Timeline` (`matrix-sdk-ui`'s
-/// `TimelineFocus::Event`, the same mechanism `load_timeline_around_event`'s
-/// fallback uses for jump-to-message) that resolves the target event via the
-/// server's `/context` endpoint regardless of how far back it is, decrypting
-/// it against this account's persisted crypto store the same way any other
-/// timeline would, then reuses [`resolve_from_timeline`] against it.
-/// Deliberately *not* cached into `MatrixState`'s live-timeline LRU (unlike
-/// the jump-to-message fallback) — a saved-messages list commonly spans many
-/// different rooms, and caching one lookup timeline per resolved bookmark
-/// would evict rooms the user actually has open.
-async fn resolve_via_context(
-    event_id: &str,
-    client: &Client,
-    room_id: &RoomId,
-    media_cache: Option<&super::media::MediaCache>,
-) -> Option<(String, Option<String>, String, u64)> {
-    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
-
-    let room = client.get_room(room_id)?;
-    let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).ok()?;
-
-    let timeline = room
-        .timeline_builder()
-        .with_focus(TimelineFocus::Event {
-            target: parsed_event_id,
-            // Only the target event's own preview is needed here, not the
-            // surrounding conversation — unlike jump-to-message, which wants
-            // context events too, this just answers "what does this one
-            // bookmarked message say".
-            num_context_events: 0,
-            thread_mode: TimelineEventFocusThreadMode::Automatic {
-                hide_threaded_events: false,
-            },
-        })
-        .build()
-        .await
-        .ok()?;
-
-    resolve_from_timeline(event_id, client, &timeline, media_cache).await
-}
-
 /// Core logic behind [`add_bookmark`]'s validation, taking an
 /// already-resolved `&Timeline` rather than `&MatrixState` — same split as
 /// `timeline::get_timeline_page_impl`, so this can be exercised against a
@@ -313,14 +264,27 @@ pub async fn list_bookmarks(
     for bookmark in bookmarks {
         let resolved = match (&client, RoomId::parse(&bookmark.room_id)) {
             (Some(client), Ok(parsed_room_id)) => {
-                if let Some(timeline) = state.peek_timeline(&parsed_room_id).await {
-                    resolve_from_timeline(&bookmark.event_id, client, &timeline, media_cache).await
-                } else {
-                    // Room isn't open this session — fall back to a direct
-                    // server-side lookup rather than giving up (review fix;
-                    // see `resolve_via_context`'s doc comment).
-                    resolve_via_context(&bookmark.event_id, client, &parsed_room_id, media_cache)
-                        .await
+                match state.peek_timeline(&parsed_room_id).await {
+                    Some(timeline) => {
+                        resolve_from_timeline(&bookmark.event_id, client, &timeline, media_cache)
+                            .await
+                    }
+                    // Room isn't open this session — leave the preview
+                    // unresolved rather than issuing a homeserver `/context`
+                    // lookup here. Review fix: `list_bookmarks` must stay
+                    // entirely local per Spec 12's data-flow ("purely local
+                    // reads/writes... no new Matrix sync/send traffic") — an
+                    // earlier version resolved previews for the whole
+                    // saved-messages list via a server-side context lookup,
+                    // meaning simply opening the panel fired one round-trip
+                    // per bookmark: leaking the user's saved-event access
+                    // pattern to the homeserver and risking the panel
+                    // blocking on network timeouts. A network round-trip is
+                    // reserved for the explicit jump-to-message action
+                    // (`timeline::load_timeline_around_event`'s fallback),
+                    // where it's expected because the user asked to navigate
+                    // there.
+                    None => None,
                 }
             }
             _ => None,
