@@ -1,35 +1,28 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T03:12:16.919Z",
+  "generatedAt": "2026-07-17T15:54:21.813Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 29,
+    "shipped": 30,
     "follow-up": 9,
-    "in-progress": 4,
+    "in-progress": 3,
     "planned": 34
   },
   "attention": [
     {
       "type": "pull-request",
-      "number": 290,
-      "title": "Sidebar and space management: pin, reorder, context menu, add existing (Spec 63)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/290",
-      "detail": "Day-1 Spec 63 · ready for review"
-    },
-    {
-      "type": "pull-request",
       "number": 294,
-      "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
+      "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
       "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-      "detail": "Day-1 Spec 12 · ready for review"
+      "detail": "Day-2 Spec 12 · ready for review"
     },
     {
       "type": "pull-request",
       "number": 293,
       "title": "feat(rooms): message pinning (Spec day-2/04)",
       "url": "https://github.com/CloudHub-Social/Charm/pull/293",
-      "detail": "Day-2 Spec 12 · ready for review"
+      "detail": "Day-2 Spec 04 · ready for review"
     },
     {
       "type": "pull-request",
@@ -81,8 +74,8 @@
         "day-1-27"
       ],
       "counts": {
-        "shipped": 23,
-        "follow-up": 4,
+        "shipped": 24,
+        "follow-up": 3,
         "in-progress": 0,
         "planned": 0
       }
@@ -131,8 +124,8 @@
       ],
       "counts": {
         "shipped": 6,
-        "follow-up": 5,
-        "in-progress": 2,
+        "follow-up": 6,
+        "in-progress": 1,
         "planned": 23
       }
     },
@@ -389,16 +382,8 @@
       "number": 12,
       "title": "First-run onboarding",
       "route": "/specs/day-1/spec-12--first-run-onboarding/",
-      "status": "follow-up",
+      "status": "shipped",
       "pullRequests": [
-        {
-          "number": 294,
-          "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-          "state": "open",
-          "draft": false,
-          "updatedAt": "2026-07-17T02:37:43Z"
-        },
         {
           "number": 30,
           "title": "Spec 12: First-run onboarding",
@@ -1423,15 +1408,15 @@
       "number": 63,
       "title": "Sidebar and space management (pin, reorder, context menu, add existing)",
       "route": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 290,
           "title": "Sidebar and space management: pin, reorder, context menu, add existing (Spec 63)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/290",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-17T02:54:00Z"
+          "updatedAt": "2026-07-17T15:47:12Z"
         }
       ],
       "issues": []
@@ -1475,12 +1460,12 @@
       "status": "in-progress",
       "pullRequests": [
         {
-          "number": 294,
-          "title": "feat(rooms): bookmarks and saved messages (Spec 12)",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/294",
+          "number": 293,
+          "title": "feat(rooms): message pinning (Spec day-2/04)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/293",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T02:37:43Z"
+          "updatedAt": "2026-07-17T01:51:57Z"
         }
       ],
       "issues": []
@@ -1564,12 +1549,12 @@
       "status": "in-progress",
       "pullRequests": [
         {
-          "number": 293,
-          "title": "feat(rooms): message pinning (Spec day-2/04)",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/293",
+          "number": 294,
+          "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/294",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T01:51:57Z"
+          "updatedAt": "2026-07-17T14:47:41Z"
         }
       ],
       "issues": []

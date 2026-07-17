@@ -127,33 +127,53 @@ async function paginated(endpoint, limit = 10) {
 	return items;
 }
 
-function mentionsSpec(item, spec) {
+// Spec references show up in both orders in the wild — "Day-2 Spec 04" and
+// "Spec day-2/04" — so both must be checked, for both title and body.
+function tierSpecReferences(tier, number) {
+	const day = tier === 'day-2' ? '2' : '1';
+	return [
+		new RegExp(`day[-\\s]?${day}\\s+spec(?:ification)?\\s+0*${number}\\b`, 'i'),
+		new RegExp(`spec(?:ification)?\\s+day[-\\s]?${day}[/\\s]0*${number}\\b`, 'i'),
+	];
+}
+
+function mentionsSpecInTitle(item, spec) {
 	const title = item.title || '';
+	const number = String(spec.number).padStart(2, '0');
+	const [dayTwoForward, dayTwoReverse] = tierSpecReferences('day-2', number);
+	if (spec.tier === 'day-2') return dayTwoForward.test(title) || dayTwoReverse.test(title);
+
+	const [dayOneForward, dayOneReverse] = tierSpecReferences('day-1', number);
+	if (dayOneForward.test(title) || dayOneReverse.test(title)) return true;
+
+	// A bare "Spec NN" (no day qualifier) counts for day-1, as long as it
+	// isn't actually a qualified day-2 reference to the same number.
+	const bareReference = new RegExp(`\\bspec(?:ification)?\\s+0*${number}\\b`, 'i');
+	return (
+		bareReference.test(title) && !dayTwoForward.test(title) && !dayTwoReverse.test(title)
+	);
+}
+
+function mentionsSpecInBody(item, spec) {
 	const body = item.body || '';
 	if (body.includes(spec.route)) return true;
 
 	const number = String(spec.number).padStart(2, '0');
-	if (spec.tier === 'day-2') {
-		const explicit = new RegExp(
-			`day[-\\s]?2\\s+spec(?:ification)?\\s+0*${number}\\b`,
-			'i',
-		);
-		return explicit.test(title) || explicit.test(body);
-	}
+	const [forward, reverse] = tierSpecReferences(spec.tier, number);
+	return forward.test(body) || reverse.test(body);
+}
 
-	const titleReference = new RegExp(`\\bspec(?:ification)?\\s+0*${number}\\b`, 'i');
-	const dayTwoTitleReference = new RegExp(
-		`day[-\\s]?2\\s+spec(?:ification)?\\s+0*${number}\\b`,
-		'i',
-	);
-	const explicitBodyReference = new RegExp(
-		`day[-\\s]?1\\s+spec(?:ification)?\\s+0*${number}\\b`,
-		'i',
-	);
-	return (
-		(titleReference.test(title) && !dayTwoTitleReference.test(title)) ||
-		explicitBodyReference.test(body)
-	);
+// A PR's title is a claim of ownership ("this PR implements Spec NN"); a
+// body mention is ambiguous — it can be the PR's own claim (e.g. #277's
+// "Implements ... Day-1 Spec 37", stated only in the body) or an incidental
+// cross-reference to a *different* spec's PR (e.g. #294's Non-goals section
+// pointing at "day-2 Spec 04", which is actually owned by #293). Callers
+// should trust a body-only mention only when the PR's own title doesn't
+// already stake a title claim on some *other* spec — a PR whose title claims
+// spec A but whose body also mentions spec B is describing B, not claiming
+// it.
+function titleClaimsAnyOtherSpec(item, spec) {
+	return specs.some((other) => other.id !== spec.id && mentionsSpecInTitle(item, other));
 }
 
 function specLabel(specId) {
@@ -238,12 +258,23 @@ const hydratedSpecs = specs.map((spec) => {
 	const pullRequests = allPullRequests
 		.filter(
 			(pullRequest) =>
-				index.pullRequests.includes(pullRequest.number) || mentionsSpec(pullRequest, spec),
+				index.pullRequests.includes(pullRequest.number) ||
+				mentionsSpecInTitle(pullRequest, spec) ||
+				// Only trust a body-only mention from a PR whose own title doesn't
+				// already claim a *different* spec — otherwise a passing
+				// cross-reference in that PR's body (e.g. a Non-goals pointer at
+				// another spec) would get credited to that other spec instead of
+				// the PR that actually owns it.
+				(!titleClaimsAnyOtherSpec(pullRequest, spec) && mentionsSpecInBody(pullRequest, spec)),
 		)
 		.map(publicPullRequest)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 	const linkedIssues = issues
-		.filter((issue) => mentionsSpec(issue, spec))
+		.filter(
+			(issue) =>
+				mentionsSpecInTitle(issue, spec) ||
+				(!titleClaimsAnyOtherSpec(issue, spec) && mentionsSpecInBody(issue, spec)),
+		)
 		.map(publicIssue)
 		.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 
