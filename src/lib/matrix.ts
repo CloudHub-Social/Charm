@@ -18,6 +18,7 @@ import type { OwnProfile } from "@bindings/OwnProfile";
 import type { PowerLevelThresholds } from "@bindings/PowerLevelThresholds";
 import type { PresenceStateDto } from "@bindings/PresenceStateDto";
 import type { PresenceUpdate } from "@bindings/PresenceUpdate";
+import type { PrivacySettings } from "@bindings/PrivacySettings";
 import type { ProfileSummary } from "@bindings/ProfileSummary";
 import type { ThirdPartyIdSummary } from "@bindings/ThirdPartyIdSummary";
 import type { PusherKind } from "@bindings/PusherKind";
@@ -141,6 +142,7 @@ export type {
   PowerLevelThresholds,
   PresenceStateDto,
   PresenceUpdate,
+  PrivacySettings,
   ProfileSummary,
   PusherKind,
   PushRegistration,
@@ -561,6 +563,14 @@ export function getPresence(userId: string): Promise<PresenceUpdate | null> {
 
 export function onPresenceUpdate(callback: (update: PresenceUpdate) => void): Promise<UnlistenFn> {
   return listen<PresenceUpdate>("presence:update", (e) => callback(e.payload));
+}
+
+export function getPrivacySettings(): Promise<PrivacySettings> {
+  return invoke("get_privacy_settings");
+}
+
+export function setPrivacySettings(settings: PrivacySettings): Promise<void> {
+  return invoke("set_privacy_settings", { settings });
 }
 
 export function getOwnProfile(): Promise<OwnProfile> {

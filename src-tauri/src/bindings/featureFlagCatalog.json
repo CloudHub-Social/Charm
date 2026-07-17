@@ -70,5 +70,11 @@
     "default": false,
     "description": "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave).",
     "owner": "Spec 63 (sidebar and space management)"
+  },
+  {
+    "key": "presence_privacy_controls",
+    "default": false,
+    "description": "Privacy controls for read receipts, typing indicators, presence (appear offline), and auto-idle timeout, plus expanded seen-by and presence status display.",
+    "owner": "Spec 40 (presence and receipt privacy controls)"
   }
 ]

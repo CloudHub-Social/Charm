@@ -90,7 +90,13 @@ function RoomListItemImpl({
         >
           {initials(room.room_id, room.name)}
         </AvatarFallback>
-        {room.is_direct && <PresenceDot presence={presence?.presence} />}
+        {room.is_direct && (
+          <PresenceDot
+            presence={presence?.presence}
+            statusMsg={presence?.status_msg}
+            lastActiveAgoMs={presence?.last_active_ago_ms}
+          />
+        )}
       </Avatar>
       <div className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <div className="flex min-w-0 items-baseline justify-between gap-2">

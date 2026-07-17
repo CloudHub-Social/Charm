@@ -3,9 +3,10 @@ use matrix_sdk::ruma::events::receipt::{ReceiptEventContent, ReceiptThread};
 use matrix_sdk::ruma::events::typing::TypingEventContent;
 use matrix_sdk::ruma::{OwnedEventId, RoomId, UserId};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 use ts_rs::TS;
 
+use super::privacy_settings;
 use super::MatrixState;
 
 /// One user's receipt on one event, flattened out of the nested
@@ -125,31 +126,43 @@ fn parse_room(client: &matrix_sdk::Client, room_id: &str) -> Result<matrix_sdk::
 /// clearing the "jump to unread" fully-read marker Spec 06 depends on.
 #[tauri::command]
 pub async fn send_read_receipt(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     event_id: String,
     private: bool,
 ) -> Result<(), String> {
+    let hide_read_receipts = privacy_settings::current_settings(&app, &state)
+        .await
+        .hide_read_receipts;
     let client = state.require_client().await?;
-    send_read_receipt_impl(&client, &room_id, event_id, private).await
+    send_read_receipt_impl(&client, &room_id, event_id, private, hide_read_receipts).await
 }
 
-/// Core logic behind [`send_read_receipt`].
+/// Core logic behind [`send_read_receipt`]. Always sends the
+/// `m.fully_read` marker (a private, per-user pointer — never visible to
+/// other users, so Spec 40's "hide read receipts" doesn't apply to it and
+/// local "jump to unread" tracking keeps working). Only the actual
+/// `m.read`/`m.read.private` receipt — the part reciprocity/other users can
+/// see — is skipped when `hide_read_receipts` is set.
 pub async fn send_read_receipt_impl(
     client: &matrix_sdk::Client,
     room_id: &str,
     event_id: String,
     private: bool,
+    hide_read_receipts: bool,
 ) -> Result<(), String> {
     let room = parse_room(client, room_id)?;
     let parsed_event_id = OwnedEventId::try_from(event_id).map_err(|e| e.to_string())?;
 
     let mut receipts = Receipts::new().fully_read_marker(parsed_event_id.clone());
-    receipts = if private {
-        receipts.private_read_receipt(parsed_event_id)
-    } else {
-        receipts.public_read_receipt(parsed_event_id)
-    };
+    if !hide_read_receipts {
+        receipts = if private {
+            receipts.private_read_receipt(parsed_event_id)
+        } else {
+            receipts.public_read_receipt(parsed_event_id)
+        };
+    }
 
     room.send_multiple_receipts(receipts)
         .await
@@ -159,12 +172,25 @@ pub async fn send_read_receipt_impl(
 /// Sends (or stops) our own `m.typing` notice for a room. The SDK
 /// deduplicates/refreshes the EDU timeout internally, so this is safe to call
 /// on every keystroke.
+/// If `typing` is `true` and the user has hidden typing indicators (Spec
+/// 40), this is a silent no-op — the SDK is never told to send an
+/// `m.typing` notice. A `typing=false` call always goes through (harmless
+/// even when nothing was started, and ensures a leftover indicator from
+/// before the setting was toggled on gets cleared).
 #[tauri::command]
 pub async fn send_typing(
+    app: AppHandle,
     state: State<'_, MatrixState>,
     room_id: String,
     typing: bool,
 ) -> Result<(), String> {
+    if typing
+        && privacy_settings::current_settings(&app, &state)
+            .await
+            .hide_typing
+    {
+        return Ok(());
+    }
     let client = state.require_client().await?;
     send_typing_impl(&client, &room_id, typing).await
 }
@@ -181,15 +207,28 @@ pub async fn send_typing_impl(
 
 /// Convenience command used both when a room becomes active and by the
 /// room-list "mark read" action: resolves the latest event in the room and
-/// sends a public read receipt + fully-read marker to it.
+/// sends a public read receipt + fully-read marker to it (the receipt is
+/// skipped, same as [`send_read_receipt`], when the user has hidden read
+/// receipts — the fully-read marker is always sent).
 #[tauri::command]
-pub async fn mark_room_read(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+pub async fn mark_room_read(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+) -> Result<(), String> {
+    let hide_read_receipts = privacy_settings::current_settings(&app, &state)
+        .await
+        .hide_read_receipts;
     let client = state.require_client().await?;
-    mark_room_read_impl(&client, &room_id).await
+    mark_room_read_impl(&client, &room_id, hide_read_receipts).await
 }
 
 /// Core logic behind [`mark_room_read`].
-pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> Result<(), String> {
+pub async fn mark_room_read_impl(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    hide_read_receipts: bool,
+) -> Result<(), String> {
     let room = parse_room(client, room_id)?;
 
     let Some(latest_event_id) = room.latest_event().event_id() else {
@@ -197,9 +236,10 @@ pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> 
         return Ok(());
     };
 
-    let receipts = Receipts::new()
-        .fully_read_marker(latest_event_id.clone())
-        .public_read_receipt(latest_event_id);
+    let mut receipts = Receipts::new().fully_read_marker(latest_event_id.clone());
+    if !hide_read_receipts {
+        receipts = receipts.public_read_receipt(latest_event_id);
+    }
 
     room.send_multiple_receipts(receipts)
         .await

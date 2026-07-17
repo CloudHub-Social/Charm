@@ -12,6 +12,7 @@ pub mod members;
 pub mod notifications;
 pub mod persistence;
 pub mod presence;
+pub mod privacy_settings;
 pub mod profiles;
 pub mod qr_login;
 pub mod room_admin;

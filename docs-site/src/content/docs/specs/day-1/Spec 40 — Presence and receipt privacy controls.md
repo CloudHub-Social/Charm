@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Presence and receipt privacy controls
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: draft
+status: shipped
 ---
 
 **Workstream:** one PR / one agent. Extends Spec 05 (read receipts, typing,
