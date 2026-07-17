@@ -14,7 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -27,7 +27,6 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
-import { logAndIgnore } from "@/lib/logAndIgnore";
 import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
@@ -74,6 +73,18 @@ export function SpaceRail({
     spaceId: string;
     name: string;
   } | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionErrorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
+    };
+  }, []);
+  function reportActionError(err: unknown) {
+    setActionError(err instanceof Error ? err.message : String(err));
+    if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
+    actionErrorTimeoutRef.current = setTimeout(() => setActionError(null), 5000);
+  }
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
     useMemo(() => {
@@ -288,7 +299,7 @@ export function SpaceRail({
                 <>
                   <ContextMenuItem
                     onSelect={() =>
-                      setSpaceChildSuggested(parentId, space.room_id, true).catch(logAndIgnore)
+                      setSpaceChildSuggested(parentId, space.room_id, true).catch(reportActionError)
                     }
                   >
                     <Star aria-hidden="true" />
@@ -296,14 +307,18 @@ export function SpaceRail({
                   </ContextMenuItem>
                   <ContextMenuItem
                     onSelect={() =>
-                      setSpaceChildSuggested(parentId, space.room_id, false).catch(logAndIgnore)
+                      setSpaceChildSuggested(parentId, space.room_id, false).catch(
+                        reportActionError,
+                      )
                     }
                   >
                     <StarOff aria-hidden="true" />
                     Unmark as suggested
                   </ContextMenuItem>
                   <ContextMenuItem
-                    onSelect={() => removeSpaceChild(parentId, space.room_id).catch(logAndIgnore)}
+                    onSelect={() =>
+                      removeSpaceChild(parentId, space.room_id).catch(reportActionError)
+                    }
                   >
                     <DoorOpen aria-hidden="true" />
                     Remove from space
@@ -336,6 +351,14 @@ export function SpaceRail({
 
   return (
     <TooltipProvider>
+      {actionError && (
+        <div
+          role="alert"
+          className="fixed bottom-3 left-3 z-50 max-w-xs rounded-md border border-destructive/50 bg-background px-3 py-2 text-sm text-destructive shadow-md"
+        >
+          {actionError}
+        </div>
+      )}
       <aside className="flex w-[72px] shrink-0 flex-col items-center border-r border-border bg-muted/25 py-3">
         <nav className="flex min-h-0 flex-1 flex-col items-center gap-2" aria-label="Spaces">
           <RailIconButton

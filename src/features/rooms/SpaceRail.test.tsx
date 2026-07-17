@@ -465,6 +465,17 @@ describe("SpaceRail", () => {
     );
   });
 
+  it("surfaces a visible error when removing a space child fails instead of failing silently", async () => {
+    removeSpaceChild.mockRejectedValueOnce(new Error("lacking power level"));
+    renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("lacking power level");
+  });
+
   it("renders the plain pre-Spec-63 rail with no context menu when space_rail_management is off", () => {
     mockUseFlag.mockReturnValue(false);
     renderRail();
