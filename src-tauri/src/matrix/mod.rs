@@ -380,16 +380,23 @@ impl MatrixState {
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
-        // Review fix: a cached entry left over from a Saved Messages jump
-        // (`replace_timeline`, `is_focused = true`) is a `TimelineFocus::Event`
-        // view, not the room's live tail — returning it here as if it were
-        // the ordinary live timeline would keep silently starving this room
-        // of live updates/notifications indefinitely. Only a live entry can
-        // be returned as-is; a focused one falls through to rebuild a fresh
-        // live timeline below, self-healing the room back to normal the next
-        // time it's genuinely queried (e.g. reopened, or `get_timeline_page`
-        // called for it).
-        if let Some((existing, _, false)) = self.timelines.lock().await.get(room_id) {
+        // Review fix (round 6, then corrected in round 7): a cached entry
+        // left over from a Saved Messages jump (`replace_timeline`,
+        // `is_focused = true`) is a `TimelineFocus::Event` view, not the
+        // room's live tail. An earlier version of this fix rebuilt a fresh
+        // live timeline right here whenever the cached entry was focused —
+        // but this function is also what `get_timeline_page` calls on
+        // *every* pagination request, not just a genuine room (re)open:
+        // that made paging further back while viewing a bookmark's focused
+        // context (e.g. Virtuoso's `startReached` auto-load) immediately
+        // evict the focused view and snap back to the live tail instead of
+        // extending it. A focused entry is now returned as-is here, same as
+        // a live one — `is_timeline_open` (see its own doc comment) already
+        // covers the actual correctness concern (live notifications)
+        // independent of this return; only an explicit reopen/reset path
+        // should ever discard a focused entry, and none currently forces
+        // one, so a focused view simply persists until normal LRU eviction.
+        if let Some((existing, _, _)) = self.timelines.lock().await.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
@@ -403,8 +410,7 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        // Same focused-entry exclusion as above.
-        if let Some((existing, _, false)) = timelines.get(room_id) {
+        if let Some((existing, _, _)) = timelines.get(room_id) {
             return Ok(std::sync::Arc::clone(existing));
         }
 
