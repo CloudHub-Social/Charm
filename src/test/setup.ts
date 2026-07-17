@@ -35,6 +35,13 @@ if (typeof globalThis.IntersectionObserver === "undefined") {
 // Tooltip/Popover needs at least a no-op stub to avoid a ReferenceError.
 if (typeof globalThis.ResizeObserver === "undefined") {
   class MockResizeObserver implements ResizeObserver {
+    // Stored (not discarded) so the mock's constructor shape matches the
+    // real `ResizeObserver`'s required callback param — code that does
+    // `new ResizeObserver(cb)` (e.g. `RoomList`'s row-height tracking)
+    // shouldn't look like it's passing a superfluous argument under this
+    // stub. Never invoked: this stub never actually fires a resize, same
+    // as before.
+    constructor(readonly callback: ResizeObserverCallback) {}
     observe(): void {}
     unobserve(): void {}
     disconnect(): void {}
