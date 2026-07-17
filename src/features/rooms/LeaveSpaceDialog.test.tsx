@@ -59,6 +59,27 @@ describe("LeaveSpaceDialog", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Leave" })).toBeEnabled());
   });
 
+  it("blocks Cancel and disables it while a leave request is in flight", async () => {
+    let resolveLeave: () => void = () => {};
+    leaveRoom.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveLeave = resolve;
+      }),
+    );
+    const { onOpenChange } = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    const cancelButton = screen.getByRole("button", { name: "Cancel" });
+    expect(cancelButton).toBeDisabled();
+
+    fireEvent.click(cancelButton);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    resolveLeave();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
   it("shows an error message and keeps the dialog open on failure", async () => {
     leaveRoom.mockRejectedValueOnce(new Error("cannot leave"));
     const { onOpenChange } = renderDialog();

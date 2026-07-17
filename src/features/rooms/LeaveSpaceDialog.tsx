@@ -40,6 +40,11 @@ export function LeaveSpaceDialog({
   }, [spaceId]);
 
   function handleClose(open: boolean) {
+    // Ignore dismiss attempts (Escape, outside click, the close button, or
+    // Cancel) while a leave request is in flight — closing here wouldn't
+    // cancel `handleLeave`'s in-progress `leaveRoom` call, so the user could
+    // back out of the dialog while still about to lose access to the space.
+    if (!open && pending) return;
     if (!open) {
       setError(null);
       setPending(false);
@@ -77,7 +82,7 @@ export function LeaveSpaceDialog({
           </p>
         )}
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleClose(false)}>
+          <Button variant="outline" onClick={() => handleClose(false)} disabled={pending}>
             Cancel
           </Button>
           <Button variant="destructive" onClick={handleLeave} disabled={pending}>
