@@ -223,24 +223,28 @@ export function RoomList({
   scopedRoomIdsRef.current = scopedRoomIds;
   const onSelectSearchResultRef = useRef(onSelectSearchResult);
   onSelectSearchResultRef.current = onSelectSearchResult;
-  const handleSelectSearchResult = useCallback(
-    (roomId: string) => {
-      const inScope = scopedRoomIdsRef.current.has(roomId);
-      if (!inScope && onSelectSearchResultRef.current) {
-        // `roomById` only indexes joined rooms (see its definition above),
-        // which is exactly this callback's domain — an out-of-scope search
-        // result being switched to must already be joined, or there'd be no
-        // scope for `onSelectSearchResult` to switch into.
-        const current = roomByIdRef.current.get(roomId);
-        if (current) onSelectSearchResultRef.current(current);
-      } else {
-        onSelectRoom(roomId);
-      }
-      setSearchQuery("");
-      setSearchEverywhere(false);
-    },
-    [onSelectRoom],
-  );
+  // `onSelectRoom` ref-backed too (Sentry review, LOW): not observably
+  // buggy today since `selectRoom` doesn't currently close over anything
+  // that changes between renders, but it's the same fragile pattern this
+  // callback already guards against for its other captures, and a stale
+  // reference here was simply overlooked rather than deliberate.
+  const onSelectRoomRef = useRef(onSelectRoom);
+  onSelectRoomRef.current = onSelectRoom;
+  const handleSelectSearchResult = useCallback((roomId: string) => {
+    const inScope = scopedRoomIdsRef.current.has(roomId);
+    if (!inScope && onSelectSearchResultRef.current) {
+      // `roomById` only indexes joined rooms (see its definition above),
+      // which is exactly this callback's domain — an out-of-scope search
+      // result being switched to must already be joined, or there'd be no
+      // scope for `onSelectSearchResult` to switch into.
+      const current = roomByIdRef.current.get(roomId);
+      if (current) onSelectSearchResultRef.current(current);
+    } else {
+      onSelectRoomRef.current(roomId);
+    }
+    setSearchQuery("");
+    setSearchEverywhere(false);
+  }, []);
   const visibleScopedRooms = useMemo(
     () => (unreadOnly ? filterRoomsToUnread(scopedRooms, activeRoomId) : scopedRooms),
     [unreadOnly, scopedRooms, activeRoomId],
