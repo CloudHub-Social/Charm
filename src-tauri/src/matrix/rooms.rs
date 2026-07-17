@@ -3,6 +3,7 @@
 //! the UI reads from (computed once here, in [`snapshot_rooms`] via
 //! [`has_unread`], never re-derived per-component — see Spec 06).
 
+use futures_util::StreamExt;
 use matrix_sdk::latest_events::LatestEventValue;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::Room;
@@ -477,98 +478,139 @@ pub async fn snapshot_rooms(
 ) -> Vec<RoomSummary> {
     let parents = parent_space_ids(client).await;
 
-    let mut summaries = Vec::new();
-    // Rooms actually registered with `LatestEvents` this pass — anything
-    // previously registered but missing here (the flag just turned off, or
-    // the room was left/removed) gets forgotten below instead of leaving
-    // `LatestEvents` listening for it indefinitely.
-    let mut still_registered = std::collections::HashSet::new();
-    let rooms = client
+    let rooms: Vec<Room> = client
         .joined_rooms()
         .into_iter()
-        .chain(client.invited_rooms());
-    for room in rooms {
-        let membership = match room.state() {
-            RoomState::Joined => RoomMembershipKind::Join,
-            RoomState::Invited => RoomMembershipKind::Invite,
-            _ => continue,
-        };
-        let room_id = room.room_id().to_string();
-        let unread_count = room.unread_notification_counts().notification_count;
-        let unread_messages = room.num_unread_messages();
-        let is_marked_unread = room.is_marked_unread();
-        let is_favourite = room.is_favourite();
-        let is_low_priority = room.is_low_priority();
-        let room_notification_mode = room.notification_mode().await;
-        let is_muted = matches!(
-            room_notification_mode,
-            Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
-        );
-        let manual_order = room.tags().await.ok().flatten().and_then(|tags| {
-            let tag = order_tag_name(is_favourite, is_low_priority);
-            tags.get(&tag).and_then(|info| info.order)
-        });
-        let is_space = room.is_space();
-        let is_direct = room.is_direct().await.unwrap_or(false);
-        let has_unread_flag = has_unread(is_marked_unread, is_muted, unread_messages, unread_count);
-        let identity = resolve_room_identity(client, media_cache, &room, is_direct).await;
-        let (inviter_user_id, inviter_display_name) = if membership == RoomMembershipKind::Invite {
-            match room.invite_details().await {
-                Ok(details) => (
+        .chain(client.invited_rooms())
+        .collect();
+
+    // Each room's async work (notification mode, tags, avatar resolution,
+    // invite details, last-message preview) is independent of every other
+    // room's, so fan them all out concurrently instead of awaiting them one
+    // room at a time — with a non-trivial room count, a sequential loop here
+    // reran on every `/sync` response and was the single largest contributor
+    // to login/steady-state latency. Concurrency is capped (rather than an
+    // unbounded `join_all`) because `resolve_room_identity` can trigger an
+    // avatar-thumbnail media fetch on a cache miss — for an account with
+    // hundreds of rooms and a cold media cache (e.g. first login on a new
+    // device), an unbounded fan-out would fire that many simultaneous
+    // requests at once (Codex review on #286, P2).
+    const SNAPSHOT_CONCURRENCY: usize = 16;
+    let snapshots = futures_util::stream::iter(rooms.into_iter().map(|room| {
+        let parents = &parents;
+        async move {
+            let membership = match room.state() {
+                RoomState::Joined => RoomMembershipKind::Join,
+                RoomState::Invited => RoomMembershipKind::Invite,
+                _ => return None,
+            };
+            let room_id = room.room_id().to_string();
+            let unread_count = room.unread_notification_counts().notification_count;
+            let unread_messages = room.num_unread_messages();
+            let is_marked_unread = room.is_marked_unread();
+            let is_favourite = room.is_favourite();
+            let is_low_priority = room.is_low_priority();
+            let is_space = room.is_space();
+            let is_direct = room.is_direct().await.unwrap_or(false);
+
+            let (room_notification_mode, tags, identity, invite_details) = tokio::join!(
+                room.notification_mode(),
+                room.tags(),
+                resolve_room_identity(client, media_cache, &room, is_direct),
+                async {
+                    if membership == RoomMembershipKind::Invite {
+                        Some(room.invite_details().await)
+                    } else {
+                        None
+                    }
+                }
+            );
+
+            let is_muted = matches!(
+                room_notification_mode,
+                Some(matrix_sdk::notification_settings::RoomNotificationMode::Mute)
+            );
+            let manual_order = tags.ok().flatten().and_then(|tags| {
+                let tag = order_tag_name(is_favourite, is_low_priority);
+                tags.get(&tag).and_then(|info| info.order)
+            });
+            let has_unread_flag =
+                has_unread(is_marked_unread, is_muted, unread_messages, unread_count);
+            let (inviter_user_id, inviter_display_name) = match invite_details {
+                Some(Ok(details)) => (
                     Some(details.inviter_id.to_string()),
                     details
                         .inviter
                         .and_then(|member| member.display_name().map(ToOwned::to_owned)),
                 ),
-                Err(_) => (None, None),
-            }
-        } else {
-            (None, None)
-        };
-        // Pending invites have no readable message history to preview yet.
-        // Skip the `LatestEvents` subscription + member lookup entirely when
-        // the feature is off, rather than computing a value the frontend
-        // will just discard.
-        let last_message_preview =
-            if include_message_preview && membership == RoomMembershipKind::Join {
-                // Registers with `LatestEvents` as a side effect regardless
-                // of whether a preview value is available yet — track it as
-                // "still wanted" either way, so it isn't forgotten below.
-                still_registered.insert(room.room_id().to_owned());
-                last_message_preview(client, &room).await
-            } else {
-                None
+                _ => (None, None),
             };
+            // Pending invites have no readable message history to preview
+            // yet. Skip the `LatestEvents` subscription + member lookup
+            // entirely when the feature is off, rather than computing a
+            // value the frontend will just discard.
+            let (last_message_preview, registered) =
+                if include_message_preview && membership == RoomMembershipKind::Join {
+                    // Registers with `LatestEvents` as a side effect
+                    // regardless of whether a preview value is available
+                    // yet — track it as "still wanted" either way, so it
+                    // isn't forgotten below.
+                    (
+                        last_message_preview(client, &room).await,
+                        Some(room.room_id().to_owned()),
+                    )
+                } else {
+                    (None, None)
+                };
 
-        summaries.push((
-            membership_rank(membership),
-            section_rank(is_favourite, is_low_priority),
-            manual_order,
-            identity.name.clone().unwrap_or_default(),
-            RoomSummary {
-                room_id: room_id.clone(),
-                name: identity.name,
-                unread_count,
-                unread_messages,
-                is_marked_unread,
-                is_muted,
-                notification_mode: room_notification_mode.map(Into::into),
-                is_favourite,
-                is_low_priority,
+            Some((
+                membership_rank(membership),
+                section_rank(is_favourite, is_low_priority),
                 manual_order,
-                is_space,
-                parent_space_ids: parents.get(&room_id).cloned().unwrap_or_default(),
-                is_direct,
-                has_unread: has_unread_flag,
-                avatar_url: identity.avatar_url,
-                avatar_path: identity.avatar_path,
-                dm_peer_user_id: identity.dm_peer_user_id,
-                membership,
-                inviter_user_id,
-                inviter_display_name,
-                last_message_preview,
-            },
-        ));
+                identity.name.clone().unwrap_or_default(),
+                RoomSummary {
+                    room_id: room_id.clone(),
+                    name: identity.name,
+                    unread_count,
+                    unread_messages,
+                    is_marked_unread,
+                    is_muted,
+                    notification_mode: room_notification_mode.map(Into::into),
+                    is_favourite,
+                    is_low_priority,
+                    manual_order,
+                    is_space,
+                    parent_space_ids: parents.get(&room_id).cloned().unwrap_or_default(),
+                    is_direct,
+                    has_unread: has_unread_flag,
+                    avatar_url: identity.avatar_url,
+                    avatar_path: identity.avatar_path,
+                    dm_peer_user_id: identity.dm_peer_user_id,
+                    membership,
+                    inviter_user_id,
+                    inviter_display_name,
+                    last_message_preview,
+                },
+                registered,
+            ))
+        }
+    }))
+    .buffer_unordered(SNAPSHOT_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+
+    // Rooms actually registered with `LatestEvents` this pass — anything
+    // previously registered but missing here (the flag just turned off, or
+    // the room was left/removed) gets forgotten below instead of leaving
+    // `LatestEvents` listening for it indefinitely.
+    let mut still_registered = std::collections::HashSet::new();
+    let mut summaries = Vec::new();
+    for snapshot in snapshots.into_iter().flatten() {
+        let (rank_a, rank_b, order, name, summary, registered) = snapshot;
+        if let Some(room_id) = registered {
+            still_registered.insert(room_id);
+        }
+        summaries.push((rank_a, rank_b, order, name, summary));
     }
 
     forget_stale_preview_registrations(client, preview_registered_rooms, still_registered).await;
@@ -583,6 +625,14 @@ pub async fn snapshot_rooms(
                 (None, None) => std::cmp::Ordering::Equal,
             })
             .then_with(|| a.3.cmp(&b.3))
+            // Final stable tie-breaker on `room_id` (Codex review on #286,
+            // P2): rooms sharing membership/section/order/name used to keep
+            // whatever relative order `join_all` happened to resolve them
+            // in; now that resolution runs through `buffer_unordered`, that
+            // order depends on which room's async work finishes first and
+            // can swap between calls. `room_id` is stable and unique, so it
+            // fully determines the order instead of leaving it to timing.
+            .then_with(|| a.4.room_id.cmp(&b.4.room_id))
     });
 
     summaries

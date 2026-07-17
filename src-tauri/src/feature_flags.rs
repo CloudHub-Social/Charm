@@ -28,7 +28,7 @@
 //! shape (`contexts.flags.values = [{ flag, result }]`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -264,15 +264,57 @@ pub fn read_overrides(app_data_dir: &Path) -> BTreeMap<String, bool> {
     read_state(app_data_dir).0
 }
 
+type FlagState = (BTreeMap<String, bool>, BTreeMap<String, bool>);
+
+/// Cache for [`read_state`], keyed by the store file's path plus a hash of
+/// its raw contents — not path+mtime+size (Codex review on #286, P2,
+/// round 2). Metadata alone is an unreliable change signal: on a filesystem
+/// with coarse mtime granularity, a remote refresh that rewrites the file
+/// within the same mtime tick and happens to keep the same byte length (e.g.
+/// flipping one flag off while another flips on) would leave this cache
+/// serving the pre-rewrite state — silently ignoring a Labs/remote
+/// kill-switch change — until some later write finally produces a different
+/// mtime or size. Hashing the content directly makes the cache key exactly
+/// as precise as the data it guards, at the cost of a read (but not a
+/// re-parse) on every call; that read is the cheap part `flag()`/`evaluate()`
+/// being hot needed to avoid, not the syscall itself.
+static STATE_CACHE: Mutex<Option<(PathBuf, u64, FlagState)>> = Mutex::new(None);
+
 /// Reads both the local overrides and the remote (OFREP) cache from the file in
 /// a single parse. Tolerant of a missing/corrupt file (returns empties) and of
 /// both the plugin-store envelope and bare `{ state }` / `{ overrides }` shapes,
 /// so a format tweak on the JS side can't hard-fail Rust evaluation.
-pub fn read_state(app_data_dir: &Path) -> (BTreeMap<String, bool>, BTreeMap<String, bool>) {
-    let Ok(raw) = std::fs::read_to_string(app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME)) else {
+pub fn read_state(app_data_dir: &Path) -> FlagState {
+    let path = app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
         return (BTreeMap::new(), BTreeMap::new());
     };
-    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+    let hash = content_hash(&raw);
+
+    if let Ok(cache) = STATE_CACHE.lock() {
+        if let Some((cached_path, cached_hash, state)) = cache.as_ref() {
+            if *cached_path == path && *cached_hash == hash {
+                return state.clone();
+            }
+        }
+    }
+
+    let state = parse_state(&raw);
+    if let Ok(mut cache) = STATE_CACHE.lock() {
+        *cache = Some((path, hash, state.clone()));
+    }
+    state
+}
+
+fn content_hash(raw: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_state(raw: &str) -> FlagState {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return (BTreeMap::new(), BTreeMap::new());
     };
     (
@@ -302,9 +344,9 @@ fn flag_map_from_value(value: &Value, store_key: &str, inner: &str) -> BTreeMap<
         .collect()
 }
 
-/// Resolves a flag from the file fresh each call — flags are checked at branch
-/// points, not in hot loops, and reading fresh means a Labs override or a
-/// remote refresh takes effect without a restart or cache-invalidation dance.
+/// Resolves a flag from the file, via [`read_state`]'s mtime-keyed cache — a
+/// Labs override or remote refresh still takes effect on the next call (no
+/// restart or manual invalidation needed) since it rewrites the file's mtime.
 pub fn evaluate(app_data_dir: &Path, key: FeatureFlagKey) -> bool {
     let (overrides, remote) = read_state(app_data_dir);
     resolve(key, &overrides, &remote)
