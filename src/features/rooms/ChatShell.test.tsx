@@ -3246,6 +3246,50 @@ describe("ChatShell", () => {
     resolveLoadAround?.(false);
   });
 
+  it("does not mark read in the gap between onJumpHandled clearing jumpToEventId and Virtuoso's own atBottomStateChange report (Codex review fix)", async () => {
+    // Regression for a narrower window than the previous fix closed:
+    // `ChatShell` clears `jumpToEventId` (via `onJumpHandled`) synchronously
+    // right after calling Virtuoso's `scrollToIndex`, but the real
+    // `atBottomStateChange` report from that scroll lands asynchronously.
+    // `hasPendingJump` reading `false` again on this next render must not by
+    // itself be enough to let a stale `isAtBottomRef.current === true` (its
+    // default, never yet corrected by Virtuoso for this jump) mark the room
+    // read before Virtuoso actually reports the post-jump position.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+
+    // Virtuoso hasn't reported a position for this jump yet — mark-read
+    // must still be suppressed even though jumpToEventId is now null.
+    expect(markRoomRead).not.toHaveBeenCalled();
+
+    // Only once Virtuoso actually reports the post-jump position should
+    // mark-read be allowed to run again.
+    fireAtBottomStateChange(false);
+    expect(markRoomRead).not.toHaveBeenCalled();
+  });
+
   it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],

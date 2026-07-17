@@ -71,6 +71,21 @@ export function useChatTimeline(
   // signal answers it directly, so mark-as-read and sticky-bottom share one
   // boolean instead of needing two mechanisms).
   const isAtBottomRef = useRef(true);
+  // Review fix: `hasPendingJump` alone isn't a wide enough suppression
+  // window for mark-read — `ChatShell` clears its `jumpToEventId` (flipping
+  // `hasPendingJump` back to `false`) immediately after calling Virtuoso's
+  // `scrollToIndex`, which is synchronous but whose resulting
+  // `atBottomStateChange` report is not — it lands on a later render once
+  // Virtuoso has actually measured the new scroll position. In that gap,
+  // `hasPendingJump` already reads `false` while `isAtBottomRef` still holds
+  // whatever value it had *before* the jump (typically `true`, from the
+  // room's initial mount), so `markReadIfAtBottom` would fire prematurely.
+  // This ref stays `true` from the moment a jump starts until Virtuoso's own
+  // `atBottomStateChange` callback actually reports a position afterward —
+  // a real signal, not just a prop having changed — so mark-read stays
+  // suppressed for the entire gap, however long it turns out to be.
+  const suppressMarkReadRef = useRef(false);
+  if (hasPendingJump) suppressMarkReadRef.current = true;
   // Tracks which room `loadMoreHistory`'s in-flight request was issued for,
   // so a slow response landing after the user has since switched rooms (or
   // this room's own subsequent request) doesn't apply its scroll anchor or
@@ -371,12 +386,15 @@ export function useChatTimeline(
   function markReadIfAtBottom() {
     if (!room || !latestEventId) return;
     if (roomSettingsOpen) return;
-    // Review fix: `isAtBottomRef` defaults to `true` (assumes the live tail
-    // until Virtuoso reports otherwise), so this would otherwise still mark
-    // read on the very first render of a bookmark-jump open — before
-    // Virtuoso has had a chance to report the post-jump scroll position at
-    // all. Same reasoning as the room-open effect above.
-    if (hasPendingJump) return;
+    // Review fix: checks the suppression ref (which stays set across the
+    // gap between `hasPendingJump` clearing and Virtuoso's own
+    // `atBottomStateChange` report — see that ref's own comment), not
+    // `hasPendingJump` directly. `isAtBottomRef` defaults to `true` (assumes
+    // the live tail until Virtuoso reports otherwise), so without this,
+    // mark-read could still fire on the very first post-jump render, before
+    // Virtuoso has had a chance to report the real post-jump scroll
+    // position at all.
+    if (suppressMarkReadRef.current) return;
     if (!isAtBottomRef.current) return;
     if (lastMarkedReadEventId.current === latestEventId) return;
     lastMarkedReadEventId.current = latestEventId;
@@ -394,6 +412,13 @@ export function useChatTimeline(
 
   function handleAtBottomStateChange(atBottom: boolean) {
     isAtBottomRef.current = atBottom;
+    // Review fix: this is the actual signal `suppressMarkReadRef` is
+    // waiting for — Virtuoso reporting a real post-jump scroll position,
+    // not just `hasPendingJump` having flipped back to `false` on a
+    // possibly-earlier render. Clearing it here (rather than wherever
+    // `hasPendingJump` changes) is what closes the gap the review finding
+    // describes.
+    suppressMarkReadRef.current = false;
     if (atBottom) markReadIfAtBottom();
   }
 
