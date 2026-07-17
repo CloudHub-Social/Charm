@@ -1341,6 +1341,44 @@ impl PersistenceStore {
             if sessions.is_genuinely_active(&entry.token, max_age).await {
                 continue;
             }
+            // A token that reaches here can still be resident in
+            // `SessionStore` — the only way that happens is `sweep_idle`'s
+            // pending-verification/unpersisted-room exemptions, which pin a
+            // session in memory indefinitely regardless of activity.
+            // Removed (and its sync loop aborted) *before* this loop reads
+            // the persisted entry below to revoke, not after: that live
+            // session's own sync loop keeps running for as long as it
+            // stays resident, and a token refresh it repersists
+            // mid-revocation — the homeserver round trip below
+            // (`restore_client_for_revocation` plus `logout()`) can take
+            // real time — would silently land a *new* access/refresh token
+            // pair on disk for a token this sweep is about to revoke and
+            // delete using the *old* one it already read, orphaning the
+            // newer pair with nothing left on disk for any future sweep to
+            // ever revoke it (Codex review finding on #280). Removing
+            // (which also takes the sync handle out and aborts it) closes
+            // that window entirely rather than narrowing it, regardless of
+            // whether revocation below actually succeeds.
+            //
+            // If revocation then fails or times out, this same `Arc<Session>`
+            // — sync loop already aborted, so no further repersist risk —
+            // goes back into `SessionStore` via `reinsert` rather than
+            // staying permanently dropped: the persisted record is left
+            // untouched either way (still true, see below) for a later
+            // sweep to retry, and a merely transient revocation failure
+            // shouldn't also force an otherwise-still-valid session to
+            // silently lose its live map entry.
+            let live_session = sessions.remove(&entry.token).await;
+            if let Some(session) = &live_session {
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+            }
             // Removal only happens after a *confirmed* revocation — never
             // on a best-effort basis. Deleting the local record before the
             // homeserver has actually invalidated the access token would
@@ -1355,6 +1393,9 @@ impl PersistenceStore {
                     "could not rebuild a client to revoke an expired persisted session's \
                      access token; leaving it for the next sweep to retry"
                 );
+                if let Some(session) = live_session {
+                    sessions.reinsert(entry.token.clone(), session).await;
+                }
                 continue;
             };
             // Bounded, unlike `routes::logout`'s equivalent call (which
@@ -1372,6 +1413,9 @@ impl PersistenceStore {
                         "failed to revoke access token for an expired persisted session, \
                          leaving it for the next sweep to retry: {e}"
                     );
+                    if let Some(session) = live_session {
+                        sessions.reinsert(entry.token.clone(), session).await;
+                    }
                     continue;
                 }
                 Err(_) => {
@@ -1379,39 +1423,10 @@ impl PersistenceStore {
                         "timed out revoking access token for an expired persisted session \
                          after {RESTORE_TIMEOUT:?}, leaving it for the next sweep to retry"
                     );
+                    if let Some(session) = live_session {
+                        sessions.reinsert(entry.token.clone(), session).await;
+                    }
                     continue;
-                }
-            }
-            // A token that reached here was resident in `SessionStore` but
-            // `is_genuinely_active` said it wasn't — the only way that
-            // happens is `sweep_idle`'s pending-verification/unpersisted-
-            // room exemptions, which pin a session in memory indefinitely
-            // regardless of activity. Aborted and dropped *before* the
-            // persisted removal below, not after — same ordering
-            // `routes::logout` uses, and for the same reason: that
-            // session's sync loop is still running until this abort lands,
-            // and a token-refresh repersist landing in the window between
-            // deleting the persisted object and aborting the loop would
-            // call `save(bump_last_seen: false)` against an object that no
-            // longer exists — which, having never itself seen an existing
-            // version in *that* call, would take the "never persisted"
-            // branch and write a brand new one, silently recreating the
-            // session this sweep just revoked (Codex review finding on
-            // #280). Without dropping it at all, the very next request
-            // would also still resolve through `require_session`'s fast
-            // path (`state.sessions.get`, checked *before*
-            // `PersistenceStore::is_expired`) against a session whose
-            // access token this loop just revoked — degrading to Matrix
-            // API calls silently failing against a live-looking but dead
-            // session, instead of a clean re-login.
-            if let Some(session) = sessions.remove(&entry.token).await {
-                if let Some(handle) = session
-                    .sync_handle
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                {
-                    handle.abort();
                 }
             }
             // The access token was just revoked above — a subsequent sweep
@@ -2788,8 +2803,17 @@ mod tests {
 
         let sessions = crate::session::SessionStore::new();
         let session = dummy_live_session("@pinned:example.invalid").await;
-        *session.last_active.lock().unwrap() =
-            std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session.last_active.lock().unwrap() = backdated;
+        // `is_genuinely_active` reads `last_validated_active`, not
+        // `last_active` — without also backdating this, a freshly
+        // constructed `Session`'s `Instant::now()` default reads as
+        // genuinely active and this sweep skips the entry before ever
+        // reaching the failed-revocation path this test means to exercise.
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
         sessions.insert("tok-pinned".to_string(), session).await;
 
         store
@@ -2803,6 +2827,67 @@ mod tests {
         assert!(
             store.read_one("tok-pinned").await.is_some(),
             "and its persisted record must stay too, for the same reason"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Revoke live
+    /// expired sessions before restoring"): a stale-but-pinned session's
+    /// sync loop must be aborted *before* this sweep reads the persisted
+    /// entry to attempt revocation — not only after a confirmed success —
+    /// so it can no longer race a repersist of a freshly refreshed token
+    /// against this sweep's read/logout/remove sequence. Reuses the same
+    /// unreachable-homeserver setup as the sibling
+    /// `sweep_expired_does_not_drop_a_stale_session_from_the_live_store_on_failed_revocation`
+    /// test (revocation fails, so the session goes back into `SessionStore`
+    /// via `reinsert`) but additionally proves the sync loop was aborted
+    /// even on that failure path, by checking `sync_handle` is `None`
+    /// afterward rather than the still-running task planted here.
+    #[tokio::test]
+    async fn sweep_expired_aborts_a_pinned_sessions_sync_loop_even_when_revocation_fails() {
+        let dir = scratch_dir("sweep-expired-pinned-abort-on-failure");
+        let store = PersistenceStore::new_for_test(&dir, [62u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(&store, "tok-pinned-abort", now.saturating_sub(sixty_days)).await;
+
+        let sessions = crate::session::SessionStore::new();
+        let session = dummy_live_session("@pinned-abort:example.invalid").await;
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session.last_active.lock().unwrap() = backdated;
+        // `is_genuinely_active` reads `last_validated_active`, not
+        // `last_active` — see that function's doc comment. Both must be
+        // backdated or this session reads as genuinely active (freshly
+        // constructed `Instant::now()`) and the sweep skips it before ever
+        // reaching the code this test exists to exercise.
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        });
+        *session
+            .sync_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        sessions
+            .insert("tok-pinned-abort".to_string(), session)
+            .await;
+
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        let session_after = sessions.get("tok-pinned-abort").await.unwrap();
+        assert!(
+            session_after
+                .sync_handle
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "the pinned session's sync loop must be aborted even when this sweep's own \
+             revocation attempt could not be confirmed — otherwise it could keep racing a \
+             later sweep's revoke/remove with a repersisted token"
         );
     }
 

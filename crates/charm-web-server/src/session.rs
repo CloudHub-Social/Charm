@@ -954,6 +954,24 @@ impl SessionStore {
         self.inner.write().await.remove(token)
     }
 
+    /// Puts an already-`Arc`-wrapped `Session` back into the map under
+    /// `token` — for `persistence::PersistenceStore::sweep_expired`'s
+    /// abort-first ordering: it removes (and aborts the sync loop of) a
+    /// stale-but-pinned session *before* reading its persisted entry to
+    /// attempt revocation, closing a race where that session's own sync
+    /// loop could otherwise repersist a freshly refreshed token mid-sweep
+    /// (Codex review finding on #280). If revocation then fails or times
+    /// out, the persisted record intentionally stays untouched for a later
+    /// retry — and the same `Arc<Session>` (its sync loop already aborted,
+    /// so no further repersist risk) goes back in here rather than being
+    /// permanently dropped from `SessionStore` on a merely transient
+    /// revocation failure. [`Self::insert`] takes a bare `Session`, not an
+    /// `Arc`, because every other caller constructs a fresh one; this is
+    /// the one caller putting an existing `Arc` back.
+    pub(crate) async fn reinsert(&self, token: String, session: Arc<Session>) {
+        self.inner.write().await.insert(token, session);
+    }
+
     /// Stable snapshot of the currently-live sessions for graceful process
     /// shutdown. Cloning the `Arc`s releases the map lock before any crypto
     /// snapshot I/O begins, so shutdown cannot hold up request handlers on a
