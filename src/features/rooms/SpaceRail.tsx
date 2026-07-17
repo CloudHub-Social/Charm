@@ -25,6 +25,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
@@ -58,6 +59,7 @@ export function SpaceRail({
   onSelectSpace,
   onCreateJoin,
 }: SpaceRailProps) {
+  const managementEnabled = useFlag("space_rail_management");
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [prefs, setPrefs] = useSpaceRailPrefsSync();
   const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
@@ -102,8 +104,17 @@ export function SpaceRail({
         directRooms: rooms.filter((room) => room.is_direct),
       };
     }, [rooms]);
-  const unpinnedIds = useMemo(() => new Set(prefs.unpinned), [prefs.unpinned]);
+  // Behind the `space_rail_management` flag: with it off, every top-level
+  // space stays pinned in its natural (room-list) order, matching this
+  // component's pre-Spec-63 behavior exactly — `prefs` never influences
+  // rendering, and the sync effects in `useSpaceRailPrefsSync` become inert
+  // reads/writes of a value nothing displays.
+  const unpinnedIds = useMemo(
+    () => (managementEnabled ? new Set(prefs.unpinned) : new Set<string>()),
+    [managementEnabled, prefs.unpinned],
+  );
   const pinnedTopLevelSpaces = useMemo(() => {
+    if (!managementEnabled) return topLevelSpaces;
     const pinned = topLevelSpaces.filter((space) => !unpinnedIds.has(space.room_id));
     const order = orderSpaceIds(
       pinned.map((space) => space.room_id),
@@ -113,10 +124,11 @@ export function SpaceRail({
     return order
       .map((id) => byId.get(id))
       .filter((space): space is RoomSummary => space !== undefined);
-  }, [topLevelSpaces, unpinnedIds, prefs.order]);
+  }, [managementEnabled, topLevelSpaces, unpinnedIds, prefs.order]);
   const unpinnedTopLevelSpaces = useMemo(
-    () => topLevelSpaces.filter((space) => unpinnedIds.has(space.room_id)),
-    [topLevelSpaces, unpinnedIds],
+    () =>
+      managementEnabled ? topLevelSpaces.filter((space) => unpinnedIds.has(space.room_id)) : [],
+    [managementEnabled, topLevelSpaces, unpinnedIds],
   );
 
   function setPinned(spaceId: string, pinned: boolean) {
@@ -192,110 +204,113 @@ export function SpaceRail({
     const pinnedIndex = topLevel
       ? pinnedTopLevelSpaces.findIndex((s) => s.room_id === space.room_id)
       : -1;
+    const entryTrigger = (
+      <div className="relative flex h-11 w-14 items-center justify-center">
+        {visibleChildren.length > 0 && (
+          <button
+            type="button"
+            aria-label={`${folderOpen ? "Collapse" : "Expand"} ${label}`}
+            className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))}
+          >
+            <ChevronDown
+              aria-hidden="true"
+              className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
+            />
+          </button>
+        )}
+        <SpaceButton
+          space={space}
+          active={activeMode === "space" && activeSpaceId === space.room_id}
+          unread={counts.unread}
+          highlight={counts.highlight}
+          onClick={() => onSelectSpace(space.room_id)}
+        />
+      </div>
+    );
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
-        <ContextMenu>
-          <ContextMenuTrigger asChild>
-            <div className="relative flex h-11 w-14 items-center justify-center">
-              {visibleChildren.length > 0 && (
-                <button
-                  type="button"
-                  aria-label={`${folderOpen ? "Collapse" : "Expand"} ${label}`}
-                  className="absolute left-0 flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                  onClick={() =>
-                    setOpenFolders((prev) => ({ ...prev, [space.room_id]: !folderOpen }))
-                  }
-                >
-                  <ChevronDown
-                    aria-hidden="true"
-                    className={cn("size-3 transition-transform", !folderOpen && "-rotate-90")}
-                  />
-                </button>
+        {managementEnabled ? (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>{entryTrigger}</ContextMenuTrigger>
+            <ContextMenuContent>
+              <ContextMenuItem onSelect={() => onSelectSpace(space.room_id)}>
+                <LogIn aria-hidden="true" />
+                Open lobby
+              </ContextMenuItem>
+              <ContextMenuItem
+                onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
+              >
+                <UserPlus aria-hidden="true" />
+                Invite
+              </ContextMenuItem>
+              {topLevel && (
+                <>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem onSelect={() => setPinned(space.room_id, !pinned)}>
+                    {pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                    {pinned ? "Unpin from sidebar" : "Pin to sidebar"}
+                  </ContextMenuItem>
+                  {pinned && (
+                    <>
+                      <ContextMenuItem
+                        disabled={pinnedIndex <= 0}
+                        onSelect={() => moveSpace(space.room_id, "up")}
+                      >
+                        Move up
+                      </ContextMenuItem>
+                      <ContextMenuItem
+                        disabled={
+                          pinnedIndex === -1 || pinnedIndex >= pinnedTopLevelSpaces.length - 1
+                        }
+                        onSelect={() => moveSpace(space.room_id, "down")}
+                      >
+                        Move down
+                      </ContextMenuItem>
+                    </>
+                  )}
+                </>
               )}
-              <SpaceButton
-                space={space}
-                active={activeMode === "space" && activeSpaceId === space.room_id}
-                unread={counts.unread}
-                highlight={counts.highlight}
-                onClick={() => onSelectSpace(space.room_id)}
-              />
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent>
-            <ContextMenuItem onSelect={() => onSelectSpace(space.room_id)}>
-              <LogIn aria-hidden="true" />
-              Open lobby
-            </ContextMenuItem>
-            <ContextMenuItem
-              onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
-            >
-              <UserPlus aria-hidden="true" />
-              Invite
-            </ContextMenuItem>
-            {topLevel && (
-              <>
-                <ContextMenuSeparator />
-                <ContextMenuItem onSelect={() => setPinned(space.room_id, !pinned)}>
-                  {pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
-                  {pinned ? "Unpin from sidebar" : "Pin to sidebar"}
-                </ContextMenuItem>
-                {pinned && (
-                  <>
-                    <ContextMenuItem
-                      disabled={pinnedIndex <= 0}
-                      onSelect={() => moveSpace(space.room_id, "up")}
-                    >
-                      Move up
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                      disabled={
-                        pinnedIndex === -1 || pinnedIndex >= pinnedTopLevelSpaces.length - 1
-                      }
-                      onSelect={() => moveSpace(space.room_id, "down")}
-                    >
-                      Move down
-                    </ContextMenuItem>
-                  </>
-                )}
-              </>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
-            >
-              <FolderPlus aria-hidden="true" />
-              Add existing…
-            </ContextMenuItem>
-            {parentId && (
-              <>
-                <ContextMenuItem
-                  onSelect={() => setSpaceChildSuggested(parentId, space.room_id, true)}
-                >
-                  <Star aria-hidden="true" />
-                  Mark as suggested
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onSelect={() => setSpaceChildSuggested(parentId, space.room_id, false)}
-                >
-                  <StarOff aria-hidden="true" />
-                  Unmark as suggested
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => removeSpaceChild(parentId, space.room_id)}>
-                  <DoorOpen aria-hidden="true" />
-                  Remove from space
-                </ContextMenuItem>
-              </>
-            )}
-            <ContextMenuSeparator />
-            <ContextMenuItem
-              variant="destructive"
-              onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
-            >
-              <LogOut aria-hidden="true" />
-              Leave
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
+              >
+                <FolderPlus aria-hidden="true" />
+                Add existing…
+              </ContextMenuItem>
+              {parentId && (
+                <>
+                  <ContextMenuItem
+                    onSelect={() => setSpaceChildSuggested(parentId, space.room_id, true)}
+                  >
+                    <Star aria-hidden="true" />
+                    Mark as suggested
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onSelect={() => setSpaceChildSuggested(parentId, space.room_id, false)}
+                  >
+                    <StarOff aria-hidden="true" />
+                    Unmark as suggested
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => removeSpaceChild(parentId, space.room_id)}>
+                    <DoorOpen aria-hidden="true" />
+                    Remove from space
+                  </ContextMenuItem>
+                </>
+              )}
+              <ContextMenuSeparator />
+              <ContextMenuItem
+                variant="destructive"
+                onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
+              >
+                <LogOut aria-hidden="true" />
+                Leave
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        ) : (
+          entryTrigger
+        )}
         {folderOpen && visibleChildren.length > 0 && (
           <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
             {visibleChildren.map((child) =>

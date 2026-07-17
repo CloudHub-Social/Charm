@@ -30,6 +30,13 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
   setAccountData: (...args: unknown[]) => setAccountData(...args),
 }));
 
+// `space_rail_management` defaults off; these tests exercise the feature
+// itself, so it's enabled here the same way `ChatShell.test.tsx` enables
+// its own flags. The one test that specifically checks the flagged-off
+// fallback (below) overrides this per-test.
+const mockUseFlag = vi.hoisted(() => vi.fn(() => true));
+vi.mock("@/featureFlags", () => ({ useFlag: () => mockUseFlag() }));
+
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {
   badgeState?: BadgeState;
 };
@@ -90,6 +97,7 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
 describe("SpaceRail", () => {
   beforeEach(() => {
     localStorage.clear();
+    mockUseFlag.mockReturnValue(true);
   });
 
   it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
@@ -454,5 +462,20 @@ describe("SpaceRail", () => {
       "!child-space:localhost",
       false,
     );
+  });
+
+  it("renders the plain pre-Spec-63 rail with no context menu when space_rail_management is off", () => {
+    mockUseFlag.mockReturnValue(false);
+    renderRail();
+
+    // Every top-level space (including one this fixture would otherwise
+    // treat as pinned-by-default) renders in its natural order, with no
+    // pin/unpin divider and no right-click affordance.
+    expect(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Loose child" })).toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem")).not.toBeInTheDocument();
   });
 });

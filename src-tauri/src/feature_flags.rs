@@ -121,6 +121,10 @@ define_feature_flag_keys!(
         /// Spec 54 room-list last-message preview: a compact sender + text
         /// snippet rendered under the room name in each row.
         RoomListMessagePreview,
+        /// Spec 63 sidebar and space management: pin/unpin and reorder rail
+        /// entries, and the per-space context menu (Invite, Add Existing,
+        /// Mark/Unmark Suggested, Remove, Leave).
+        SpaceRailManagement,
     }
 );
 
@@ -140,6 +144,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessageActionParity => false,
             FeatureFlagKey::MediaSendPolish => false,
             FeatureFlagKey::RoomListMessagePreview => false,
+            FeatureFlagKey::SpaceRailManagement => false,
         }
     }
 
@@ -180,6 +185,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => {
                 "Show a compact last-message preview with sender label under each room-list row."
             }
+            FeatureFlagKey::SpaceRailManagement => {
+                "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave)."
+            }
         }
     }
 
@@ -200,6 +208,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => {
                 "Spec 54 (room-list enrichment and filtering)"
             }
+            FeatureFlagKey::SpaceRailManagement => "Spec 63 (sidebar and space management)",
         }
     }
 
@@ -218,6 +227,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessageActionParity => "message_action_parity",
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
+            FeatureFlagKey::SpaceRailManagement => "space_rail_management",
         }
     }
 }
