@@ -91,9 +91,7 @@ describe("SavedMessagesPanel", () => {
     // `ChatShell`'s message action menu in sync), which refetches via
     // `listBookmarks`; the second resolved value below stands in for the
     // real `list_bookmarks` round-trip now reflecting the removal.
-    listBookmarks
-      .mockResolvedValueOnce([makeBookmark({ event_id: "$a" })])
-      .mockResolvedValue([]);
+    listBookmarks.mockResolvedValueOnce([makeBookmark({ event_id: "$a" })]).mockResolvedValue([]);
     renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
 
     await screen.findByText("hello there");
