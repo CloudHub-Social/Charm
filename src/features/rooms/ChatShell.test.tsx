@@ -655,6 +655,36 @@ describe("ChatShell", () => {
     );
   });
 
+  it("shows a Jump to Present pill after a focused bookmark jump even with no new messages counted (Codex review fix)", async () => {
+    // A focused (`TimelineFocus::Event`) view from a Saved Messages jump
+    // never receives live updates, so `newMessageCount` (which only counts
+    // messages arriving via `timeline:update`) stays 0 forever after such a
+    // jump — the pill must still appear (with generic copy, since there's
+    // no count to show) so the user has an in-room way to reset back to
+    // live, rather than needing to leave and reopen the room.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+  });
+
   it("discards a stale resetToLive response if the user switches rooms before it resolves (Codex review fix)", async () => {
     // Room A's Jump to Present triggers resetToLive (a jump used
     // loadTimelineAroundEvent earlier), but its getTimelinePage response

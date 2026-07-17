@@ -270,6 +270,7 @@ export function ChatShell({
     // specifically about *this* room possibly still being focused from an
     // earlier jump, which doesn't carry over to a different room id.
     mightHaveFocusedViewRef.current = false;
+    setHasFocusedView(false);
     if (fileDragLeaveTimerRef.current !== null) {
       clearTimeout(fileDragLeaveTimerRef.current);
       fileDragLeaveTimerRef.current = null;
@@ -367,6 +368,14 @@ export function ChatShell({
   // exactly that case. Reset to 0 once the user is back at bottom, whether
   // by scrolling there themselves or by clicking the pill.
   const [newMessageCount, setNewMessageCount] = useState(0);
+  // Review fix: mirrors `mightHaveFocusedViewRef` as render-visible state.
+  // The ref alone can't drive the "Jump to Present" pill's visibility below
+  // — a focused (`TimelineFocus::Event`) view never receives live updates,
+  // so `newMessageCount` stays 0 after such a jump and the pill (gated on
+  // `!atBottom && newMessageCount > 0`) would never appear, leaving the
+  // user with no in-room way to reset back to live short of leaving and
+  // reopening the room.
+  const [hasFocusedView, setHasFocusedView] = useState(false);
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
     handleAtBottomStateChange(bottom);
     setAtBottom(bottom);
@@ -394,6 +403,7 @@ export function ChatShell({
     // arrives, click the pill" case.
     if (mightHaveFocusedViewRef.current) {
       mightHaveFocusedViewRef.current = false;
+      setHasFocusedView(false);
       resetToLive().catch(logAndIgnore);
     }
     // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
@@ -585,6 +595,7 @@ export function ChatShell({
         if (loadRequestedForRef.current !== requestKey) return;
         if (installed_focused_view) {
           mightHaveFocusedViewRef.current = true;
+          setHasFocusedView(true);
         }
         // A `false` result means the event isn't reachable at all (further
         // back than the pagination cap, or no longer in this room's
@@ -1248,17 +1259,25 @@ export function ChatShell({
             }}
           />
         )}
-        {/* "Jump to present" (Spec 26 Phase 2): shown only while scrolled away
-            from the live bottom and at least one new (non-own) message has
-            arrived since — never while already at bottom, the Charm 1.0 #328
-            failure mode this migration is meant to avoid. */}
-        {!atBottom && newMessageCount > 0 && (
+        {/* "Jump to present" (Spec 26 Phase 2): shown while scrolled away
+            from the live bottom with at least one new (non-own) message
+            arrived since — never while already at bottom, the Charm 1.0
+            #328 failure mode this migration is meant to avoid.
+            Review fix: also shown whenever `hasFocusedView` is set,
+            regardless of `newMessageCount` — a focused (`TimelineFocus::Event`)
+            view from a Saved Messages jump never receives live updates, so
+            `newMessageCount` would otherwise stay 0 forever after such a
+            jump, leaving the user with no in-room way to reset back to
+            live short of leaving and reopening the room. */}
+        {(hasFocusedView || (!atBottom && newMessageCount > 0)) && (
           <button
             type="button"
             onClick={handleJumpToPresent}
             className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-primary-solid px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md hover:opacity-90"
           >
-            {newMessageCount} new message{newMessageCount === 1 ? "" : "s"}
+            {newMessageCount > 0
+              ? `${newMessageCount} new message${newMessageCount === 1 ? "" : "s"}`
+              : "Jump to present"}
             <ChevronDown className="size-3.5" />
           </button>
         )}
