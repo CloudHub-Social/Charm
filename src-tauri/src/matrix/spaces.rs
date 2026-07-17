@@ -405,6 +405,9 @@ pub async fn add_existing_space_child_impl(
     child_room_id: &str,
 ) -> Result<(), String> {
     let space = require_room(client, space_id)?;
+    if !space.is_space() {
+        return Err(format!("{space_id} is not a space"));
+    }
     let parsed_child_id = RoomId::parse(child_room_id).map_err(|e| e.to_string())?;
     if child_room_id == space_id {
         return Err(format!("{space_id} cannot be a child of itself"));
@@ -922,6 +925,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_existing_space_child_impl_sends_via_for_the_signed_in_users_server() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
         let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
         let server = MatrixMockServer::new().await;
@@ -931,7 +937,17 @@ mod tests {
         let client = server.client_builder().build().await;
 
         server.mock_room_state_encryption().plain().mount().await;
-        server.sync_joined_room(&client, space_id).await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
         server.sync_joined_room(&client, child_id).await;
 
         wiremock::Mock::given(wiremock::matchers::method("PUT"))
@@ -959,13 +975,26 @@ mod tests {
 
     #[tokio::test]
     async fn add_existing_space_child_impl_rejects_a_room_that_has_not_been_joined() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
         let uninvolved_id = matrix_sdk::ruma::room_id!("!unjoined:example.org");
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
 
         server.mock_room_state_encryption().plain().mount().await;
-        server.sync_joined_room(&client, space_id).await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
         // `uninvolved_id` is never synced at all — the client has no local
         // knowledge of it, matching a pending invite it hasn't accepted.
 
@@ -978,13 +1007,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_target_that_is_not_a_space() {
+        let not_a_space_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // A plain (non-space) joined room — no `m.room.create` `room_type`.
+        server.sync_joined_room(&client, not_a_space_id).await;
+        server.sync_joined_room(&client, child_id).await;
+
+        let result =
+            add_existing_space_child_impl(&client, not_a_space_id.as_str(), child_id.as_str())
+                .await;
+        assert!(
+            result.is_err(),
+            "expected adding a child under a non-space room to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn add_existing_space_child_impl_rejects_adding_a_space_as_its_own_child() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
         let server = MatrixMockServer::new().await;
         let client = server.client_builder().build().await;
         let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
 
         server.mock_room_state_encryption().plain().mount().await;
-        server.sync_joined_room(&client, space_id).await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
 
         let result =
             add_existing_space_child_impl(&client, space_id.as_str(), space_id.as_str()).await;
@@ -1042,7 +1105,19 @@ mod tests {
         let client = server.client_builder().build().await;
 
         server.mock_room_state_encryption().plain().mount().await;
-        server.sync_joined_room(&client, child_id).await;
+        // `child_id` plays the space-parameter role in the call below (Root
+        // is being added as a child *of* Child), so it must be a space too.
+        let child_create_event = EventFactory::new()
+            .room(child_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(child_id).add_state_event(child_create_event),
+            )
+            .await;
 
         let factory = EventFactory::new().room(root_id).sender(&ALICE);
         let child_event = factory
