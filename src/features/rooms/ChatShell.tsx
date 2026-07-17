@@ -109,7 +109,20 @@ function hasDraggedFiles(dataTransfer: DataTransfer): boolean {
  * `setState` without triggering React's render-loop guard.
  */
 function useCanRedactMap(roomId: string, currentUserId: string, senders: readonly string[]) {
-  const [canRedactOthersInRoom, setCanRedactOthersInRoom] = useState(false);
+  // Tagged with the room it resolved *for*, not a plain boolean — derived
+  // against the current `roomId` at render time below, rather than reset by
+  // a passive effect. An effect-based reset (`setCanRedactOthersInRoom(false)`
+  // on room change) doesn't run until *after* the new room's first paint, so
+  // that first render would still see the *previous* room's resolved value:
+  // a room where redact was allowed, immediately followed by one where it
+  // isn't, could briefly show (and let the user submit) a Delete action the
+  // server then rejects (Codex review on #287, P3).
+  const [resolvedPermission, setResolvedPermission] = useState<{
+    roomId: string;
+    allowed: boolean;
+  } | null>(null);
+  const canRedactOthersInRoom =
+    resolvedPermission?.roomId === roomId ? resolvedPermission.allowed : false;
   // Tracks the room a `canRedactOthers` call was actually issued for, so its
   // resolution can be checked against whatever room is current by the time
   // it lands — without this, a slow response for a room the user has since
@@ -119,7 +132,6 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   requestedRoomIdRef.current = roomId;
 
   useEffect(() => {
-    setCanRedactOthersInRoom(false);
     // No room selected (ChatShell's empty state, before its `if (!room)`
     // early return further down) — `canRedactOthers("")` would fail on
     // both the Rust IPC path (`RoomId::parse("")`) and the web transport
@@ -133,7 +145,7 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
       canRedactOthers(roomId)
         .then((allowed) => {
           if (requestedRoomIdRef.current !== requestedForRoomId) return;
-          setCanRedactOthersInRoom(allowed);
+          setResolvedPermission({ roomId: requestedForRoomId, allowed });
         })
         .catch(logAndIgnore);
     };

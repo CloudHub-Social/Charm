@@ -3300,6 +3300,63 @@ describe("ChatShell", () => {
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
   });
 
+  it("does not carry an already-resolved room's redact permission into a newly entered room's first render", async () => {
+    // Room A's permission resolves *before* switching — unlike the previous
+    // test, there's no pending promise for a late response to leak from;
+    // this covers the room-scoped permission state itself briefly holding
+    // stale data during the new room's first render, before its own
+    // `useEffect` has a chance to run and re-fetch (Codex review on #287,
+    // P3).
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    let resolveRoomBCheck: ((allowed: boolean) => void) | undefined;
+    canRedactOthers.mockImplementationOnce(() => Promise.resolve(true)).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRoomBCheck = resolve;
+        }),
+    );
+    getTimelinePage
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "in room A" })],
+        next_cursor: null,
+      })
+      .mockResolvedValueOnce({
+        messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "in room B" })],
+        next_cursor: null,
+      });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room A");
+    // Room A's permission has fully resolved (allowed = true) before we
+    // switch rooms.
+    await vi.waitFor(() => expect(canRedactOthers).toHaveBeenCalledTimes(1));
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("in room B");
+
+    // Room B's own canRedactOthers call is still pending (captured by
+    // resolveRoomBCheck above, deliberately never resolved yet) — the
+    // Delete affordance must not appear based on room A's leftover `true`.
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+
+    resolveRoomBCheck?.(true);
+    await vi.waitFor(async () => expect(await screen.findByText("Delete")).toBeInTheDocument());
+  });
+
   it("refetches the redact permission when the room's details update", async () => {
     canRedactOthers.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     getTimelinePage.mockResolvedValueOnce({
