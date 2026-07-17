@@ -3,6 +3,7 @@
 //! the UI reads from (computed once here, in [`snapshot_rooms`] via
 //! [`has_unread`], never re-derived per-component — see Spec 06).
 
+use futures_util::StreamExt;
 use matrix_sdk::latest_events::LatestEventValue;
 use matrix_sdk::notification_settings::RoomNotificationMode;
 use matrix_sdk::room::Room;
@@ -488,8 +489,14 @@ pub async fn snapshot_rooms(
     // room's, so fan them all out concurrently instead of awaiting them one
     // room at a time — with a non-trivial room count, a sequential loop here
     // reran on every `/sync` response and was the single largest contributor
-    // to login/steady-state latency.
-    let snapshots = futures_util::future::join_all(rooms.into_iter().map(|room| {
+    // to login/steady-state latency. Concurrency is capped (rather than an
+    // unbounded `join_all`) because `resolve_room_identity` can trigger an
+    // avatar-thumbnail media fetch on a cache miss — for an account with
+    // hundreds of rooms and a cold media cache (e.g. first login on a new
+    // device), an unbounded fan-out would fire that many simultaneous
+    // requests at once (Codex review on #286, P2).
+    const SNAPSHOT_CONCURRENCY: usize = 16;
+    let snapshots = futures_util::stream::iter(rooms.into_iter().map(|room| {
         let parents = &parents;
         async move {
             let membership = match room.state() {
@@ -588,6 +595,8 @@ pub async fn snapshot_rooms(
             ))
         }
     }))
+    .buffer_unordered(SNAPSHOT_CONCURRENCY)
+    .collect::<Vec<_>>()
     .await;
 
     // Rooms actually registered with `LatestEvents` this pass — anything

@@ -28,7 +28,7 @@
 //! shape (`contexts.flags.values = [{ flag, result }]`).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -266,14 +266,23 @@ pub fn read_overrides(app_data_dir: &Path) -> BTreeMap<String, bool> {
 
 type FlagState = (BTreeMap<String, bool>, BTreeMap<String, bool>);
 
-/// Cache for [`read_state`], keyed by the store file's last-modified time so a
-/// Labs override or remote refresh (which rewrites the file) is picked up on
-/// the next read without a restart. Needed because `flag()`/`evaluate()` are
-/// now called on every sync-loop iteration (room-list + invite gating) and
-/// every `list_rooms` IPC call, not just at occasional branch points as the
-/// module originally assumed — an uncached `read_to_string` + JSON parse on
-/// that path added synchronous disk I/O to every `/sync` response.
-static STATE_CACHE: Mutex<Option<(std::time::SystemTime, FlagState)>> = Mutex::new(None);
+/// Cache for [`read_state`], keyed by the store file's *identity* — its path
+/// plus last-modified time and size, not modified time alone (Codex review
+/// on #286, P2). A bare `SystemTime` key is process-global but the
+/// timestamp itself can collide across two distinct callers: multiple
+/// accounts' app-data dirs each with their own store file, or (concretely
+/// hit in this module's own unit tests) multiple temp app-data dirs created
+/// in the same instant — on a filesystem with coarse mtime granularity, a
+/// Labs override rewritten quickly enough could land on the *same* mtime as
+/// the read it's meant to invalidate, both leaving Rust to keep serving a
+/// stale parse from an unrelated file until a later mtime change or restart,
+/// and (the test scenario) letting one temp dir's cached state leak into
+/// another's. Size is included alongside the path+mtime pair as a cheap
+/// extra check (already available from the same `metadata()` call) against
+/// a same-second rewrite that happens to keep the mtime's coarse value but
+/// changes the file's length.
+static STATE_CACHE: Mutex<Option<(PathBuf, std::time::SystemTime, u64, FlagState)>> =
+    Mutex::new(None);
 
 /// Reads both the local overrides and the remote (OFREP) cache from the file in
 /// a single parse. Tolerant of a missing/corrupt file (returns empties) and of
@@ -287,10 +296,11 @@ pub fn read_state(app_data_dir: &Path) -> FlagState {
     let Ok(modified) = metadata.modified() else {
         return read_state_uncached(&path);
     };
+    let size = metadata.len();
 
     if let Ok(cache) = STATE_CACHE.lock() {
-        if let Some((cached_modified, state)) = cache.as_ref() {
-            if *cached_modified == modified {
+        if let Some((cached_path, cached_modified, cached_size, state)) = cache.as_ref() {
+            if *cached_path == path && *cached_modified == modified && *cached_size == size {
                 return state.clone();
             }
         }
@@ -298,7 +308,7 @@ pub fn read_state(app_data_dir: &Path) -> FlagState {
 
     let state = read_state_uncached(&path);
     if let Ok(mut cache) = STATE_CACHE.lock() {
-        *cache = Some((modified, state.clone()));
+        *cache = Some((path, modified, size, state.clone()));
     }
     state
 }
