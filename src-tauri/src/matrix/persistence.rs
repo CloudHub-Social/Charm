@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use matrix_sdk::authentication::matrix::MatrixSession;
@@ -162,8 +163,139 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
 
+static STARTUP_SWEEP_READY: std::sync::OnceLock<(
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+)> = std::sync::OnceLock::new();
+
+fn startup_sweep_channel() -> &'static (
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+) {
+    STARTUP_SWEEP_READY.get_or_init(|| tokio::sync::watch::channel(false))
+}
+
+/// Called once by `lib.rs`'s `.setup()` after the background
+/// `sweep_orphan_temp_stores` task finishes (success or failure — a failed
+/// sweep still shouldn't leave startup restore waiting forever). See
+/// [`wait_for_startup_sweep`].
+pub fn mark_startup_sweep_complete() {
+    let _ = startup_sweep_channel().0.send(true);
+}
+
+/// `try_restore_session` awaits this before iterating `known_account_keys`
+/// (Codex review on #288, P1): that sweep is also what recovers a
+/// [`STALE_BACKUP_SUFFIX`] directory left by a crash mid-relocation, and
+/// `known_account_keys` skips such directories entirely — if restore ran
+/// first, it would see no store at all for that account and skip it, even
+/// though the account has a perfectly recoverable session. Bounded so a
+/// sweep that panics or never runs (there's no other caller of
+/// `mark_startup_sweep_complete`) can't hang startup restore forever; a
+/// timeout is logged and restore proceeds with whatever's on disk, same as
+/// before this coordination existed.
+pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
+    let mut rx = startup_sweep_channel().1.clone();
+    if *rx.borrow_and_update() {
+        return;
+    }
+    if tokio::time::timeout(timeout, rx.changed()).await.is_err() {
+        eprintln!("timed out waiting for startup orphan-temp-store sweep before restoring session");
+    }
+}
+
+/// A `tmp-*` directory younger than this is never swept, regardless of how
+/// long the sweep itself has been running (Codex review on #288, P1). This
+/// sweep now runs as a spawned background task rather than blocking window
+/// creation (see its call site in `lib.rs`'s `.setup()`), so it can still be
+/// mid-`read_dir` when a login/register/SSO/QR flow creates its own `tmp-*`
+/// store — the sweep has no way to distinguish "orphaned by a past crash"
+/// from "a login in progress right now" other than age. `login`/`register`
+/// additionally hold `restore_store_lock` for their whole duration as a
+/// second, redundant guard (belt-and-suspenders, and documents intent at
+/// those call sites), but SSO and QR login can't reasonably do the same —
+/// their temp store's lifetime spans a separate long-running task waiting on
+/// a browser redirect or QR scan, potentially minutes, and holding this lock
+/// for that whole window would block anything else that needs it for no
+/// benefit (the *first* of the two sweep passes `lib.rs`'s `.setup()` spawns
+/// — see its second, delayed pass at this same duration — runs in the first
+/// few seconds after launch). This grace period is the fix that actually
+/// covers all four flows uniformly: a store created moments ago is
+/// essentially always still in active use, however long its owning flow
+/// ultimately takes to finish — old enough to have survived from a
+/// *previous* session (which is the only thing this sweep is meant to
+/// clean up) reliably means older than this by a huge margin. 5 minutes is
+/// generous slack for a slow/busy launch (many stale directories, a loaded
+/// disk) while still being far shorter than any realistic previous-session
+/// gap.
+pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
+
 /// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
+    sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
+}
+
+/// Variant of [`sweep_orphan_temp_stores`] that never discards a `tmp-*`
+/// directory whose name appears in `protected`, regardless of age. Used by
+/// `lib.rs`'s delayed second sweep pass: that pass runs `ORPHAN_TEMP_STORE_
+/// MIN_AGE` after the first one, at which point age alone can no longer
+/// distinguish a genuine crash orphan from a *still-pending* SSO/QR login —
+/// unlike password login/register, those flows have no inherent time limit
+/// (waiting on a browser redirect or a QR scan), so one running long is
+/// completely ordinary, not evidence of anything stale (Codex review on
+/// #288, P2: the delayed pass reintroduced exactly the false-positive-
+/// delete risk the age check exists to prevent). `protected` should be
+/// gathered fresh, immediately before sweeping, from whatever the app
+/// currently considers "SSO/QR login in flight" — see its call site.
+pub fn sweep_orphan_temp_stores_excluding(
+    app: &AppHandle,
+    protected: &HashSet<String>,
+) -> Result<(), String> {
+    sweep_orphan_temp_stores_at_with_min_age(
+        &matrix_store_root(app)?,
+        ORPHAN_TEMP_STORE_MIN_AGE,
+        protected,
+    )
+}
+
+/// Core logic behind [`sweep_orphan_temp_stores_at`]/
+/// [`sweep_orphan_temp_stores_excluding`], taking the minimum age
+/// explicitly so tests can use a near-zero threshold instead of waiting on
+/// real wall-clock time. Thin wrapper over [`recover_stale_backups_at`] +
+/// [`discard_stale_temp_stores`] for callers that want both phases run
+/// back-to-back — see those functions' doc comments for why `lib.rs`'s
+/// first sweep pass calls them separately instead (Codex review on #288,
+/// P2).
+fn sweep_orphan_temp_stores_at_with_min_age(
+    root: &Path,
+    min_age: std::time::Duration,
+    protected: &HashSet<String>,
+) -> Result<(), String> {
+    let temp_store_entries = recover_stale_backups_at(root)?;
+    discard_stale_temp_stores(temp_store_entries, min_age, protected);
+    Ok(())
+}
+
+/// Recovers every [`STALE_BACKUP_SUFFIX`] directory under `root` and
+/// returns the `tmp-*` directories found in the same scan, deferred for the
+/// caller to discard separately via [`discard_stale_temp_stores`] — a
+/// single `read_dir` pass serves both phases; splitting them apart doesn't
+/// mean scanning twice.
+///
+/// Split out from the combined sweep so `lib.rs`'s first pass can signal
+/// `mark_startup_sweep_complete` right after this returns, instead of only
+/// after temp-store discards (each a directory removal plus a keychain
+/// credential delete, unboundedly many on an install with a lot of
+/// stranded state) finish too. `try_restore_session` only actually needs
+/// the backups this function recovers — see its own doc comment — so
+/// gating its bounded wait on the *slower*, unrelated discard phase just
+/// replaces one blocking window with another, even after moving the sweep
+/// out of `.setup()` (Codex review on #288, P2: "moving the sweep out of
+/// .setup() merely replaces a blocked window with a blank one" if discards
+/// still sit in front of the readiness signal).
+fn recover_stale_backups_at(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut temp_store_entries = Vec::new();
+    let mut stale_backup_entries = Vec::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let Ok(entry) = entry else { continue };
         let Ok(file_type) = entry.file_type() else {
@@ -176,12 +308,79 @@ pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
             continue;
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
-            discard_temp_store(&entry.path(), &name);
+            temp_store_entries.push((name, entry.path()));
         } else if let Some(account_key) = name.strip_suffix(STALE_BACKUP_SUFFIX) {
-            recover_or_discard_stale_backup(root, account_key, &name, &entry.path());
+            stale_backup_entries.push((account_key.to_string(), name, entry.path()));
         }
     }
-    Ok(())
+
+    for (account_key, name, path) in stale_backup_entries {
+        recover_or_discard_stale_backup(root, &account_key, &name, &path);
+    }
+
+    Ok(temp_store_entries)
+}
+
+/// Discards each `(name, path)` from [`recover_stale_backups_at`]'s
+/// deferred list whose age is at least `min_age` and whose name isn't in
+/// `protected` — the second, slower phase of the sweep, meant to run after
+/// readiness has already been signaled (see that function's doc comment).
+fn discard_stale_temp_stores(
+    temp_store_entries: Vec<(String, PathBuf)>,
+    min_age: std::time::Duration,
+    protected: &HashSet<String>,
+) {
+    let now = std::time::SystemTime::now();
+    for (name, path) in temp_store_entries {
+        if protected.contains(&name) {
+            continue;
+        }
+        // Best-effort, with two distinct failure modes handled
+        // differently:
+        // - mtime unreadable at all: err toward sweeping it, matching
+        //   the pre-existing behavior for every other failure mode in
+        //   this best-effort cleanup pass — an unreadable mtime is
+        //   itself unusual enough to suggest genuine filesystem trouble
+        //   rather than a live directory.
+        // - mtime reads as *later* than `now` (clock skew, or a write
+        //   landing between reading `now` and stat'ing this entry): err
+        //   toward treating it as fresh — `duration_since` returning
+        //   `Err` here means "younger than `now`, however you slice it,"
+        //   which is the one thing this check exists to protect against
+        //   sweeping.
+        let is_fresh = match std::fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+            Ok(modified) => match now.duration_since(modified) {
+                Ok(age) => age < min_age,
+                Err(_) => true,
+            },
+            Err(_) => false,
+        };
+        if is_fresh {
+            continue;
+        }
+        discard_temp_store(&path, &name);
+    }
+}
+
+/// `AppHandle`-based entry point for `lib.rs`'s first sweep pass: recovers
+/// stale backups and returns the deferred temp-store list for a later,
+/// separate call to [`DeferredTempStoreDiscards::discard`] — see
+/// [`recover_stale_backups_at`]'s doc comment for why these are split.
+pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscards, String> {
+    let root = matrix_store_root(app)?;
+    let entries = recover_stale_backups_at(&root)?;
+    Ok(DeferredTempStoreDiscards(entries))
+}
+
+/// Deferred temp-store discard list from [`recover_stale_backups`], to be
+/// resolved once the caller is done treating recovery as the
+/// readiness-gating part of the sweep.
+pub struct DeferredTempStoreDiscards(Vec<(String, PathBuf)>);
+
+impl DeferredTempStoreDiscards {
+    pub fn discard(self, protected: &HashSet<String>) {
+        discard_stale_temp_stores(self.0, ORPHAN_TEMP_STORE_MIN_AGE, protected);
+    }
 }
 
 fn discard_temp_store(path: &Path, temp_key: &str) {
@@ -220,7 +419,42 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
 /// data or the credential needed to read it), and blindly overwriting
 /// `backup_path` out from under it would destroy that before it was ever
 /// actually recovered.
+/// [`RELOCATE_LOCK`]-guarded wrapper for the sweep's own call site
+/// (`sweep_orphan_temp_stores_at_with_min_age`), which — unlike
+/// `relocate_store_at_locked_with`'s call to
+/// [`recover_or_discard_stale_backup_locked`] below — doesn't already hold
+/// the lock itself (Codex review on #288, P2): this function and SSO/QR
+/// login completion's relocation both rename/delete the same `account_path`
+/// and backup path for a given account, and before this, only
+/// `relocate_store_and_save_*` serialized against *each other* — the
+/// background startup sweep held no lock at all, so it could run
+/// concurrently with an SSO/QR completion relocating the very same account
+/// (a race impossible before the sweep moved off the synchronous,
+/// pre-interactive `.setup()` path), corrupting whichever one lost.
+///
+/// A separate function from the actual implementation, not just "call it
+/// then lock" — see this pair's own `_locked` sibling, whose doc comment
+/// explains why: taking `RELOCATE_LOCK` a second time from inside a
+/// call site that already holds it (`relocate_store_at_locked_with`) would
+/// self-deadlock, since `std::sync::Mutex` isn't reentrant (Codex review on
+/// #288, P1 — a real regression in an earlier version of this same fix).
 fn recover_or_discard_stale_backup(
+    root: &Path,
+    account_key: &str,
+    backup_key: &str,
+    backup_path: &Path,
+) -> bool {
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    recover_or_discard_stale_backup_locked(root, account_key, backup_key, backup_path)
+}
+
+/// The actual implementation, assuming [`RELOCATE_LOCK`] is already held by
+/// the caller — see [`recover_or_discard_stale_backup`]'s doc comment for
+/// why this split exists. Called directly (without taking the lock again)
+/// by `relocate_store_at_locked_with`, which already holds it; wrapped by
+/// [`recover_or_discard_stale_backup`] for the sweep's call site, which
+/// doesn't.
+fn recover_or_discard_stale_backup_locked(
     root: &Path,
     account_key: &str,
     backup_key: &str,
@@ -669,7 +903,7 @@ fn relocate_store_at_locked_with(
     // attempt overwriting the still-unresolved leftover would destroy it
     // for good.
     if backup_path.exists()
-        && !recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path)
+        && !recover_or_discard_stale_backup_locked(root, account_key, &backup_key, &backup_path)
     {
         // Safe: this attempt hasn't touched `account_path` at all yet.
         return Err(RelocationFailure::safe(format!(
@@ -1411,7 +1645,12 @@ mod tests {
         std::fs::create_dir_all(&backup_path).unwrap();
         let _ = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         assert!(!temp_path.exists());
         assert!(!backup_path.exists());
@@ -1431,6 +1670,75 @@ mod tests {
     }
 
     #[test]
+    fn sweep_orphan_temp_stores_skips_a_temp_dir_younger_than_the_min_age() {
+        // Codex review on #288, P1: a `tmp-*` directory created moments ago
+        // is almost certainly a login/register/SSO/QR flow still in
+        // progress, not something orphaned by a past crash — sweeping it
+        // anyway raced exactly this scenario for SSO/QR, whose temp store
+        // outlives a separate long-running task this sweep has no way to
+        // see. A generous min_age (real-world: `ORPHAN_TEMP_STORE_MIN_AGE`)
+        // protects any freshly-created store regardless of which flow made
+        // it or how long that flow ultimately takes to finish.
+        let root = ScratchRoot::new("sweep-fresh");
+        let temp_key = temp_store_key();
+        let temp_path = store_path_at(&root.0, &temp_key).unwrap();
+        let _ = get_or_create_passphrase(&temp_key).unwrap();
+
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::from_secs(300),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        assert!(
+            temp_path.exists(),
+            "a freshly-created temp store must survive the sweep"
+        );
+        let temp_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
+        assert!(
+            temp_entry.get_password().is_ok(),
+            "its passphrase must survive the sweep too"
+        );
+    }
+
+    #[test]
+    fn sweep_orphan_temp_stores_never_discards_a_protected_key_even_past_the_min_age() {
+        // Codex review on #288, P2: lib.rs's delayed second sweep pass runs
+        // `ORPHAN_TEMP_STORE_MIN_AGE` after the first, at which point age
+        // alone can no longer distinguish a genuine crash orphan from a
+        // still-pending SSO/QR login — those flows have no inherent time
+        // limit, so one running long by then is completely ordinary. A
+        // `min_age` of zero here stands in for that: even a directory that's
+        // definitely old enough to sweep by age must still survive if its
+        // name is in `protected`.
+        let root = ScratchRoot::new("sweep-protected");
+        let temp_key = temp_store_key();
+        let temp_path = store_path_at(&root.0, &temp_key).unwrap();
+        let _ = get_or_create_passphrase(&temp_key).unwrap();
+
+        let mut protected = HashSet::new();
+        protected.insert(temp_key.clone());
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO, &protected)
+            .unwrap();
+
+        assert!(
+            temp_path.exists(),
+            "a protected temp store must survive the sweep regardless of age"
+        );
+        let temp_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
+        assert!(
+            temp_entry.get_password().is_ok(),
+            "its passphrase must survive the sweep too"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_path);
+        let _ = temp_entry.delete_credential();
+    }
+
+    #[test]
     fn sweep_orphan_temp_stores_restores_uncommitted_stale_backup() {
         let root = ScratchRoot::new("sweep-restore");
         let account_key = account_key("@charm-persistence-test-sweep-restore:localhost");
@@ -1447,7 +1755,12 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         // The backup is restored to the account's path, not discarded.
         assert!(!backup_path.exists());
@@ -1490,7 +1803,12 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at(&root.0).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         // The uncommitted store is discarded; the backup takes its place.
         assert!(!backup_path.exists());

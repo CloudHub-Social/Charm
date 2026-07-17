@@ -399,6 +399,29 @@ export function sendReply(roomId: string, inReplyToEventId: string, body: string
   return invoke("send_reply", { roomId, inReplyToEventId, body });
 }
 
+/**
+ * Retries a failed message send in place via the send queue's own retry
+ * primitive (`SendHandle::unwedge`), rather than re-composing and sending
+ * new content. `transactionId` is the failed local echo's
+ * `RoomMessageSummary.transaction_id` (present while `send_state.state` is
+ * `"error"`).
+ */
+export function resendMessage(roomId: string, transactionId: string): Promise<void> {
+  return invoke("resend_message", { roomId, transactionId });
+}
+
+/**
+ * Discards a failed message send by cancelling its local echo via the send
+ * queue (`SendHandle::abort`) — there's nothing to redact since a failed
+ * send was never accepted by the homeserver. Resolves `true` if the local
+ * echo was actually removed, `false` if it was already gone (e.g. a
+ * previous call already discarded it, or it succeeded in the meantime) —
+ * either way the message should no longer show as failed.
+ */
+export function discardFailedMessage(roomId: string, transactionId: string): Promise<boolean> {
+  return invoke("discard_failed_message", { roomId, transactionId });
+}
+
 // captureOnError: false — UIA-gated. useUiaRetry treats both the initial
 // UiaChallenge (already filtered) and any subsequent `Other` failure (wrong
 // password on retry, or a real backend error the Rust side can't further

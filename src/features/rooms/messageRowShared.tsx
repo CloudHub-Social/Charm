@@ -52,6 +52,10 @@ export interface MessageRowLayoutProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /** Retries a failed send in place via the send queue. Only meaningful (and rendered) when `isError` is set. */
+  onResend: () => void;
+  /** Discards a failed send's local echo. Only meaningful (and rendered) when `isError` is set. */
+  onDiscard: () => void;
   /** Scrolls the timeline to a given loaded message by event id — used by the
    * reply-preview "jump to the replied-to message" click. Routed through the
    * Virtuoso instance (not a plain `document.getElementById(...)`

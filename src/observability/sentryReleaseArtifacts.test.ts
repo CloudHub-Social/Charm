@@ -67,7 +67,7 @@ describe("Sentry release artifact workflow", () => {
     expect(workflow).toContain("pnpm build");
     expect(workflow).toContain("find dist -name '*.map' -print -quit");
     expect(workflow).toContain("Sentry sourcemap upload left .map files in dist");
-    expect(viteConfig).toContain("build: { sourcemap: sentryEnabled }");
+    expect(viteConfig).toContain("sourcemap: sentryEnabled");
     expect(viteConfig).toContain("sentryVitePlugin");
     expect(viteConfig).toContain(
       "release: { name: procEnv.SENTRY_RELEASE || procEnv.npm_package_version }",

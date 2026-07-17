@@ -57,6 +57,8 @@ const sendReply = vi.fn().mockResolvedValue("txn-1");
 const editMessage = vi.fn().mockResolvedValue(undefined);
 const redactEvent = vi.fn().mockResolvedValue(undefined);
 const toggleReaction = vi.fn<(...args: unknown[]) => Promise<ReactionToggleResult>>();
+const resendMessage = vi.fn().mockResolvedValue(undefined);
+const discardFailedMessage = vi.fn().mockResolvedValue(true);
 const canRedactOthers = vi.fn().mockResolvedValue(true);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
@@ -175,6 +177,8 @@ vi.mock("@/lib/matrix", () => ({
   editMessage: (...args: unknown[]) => editMessage(...args),
   redactEvent: (...args: unknown[]) => redactEvent(...args),
   toggleReaction: (...args: unknown[]) => toggleReaction(...args),
+  resendMessage: (...args: unknown[]) => resendMessage(...args),
+  discardFailedMessage: (...args: unknown[]) => discardFailedMessage(...args),
   canRedactOthers: (...args: unknown[]) => canRedactOthers(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
@@ -330,6 +334,8 @@ describe("ChatShell", () => {
     sendReply.mockReset().mockResolvedValue("txn-1");
     redactEvent.mockReset().mockResolvedValue(undefined);
     toggleReaction.mockReset();
+    resendMessage.mockReset().mockResolvedValue(undefined);
+    discardFailedMessage.mockReset().mockResolvedValue(true);
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
     sendAttachment.mockReset().mockResolvedValue(undefined);
@@ -2917,6 +2923,105 @@ describe("ChatShell", () => {
       expect(clipboardWriteText).toHaveBeenCalledWith(
         "https://matrix.to/#/%21room%3Alocalhost/%24event%3Alocalhost?via=localhost",
       ),
+    );
+  });
+
+  it("shows Resend and Discard, not Delete, for a failed send", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    await screen.findByText(/failed to send/);
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    expect(await screen.findByText("Resend")).toBeInTheDocument();
+    expect(screen.getByText("Discard")).toBeInTheDocument();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("does not show Resend or Discard for a normally-sent message", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$sent:localhost", sender: "@me:localhost", body: "hi" })],
+      next_cursor: null,
+    });
+    renderChatShell();
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+
+    expect(await screen.findByText("Delete")).toBeInTheDocument();
+    expect(screen.queryByText("Resend")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discard")).not.toBeInTheDocument();
+  });
+
+  it("calls resendMessage with the failed local echo's transaction id when Resend is selected", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), makeRoomSummary({ room_id: "!room:localhost" }));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Resend"));
+
+    await waitFor(() =>
+      expect(resendMessage).toHaveBeenCalledWith("!room:localhost", "txn-failed"),
+    );
+  });
+
+  it("calls discardFailedMessage with the failed local echo's transaction id when Discard is selected", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({
+          event_id: "txn-failed",
+          sender: "@me:localhost",
+          body: "oops",
+          transaction_id: "txn-failed",
+          send_state: { state: "error", message: "network down" },
+        }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell(createStore(), makeRoomSummary({ room_id: "!room:localhost" }));
+
+    fireEvent.pointerDown(await screen.findByRole("button", { name: "More actions" }), {
+      button: 0,
+      ctrlKey: false,
+      pointerType: "mouse",
+    });
+    fireEvent.click(await screen.findByText("Discard"));
+
+    await waitFor(() =>
+      expect(discardFailedMessage).toHaveBeenCalledWith("!room:localhost", "txn-failed"),
     );
   });
 

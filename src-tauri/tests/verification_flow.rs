@@ -24,10 +24,17 @@ use tokio::time::{sleep, timeout};
 // propagation against the real Synapse container in this job occasionally
 // missed the old timeout even on unrelated `main` runs (e.g. CI run
 // 29049663045, job 86226974720 — same panic, same line, unrelated to
-// whatever else that run touched). 30s gives real propagation headroom
-// without masking an actual regression — the assertions themselves are
-// unchanged.
-const POLL_TIMEOUT: Duration = Duration::from_secs(30);
+// whatever else that run touched). 30s still wasn't consistently enough
+// (e.g. CI run 29527465726, job 87719483042 — same panic, same
+// "device A received the verification request within timeout" line,
+// again on an unrelated PR): matrix-sdk's own periodic key-query cycle
+// (not a synchronous call this test can force) is what actually resolves
+// a newly-logged-in device's identity to the other client, and that
+// cycle's timing is entirely up to the shared CI runner's network/CPU
+// load, not anything this test controls. 60s gives real headroom for
+// that without masking an actual regression — the assertions themselves
+// are unchanged.
+const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[tokio::test]
 async fn sas_verification_completes_with_matching_emojis() {

@@ -26,7 +26,29 @@ if (sentryUploadRequested && !sentryUploadConfigured) {
 export default defineConfig(async () => ({
   // Emit source maps only when Sentry will upload them; the plugin deletes the emitted
   // `.map` files after upload so they're never shipped to users.
-  build: { sourcemap: sentryEnabled },
+  build: {
+    sourcemap: sentryEnabled,
+    rollupOptions: {
+      output: {
+        // Without this, Rollup's default chunking still splits off
+        // `katex`/`highlight.js` (already behind dynamic `import()` in
+        // RichMessageContent.tsx) but leaves everything else — including
+        // the full TipTap editor graph, eagerly imported by Composer.tsx
+        // and therefore reachable from the base app-shell chunk on every
+        // session — bundled together with no vendor separation, so an
+        // unrelated app-shell change invalidates the browser cache for
+        // TipTap too, and vice versa. Splitting large, independently-
+        // versioned dependency graphs into their own chunks lets the
+        // browser cache each independently across deploys.
+        manualChunks(id: string) {
+          if (id.includes("node_modules/@tiptap/") || id.includes("node_modules/prosemirror")) {
+            return "tiptap";
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     tailwindcss(),
