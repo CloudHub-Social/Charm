@@ -418,9 +418,18 @@ pub async fn add_existing_space_child_impl(
     // publish) to every member of `space_id`. Checked here too, not just in
     // the frontend picker's own filter, since this command is reachable
     // directly over IPC.
-    match client.get_room(&parsed_child_id).map(|room| room.state()) {
-        Some(matrix_sdk::RoomState::Joined) => {}
+    let child_room = match client.get_room(&parsed_child_id) {
+        Some(room) if room.state() == matrix_sdk::RoomState::Joined => room,
         _ => return Err(format!("{child_room_id} has not been joined")),
+    };
+    // Mirrors `AddExistingToSpaceDialog`'s own candidate filter — checked
+    // here too, not just in the frontend picker, since this command is
+    // reachable directly over IPC. A DM's room id is otherwise exposed to
+    // every member of `space_id` once published as a child.
+    if child_room.is_direct().await.unwrap_or(false) {
+        return Err(format!(
+            "{child_room_id} is a direct message and cannot be added to a space"
+        ));
     }
     let parents_by_room = super::rooms::parent_space_ids(client).await;
     if let Some(existing_children) = parents_by_room.get(child_room_id) {
@@ -1016,6 +1025,49 @@ mod tests {
         assert!(
             result.is_err(),
             "expected a room the client hasn't joined to be rejected, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_existing_space_child_impl_rejects_a_direct_message_room() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let space_id = matrix_sdk::ruma::room_id!("!space:example.org");
+        let dm_id = matrix_sdk::ruma::room_id!("!dm:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let create_event = EventFactory::new()
+            .room(space_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(space_id).add_state_event(create_event),
+            )
+            .await;
+
+        server
+            .mock_sync()
+            .ok_and_run(&client, |builder| {
+                builder.add_joined_room(JoinedRoomBuilder::new(dm_id));
+                builder.add_global_account_data(
+                    EventFactory::new()
+                        .direct()
+                        .add_user((*ALICE).into(), dm_id),
+                );
+            })
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, space_id.as_str(), dm_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected a direct-message room to be rejected, got {result:?}"
         );
     }
 
