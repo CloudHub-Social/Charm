@@ -485,6 +485,13 @@ export function ChatShell({
   const loadRequestedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (!jumpToEventId || !room) return;
+    // Review fix: keyed by room *and* event, not event alone — if the user
+    // starts a jump in one room then manually switches away before it
+    // resolves, an event-id-only key would keep matching in every other
+    // room the user visits afterward (since `jumpToEventId` itself isn't
+    // cleared by a plain room switch), permanently blocking any new jump
+    // request until the original room is reopened.
+    const requestKey = `${room.room_id}:${jumpToEventId}`;
     const index = messages.findIndex((m) => m.event_id === jumpToEventId);
     if (index >= 0) {
       handleJumpToMessage(jumpToEventId);
@@ -504,24 +511,24 @@ export function ChatShell({
     // this very first page.
     const initialLoadSettled = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
     if (!initialLoadSettled) return;
-    if (loadRequestedForRef.current === jumpToEventId) return;
-    loadRequestedForRef.current = jumpToEventId;
+    if (loadRequestedForRef.current === requestKey) return;
+    loadRequestedForRef.current = requestKey;
     loadTimelineAroundEvent(room.room_id, jumpToEventId)
       .then((found) => {
         // Only act on this request if it's still the current one — cleared
         // (to `null`) the moment the already-loaded branch above fires for
-        // this same `jumpToEventId`, which can still happen before this
-        // promise resolves. Without this check, an already-handled jump
-        // could double-call `onJumpHandled` once this stale promise
-        // finally settles.
-        if (loadRequestedForRef.current !== jumpToEventId) return;
+        // this same jump, which can still happen before this promise
+        // resolves. Without this check, an already-handled jump could
+        // double-call `onJumpHandled` once this stale promise finally
+        // settles.
+        if (loadRequestedForRef.current !== requestKey) return;
         // A `false` result means the event isn't reachable at all (further
         // back than the pagination cap, or no longer in this room's
         // history) — nothing more to try, so give up rather than leaving
         // the caller's `jumpToEventId` set forever. Also reset the ref: left
-        // set to `jumpToEventId`, the dedup check above would permanently
-        // block a retry of the exact same jump (e.g. the caller re-sets the
-        // same `jumpToEventId` after the panel is reopened) even though this
+        // set to this key, the dedup check above would permanently block a
+        // retry of the exact same jump (e.g. the caller re-sets the same
+        // `jumpToEventId` after the panel is reopened) even though this
         // attempt is now finished.
         if (!found) {
           loadRequestedForRef.current = null;
@@ -537,9 +544,9 @@ export function ChatShell({
         // branch above — review fix: an earlier request's rejection must
         // not clear a *newer* jump the user has since started (e.g.
         // reopened Settings and picked a different bookmark while this one
-        // was still failing/pagination-erroring). Only the request whose id
-        // still matches this ref gets to reset it and notify the caller.
-        if (loadRequestedForRef.current === jumpToEventId) {
+        // was still failing/pagination-erroring). Only the request whose
+        // key still matches this ref gets to reset it and notify the caller.
+        if (loadRequestedForRef.current === requestKey) {
           // Also clear the caller's own jump target here (review fix) —
           // otherwise `RoomsScreen` keeps the stale `jumpToEventId` set,
           // and since mutating this ref alone doesn't trigger a re-render,

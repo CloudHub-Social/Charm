@@ -3259,6 +3259,46 @@ describe("ChatShell", () => {
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
+  it("retries a jump for the same event id after switching rooms mid-request (Codex review fix)", async () => {
+    // Review fix regression test: the in-flight dedupe ref used to key only
+    // on `jumpToEventId`, not room. If the user started a jump in room A
+    // and manually switched to room B before that request resolved (without
+    // the parent clearing `jumpToEventId`), the same event id landing in
+    // room B would be permanently blocked by room A's still-set key, and no
+    // new `loadTimelineAroundEvent` call would ever fire for room B.
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    let resolveRoomARequest: ((found: boolean) => void) | undefined;
+    loadTimelineAroundEvent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRoomARequest ??= resolve;
+        }),
+    );
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$shared-id" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$shared-id"),
+    );
+    loadTimelineAroundEvent.mockClear();
+
+    // Switch to room B without room A's request ever resolving.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" jumpToEventId="$shared-id" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(roomB.room_id, "$shared-id"),
+    );
+  });
+
   it("calls onJumpHandled when loadTimelineAroundEvent rejects, same as a not-found result", async () => {
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
     loadTimelineAroundEvent.mockRejectedValueOnce(new Error("network error"));

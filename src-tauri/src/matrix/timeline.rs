@@ -1048,11 +1048,21 @@ pub async fn load_timeline_around_event(
             return Ok(true);
         }
         if hit_start {
-            // Genuinely reached the start of the room's visible history
-            // without finding the event — no amount of further scanning
-            // (bounded or not) will locate it, so the event-focused
-            // fallback below would only fail too. Report not-found now.
-            return Ok(false);
+            // Review fix: this used to report not-found immediately here,
+            // reasoning that reaching the start of visible history means no
+            // further scanning could locate the event. That's only true if
+            // `timeline` is the room's live tail — but `get_or_create_timeline`
+            // above can just as well return a *cached, already-focused*
+            // `Timeline` left over from a previous `load_focused_event_timeline`
+            // call for a *different* event in this same room (`replace_timeline`
+            // swaps the cache entry to the focused view on every jump). Hitting
+            // the start of *that* narrow, event-focused window says nothing
+            // about whether the newly-requested event is reachable at all —
+            // only the server-side `/context` fallback below can answer that
+            // for an arbitrary target, so always fall through to it instead of
+            // reporting failure from a bounded scan whose starting point may
+            // not even be the room's actual live tail.
+            break;
         }
     }
 
