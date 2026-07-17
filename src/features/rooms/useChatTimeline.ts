@@ -332,6 +332,14 @@ export function useChatTimeline(
   async function resetToLive() {
     if (!room) return;
     const targetRoomId = room.room_id;
+    // Review fix: without this, a slow response landing after the user has
+    // since switched rooms (or revisited this same room id — a plain
+    // `currentRoomIdRef` comparison wouldn't catch that, see
+    // `loadMoreHistory`'s identical use of this same ref) would still apply
+    // its `messages`/pagination state to whatever room is currently
+    // mounted, the same staleness class `loadMoreHistory`'s own generation
+    // check already guards against.
+    const generation = visitGenerationRef.current;
     setLoadingMore(false);
     setHasMore(false);
     setPaginationError(false);
@@ -340,13 +348,17 @@ export function useChatTimeline(
     setLoading(true);
     try {
       const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
+      if (visitGenerationRef.current !== generation) return;
       applyMessages(page.messages);
       nextCursorRef.current = page.next_cursor;
       setHasMore(page.next_cursor !== null);
     } catch (err) {
+      if (visitGenerationRef.current !== generation) return;
       logAndIgnore(err);
     } finally {
-      setLoading(false);
+      if (visitGenerationRef.current === generation) {
+        setLoading(false);
+      }
     }
   }
 

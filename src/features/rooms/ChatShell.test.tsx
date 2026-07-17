@@ -655,6 +655,89 @@ describe("ChatShell", () => {
     );
   });
 
+  it("discards a stale resetToLive response if the user switches rooms before it resolves (Codex review fix)", async () => {
+    // Room A's Jump to Present triggers resetToLive (a jump used
+    // loadTimelineAroundEvent earlier), but its getTimelinePage response
+    // doesn't land until after the user has already switched to room B.
+    // Room B's own messages must not be clobbered by room A's late,
+    // now-stale response.
+    loadTimelineAroundEvent.mockResolvedValue(true);
+    let resolveRoomAReset: ((page: unknown) => void) | undefined;
+    getTimelinePage.mockImplementation(() => Promise.resolve({ messages: [], next_cursor: null }));
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+
+    fireAtBottomStateChange(true);
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    // resetToLive's own getTimelinePage call is made to hang here — it only
+    // resolves once `resolveRoomAReset` is invoked, well after the room
+    // switch below.
+    getTimelinePage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRoomAReset = resolve;
+        }),
+    );
+    fireEvent.click(pill);
+    await vi.waitFor(() => expect(resolveRoomAReset).toBeDefined());
+
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+
+    // Room A's stale reset finally resolves — its (empty) response must not
+    // overwrite room B's already-loaded message. `act`'s async form (not a
+    // bare `Promise.resolve()`) is needed here: `resetToLive`'s `.then`
+    // continuation runs as a later microtask than the synchronous `resolve`
+    // call itself, and only the async form of `act` waits for it.
+    await act(async () => {
+      resolveRoomAReset?.({ messages: [], next_cursor: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("room B msg")).toBeInTheDocument();
+  });
+
   it("does not re-fetch on Jump to Present when no bookmark jump ever used loadTimelineAroundEvent for this room (Codex review fix)", async () => {
     // The common case: no Saved Messages jump ever happened (or the jump
     // resolved entirely from the already-loaded page). Forcing a network
