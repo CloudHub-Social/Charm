@@ -4035,8 +4035,9 @@ describe("ChatShell", () => {
     await screen.findByText("No messages yet");
 
     fireEvent.click(screen.getByRole("button", { name: "Show pinned messages" }));
-    expect(
-      screen.getByRole("button", { name: "Hide pinned messages" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Hide pinned messages" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 });

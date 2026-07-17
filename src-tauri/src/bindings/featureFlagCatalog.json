@@ -70,5 +70,11 @@
     "default": false,
     "description": "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave).",
     "owner": "Spec 63 (sidebar and space management)"
+  },
+  {
+    "key": "message_pinning",
+    "default": false,
+    "description": "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge.",
+    "owner": "day-2 Spec 04 (message pinning)"
   }
 ]

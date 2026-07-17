@@ -73,6 +73,12 @@ export function RoomsScreen({
 }: RoomsScreenProps) {
   const { openSettings } = useSettingsNavigation();
   const roomInvitesEnabled = useFlag("room_invites");
+  // Day-2 Spec 04 (message pinning). `ChatShell` already hides the header
+  // button/menu entry that would set `pinnedMessagesDrawerOpen` while this is
+  // off, but gating the panel's render here too means a previously-set atom
+  // value (e.g. the flag flipped off mid-session) can't leave the panel
+  // showing regardless.
+  const messagePinningEnabled = useFlag("message_pinning");
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
@@ -497,7 +503,7 @@ export function RoomsScreen({
           />
         }
         rightPanel={
-          activeRoom && pinnedMessagesDrawerOpen ? (
+          activeRoom && messagePinningEnabled && pinnedMessagesDrawerOpen ? (
             <PinnedMessagesPanel
               roomId={activeRoom.room_id}
               onClose={() => setPinnedMessagesDrawerOpen(false)}

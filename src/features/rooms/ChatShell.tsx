@@ -232,6 +232,12 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
   const mediaSendPolishEnabled = useFlag("media_send_polish");
+  // Day-2 Spec 04 (message pinning) — new user-facing surface, so gated
+  // behind a flag that defaults off per CLAUDE.md's feature-flag rule. Gates
+  // the whole surface (header button/badge, mobile menu entry, and the
+  // MessageActions Pin/Unpin item below), not just the send call, so the
+  // feature is fully dark until rolled out.
+  const messagePinningEnabled = useFlag("message_pinning");
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);
@@ -285,8 +291,11 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
     room ? pinnedMessagesDrawerOpenAtomFamily(roomId) : noRoomPinnedMessagesDrawerOpenAtom,
   );
   const { data: roomDetails } = useRoomDetails(room?.room_id ?? null);
-  const pinnedEventIds = roomDetails?.pinned_event_ids ?? [];
-  const canPinMessages = roomDetails?.can?.set_pinned_events ?? false;
+  // Both empty (rather than reading through to `roomDetails`) while the flag
+  // is off, so the header badge/button, mobile menu entry, and Pin/Unpin
+  // MessageActions item are all fully dark, not just the underlying send call.
+  const pinnedEventIds = messagePinningEnabled ? (roomDetails?.pinned_event_ids ?? []) : [];
+  const canPinMessages = messagePinningEnabled && (roomDetails?.can?.set_pinned_events ?? false);
   const roomSettingsTarget = useAtomValue(roomSettingsAtom);
   const setRoomSettingsTarget = useSetAtom(roomSettingsAtom);
   // Room settings is a full modal covering the chat — messages arriving (or
@@ -878,17 +887,19 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
                 <Info />
                 {membersDrawerOpen ? "Hide members" : "Show members"}
               </DropdownMenuItem>
-              <DropdownMenuItem
-                className="min-h-11"
-                onSelect={() => {
-                  setPinnedMessagesDrawerOpen((open) => !open);
-                  setMembersDrawerOpen(false);
-                }}
-              >
-                <Pin />
-                {pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Pinned messages"}
-                {pinnedEventIds.length > 0 && ` (${pinnedEventIds.length})`}
-              </DropdownMenuItem>
+              {messagePinningEnabled && (
+                <DropdownMenuItem
+                  className="min-h-11"
+                  onSelect={() => {
+                    setPinnedMessagesDrawerOpen((open) => !open);
+                    setMembersDrawerOpen(false);
+                  }}
+                >
+                  <Pin />
+                  {pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Pinned messages"}
+                  {pinnedEventIds.length > 0 && ` (${pinnedEventIds.length})`}
+                </DropdownMenuItem>
+              )}
               <DropdownMenuItem
                 className="min-h-11"
                 onSelect={() => setRoomSettingsTarget({ roomId: room.room_id, section: "general" })}
@@ -915,28 +926,30 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
             >
               <Info className="size-4" />
             </button>
-            <button
-              type="button"
-              aria-label={
-                pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Show pinned messages"
-              }
-              aria-pressed={pinnedMessagesDrawerOpen}
-              onClick={() => {
-                setPinnedMessagesDrawerOpen((open) => !open);
-                setMembersDrawerOpen(false);
-              }}
-              className={cn(
-                "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
-              )}
-            >
-              <Pin className="size-4" />
-              {pinnedEventIds.length > 0 && (
-                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
-                  {pinnedEventIds.length}
-                </span>
-              )}
-            </button>
+            {messagePinningEnabled && (
+              <button
+                type="button"
+                aria-label={
+                  pinnedMessagesDrawerOpen ? "Hide pinned messages" : "Show pinned messages"
+                }
+                aria-pressed={pinnedMessagesDrawerOpen}
+                onClick={() => {
+                  setPinnedMessagesDrawerOpen((open) => !open);
+                  setMembersDrawerOpen(false);
+                }}
+                className={cn(
+                  "relative flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  pinnedMessagesDrawerOpen && "bg-accent text-accent-foreground",
+                )}
+              >
+                <Pin className="size-4" />
+                {pinnedEventIds.length > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-primary-foreground">
+                    {pinnedEventIds.length}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               type="button"
               aria-label="Room settings"

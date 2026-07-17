@@ -38,11 +38,7 @@ describe("PinnedMessagesPanel", () => {
     const onClose = vi.fn();
 
     renderWithProviders(
-      <PinnedMessagesPanel
-        roomId={details.room_id}
-        onClose={onClose}
-        onJumpToMessage={() => {}}
-      />,
+      <PinnedMessagesPanel roomId={details.room_id} onClose={onClose} onJumpToMessage={() => {}} />,
     );
 
     const items = await screen.findAllByRole("listitem");
@@ -60,7 +56,11 @@ describe("PinnedMessagesPanel", () => {
     getPinnedMessages.mockResolvedValue([]);
 
     renderWithProviders(
-      <PinnedMessagesPanel roomId={details.room_id} onClose={() => {}} onJumpToMessage={() => {}} />,
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
     );
 
     expect(await screen.findByText("No pinned messages yet.")).toBeInTheDocument();
@@ -72,7 +72,11 @@ describe("PinnedMessagesPanel", () => {
     getPinnedMessages.mockRejectedValue(new Error("network error"));
 
     renderWithProviders(
-      <PinnedMessagesPanel roomId={details.room_id} onClose={() => {}} onJumpToMessage={() => {}} />,
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
     );
 
     expect(await screen.findByText("Couldn't load pinned messages.")).toBeInTheDocument();
@@ -104,7 +108,11 @@ describe("PinnedMessagesPanel", () => {
     ]);
 
     renderWithProviders(
-      <PinnedMessagesPanel roomId={details.room_id} onClose={() => {}} onJumpToMessage={() => {}} />,
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
     );
 
     expect(await screen.findByText("This message was deleted.")).toBeInTheDocument();

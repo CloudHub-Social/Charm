@@ -125,6 +125,10 @@ define_feature_flag_keys!(
         /// entries, and the per-space context menu (Invite, Add Existing,
         /// Mark/Unmark Suggested, Remove, Leave).
         SpaceRailManagement,
+        /// Day-2 Spec 04 message pinning: the Pin/Unpin `MessageActions` entry,
+        /// the pinned-messages right-panel drawer, and the room-header
+        /// pin-count badge.
+        MessagePinning,
     }
 );
 
@@ -145,6 +149,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => false,
             FeatureFlagKey::RoomListMessagePreview => false,
             FeatureFlagKey::SpaceRailManagement => false,
+            FeatureFlagKey::MessagePinning => false,
         }
     }
 
@@ -188,6 +193,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::SpaceRailManagement => {
                 "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave)."
             }
+            FeatureFlagKey::MessagePinning => {
+                "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge."
+            }
         }
     }
 
@@ -209,6 +217,7 @@ impl FeatureFlagKey {
                 "Spec 54 (room-list enrichment and filtering)"
             }
             FeatureFlagKey::SpaceRailManagement => "Spec 63 (sidebar and space management)",
+            FeatureFlagKey::MessagePinning => "day-2 Spec 04 (message pinning)",
         }
     }
 
@@ -228,6 +237,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
             FeatureFlagKey::SpaceRailManagement => "space_rail_management",
+            FeatureFlagKey::MessagePinning => "message_pinning",
         }
     }
 }
