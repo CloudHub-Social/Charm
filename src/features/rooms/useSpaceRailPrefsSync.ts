@@ -59,10 +59,22 @@ export function useSpaceRailPrefsSync(userId: string) {
   // newer write another device makes in the gap between the read landing
   // here and this redundant write reaching the server.
   const skipNextMirrorRef = useRef(false);
+  // Flipped in the unmount cleanup below. `latestUserIdRef` only updates via
+  // a render, so if this hook's owner unmounts entirely (e.g. on logout)
+  // while a write is still queued behind a slow earlier request, no later
+  // render ever happens to move `latestUserIdRef` off the stale user id —
+  // the queued continuation would still see it match and write the old
+  // account's prefs into whatever account is signed in by the time it runs.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
 
   const queueWrite = useCallback((forUserId: string, value: SpaceRailPrefs) => {
     writeQueueRef.current = writeQueueRef.current.then(async () => {
-      if (latestUserIdRef.current !== forUserId) return;
+      if (unmountedRef.current || latestUserIdRef.current !== forUserId) return;
       try {
         await setAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE, value satisfies SpaceRailPrefs);
       } catch {

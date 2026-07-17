@@ -331,4 +331,36 @@ describe("useSpaceRailPrefsSync", () => {
 
     resolveAccountAWrite();
   });
+
+  it("does not let a write queued before unmount land after a different account signs in", async () => {
+    getAccountData.mockResolvedValue(null);
+    let resolveFirstWrite: () => void = () => {};
+    setAccountData.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFirstWrite = resolve;
+        }),
+    );
+
+    const { result, unmount } = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
+
+    // A queued write is still in flight when the component unmounts (e.g.
+    // the user logs out) — since no further render happens, `latestUserIdRef`
+    // never gets a chance to move off the stale user id on its own.
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!stale-space:localhost"] });
+    });
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(1));
+
+    unmount();
+    resolveFirstWrite();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A different account's own hook instance (or the same signed-in
+    // session under a new user id) must never see a write land from the
+    // unmounted instance.
+    expect(setAccountData).toHaveBeenCalledTimes(1);
+  });
 });
