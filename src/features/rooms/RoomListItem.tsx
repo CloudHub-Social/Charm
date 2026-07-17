@@ -192,10 +192,7 @@ function RoomListItemImpl({
  */
 // Exported for direct unit testing of the comparator's branches — see
 // RoomListItem.test.tsx. Not otherwise part of this module's public API.
-export function roomListItemPropsEqual(
-  prev: RoomListItemProps,
-  next: RoomListItemProps,
-): boolean {
+export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListItemProps): boolean {
   if (prev.active !== next.active) return false;
   if (prev.style !== next.style) return false;
   if (prev.dragHandleProps !== next.dragHandleProps) return false;
