@@ -275,6 +275,19 @@ impl<'a> ReservedTempStoreGuard<'a> {
 
     pub(crate) fn defuse(mut self) {
         self.defused = true;
+        // Removed here, not left for `Drop` to skip: `defuse` means
+        // ownership has transferred to `pending_sso`/
+        // `pending_qr_temp_store_key`, which protect the key themselves
+        // from now on — leaving it behind in `reserved_temp_store_keys`
+        // too would never get cleaned up (Sentry review on #288, MEDIUM: an
+        // earlier version of this method only set the flag and relied on
+        // `Drop` to skip removal, which meant every successful login leaked
+        // an entry into this set for the rest of the process's life).
+        self.matrix_state
+            .reserved_temp_store_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.store_key);
     }
 }
 
