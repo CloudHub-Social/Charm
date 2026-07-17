@@ -52,38 +52,24 @@ pub struct BookmarkEntry {
     pub timestamp_ms: u64,
 }
 
-/// What actually lives in `<app_data>/bookmarks/<account_key>.json`. See the
-/// module doc for why message content is only ever persisted here for a
-/// room confirmed *not* encrypted at save time.
+/// What actually lives in `<app_data>/bookmarks/<account_key>.json` — just
+/// enough to identify the bookmarked message and order the list, no message
+/// content. See the module doc for why this is deliberately narrower than
+/// [`BookmarkEntry`].
 ///
-/// Review fix: an earlier version of this struct never persisted any
-/// preview at all, so `list_bookmarks` showed a blank sender and the
-/// bookmark's *save* time (not the message's *sent* time) for any room not
-/// already open this session — the common case right after an app restart,
-/// defeating the point of a cross-room saved-messages list for ordinary
-/// use. The plaintext-leak concern the original fix addressed only applies
-/// to *encrypted* rooms (an unencrypted room's message content isn't
-/// protected by anything this file's storage format could weaken further),
-/// so `preview` is `Some` only when [`add_bookmark`] confirmed the room was
-/// unencrypted at save time, and `None` for encrypted rooms — falling back
-/// to live timeline resolution or [`UNRESOLVED_PREVIEW`] exactly as before.
+/// Review fix: a short-lived version of this struct cached a
+/// sender/body/timestamp preview for unencrypted-room bookmarks, to fix a
+/// separate cold-start UX complaint (no context until the room reopens).
+/// That traded one real problem for a worse one: a cached preview has no
+/// invalidation path, so a bookmarked message that's later redacted or
+/// edited would keep showing its stale pre-redaction/pre-edit body forever
+/// in a cold Saved Messages view — wrong content is worse than no content.
+/// Reverted; a cold room simply shows [`UNRESOLVED_PREVIEW`] until reopened.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredBookmark {
     room_id: String,
     event_id: String,
     saved_at_ms: u64,
-    #[serde(default)]
-    preview: Option<StoredPreview>,
-}
-
-/// The cached sender/body/timestamp snapshot for an unencrypted-room
-/// bookmark — see [`StoredBookmark::preview`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredPreview {
-    sender: String,
-    sender_display_name: Option<String>,
-    body_preview: String,
-    timestamp_ms: u64,
 }
 
 /// Caps a bookmark's resolved preview so a very long message doesn't bloat
@@ -222,25 +208,6 @@ pub async fn add_bookmark(
     let account_key = account_key_for_client(&client)?;
     let entry = build_bookmark_entry(&room_id, &event_id, &client, &timeline, media_cache).await?;
 
-    // Review fix: only cache a preview for a room *confirmed* unencrypted —
-    // see `StoredPreview`'s doc comment for why an encrypted room still
-    // gets no persisted content, same as before this fix. Defaults to
-    // treating an unknown encryption state as encrypted (the conservative
-    // choice — an as-yet-unsynced encryption flag should never accidentally
-    // let plaintext through).
-    let is_encrypted = timeline
-        .room()
-        .latest_encryption_state()
-        .await
-        .map(|state| state.is_encrypted())
-        .unwrap_or(true);
-    let preview = (!is_encrypted).then(|| StoredPreview {
-        sender: entry.sender.clone(),
-        sender_display_name: entry.sender_display_name.clone(),
-        body_preview: entry.body_preview.clone(),
-        timestamp_ms: entry.timestamp_ms,
-    });
-
     let lock = persistence::bookmarks_lock(&account_key);
     let _guard = lock.lock().await;
     let mut bookmarks: Vec<StoredBookmark> = persistence::load_bookmarks(&app, &account_key)?;
@@ -251,7 +218,6 @@ pub async fn add_bookmark(
         room_id: entry.room_id,
         event_id: entry.event_id,
         saved_at_ms: entry.saved_at_ms,
-        preview,
     });
     persistence::save_bookmarks(&app, &account_key, &bookmarks)
 }
@@ -333,31 +299,17 @@ pub async fn list_bookmarks(
             _ => None,
         };
 
-        // Falls back to the cached preview (only ever present for a room
-        // confirmed unencrypted at save time — see `StoredPreview`'s doc
-        // comment) before giving up entirely, so a cold session still shows
-        // real sender/timestamp context for the common unencrypted-room
-        // case rather than only ever "Preview unavailable".
         let (sender, sender_display_name, body_preview, timestamp_ms) = match resolved {
             Some(resolved) => resolved,
-            None => match bookmark.preview {
-                Some(preview) => (
-                    preview.sender,
-                    preview.sender_display_name,
-                    preview.body_preview,
-                    preview.timestamp_ms,
-                ),
-                None => (
-                    String::new(),
-                    None,
-                    UNRESOLVED_PREVIEW.to_string(),
-                    // No message-sent timestamp is known without resolving
-                    // the event; falling back to `saved_at_ms` rather than
-                    // `0` keeps this entry's sort-adjacent display value
-                    // plausible.
-                    bookmark.saved_at_ms,
-                ),
-            },
+            None => (
+                String::new(),
+                None,
+                UNRESOLVED_PREVIEW.to_string(),
+                // No message-sent timestamp is known without resolving the
+                // event; falling back to `saved_at_ms` rather than `0` keeps
+                // this entry's sort-adjacent display value plausible.
+                bookmark.saved_at_ms,
+            ),
         };
 
         entries.push(BookmarkEntry {
