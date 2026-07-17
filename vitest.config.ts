@@ -34,12 +34,14 @@ export default defineConfig({
       thresholds: {
         // Deliberately enforced, unlike Charm 1.0's unenforced coverage collection.
         // These are a RATCHET: set to just under current actual coverage (as of
-        // 2026-07-16, after adding Spec 12's bookmarks/saved-messages coverage.
-        // When tests raise coverage, raise these floors in the same PR.
-        lines: 86.4,
-        statements: 84.25,
-        functions: 77.15,
-        branches: 83.55,
+        // 2026-07-17, after PR #294's review-fix round added coverage for the
+        // resend/discard handlers, ChatShell's stale-jump-request guard, and
+        // presenceUpdateAtom). When tests raise coverage, raise these floors
+        // in the same PR.
+        lines: 86.5,
+        statements: 84.4,
+        functions: 77.16,
+        branches: 83.7,
       },
     },
   },

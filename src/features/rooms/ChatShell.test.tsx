@@ -3305,9 +3305,7 @@ describe("ChatShell", () => {
       </JotaiProvider>,
     );
 
-    await waitFor(() =>
-      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$old"),
-    );
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$old"));
 
     // A newer jump target supersedes the still-in-flight one above (e.g. the
     // user reopened Settings and picked a different bookmark) before the
@@ -3323,9 +3321,7 @@ describe("ChatShell", () => {
         />
       </JotaiProvider>,
     );
-    await waitFor(() =>
-      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$new"),
-    );
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$new"));
 
     // The stale first request now rejects late — this must not fire
     // `onJumpHandled` a second time (or clear anything) on behalf of the
