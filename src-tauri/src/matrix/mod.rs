@@ -164,6 +164,20 @@ pub struct MatrixState {
     /// the time it returns, the same rigor `sync::abort_current_sync_loop`
     /// applies to the main sync loop.
     timelines: Mutex<lru::LruCache<matrix_sdk::ruma::OwnedRoomId, TimelineEntry>>,
+    /// Rooms currently mid-swap in `replace_timeline`/`get_or_create_timeline`'s
+    /// `force_live` path — between the previous listener being aborted and
+    /// (genuinely, by `.await`) confirmed stopped, and the new one being
+    /// pushed into `timelines`. Review fix: without this, closing that
+    /// window by *awaiting* the old listener's full shutdown before spawning
+    /// the new one would require briefly `pop`-ing the entry out of
+    /// `timelines` to get ownership of its `JoinHandle` (a plain `&self`
+    /// `.abort()` call doesn't need ownership, but consuming `.await` does)
+    /// — during which `is_timeline_open` would incorrectly report the room
+    /// as closed (the same bug an earlier round of this fix already closed
+    /// for the non-awaited case). This set lets `is_timeline_open` also
+    /// check "is this room mid-transition" so it stays correct even while
+    /// `timelines` itself briefly has no entry for it.
+    transitioning_timelines: Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
     /// The task driving the current background sync loop (see
     /// `sync::spawn_sync_loop`). Login/session-restore has several independent
     /// success paths (password, SSO, QR, restored-session) and none of them
@@ -245,6 +259,7 @@ impl Default for MatrixState {
                 std::num::NonZeroUsize::new(MAX_LIVE_TIMELINES)
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
+            transitioning_timelines: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
             presence_task_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),
@@ -395,29 +410,47 @@ impl MatrixState {
     ) -> Result<std::sync::Arc<matrix_sdk_ui::Timeline>, String> {
         use matrix_sdk_ui::timeline::RoomExt as _;
 
+        // Review fix: a focused entry being force-reset to live used to have
+        // its listener merely `.abort()`-ed in place (via `get_mut`, keeping
+        // the entry cached) and only *awaited* once displaced by the later
+        // `push` below — leaving a residual window where the old listener
+        // could still be mid-unwind (not yet fully stopped) while the new
+        // one was already spawned and running, both able to emit their own
+        // `timeline:update` for this room. Fully awaiting the old listener's
+        // shutdown *before* spawning the new one closes that window
+        // entirely, at the cost of needing real ownership of its
+        // `JoinHandle` (`.await` consumes it, unlike `&self`-taking
+        // `.abort()`) — which means genuinely `pop`-ing it out of
+        // `timelines`. `transitioning_timelines` is what keeps
+        // `is_timeline_open` correct while this room briefly has no entry
+        // cached during that pop-to-repush span.
+        if force_live {
+            let previous = {
+                let mut timelines = self.timelines.lock().await;
+                match timelines.peek(room_id) {
+                    Some((_, _, true)) => {
+                        self.transitioning_timelines
+                            .lock()
+                            .await
+                            .insert(room_id.to_owned());
+                        timelines.pop(room_id)
+                    }
+                    _ => None,
+                }
+            };
+            if let Some((_, previous_handle, _)) = previous {
+                previous_handle.abort();
+                let _ = previous_handle.await;
+            }
+        }
+
         {
             let mut timelines = self.timelines.lock().await;
-            match timelines.get_mut(room_id) {
-                Some((existing, _, is_focused)) if !(*is_focused && force_live) => {
-                    return Ok(std::sync::Arc::clone(existing));
-                }
-                // Review fix: a focused entry being force-reset to live used
-                // to fall through here and only get its listener aborted
-                // *after* the new one was already spawned below (via the
-                // `push`-returns-the-displaced-entry path near the end of
-                // this function) — leaving a window where both the old
-                // (focused) and new (live) listeners were alive at once,
-                // each able to emit their own `timeline:update` for this
-                // room. `JoinHandle::abort` takes `&self`, so it can be
-                // called in place here (via `get_mut`, not `pop`) without
-                // ever removing the entry from the cache — signaling the old
-                // listener to stop *before* the new one is even built,
-                // while keeping `is_timeline_open` correctly reporting this
-                // room as open the whole time (see that method's own doc
-                // comment for why briefly having no entry cached here would
-                // be its own bug).
-                Some((_, handle, _)) => handle.abort(),
-                None => {}
+            if let Some((existing, _, _)) = timelines.get(room_id) {
+                let existing = std::sync::Arc::clone(existing);
+                drop(timelines);
+                self.transitioning_timelines.lock().await.remove(room_id);
+                return Ok(existing);
             }
         }
 
@@ -431,13 +464,11 @@ impl MatrixState {
         // for this same room while this call was awaiting `room.timeline()`
         // above (lock isn't held across that await) — keep whichever was
         // inserted first rather than running two listener tasks for one room.
-        // Same `force_live` exclusion and in-place-abort handling as above.
-        match timelines.get_mut(room_id) {
-            Some((existing, _, is_focused)) if !(*is_focused && force_live) => {
-                return Ok(std::sync::Arc::clone(existing));
-            }
-            Some((_, handle, _)) => handle.abort(),
-            None => {}
+        if let Some((existing, _, _)) = timelines.get(room_id) {
+            let existing = std::sync::Arc::clone(existing);
+            drop(timelines);
+            self.transitioning_timelines.lock().await.remove(room_id);
+            return Ok(existing);
         }
 
         let handle = timeline::spawn_timeline_listener(
@@ -447,13 +478,12 @@ impl MatrixState {
             client.clone(),
             client.user_id().map(ToOwned::to_owned),
         );
-        // `push` returns the LRU-evicted (or, per the review fix above,
-        // possibly a displaced *focused*) entry rather than just dropping
-        // it — a dropped `JoinHandle` detaches its task instead of stopping
-        // it, which would leave that room's listener (and its own `Client`
-        // clone) running for up to `LIVENESS_CHECK_INTERVAL` after eviction,
-        // the same open-handle hazard `clear_timelines` exists to avoid on
-        // logout/relocation.
+        // `push` returns the LRU-evicted entry (if any capacity eviction
+        // happened) rather than just dropping it — a dropped `JoinHandle`
+        // detaches its task instead of stopping it, which would leave that
+        // room's listener (and its own `Client` clone) running for up to
+        // `LIVENESS_CHECK_INTERVAL` after eviction, the same open-handle
+        // hazard `clear_timelines` exists to avoid on logout/relocation.
         let evicted = timelines.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle, false),
@@ -463,6 +493,7 @@ impl MatrixState {
         // block every other `get_or_create_timeline`/`is_timeline_open`
         // caller for however long that task takes to unwind, for no reason.
         drop(timelines);
+        self.transitioning_timelines.lock().await.remove(room_id);
         if let Some((_, (_, evicted_handle, _))) = evicted {
             evicted_handle.abort();
             // Genuinely wait for it to stop (see `abort_current_sync_loop`'s
@@ -501,21 +532,26 @@ impl MatrixState {
         room_id: &matrix_sdk::ruma::RoomId,
         timeline: std::sync::Arc<matrix_sdk_ui::Timeline>,
     ) -> std::sync::Arc<matrix_sdk_ui::Timeline> {
-        // Review fix: this used to `pop` the previous entry here (removing
-        // it from the cache entirely) before awaiting its abort — during
-        // that window `is_timeline_open` would report this room as *not*
-        // open (the cache had no entry for it at all), so a message
-        // arriving mid-sync in that exact window could be misrouted through
-        // `notify_unopened_room_messages`'s unopened-room path. Aborting the
-        // previous listener *in place* via `get_mut` (which `JoinHandle::abort`
-        // allows — it takes `&self`, not `self`) signals it to stop without
-        // ever removing the entry from the cache, so `is_timeline_open` stays
-        // correctly "true" for this room throughout the whole swap. This
-        // also keeps the earlier round-4 fix intact (old listener signaled
-        // to stop *before* the new one is spawned below, not after) — just
-        // without the cache-emptying side effect that fix's `pop` had.
-        if let Some((_, previous_handle, _)) = self.timelines.lock().await.get_mut(room_id) {
+        // Review fix: this used to only `.abort()` the previous listener *in
+        // place* (via `get_mut`, keeping the entry cached so `is_timeline_open`
+        // stayed correct) and defer the actual `.await` of its shutdown until
+        // the later `push` displaced it — leaving a residual window where the
+        // old listener could still be mid-unwind while the new one was
+        // already spawned and running, both able to emit their own
+        // `timeline:update` for this room. Genuinely popping the entry,
+        // aborting, and fully *awaiting* its shutdown before spawning the new
+        // listener closes that window entirely; `transitioning_timelines`
+        // (see its own doc comment on `MatrixState`) is what keeps
+        // `is_timeline_open` correct while this room briefly has no entry
+        // cached during that pop-to-repush span.
+        self.transitioning_timelines
+            .lock()
+            .await
+            .insert(room_id.to_owned());
+        let previous = self.timelines.lock().await.pop(room_id);
+        if let Some((_, previous_handle, _)) = previous {
             previous_handle.abort();
+            let _ = previous_handle.await;
         }
 
         let handle = timeline::spawn_timeline_listener(
@@ -544,6 +580,7 @@ impl MatrixState {
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle, true),
         );
+        self.transitioning_timelines.lock().await.remove(room_id);
         if let Some((_, (_, displaced_handle, _))) = displaced {
             displaced_handle.abort();
             let _ = displaced_handle.await;
@@ -574,6 +611,18 @@ impl MatrixState {
         // fires `maybe_notify_new_message` for anything arriving after the
         // jump — only a genuinely live entry means "this room's own listener
         // has it covered, skip the unopened-room notification path here".
+        //
+        // Also true while the room is mid-swap (`transitioning_timelines`):
+        // `replace_timeline`/`get_or_create_timeline`'s `force_live` path
+        // briefly has no entry in `timelines` at all while it fully awaits
+        // the previous listener's shutdown before spawning the new one (see
+        // that field's own doc comment) — without this check, a message
+        // arriving in that exact window would be misrouted through
+        // `notify_unopened_room_messages`'s unopened-room path even though
+        // this room is, from the user's perspective, still very much open.
+        if self.transitioning_timelines.lock().await.contains(room_id) {
+            return true;
+        }
         matches!(
             self.timelines.lock().await.peek(room_id),
             Some((_, _, false))
