@@ -1136,6 +1136,29 @@ async fn load_focused_event_timeline(
         return Ok(false);
     }
 
+    // Review fix: `client` was captured (and potentially awaited on, both in
+    // `room.timeline_builder()...build()` above and in the caller's own
+    // bounded-pagination loop) well before this point. If the user logs out
+    // — or logs out and into a *different* account — while this is in
+    // flight, `clear_timelines()` runs against the new/absent session, but
+    // this task is still holding its own `Client` clone (an `Arc` handle
+    // that keeps working even after the session it belongs to has been
+    // logged out of) and would otherwise go ahead and install that stale
+    // account's focused `Timeline` into the process-wide, room-id-keyed
+    // cache — a later open of that same room id under the new session would
+    // then render or emit updates sourced from the old account. Re-check
+    // that the currently active client is still the same one this task
+    // started with (by user id — `Client` has no cheap identity comparison)
+    // immediately before installing anything, and no-op instead of racing a
+    // stale account into a live session's cache.
+    let still_active = match state.require_client().await {
+        Ok(current) => current.user_id() == client.user_id(),
+        Err(_) => false,
+    };
+    if !still_active {
+        return Ok(false);
+    }
+
     state.replace_timeline(app, client, room_id, focused).await;
     Ok(true)
 }
