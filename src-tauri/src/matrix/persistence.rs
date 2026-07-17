@@ -321,23 +321,47 @@ fn discard_temp_store(path: &Path, temp_key: &str) {
 /// data or the credential needed to read it), and blindly overwriting
 /// `backup_path` out from under it would destroy that before it was ever
 /// actually recovered.
+/// [`RELOCATE_LOCK`]-guarded wrapper for the sweep's own call site
+/// (`sweep_orphan_temp_stores_at_with_min_age`), which — unlike
+/// `relocate_store_at_locked_with`'s call to
+/// [`recover_or_discard_stale_backup_locked`] below — doesn't already hold
+/// the lock itself (Codex review on #288, P2): this function and SSO/QR
+/// login completion's relocation both rename/delete the same `account_path`
+/// and backup path for a given account, and before this, only
+/// `relocate_store_and_save_*` serialized against *each other* — the
+/// background startup sweep held no lock at all, so it could run
+/// concurrently with an SSO/QR completion relocating the very same account
+/// (a race impossible before the sweep moved off the synchronous,
+/// pre-interactive `.setup()` path), corrupting whichever one lost.
+///
+/// A separate function from the actual implementation, not just "call it
+/// then lock" — see this pair's own `_locked` sibling, whose doc comment
+/// explains why: taking `RELOCATE_LOCK` a second time from inside a
+/// call site that already holds it (`relocate_store_at_locked_with`) would
+/// self-deadlock, since `std::sync::Mutex` isn't reentrant (Codex review on
+/// #288, P1 — a real regression in an earlier version of this same fix).
 fn recover_or_discard_stale_backup(
     root: &Path,
     account_key: &str,
     backup_key: &str,
     backup_path: &Path,
 ) -> bool {
-    // Same `RELOCATE_LOCK` every `relocate_store_and_save_*` takes (Codex
-    // review on #288, P2): this function and SSO/QR login completion's
-    // relocation both rename/delete the same `account_path` and backup
-    // path for a given account. Before this, only `relocate_store_and_
-    // save_*` serialized against *each other* — the background startup
-    // sweep calling this function held no lock at all, so it could run
-    // concurrently with an SSO/QR completion relocating the very same
-    // account (a race impossible before the sweep moved off the
-    // synchronous, pre-interactive `.setup()` path), corrupting whichever
-    // one lost.
     let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    recover_or_discard_stale_backup_locked(root, account_key, backup_key, backup_path)
+}
+
+/// The actual implementation, assuming [`RELOCATE_LOCK`] is already held by
+/// the caller — see [`recover_or_discard_stale_backup`]'s doc comment for
+/// why this split exists. Called directly (without taking the lock again)
+/// by `relocate_store_at_locked_with`, which already holds it; wrapped by
+/// [`recover_or_discard_stale_backup`] for the sweep's call site, which
+/// doesn't.
+fn recover_or_discard_stale_backup_locked(
+    root: &Path,
+    account_key: &str,
+    backup_key: &str,
+    backup_path: &Path,
+) -> bool {
     let account_path = root.join(account_key);
     let backup_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(backup_key));
@@ -781,7 +805,7 @@ fn relocate_store_at_locked_with(
     // attempt overwriting the still-unresolved leftover would destroy it
     // for good.
     if backup_path.exists()
-        && !recover_or_discard_stale_backup(root, account_key, &backup_key, &backup_path)
+        && !recover_or_discard_stale_backup_locked(root, account_key, &backup_key, &backup_path)
     {
         // Safe: this attempt hasn't touched `account_path` at all yet.
         return Err(RelocationFailure::safe(format!(
