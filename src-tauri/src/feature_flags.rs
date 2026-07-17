@@ -266,23 +266,19 @@ pub fn read_overrides(app_data_dir: &Path) -> BTreeMap<String, bool> {
 
 type FlagState = (BTreeMap<String, bool>, BTreeMap<String, bool>);
 
-/// Cache for [`read_state`], keyed by the store file's *identity* — its path
-/// plus last-modified time and size, not modified time alone (Codex review
-/// on #286, P2). A bare `SystemTime` key is process-global but the
-/// timestamp itself can collide across two distinct callers: multiple
-/// accounts' app-data dirs each with their own store file, or (concretely
-/// hit in this module's own unit tests) multiple temp app-data dirs created
-/// in the same instant — on a filesystem with coarse mtime granularity, a
-/// Labs override rewritten quickly enough could land on the *same* mtime as
-/// the read it's meant to invalidate, both leaving Rust to keep serving a
-/// stale parse from an unrelated file until a later mtime change or restart,
-/// and (the test scenario) letting one temp dir's cached state leak into
-/// another's. Size is included alongside the path+mtime pair as a cheap
-/// extra check (already available from the same `metadata()` call) against
-/// a same-second rewrite that happens to keep the mtime's coarse value but
-/// changes the file's length.
-static STATE_CACHE: Mutex<Option<(PathBuf, std::time::SystemTime, u64, FlagState)>> =
-    Mutex::new(None);
+/// Cache for [`read_state`], keyed by the store file's path plus a hash of
+/// its raw contents — not path+mtime+size (Codex review on #286, P2,
+/// round 2). Metadata alone is an unreliable change signal: on a filesystem
+/// with coarse mtime granularity, a remote refresh that rewrites the file
+/// within the same mtime tick and happens to keep the same byte length (e.g.
+/// flipping one flag off while another flips on) would leave this cache
+/// serving the pre-rewrite state — silently ignoring a Labs/remote
+/// kill-switch change — until some later write finally produces a different
+/// mtime or size. Hashing the content directly makes the cache key exactly
+/// as precise as the data it guards, at the cost of a read (but not a
+/// re-parse) on every call; that read is the cheap part `flag()`/`evaluate()`
+/// being hot needed to avoid, not the syscall itself.
+static STATE_CACHE: Mutex<Option<(PathBuf, u64, FlagState)>> = Mutex::new(None);
 
 /// Reads both the local overrides and the remote (OFREP) cache from the file in
 /// a single parse. Tolerant of a missing/corrupt file (returns empties) and of
@@ -290,34 +286,35 @@ static STATE_CACHE: Mutex<Option<(PathBuf, std::time::SystemTime, u64, FlagState
 /// so a format tweak on the JS side can't hard-fail Rust evaluation.
 pub fn read_state(app_data_dir: &Path) -> FlagState {
     let path = app_data_dir.join(FEATURE_FLAGS_STORE_FILENAME);
-    let Ok(metadata) = std::fs::metadata(&path) else {
+    let Ok(raw) = std::fs::read_to_string(&path) else {
         return (BTreeMap::new(), BTreeMap::new());
     };
-    let Ok(modified) = metadata.modified() else {
-        return read_state_uncached(&path);
-    };
-    let size = metadata.len();
+    let hash = content_hash(&raw);
 
     if let Ok(cache) = STATE_CACHE.lock() {
-        if let Some((cached_path, cached_modified, cached_size, state)) = cache.as_ref() {
-            if *cached_path == path && *cached_modified == modified && *cached_size == size {
+        if let Some((cached_path, cached_hash, state)) = cache.as_ref() {
+            if *cached_path == path && *cached_hash == hash {
                 return state.clone();
             }
         }
     }
 
-    let state = read_state_uncached(&path);
+    let state = parse_state(&raw);
     if let Ok(mut cache) = STATE_CACHE.lock() {
-        *cache = Some((path, modified, size, state.clone()));
+        *cache = Some((path, hash, state.clone()));
     }
     state
 }
 
-fn read_state_uncached(path: &Path) -> FlagState {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return (BTreeMap::new(), BTreeMap::new());
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+fn content_hash(raw: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn parse_state(raw: &str) -> FlagState {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
         return (BTreeMap::new(), BTreeMap::new());
     };
     (

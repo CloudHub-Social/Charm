@@ -625,6 +625,14 @@ pub async fn snapshot_rooms(
                 (None, None) => std::cmp::Ordering::Equal,
             })
             .then_with(|| a.3.cmp(&b.3))
+            // Final stable tie-breaker on `room_id` (Codex review on #286,
+            // P2): rooms sharing membership/section/order/name used to keep
+            // whatever relative order `join_all` happened to resolve them
+            // in; now that resolution runs through `buffer_unordered`, that
+            // order depends on which room's async work finishes first and
+            // can swap between calls. `room_id` is stable and unique, so it
+            // fully determines the order instead of leaving it to timing.
+            .then_with(|| a.4.room_id.cmp(&b.4.room_id))
     });
 
     summaries
