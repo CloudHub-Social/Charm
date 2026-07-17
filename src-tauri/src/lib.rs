@@ -14,6 +14,7 @@ pub mod push;
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::Manager;
 use tracing_subscriber::prelude::*;
 
@@ -110,7 +111,68 @@ fn resolve_sentry_environment() -> Option<String> {
 }
 
 static SENTRY_TRACING_INSTALLED: AtomicBool = AtomicBool::new(false);
-static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
+
+/// `sequence`, `enabled`, and (sentry only) `generation` for one runtime
+/// consent flag, held under a single lock so a claim-then-apply pair can
+/// never be torn apart by another thread's claim-then-apply landing in
+/// between (Codex review on #289, P2 — see
+/// `update_runtime_observability_sentry_enabled`'s doc comment for the exact
+/// race two separate atomics couldn't close: `fetch_max`-claiming the
+/// sequence and applying the value were two independent steps, so an older
+/// call could claim first, get preempted before storing, let a newer call
+/// claim-and-store, then resume and overwrite the newer value with its own
+/// stale one). `generation` is `()` for the log-consent flag, which has no
+/// `run_traced`-style mid-flight-drop consumer to serve.
+struct ConsentState<G> {
+    /// Highest `sequence` any caller has successfully claimed so far — see
+    /// `update_runtime_observability_sentry_enabled`'s doc comment on why
+    /// this exists (out-of-order Tauri IPC delivery) and why it's paired
+    /// with `enabled` in the same lock rather than a separate atomic.
+    sequence: u64,
+    enabled: bool,
+    generation: G,
+}
+
+/// Separate from the log-consent state: `sentryEnabled` (the primary Sentry
+/// opt-in — crash reports, performance, breadcrumbs) and `logsEnabled` (a
+/// stricter sub-toggle gating only native log events) are independent
+/// settings on the Observability panel — see `ObservabilitySettings` on the
+/// frontend. A user can have Sentry on with logs off, a legitimate and
+/// likely common combination; gating `observability_trace::traced`'s
+/// performance transactions on the logs-specific flag would silently drop
+/// them for exactly that case. `enabled` starts `false` and is only ever
+/// flipped `true` by `init_sentry_from_settings` (which only runs at all
+/// when the initial `sentry_enabled` was true) or a live toggle from the
+/// panel — never assume it's `true` just because a `SentryGuard` exists,
+/// since a same-session opt-out can flip it back to `false` while the guard
+/// itself stays alive for the rest of the process (see
+/// `runtime_observability_sentry_enabled`'s doc comment).
+///
+/// `generation` is bumped on every *actual value change* (off→on or on→off)
+/// — not on a same-value call, which `persistObservabilitySettings` makes
+/// unconditionally whenever `sentryEnabled` is `true` in the saved settings,
+/// including a save that only touched an unrelated toggle (logs, replay,
+/// profiling) while Sentry consent itself never changed; bumping on those
+/// too would spuriously drop an unrelated in-flight transaction.
+/// `observability_trace::run_traced` (Codex review on #289) captures this
+/// before awaiting the wrapped future and compares it again afterward: an
+/// off→on→off *or* off→on flip mid-flight leaves `enabled` itself looking
+/// unchanged (or even re-enabled) by the time the future resolves, which a
+/// plain before/after boolean re-check can't tell apart from "consent never
+/// changed" — this generation counter is what actually answers "did consent
+/// change at any point during this call," not just "what does it read as
+/// right now."
+static RUNTIME_SENTRY_CONSENT: Mutex<ConsentState<u64>> = Mutex::new(ConsentState {
+    sequence: 0,
+    enabled: false,
+    generation: 0,
+});
+
+static RUNTIME_LOG_CONSENT: Mutex<ConsentState<()>> = Mutex::new(ConsentState {
+    sequence: 0,
+    enabled: false,
+    generation: (),
+});
 
 /// Consent-gated wrapper around `observability_scrub::scrub_log_in_place` —
 /// desktop is the one Sentry call site with a per-user runtime toggle (the
@@ -118,7 +180,7 @@ static RUNTIME_LOG_CONSENT: AtomicBool = AtomicBool::new(false);
 /// the shared module `charm-web-server` also uses (which has no such
 /// toggle).
 fn scrub_log(mut log: sentry::protocol::Log) -> Option<sentry::protocol::Log> {
-    if !RUNTIME_LOG_CONSENT.load(Ordering::SeqCst) {
+    if !runtime_observability_logs_enabled() {
         return None;
     }
     if matches!(log.level, sentry::protocol::LogLevel::Debug) && !cfg!(debug_assertions) {
@@ -469,16 +531,83 @@ fn install_tracing<R: tauri::Runtime>(app: &tauri::App<R>, sentry_enabled: bool)
     }
 }
 
-fn update_runtime_observability_logs_enabled(logs_enabled: bool) {
-    RUNTIME_LOG_CONSENT.store(logs_enabled, Ordering::SeqCst);
+/// `sequence` guards against Tauri IPC calls landing out of send-order
+/// (Codex review on #289, P1): `persistObservabilitySettings` can fire two
+/// overlapping `update_observability_log_consent` calls (an eager opt-out
+/// racing a still-in-flight earlier opt-in, say), and Tauri gives no
+/// ordering guarantee between two independent `invoke`s — the *older* call
+/// completing *after* the newer one would silently undo it. The frontend
+/// hands each call a strictly increasing sequence number at send time (not
+/// something Rust could reconstruct from arrival order, which is exactly
+/// what's unreliable here). Claiming the sequence and applying `enabled`
+/// happen under one lock (Codex review on #289, P2): a `fetch_max`-then-
+/// separate-store version of this had a real gap — an older call could win
+/// the sequence claim, get preempted by another thread before storing, let a
+/// newer call claim-and-store, then resume and overwrite the newer value
+/// with its own stale one. A call whose sequence is at or below the current
+/// watermark lost to one that's already applied (or, under the lock,
+/// literally cannot be in the process of applying concurrently) and is
+/// ignored outright, regardless of which one happened to reach this line
+/// first.
+fn update_runtime_observability_logs_enabled(logs_enabled: bool, sequence: u64) {
+    let mut state = RUNTIME_LOG_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if sequence <= state.sequence {
+        return;
+    }
+    state.sequence = sequence;
+    state.enabled = logs_enabled;
 }
 
 #[tauri::command]
 fn update_observability_log_consent<R: tauri::Runtime>(
     _app: tauri::AppHandle<R>,
     logs_enabled: bool,
+    sequence: u64,
 ) {
-    update_runtime_observability_logs_enabled(logs_enabled);
+    update_runtime_observability_logs_enabled(logs_enabled, sequence);
+}
+
+/// See `update_runtime_observability_logs_enabled`'s doc comment for the
+/// sequence-claim-and-apply rationale, which applies identically here.
+fn update_runtime_observability_sentry_enabled(sentry_enabled: bool, sequence: u64) {
+    let mut state = RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if sequence <= state.sequence {
+        return;
+    }
+    state.sequence = sequence;
+    // Only bump on an actual value change (Codex review on #289, P3):
+    // persistObservabilitySettings' post-persist-success sync calls this
+    // unconditionally whenever `sentryEnabled` is `true` in the saved
+    // settings — including saves that only touched an unrelated toggle
+    // (logs, replay, profiling) while Sentry consent itself stayed
+    // unchanged. Bumping on every call regardless would make any such save
+    // spuriously drop an in-flight login/timeline transaction `run_traced`
+    // happened to be mid-await on, even though consent never actually
+    // changed. A same-value call is exactly the "already resynced,
+    // redundant no-op" case this guards against; a real toggle still bumps
+    // it via the plain not-equal check.
+    if state.enabled != sentry_enabled {
+        state.enabled = sentry_enabled;
+        state.generation += 1;
+    }
+}
+
+/// Frontend counterpart: `persistObservabilitySettings` calls this whenever
+/// `sentryEnabled` changes, the same live-sync pattern
+/// `update_observability_log_consent` already uses for `logsEnabled` — see
+/// `RUNTIME_SENTRY_CONSENT`'s doc comment for why this needs to be a
+/// separate command/flag rather than reusing that one.
+#[tauri::command]
+fn update_observability_sentry_consent<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    sentry_enabled: bool,
+    sequence: u64,
+) {
+    update_runtime_observability_sentry_enabled(sentry_enabled, sequence);
 }
 
 /// Returns every catalog flag resolved to a boolean for this install
@@ -600,7 +729,71 @@ fn observability_logs_enabled_from_store(app_data_dir: &Path) -> bool {
 }
 
 fn runtime_observability_logs_enabled() -> bool {
-    RUNTIME_LOG_CONSENT.load(Ordering::SeqCst)
+    RUNTIME_LOG_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .enabled
+}
+
+/// `pub(crate)`: read by `observability_trace::traced`/`traced_infallible`
+/// to gate the Sentry performance transactions they start — see
+/// `RUNTIME_SENTRY_CONSENT`'s doc comment for why this needs to be its own
+/// flag rather than reusing `runtime_observability_logs_enabled`. Native
+/// transactions from a background task (the sync loop, an open room's
+/// timeline) have no per-call opportunity to re-check
+/// `observability_enabled_from_store` on disk the way an IPC command handler
+/// might, and `SentryGuard` itself stays alive for the rest of the process
+/// after a same-session opt-out (only the frontend client and this flag
+/// update live) — so without this check, a transaction started after
+/// in-session opt-out would still report.
+///
+/// Pure flag read — deliberately doesn't also check whether a native Sentry
+/// client actually exists (see `observability_trace::traced`'s doc comment
+/// for that separate check and why it lives at the call site instead of
+/// here). Production code reads `enabled`/`generation` together through
+/// [`with_current_sentry_consent`] (so the two are never torn apart by a
+/// concurrent update — see that function's doc comment); this and
+/// [`runtime_observability_sentry_consent_generation`] exist as plain,
+/// separately-callable getters for tests that only care about one field at
+/// a time and don't need the atomicity guarantee for their own assertions.
+#[allow(dead_code, reason = "test-only convenience getter, see doc comment")]
+pub(crate) fn runtime_observability_sentry_enabled() -> bool {
+    RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .enabled
+}
+
+/// See [`runtime_observability_sentry_enabled`]'s doc comment.
+#[allow(dead_code, reason = "test-only convenience getter, see doc comment")]
+pub(crate) fn runtime_observability_sentry_consent_generation() -> u64 {
+    RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .generation
+}
+
+/// `pub(crate)`: read by `observability_trace::run_traced` to close the
+/// remaining check-then-finish race (Codex review on #289, P2) — reading
+/// `runtime_observability_sentry_enabled()` and
+/// `runtime_observability_sentry_consent_generation()` as two separate lock
+/// acquisitions, then calling `Transaction::finish()` afterward, still left
+/// a window where a consent update could land *between* that check and the
+/// `finish()` call, submitting a transaction after Rust had already applied
+/// a revocation. `f` runs while this lock is held, so a call to
+/// `update_runtime_observability_sentry_enabled` on another thread — which
+/// also needs this same lock — cannot interleave between the decision and
+/// the `finish()` a caller performs inside `f`; the whole "is this still
+/// consented" + "actually submit" sequence is atomic with respect to
+/// consent changes. Safe to call `Transaction::finish()` from inside `f`:
+/// it hands the built event off to the client's transport queue rather than
+/// blocking on network I/O itself, and sentry-rust's internals have no
+/// reentrant path back into this lock.
+pub(crate) fn with_current_sentry_consent<T>(f: impl FnOnce(bool, u64) -> T) -> T {
+    let state = RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(state.enabled, state.generation)
 }
 
 /// Resolves the value for the `charm.build.id` Sentry tag (Spec 23/24):
@@ -644,8 +837,30 @@ fn init_sentry_from_settings<R: tauri::Runtime>(
     let dsn = resolve_sentry_dsn()?;
     let app_data_dir = app.path().app_data_dir().ok()?;
 
+    // Direct stores, not through the sequence-guarded update_runtime_*
+    // functions: those treat an incoming sequence at or below the current
+    // watermark (0 at this point, before any real IPC call has landed) as
+    // stale and ignore it — a sequence of 0 here would be discarded by that
+    // same `<=` check instead of seeding the flags. There's no concurrency
+    // to guard against yet at this single synchronous point in `.setup()`
+    // anyway; the frontend's own sequence values are derived from
+    // `Date.now()` (see `nextConsentSyncSequence` in `persistence.ts`), so
+    // its first real call is always far larger than 0 and correctly
+    // supersedes this seed once IPC starts flowing.
     let logs_enabled = observability_logs_enabled_from_store(&app_data_dir);
-    update_runtime_observability_logs_enabled(logs_enabled);
+    RUNTIME_LOG_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .enabled = logs_enabled;
+    // `sentry_enabled` is already known `true` here (the early return above
+    // covers `false`), so this seeds the flag to match the state a
+    // `SentryGuard` is about to exist for — the panel's live toggle
+    // (`update_observability_sentry_consent`) takes over from here for any
+    // change during this same session.
+    RUNTIME_SENTRY_CONSENT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .enabled = true;
     let environment = resolve_sentry_environment().map(Cow::Owned);
     // Priority: an explicit runtime SENTRY_RELEASE override, then the
     // compile-time-baked BUILD_ID (Spec 24 — present on every CI-built
@@ -1106,6 +1321,7 @@ pub fn run() {
             greet,
             get_platform,
             update_observability_log_consent,
+            update_observability_sentry_consent,
             get_feature_flags,
             get_feature_flag_catalog,
             fetch_remote_flags,
@@ -1247,6 +1463,18 @@ pub fn run() {
 mod observability_tests {
     use super::*;
 
+    // A dedicated, always-incrementing counter for tests to pass as the new
+    // `sequence` param. Shared across every test in this module (not reset
+    // between tests) so sequence values keep increasing no matter which
+    // test runs, or in what order, in the same process — a hardcoded
+    // literal like `1` in more than one test would eventually get treated
+    // as stale against a watermark an earlier test already raised.
+    static TEST_SEQUENCE_COUNTER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+    fn next_test_sequence() -> u64 {
+        TEST_SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst)
+    }
+
     static LOG_CONSENT_TEST_LOCK: std::sync::LazyLock<std::sync::Mutex<()>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
 
@@ -1254,12 +1482,57 @@ mod observability_tests {
 
     impl Drop for RuntimeLogConsentReset {
         fn drop(&mut self) {
-            RUNTIME_LOG_CONSENT.store(self.0, Ordering::SeqCst);
+            RUNTIME_LOG_CONSENT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .enabled = self.0;
         }
     }
 
+    /// Sets `enabled` directly, bypassing the sequence guard entirely (same
+    /// rationale as `init_sentry_from_settings`'s direct stores: a test
+    /// seeding a starting value isn't the out-of-order-IPC scenario the
+    /// guard exists for, and going through it would need a fake sequence
+    /// number that could itself collide with a real test call's).
     fn set_runtime_log_consent_for_test(logs_enabled: bool) -> RuntimeLogConsentReset {
-        RuntimeLogConsentReset(RUNTIME_LOG_CONSENT.swap(logs_enabled, Ordering::SeqCst))
+        let mut state = RUNTIME_LOG_CONSENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = state.enabled;
+        state.enabled = logs_enabled;
+        RuntimeLogConsentReset(previous)
+    }
+
+    // `tokio::sync::Mutex`, not `std::sync::Mutex` like `LOG_CONSENT_TEST_LOCK`
+    // above: `traced_drops_a_transaction_whose_consent_is_revoked_mid_flight`
+    // below needs to hold this lock across an `.await` (so a concurrently
+    // running sentry-consent test can't interleave and flip the shared
+    // `RUNTIME_SENTRY_CONSENT` state mid-test), and clippy's
+    // `await_holding_lock` correctly flags doing that with a
+    // `std::sync::MutexGuard`.
+    static SENTRY_CONSENT_TEST_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    struct RuntimeSentryConsentReset(bool);
+
+    impl Drop for RuntimeSentryConsentReset {
+        fn drop(&mut self) {
+            RUNTIME_SENTRY_CONSENT
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .enabled = self.0;
+        }
+    }
+
+    /// See `set_runtime_log_consent_for_test`'s doc comment — same
+    /// direct-set, bypass-the-sequence-guard rationale.
+    fn set_runtime_sentry_consent_for_test(sentry_enabled: bool) -> RuntimeSentryConsentReset {
+        let mut state = RUNTIME_SENTRY_CONSENT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = state.enabled;
+        state.enabled = sentry_enabled;
+        RuntimeSentryConsentReset(previous)
     }
 
     // Pure redaction-rule tests (matrix ID/secret patterns, JSON walking)
@@ -1400,14 +1673,182 @@ mod observability_tests {
     }
 
     #[test]
+    fn runtime_sentry_consent_is_independent_of_log_consent() {
+        // The bug this guards against: gating performance transactions on
+        // the logs-specific flag would silently drop them for a user who
+        // has Sentry on but the stricter logs sub-toggle off — a legitimate,
+        // likely common combination (see `RUNTIME_SENTRY_CONSENT`'s doc
+        // comment).
+        let _log_guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
+        let _sentry_guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _log_reset = set_runtime_log_consent_for_test(false);
+        let _sentry_reset = set_runtime_sentry_consent_for_test(false);
+
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
+
+        assert!(runtime_observability_sentry_enabled());
+        assert!(!runtime_observability_logs_enabled());
+    }
+
+    #[test]
+    fn runtime_sentry_consent_updates_after_notification() {
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(false);
+
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
+        assert!(runtime_observability_sentry_enabled());
+
+        update_runtime_observability_sentry_enabled(false, next_test_sequence());
+
+        assert!(!runtime_observability_sentry_enabled());
+    }
+
+    #[test]
+    fn runtime_sentry_consent_generation_bumps_on_every_toggle_direction() {
+        // Codex review on #289 (P2): comparing only the final consent
+        // boolean before/after an await can't tell an off→on→off (or
+        // off→on) flip mid-call apart from "consent never changed" — the
+        // final read can land back on the same value it started at. The
+        // generation counter answers "did it change at all," which is what
+        // `observability_trace::run_traced` actually needs.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(false);
+        let generation_before = runtime_observability_sentry_consent_generation();
+
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
+        let generation_after_on = runtime_observability_sentry_consent_generation();
+        assert_ne!(generation_before, generation_after_on);
+
+        update_runtime_observability_sentry_enabled(false, next_test_sequence());
+        let generation_after_off = runtime_observability_sentry_consent_generation();
+        assert_ne!(generation_after_on, generation_after_off);
+        // Back to the same boolean value it started at, but the generation
+        // still recorded that two changes happened — this is the exact
+        // property a plain before/after boolean comparison would miss.
+        assert!(!runtime_observability_sentry_enabled());
+    }
+
+    #[test]
+    fn runtime_sentry_consent_generation_does_not_bump_on_a_same_value_call() {
+        // Codex review on #289 (P3): persistObservabilitySettings' post-
+        // persist-success sync calls update_observability_sentry_consent(true)
+        // unconditionally whenever sentryEnabled is true in the saved
+        // settings — including a save that only touched an unrelated toggle
+        // (logs, replay, profiling). Bumping the generation on that
+        // already-true→true no-op would spuriously drop an unrelated
+        // in-flight login/timeline transaction run_traced happened to be
+        // mid-await on, even though Sentry consent itself never changed.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(true);
+
+        let generation_before = runtime_observability_sentry_consent_generation();
+        update_runtime_observability_sentry_enabled(true, next_test_sequence());
+        let generation_after = runtime_observability_sentry_consent_generation();
+
+        assert_eq!(generation_before, generation_after);
+    }
+
+    #[test]
+    fn stale_out_of_order_sentry_consent_update_is_ignored() {
+        // Codex review on #289 (P1): Tauri gives no ordering guarantee
+        // between two independent `invoke`s, so an older
+        // update_observability_sentry_consent(true) call can complete
+        // *after* a newer update_observability_sentry_consent(false) one —
+        // e.g. an eager opt-out racing a still-in-flight earlier opt-in. The
+        // `sequence` param (assigned at send time on the frontend, not
+        // reconstructable from arrival order on this side) is what lets
+        // Rust tell which call is actually newer regardless of which one
+        // reaches this function first.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.blocking_lock();
+        let _reset = set_runtime_sentry_consent_for_test(false);
+
+        let older_sequence = next_test_sequence();
+        let newer_sequence = next_test_sequence();
+
+        // Newer call ("opt-out") lands first.
+        update_runtime_observability_sentry_enabled(false, newer_sequence);
+        assert!(!runtime_observability_sentry_enabled());
+
+        // Older call ("opt-in") arrives late — must not undo the opt-out.
+        update_runtime_observability_sentry_enabled(true, older_sequence);
+        assert!(!runtime_observability_sentry_enabled());
+    }
+
+    #[tokio::test]
+    async fn traced_drops_a_transaction_whose_consent_is_revoked_mid_flight() {
+        // Codex review on #289 (P2): consent was only checked *before*
+        // `fut.await`, so a slow call (a slow login, a first timeline load)
+        // could still submit through the live Sentry guard if the user
+        // opted out while it was in flight. This doesn't assert anything
+        // about what Sentry actually receives (no test double for the
+        // client here) — it asserts `traced` doesn't panic or deadlock
+        // taking the revoked-mid-flight path, and that the wrapped future's
+        // own result still comes through untouched regardless of whether
+        // the transaction ends up finished or dropped.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.lock().await;
+        let _reset = set_runtime_sentry_consent_for_test(true);
+        // `traced`'s pre-check also requires a live Sentry client (a
+        // separate P2 fix on the same review round) — without one, the
+        // consent-flag flip below would never even reach the transaction
+        // machinery this test means to exercise. `sentry::init(())` (no DSN)
+        // still binds a "disabled" client onto the current Hub — see
+        // sentry-rust's own `init()`, which unconditionally calls
+        // `hub.bind_client(Some(client))` regardless of whether a DSN was
+        // configured — so this satisfies `Hub::current().client().is_some()`
+        // without any real network activity. Held for the test's duration;
+        // dropping it at the end closes this dummy client.
+        let _sentry_client = sentry::init(());
+
+        let result: Result<u8, &str> =
+            crate::observability_trace::traced("test.mid_flight_revoke", "test", async {
+                // Consent flips *during* the traced call, not before it —
+                // exercises the post-await re-check rather than the
+                // before-await early return.
+                update_runtime_observability_sentry_enabled(false, next_test_sequence());
+                Ok(7)
+            })
+            .await;
+
+        assert_eq!(result, Ok(7));
+    }
+
+    #[tokio::test]
+    async fn traced_drops_a_transaction_toggled_off_then_back_on_mid_flight() {
+        // Codex review on #289 (P2), the follow-up to the test above: an
+        // off→on flip (not just a plain off) mid-call leaves
+        // `runtime_observability_sentry_enabled()` reading `true` again by
+        // the time `fut` resolves — a re-check of the boolean alone would
+        // wrongly conclude "consent never changed" and finish the
+        // transaction, even though it spans an interval where the user had
+        // opted out. This doesn't assert what Sentry actually receives (no
+        // test double for the client here) — it asserts `traced` doesn't
+        // panic or deadlock taking this path, and that the wrapped future's
+        // own result still comes through untouched regardless of whether
+        // the transaction ends up finished or dropped.
+        let _guard = SENTRY_CONSENT_TEST_LOCK.lock().await;
+        let _reset = set_runtime_sentry_consent_for_test(true);
+        let _sentry_client = sentry::init(());
+
+        let result: Result<u8, &str> =
+            crate::observability_trace::traced("test.off_then_on_mid_flight", "test", async {
+                update_runtime_observability_sentry_enabled(false, next_test_sequence());
+                update_runtime_observability_sentry_enabled(true, next_test_sequence());
+                Ok(9)
+            })
+            .await;
+
+        assert_eq!(result, Ok(9));
+    }
+
+    #[test]
     fn runtime_log_consent_updates_after_notification() {
         let _guard = LOG_CONSENT_TEST_LOCK.lock().expect("log consent test lock");
         let _reset = set_runtime_log_consent_for_test(false);
 
-        update_runtime_observability_logs_enabled(true);
+        update_runtime_observability_logs_enabled(true, next_test_sequence());
         assert!(runtime_observability_logs_enabled());
 
-        update_runtime_observability_logs_enabled(false);
+        update_runtime_observability_logs_enabled(false, next_test_sequence());
 
         assert!(!runtime_observability_logs_enabled());
     }

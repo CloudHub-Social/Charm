@@ -174,6 +174,7 @@ describe("observability persistence", () => {
     await vi.waitFor(() => {
       expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
         logsEnabled: false,
+        sequence: expect.any(Number),
       });
     });
     expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
@@ -228,9 +229,65 @@ describe("observability persistence", () => {
     expect(mocks.storeSet.mock.invocationCallOrder[1]).toBeLessThan(
       mocks.storeSave.mock.invocationCallOrder[0],
     );
-    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    // Two calls from the winning optOut: the eager log opt-out sync (fired
+    // before durable persistence, same as the previous test), plus the
+    // post-success sentry consent sync — sentryEnabled stays `true` across
+    // both persists in this test, so it never takes the eager-off path,
+    // only the after-persist-succeeds one.
+    expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(mocks.invoke).toHaveBeenCalledWith("update_observability_log_consent", {
       logsEnabled: false,
+      sequence: expect.any(Number),
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
+      sentryEnabled: true,
+      sequence: expect.any(Number),
+    });
+  });
+
+  it("syncs sentry opt-outs to Rust before awaiting durable persistence", async () => {
+    let resolveStoreWrite!: () => void;
+    const storeWrite = new Promise<void>((resolve) => {
+      resolveStoreWrite = resolve;
+    });
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({ set: mocks.storeSet, save: mocks.storeSave });
+    mocks.storeSet.mockReturnValue(storeWrite);
+
+    const persist = persistObservabilitySettings(
+      {
+        ...DEFAULT_OBSERVABILITY_SETTINGS,
+        sentryEnabled: false,
+      },
+      100,
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
+        sentryEnabled: false,
+        sequence: expect.any(Number),
+      });
+    });
+    expect(mocks.invoke.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.storeSet.mock.invocationCallOrder[0],
+    );
+
+    resolveStoreWrite();
+    await persist;
+  });
+
+  it("syncs a sentry opt-in to Rust only after durable persistence succeeds", async () => {
+    mocks.isTauri.mockReturnValue(true);
+    mocks.load.mockResolvedValue({ set: mocks.storeSet, save: mocks.storeSave });
+
+    await persistObservabilitySettings(
+      { ...DEFAULT_OBSERVABILITY_SETTINGS, sentryEnabled: true },
+      100,
+    );
+
+    expect(mocks.invoke).toHaveBeenCalledWith("update_observability_sentry_consent", {
+      sentryEnabled: true,
+      sequence: expect.any(Number),
     });
   });
 });
