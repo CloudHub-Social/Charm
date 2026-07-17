@@ -1301,6 +1301,26 @@ pub fn run() {
                 // outcome — see `wait_for_startup_sweep`'s doc comment
                 // (Codex review on #288, P1).
                 matrix::persistence::mark_startup_sweep_complete();
+
+                // A second, delayed pass: this first sweep's own grace
+                // period (`ORPHAN_TEMP_STORE_MIN_AGE`) means a genuine crash
+                // orphan created shortly before *this* launch is
+                // indistinguishable from a login in progress right now, so
+                // it's deliberately skipped rather than swept — see that
+                // constant's doc comment. Without a second pass, an orphan
+                // skipped for exactly that reason would never get cleaned
+                // up unless the user happens to relaunch the app again
+                // after the grace period elapses (Codex review on #288,
+                // P2). Sleeping for the same duration and re-running once
+                // more closes that gap within this same session: by then,
+                // anything that was still "fresh" at the first pass and
+                // hasn't since been relocated to its permanent path is
+                // genuinely stale, not racing an in-progress flow.
+                tokio::time::sleep(matrix::persistence::ORPHAN_TEMP_STORE_MIN_AGE).await;
+                let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                if let Err(e) = matrix::persistence::sweep_orphan_temp_stores(&sweep_handle) {
+                    eprintln!("delayed orphan temp-store sweep failed: {e}");
+                }
             });
             matrix::dnd::init(&handle);
             #[cfg(desktop)]

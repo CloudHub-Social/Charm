@@ -241,8 +241,15 @@ pub async fn try_restore_session(
     // `known_account_keys` below skips a not-yet-recovered stale-backup
     // directory entirely, so this restore could otherwise run ahead of the
     // sweep's recovery pass and wrongly treat a perfectly restorable
-    // account as having no store at all.
-    persistence::wait_for_startup_sweep(std::time::Duration::from_secs(5)).await;
+    // account as having no store at all. 30s, not a tighter bound: the
+    // frontend calls this exactly once at startup (`App.tsx`), with no
+    // retry if it times out — a slow disk or an install with many
+    // stranded temp stores taking longer than a short bound would
+    // otherwise show a real, restorable session as logged out (Codex
+    // review on #288, P2). The bound exists only to protect against the
+    // sweep task panicking outright (its only other way to never signal
+    // completion), not to cap ordinary slowness.
+    persistence::wait_for_startup_sweep(std::time::Duration::from_secs(30)).await;
 
     // Held for the whole restore attempt: without this, a startup restore
     // building a client against `account_key`'s store could overlap an

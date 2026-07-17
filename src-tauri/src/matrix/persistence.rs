@@ -215,16 +215,19 @@ pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
 /// their temp store's lifetime spans a separate long-running task waiting on
 /// a browser redirect or QR scan, potentially minutes, and holding this lock
 /// for that whole window would block anything else that needs it for no
-/// benefit (the sweep only ever runs once, in the first few seconds after
-/// launch). This grace period is the fix that actually covers all four
-/// flows uniformly: a store created moments ago is essentially always still
-/// in active use, however long its owning flow ultimately takes to finish —
-/// old enough to have survived from a *previous* session (which is the only
-/// thing this sweep is meant to clean up) reliably means older than this by
-/// a huge margin. 5 minutes is generous slack for a slow/busy launch (many
-/// stale directories, a loaded disk) while still being far shorter than any
-/// realistic previous-session gap.
-const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// benefit (the *first* of the two sweep passes `lib.rs`'s `.setup()` spawns
+/// — see its second, delayed pass at this same duration — runs in the first
+/// few seconds after launch). This grace period is the fix that actually
+/// covers all four flows uniformly: a store created moments ago is
+/// essentially always still in active use, however long its owning flow
+/// ultimately takes to finish — old enough to have survived from a
+/// *previous* session (which is the only thing this sweep is meant to
+/// clean up) reliably means older than this by a huge margin. 5 minutes is
+/// generous slack for a slow/busy launch (many stale directories, a loaded
+/// disk) while still being far shorter than any realistic previous-session
+/// gap.
+pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
 
 /// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
