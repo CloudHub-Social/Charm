@@ -138,7 +138,10 @@ function mentionsSpec(item, spec) {
 			`day[-\\s]?2\\s+spec(?:ification)?\\s+0*${number}\\b`,
 			'i',
 		);
-		return explicit.test(title) || explicit.test(body);
+		// Title only: the owning PR states its spec in the title. A body-only
+		// match (e.g. a "day-2 Spec NN" pointer inside another spec's
+		// Non-goals section) is a cross-reference, not a claim of ownership.
+		return explicit.test(title);
 	}
 
 	const titleReference = new RegExp(`\\bspec(?:ification)?\\s+0*${number}\\b`, 'i');
@@ -146,14 +149,7 @@ function mentionsSpec(item, spec) {
 		`day[-\\s]?2\\s+spec(?:ification)?\\s+0*${number}\\b`,
 		'i',
 	);
-	const explicitBodyReference = new RegExp(
-		`day[-\\s]?1\\s+spec(?:ification)?\\s+0*${number}\\b`,
-		'i',
-	);
-	return (
-		(titleReference.test(title) && !dayTwoTitleReference.test(title)) ||
-		explicitBodyReference.test(body)
-	);
+	return titleReference.test(title) && !dayTwoTitleReference.test(title);
 }
 
 function specLabel(specId) {
