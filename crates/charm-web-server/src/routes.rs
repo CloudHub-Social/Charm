@@ -528,17 +528,43 @@ async fn refresh_session_cookie(
                         session
                             .last_persistence_touch_unix
                             .store(now, std::sync::atomic::Ordering::Relaxed);
+                        // Proof the object now exists — any further
+                        // `NotFound` for this token is unambiguously a real
+                        // cross-instance logout again, not the initial-save
+                        // retry this flag exists to tolerate. See
+                        // `Session::awaiting_initial_persistence`'s doc
+                        // comment.
+                        session
+                            .awaiting_initial_persistence
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(crate::persistence::TouchOutcome::NotFound) => {
-                        refresh_cookie = false;
-                        if let Some(dead_session) = state.sessions.remove(&token).await {
-                            if let Some(handle) = dead_session
-                                .sync_handle
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .take()
-                            {
-                                handle.abort();
+                        // A session whose very first `PersistenceStore::save`
+                        // (in `finish_login`) failed has no persisted object
+                        // yet by design — `sync_loop` is still retrying that
+                        // save in the background (`SaveMode::RetryInitialSave`)
+                        // — and `NotFound` here is the expected, ordinary
+                        // state until that retry lands, not evidence of a
+                        // cross-instance logout. Dropping the session on
+                        // sight would turn a transient first-save failure
+                        // into a forced logout, defeating the documented
+                        // keep-it-live-and-retry fallback entirely (Codex
+                        // review finding on #280). See `Session::
+                        // awaiting_initial_persistence`'s doc comment.
+                        if !session
+                            .awaiting_initial_persistence
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            refresh_cookie = false;
+                            if let Some(dead_session) = state.sessions.remove(&token).await {
+                                if let Some(handle) = dead_session
+                                    .sync_handle
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .take()
+                                {
+                                    handle.abort();
+                                }
                             }
                         }
                     }
@@ -909,6 +935,70 @@ mod refresh_session_cookie_gating_tests {
              killed it"
         );
     }
+
+    /// Regression test for the Codex review finding on #280 ("Don't drop
+    /// sessions still awaiting initial persistence"): a session whose very
+    /// first `PersistenceStore::save` (in `finish_login`) failed has no
+    /// persisted object yet by design — `sync_loop` is still retrying that
+    /// save in the background — and `TouchOutcome::NotFound` on this
+    /// session's first authenticated request is the expected, ordinary
+    /// state, not evidence of a cross-instance logout. It must not be
+    /// dropped from `SessionStore` on sight, unlike the sibling
+    /// `a_session_with_no_persisted_record_is_dropped_and_its_cookie_is_not_refreshed`
+    /// test's session, which has no such excuse.
+    #[tokio::test]
+    async fn a_session_still_awaiting_its_initial_save_is_not_dropped_on_not_found() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-awaiting-initial-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [65u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@awaiting-initial:example.invalid").await;
+        session
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-awaiting-initial".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-awaiting-initial",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            sessions.get("tok-awaiting-initial").await.is_some(),
+            "a session still awaiting its very first successful save must not be dropped \
+             just because that save hasn't landed yet — sync_loop's own RetryInitialSave \
+             retry is the documented fallback for this, not a forced logout"
+        );
+        assert!(
+            response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "and its cookie should still refresh normally while it waits"
+        );
+    }
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
@@ -1128,6 +1218,16 @@ async fn finish_login(
             }
             Err(e) => tracing::warn!("failed to persist session: {e}"),
         }
+    }
+    // See `Session::awaiting_initial_persistence`'s doc comment —
+    // `routes::refresh_session_cookie`'s durable touch can't yet tell
+    // "no persisted object because the initial save is still retrying" from
+    // "no persisted object because another instance already logged this
+    // token out" without this (Codex review finding on #280).
+    if !initial_save_succeeded {
+        stored
+            .awaiting_initial_persistence
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     let persist = if let (Some(store), Some(matrix_session)) = (&state.persistence, &matrix_session)

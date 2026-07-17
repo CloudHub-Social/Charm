@@ -387,6 +387,29 @@ pub struct Session {
     /// corresponding server-side signal) without paying a write on every
     /// request to do it.
     pub last_persistence_touch_unix: std::sync::atomic::AtomicU64,
+    /// `true` only for a session whose *very first* `PersistenceStore::save`
+    /// (in `routes::finish_login`, immediately after login/register) failed
+    /// — a transient disk/lock error, not a sign anything is actually
+    /// wrong with the session itself. `sync_loop`'s `repersist_if_token_changed`
+    /// keeps retrying that first save in the background
+    /// (`SaveMode::RetryInitialSave`) until it lands; until it does, there
+    /// is genuinely no persisted object for this token yet, so
+    /// `routes::refresh_session_cookie`'s durable touch reports
+    /// `TouchOutcome::NotFound` on every request — indistinguishable, from
+    /// that call alone, from a *different* token whose persisted record
+    /// really was deleted by another instance's logout. Without this flag,
+    /// an earlier revision of `refresh_session_cookie` treated both cases
+    /// identically and force-logged out a brand-new session still waiting
+    /// on its first successful save, defeating the documented
+    /// keep-it-live-and-retry fallback entirely (Codex review finding on
+    /// #280). Cleared back to `false` the moment a touch finally succeeds
+    /// (`TouchOutcome::Touched`), proof the object now exists — after that,
+    /// a further `NotFound` is unambiguously a real cross-instance logout
+    /// again. `false` for every other construction path (restored sessions
+    /// — `restore_by_token`/`restore_all` — already came from a persisted
+    /// record by definition, and a fresh login whose initial save actually
+    /// succeeded has nothing to wait on).
+    pub awaiting_initial_persistence: std::sync::atomic::AtomicBool,
     /// Count of this session's currently-connected WebSocket clients (zero,
     /// one, or more — the same "zero or more tabs" shape as `events`
     /// above). `crate::routes::handle_socket` increments this on connect and
@@ -488,6 +511,7 @@ impl Session {
             last_active: std::sync::Mutex::new(std::time::Instant::now()),
             last_validated_active: std::sync::Mutex::new(std::time::Instant::now()),
             last_persistence_touch_unix: std::sync::atomic::AtomicU64::new(0),
+            awaiting_initial_persistence: std::sync::atomic::AtomicBool::new(false),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }
