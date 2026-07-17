@@ -233,7 +233,7 @@ pub async fn list_bookmarks(
 ) -> Result<Vec<BookmarkEntry>, String> {
     let account_key = account_key_for_current_user(&state).await?;
     let mut bookmarks: Vec<StoredBookmark> = persistence::load_bookmarks(&app, &account_key)?;
-    bookmarks.sort_by(|a, b| b.saved_at_ms.cmp(&a.saved_at_ms));
+    bookmarks.sort_by_key(|b| std::cmp::Reverse(b.saved_at_ms));
 
     let client = state.require_client().await.ok();
     let media_cache = state.require_media_cache(&app).await.ok();
