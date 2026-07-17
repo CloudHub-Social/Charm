@@ -978,7 +978,18 @@ impl PersistenceStore {
             let existing = self.read_one_with_version_result(token).await?;
             let (last_seen_unix, existing_version) = match &existing {
                 Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
-                None if mode == SaveMode::RetryInitialSave => (None, None),
+                // `RetryInitialSave` creating a genuinely new object (nothing
+                // was ever there) is the one case that stamps a concrete
+                // `Some(now_unix())` here rather than preserving `None` —
+                // `None` is reserved for pre-existing legacy entries that
+                // predate this field, which `sweep_expired` backfills and
+                // skips for one round on sight. A *freshly created* object
+                // writing `None` would look exactly like one of those
+                // legacy entries and get the same one-round grace it
+                // doesn't need, silently extending an abandoned session's
+                // effective retention window past `SESSION_COOKIE_MAX_AGE_SECS`
+                // (Codex review finding on #280).
+                None if mode == SaveMode::RetryInitialSave => (Some(now_unix()), None),
                 None => {
                     tracing::info!(
                         "skipped a re-save for a persisted session: removed by a racing \
@@ -3319,10 +3330,24 @@ mod tests {
             .await
             .unwrap();
 
+        let entry = store.read_one("tok-retry-initial").await;
         assert!(
-            store.read_one("tok-retry-initial").await.is_some(),
+            entry.is_some(),
             "SaveMode::RetryInitialSave must create a fresh object when the initial \
              login save previously failed and nothing was ever persisted"
+        );
+        // Regression test for the Codex review finding on #280 ("Stamp
+        // first retry saves with a real last-seen time"): this create path
+        // must stamp a concrete `Some(now)`, not leave `last_seen_unix:
+        // None` — `None` is reserved for legacy pre-field entries, which
+        // `sweep_expired` backfills and skips for one extra round on sight.
+        // A freshly created object writing `None` would get that same
+        // one-round grace it doesn't need, silently extending an abandoned
+        // session's effective retention window.
+        assert!(
+            entry.unwrap().last_seen_unix.is_some(),
+            "a freshly created object must not carry last_seen_unix: None — that's reserved \
+             for legacy pre-field entries, not new writes"
         );
     }
 
