@@ -766,7 +766,13 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
             >
               {initials(room.room_id, room.name)}
             </AvatarFallback>
-            {room.is_direct && <PresenceDot presence={headerPresence?.presence} />}
+            {room.is_direct && (
+              <PresenceDot
+                presence={headerPresence?.presence}
+                statusMsg={headerPresence?.status_msg}
+                lastActiveAgoMs={headerPresence?.last_active_ago_ms}
+              />
+            )}
           </Avatar>
           <span className="truncate">{displayName(room.room_id, room.name)}</span>
         </div>

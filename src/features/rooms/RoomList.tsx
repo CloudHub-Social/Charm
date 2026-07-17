@@ -46,6 +46,7 @@ import {
 } from "./roomSections";
 import { filterRoomsByQuery, filterSpaceChildrenByQuery } from "./roomSearch";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
+import { getPrivacySettings } from "@/features/privacy/privacySettings";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import type { RoomListMode } from "./SpaceRail";
 
@@ -356,7 +357,9 @@ export function RoomList({
             ? undefined
             : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
         }
-        onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+        onMarkRead={() =>
+          markRoomRead(room.room_id, getPrivacySettings().hideReadReceipts).catch(logAndIgnore)
+        }
         onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       />
     ));
@@ -887,7 +890,11 @@ function HierarchyRow({
               ? undefined
               : () => setRoomMuted(joinedRoom.room_id, !joinedRoom.is_muted).catch(logAndIgnore)
           }
-          onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
+          onMarkRead={() =>
+            markRoomRead(joinedRoom.room_id, getPrivacySettings().hideReadReceipts).catch(
+              logAndIgnore,
+            )
+          }
           onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
         />
       </div>
@@ -975,7 +982,9 @@ function DraggableRoomRow({
           ? undefined
           : () => setRoomMuted(room.room_id, !room.is_muted).catch(logAndIgnore)
       }
-      onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
+      onMarkRead={() =>
+        markRoomRead(room.room_id, getPrivacySettings().hideReadReceipts).catch(logAndIgnore)
+      }
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       dragHandleProps={{ ...bind(), ref: measureRow }}
       style={{

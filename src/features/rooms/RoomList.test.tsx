@@ -281,7 +281,7 @@ describe("RoomList", () => {
 
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Mark as read"));
-    expect(markRoomRead).toHaveBeenCalledWith(room.room_id);
+    expect(markRoomRead).toHaveBeenCalledWith(room.room_id, false);
 
     fireEvent.contextMenu(screen.getByText("general"));
     fireEvent.click(await screen.findByText("Mark as unread"));

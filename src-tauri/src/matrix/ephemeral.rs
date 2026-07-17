@@ -181,15 +181,26 @@ pub async fn send_typing_impl(
 
 /// Convenience command used both when a room becomes active and by the
 /// room-list "mark read" action: resolves the latest event in the room and
-/// sends a public read receipt + fully-read marker to it.
+/// sends a read receipt + fully-read marker to it. `private` selects
+/// `m.read.private` instead of the (default) broadcast `m.read` receipt —
+/// wired to the "hide read receipts" privacy setting (Spec 40), which per
+/// Matrix reciprocity also means the user stops *seeing* others' receipts.
 #[tauri::command]
-pub async fn mark_room_read(state: State<'_, MatrixState>, room_id: String) -> Result<(), String> {
+pub async fn mark_room_read(
+    state: State<'_, MatrixState>,
+    room_id: String,
+    private: bool,
+) -> Result<(), String> {
     let client = state.require_client().await?;
-    mark_room_read_impl(&client, &room_id).await
+    mark_room_read_impl(&client, &room_id, private).await
 }
 
 /// Core logic behind [`mark_room_read`].
-pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> Result<(), String> {
+pub async fn mark_room_read_impl(
+    client: &matrix_sdk::Client,
+    room_id: &str,
+    private: bool,
+) -> Result<(), String> {
     let room = parse_room(client, room_id)?;
 
     let Some(latest_event_id) = room.latest_event().event_id() else {
@@ -197,9 +208,12 @@ pub async fn mark_room_read_impl(client: &matrix_sdk::Client, room_id: &str) -> 
         return Ok(());
     };
 
-    let receipts = Receipts::new()
-        .fully_read_marker(latest_event_id.clone())
-        .public_read_receipt(latest_event_id);
+    let mut receipts = Receipts::new().fully_read_marker(latest_event_id.clone());
+    receipts = if private {
+        receipts.private_read_receipt(latest_event_id)
+    } else {
+        receipts.public_read_receipt(latest_event_id)
+    };
 
     room.send_multiple_receipts(receipts)
         .await

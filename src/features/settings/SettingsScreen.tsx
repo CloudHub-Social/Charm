@@ -13,6 +13,7 @@ import { DesktopPanel } from "./DesktopPanel";
 import { FocusPanel } from "./FocusPanel";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 import { ObservabilityPanel } from "./ObservabilityPanel";
+import { PrivacyPanel } from "./PrivacyPanel";
 import type { SettingsSection } from "./settingsAtoms";
 import { useIsDesktopPlatform } from "./useIsDesktopPlatform";
 import { useSettingsNavigation } from "./useSettingsNavigation";
@@ -46,6 +47,7 @@ const SECTIONS: {
   desktopOnly?: boolean;
   webUnsupported?: boolean;
   flagGated?: boolean;
+  privacyFlagGated?: boolean;
   productionHidden?: boolean;
 }[] = [
   { value: "account", label: "Account" },
@@ -61,6 +63,7 @@ const SECTIONS: {
   // transport for, same reason `general`/`notifications` above are
   // `webUnsupported` rather than adding web-side command support.
   { value: "focus", label: "Focus", flagGated: true, webUnsupported: true },
+  { value: "privacy", label: "Privacy", privacyFlagGated: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
   { value: "labs", label: "Labs", productionHidden: true },
@@ -89,11 +92,13 @@ function SettingsBody({
   // off-ramp; `!webBuild` still applies since the underlying IPC is
   // Tauri-only either way.
   const { enabled: dndActive } = useFocusMode();
+  const privacyControlsEnabled = useFlag("presence_receipt_privacy_controls");
   const sections = SECTIONS.filter(
     (s) =>
       (!s.desktopOnly || showDesktopSection) &&
       (!s.webUnsupported || !webBuild) &&
       (!s.flagGated || focusModeEnabled || dndActive) &&
+      (!s.privacyFlagGated || privacyControlsEnabled) &&
       (!s.productionHidden || !isProductionEnv),
   );
 
@@ -175,6 +180,11 @@ function SettingsBody({
         {(focusModeEnabled || dndActive) && (
           <TabsContent value="focus">
             <FocusPanel />
+          </TabsContent>
+        )}
+        {privacyControlsEnabled && (
+          <TabsContent value="privacy">
+            <PrivacyPanel />
           </TabsContent>
         )}
         <TabsContent value="about">

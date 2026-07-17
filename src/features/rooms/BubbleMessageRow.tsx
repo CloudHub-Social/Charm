@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { LinkPreviewForMessage } from "./linkPreview/LinkPreviewForMessage";
 import { MediaMessage } from "./media/MediaMessage";
+import { ReadByDialog } from "./ReadByDialog";
 import { avatarColor, initials, resolveAvatar } from "./roomDisplay";
 import { MessageActions } from "./MessageActions";
 import { ReactionBar } from "./ReactionBar";
@@ -46,6 +48,7 @@ export function BubbleMessageRow({
 }: MessageRowLayoutProps) {
   const showAvatar = !own && !sameSenderAsPrev;
   const showMeta = !sameSenderAsNext;
+  const [readByOpen, setReadByOpen] = useState(false);
 
   return (
     <div
@@ -174,7 +177,12 @@ export function BubbleMessageRow({
                 the chips sit under the same edge as the timestamp above
                 them instead of floating to the opposite side on another
                 sender's left-aligned message. */}
-            <div
+            {/* Clickable (Spec 40, item 5): opens the full ordered "read by"
+                list instead of just a truncated avatar preview + count. */}
+            <button
+              type="button"
+              onClick={() => setReadByOpen(true)}
+              aria-label={`Read by ${readers.length} ${readers.length === 1 ? "person" : "people"}`}
               className={cn(
                 "mt-0.5 flex items-center gap-[3px]",
                 own ? "justify-end" : "justify-start",
@@ -212,10 +220,18 @@ export function BubbleMessageRow({
                   +{readers.length - MAX_RECEIPT_AVATARS}
                 </span>
               )}
-            </div>
+            </button>
           </TooltipProvider>
         )}
       </div>
+      {readers.length > 0 && (
+        <ReadByDialog
+          open={readByOpen}
+          onOpenChange={setReadByOpen}
+          readerIds={readers}
+          senderNameByUserId={senderNameByUserId}
+        />
+      )}
     </div>
   );
 }

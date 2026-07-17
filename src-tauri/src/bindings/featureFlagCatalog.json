@@ -64,5 +64,11 @@
     "default": false,
     "description": "Show a compact last-message preview with sender label under each room-list row.",
     "owner": "Spec 54 (room-list enrichment and filtering)"
+  },
+  {
+    "key": "presence_receipt_privacy_controls",
+    "default": false,
+    "description": "Control whether you send read receipts and typing indicators, appear offline, and auto-idle after inactivity.",
+    "owner": "Spec 40 (presence and receipt privacy controls)"
   }
 ]

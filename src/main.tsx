@@ -13,6 +13,7 @@ import { ErrorFallback } from "./components/ErrorFallback";
 import { ThemeProvider } from "./features/appearance/ThemeProvider";
 import { isTauri } from "./lib/platform";
 import { initializeFeatureFlags } from "./featureFlags";
+import { initializePrivacySettings } from "./features/privacy/privacySettings";
 import { checkUncleanPreviousSession } from "./observability/crashRecovery";
 import { bootstrapSentryWithTimeout } from "./observability/instrument";
 import { AppProviders } from "./providers";
@@ -65,6 +66,7 @@ function Root({ showCrashRecoveryPrompt }: { showCrashRecoveryPrompt: boolean })
 // catalog defaults until it resolves, then re-render (the no-flag-flicker
 // contract). Overrides are dev/Labs-only today, so there's no user-visible flip.
 void initializeFeatureFlags();
+void initializePrivacySettings();
 
 const [settings, uncleanPreviousSession] = await Promise.all([
   bootstrapSentryWithTimeout(),

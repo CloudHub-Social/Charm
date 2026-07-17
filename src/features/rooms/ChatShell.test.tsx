@@ -459,7 +459,7 @@ describe("ChatShell", () => {
 
   it("marks the room read once it becomes active", async () => {
     renderChatShell();
-    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id, false));
   });
 
   // Real bottom-anchoring / sticky-bottom-on-arrival behavior is now
@@ -508,7 +508,7 @@ describe("ChatShell", () => {
     markRoomRead.mockClear();
 
     fireAtBottomStateChange(true);
-    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id, false));
   });
 
   it("does not mark read again while scrolled away from bottom when a new message arrives", async () => {
@@ -572,7 +572,7 @@ describe("ChatShell", () => {
       expect.objectContaining({ index: "LAST", align: "end" }),
     );
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
-    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id, false));
   });
 
   it("does not show a pill for the user's own message sent through the composer while scrolled away, because sending scrolls to present first", async () => {
@@ -2074,7 +2074,7 @@ describe("ChatShell", () => {
       store.set(roomSettingsAtom, null);
     });
 
-    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id, false));
   });
 
   it("renders the sender's resolved display name over the raw MXID, with matching initials", async () => {

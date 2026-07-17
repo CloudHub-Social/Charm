@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { getPrivacySettings } from "@/features/privacy/privacySettings";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 
@@ -93,6 +94,10 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
 
   function handleTypingInput() {
     if (!roomId) return;
+    // "Hide typing indicators" (Spec 40): never emit `m.typing` at all while
+    // the privacy setting is on — not even a one-time `true` — so a
+    // still-in-flight refresh from before the toggle can't leak one either.
+    if (getPrivacySettings().hideTyping) return;
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
@@ -100,6 +105,8 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   }
 
   function stopTyping() {
+    // `false` (stop) is always safe to send regardless of the privacy
+    // setting — it can only ever clear a typing state, never announce one.
     if (roomId) sendTyping(roomId, false).catch(logAndIgnore);
   }
 

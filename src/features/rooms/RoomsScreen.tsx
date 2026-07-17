@@ -6,6 +6,7 @@ import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
 import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
+import { usePresenceIdle } from "@/features/privacy/usePresenceIdle";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
 import { settingsOpenAtom } from "@/features/settings/settingsAtoms";
 import {
@@ -186,6 +187,11 @@ export function RoomsScreen({
   usePresenceListener();
   useBadgeListener();
   useSettingsHashSync();
+  // "Appear offline" and auto-idle (Spec 40) — no-ops unless the user has
+  // actually turned one on, and gated behind the flag so the idle timer
+  // isn't running for anyone who can't even reach the setting yet.
+  const privacyControlsEnabled = useFlag("presence_receipt_privacy_controls");
+  usePresenceIdle(privacyControlsEnabled);
 
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);
   const activeRoom = joinedRooms.find((room) => room.room_id === activeRoomId) ?? null;

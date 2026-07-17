@@ -396,7 +396,9 @@ async function invokeWeb<T>(command: string, args: InvokeArgs = {}): Promise<T> 
         typing: args.typing,
       });
     case "mark_room_read":
-      return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/mark-read`);
+      return requestJson<T>("POST", `/api/rooms/${encodeSegment(String(args.roomId))}/mark-read`, {
+        private: args.private,
+      });
     case "set_room_favourite":
       return requestJson<T>(
         "PUT",

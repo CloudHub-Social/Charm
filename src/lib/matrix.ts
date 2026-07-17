@@ -526,8 +526,8 @@ export function sendTyping(roomId: string, typing: boolean): Promise<void> {
   return invoke("send_typing", { roomId, typing });
 }
 
-export function markRoomRead(roomId: string): Promise<void> {
-  return invoke("mark_room_read", { roomId });
+export function markRoomRead(roomId: string, isPrivate = false): Promise<void> {
+  return invoke("mark_room_read", { roomId, private: isPrivate });
 }
 
 export function onReceiptsUpdate(callback: (update: ReceiptUpdate) => void): Promise<UnlistenFn> {

@@ -6,6 +6,7 @@ import {
   type RoomMessageSummary,
   type RoomSummary,
 } from "@/lib/matrix";
+import { getPrivacySettings } from "@/features/privacy/privacySettings";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { messageRowKey } from "./messageRowShared";
 
@@ -338,7 +339,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
-    markRoomRead(room.room_id).catch(logAndIgnore);
+    markRoomRead(room.room_id, getPrivacySettings().hideReadReceipts).catch(logAndIgnore);
   }, [room, roomSettingsOpen]);
 
   // Marks the room read once the true bottom of the timeline is visible —
@@ -352,7 +353,7 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     if (!isAtBottomRef.current) return;
     if (lastMarkedReadEventId.current === latestEventId) return;
     lastMarkedReadEventId.current = latestEventId;
-    markRoomRead(room.room_id).catch(logAndIgnore);
+    markRoomRead(room.room_id, getPrivacySettings().hideReadReceipts).catch(logAndIgnore);
   }
   // Re-check on every message/room-settings change too: `roomSettingsOpen`
   // closing while already at bottom, or a new latest message arriving while

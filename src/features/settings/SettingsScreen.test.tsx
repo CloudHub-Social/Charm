@@ -63,8 +63,13 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 }));
 
 let focusModeFlagEnabled = false;
+let privacyControlsFlagEnabled = false;
 vi.mock("@/featureFlags", () => ({
-  useFlag: (key: string) => (key === "focus_mode" ? focusModeFlagEnabled : false),
+  useFlag: (key: string) => {
+    if (key === "focus_mode") return focusModeFlagEnabled;
+    if (key === "presence_receipt_privacy_controls") return privacyControlsFlagEnabled;
+    return false;
+  },
 }));
 
 // `useFocusMode` gates its `getDndState` query on `isTauri()` (whether
@@ -97,6 +102,7 @@ function renderScreen(section: SettingsSection | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   focusModeFlagEnabled = false;
+  privacyControlsFlagEnabled = false;
 });
 
 afterEach(() => {
@@ -182,6 +188,26 @@ describe("SettingsScreen", () => {
     await screen.findByRole("heading", { name: "Profile" });
 
     expect(screen.queryByRole("tab", { name: "Focus" })).not.toBeInTheDocument();
+  });
+
+  it("hides Privacy when presence_receipt_privacy_controls is off", async () => {
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Privacy" })).not.toBeInTheDocument();
+  });
+
+  it("shows Privacy when presence_receipt_privacy_controls is on", async () => {
+    privacyControlsFlagEnabled = true;
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    const tab = screen.getByRole("tab", { name: "Privacy" });
+    tab.focus();
+    fireEvent.click(tab);
+
+    expect(await screen.findByRole("heading", { name: "Privacy" })).toBeInTheDocument();
   });
 
   it("hides Focus when the flag is off and DND is not active", async () => {

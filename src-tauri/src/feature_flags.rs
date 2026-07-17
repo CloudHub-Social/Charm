@@ -121,6 +121,10 @@ define_feature_flag_keys!(
         /// Spec 54 room-list last-message preview: a compact sender + text
         /// snippet rendered under the room name in each row.
         RoomListMessagePreview,
+        /// Spec 40 presence and receipt privacy controls: hide read
+        /// receipts, hide typing indicators, appear-offline, and
+        /// auto-idle/away timeout.
+        PresenceReceiptPrivacyControls,
     }
 );
 
@@ -140,6 +144,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessageActionParity => false,
             FeatureFlagKey::MediaSendPolish => false,
             FeatureFlagKey::RoomListMessagePreview => false,
+            FeatureFlagKey::PresenceReceiptPrivacyControls => false,
         }
     }
 
@@ -180,6 +185,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => {
                 "Show a compact last-message preview with sender label under each room-list row."
             }
+            FeatureFlagKey::PresenceReceiptPrivacyControls => {
+                "Control whether you send read receipts and typing indicators, appear offline, and auto-idle after inactivity."
+            }
         }
     }
 
@@ -200,6 +208,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => {
                 "Spec 54 (room-list enrichment and filtering)"
             }
+            FeatureFlagKey::PresenceReceiptPrivacyControls => {
+                "Spec 40 (presence and receipt privacy controls)"
+            }
         }
     }
 
@@ -218,6 +229,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessageActionParity => "message_action_parity",
             FeatureFlagKey::MediaSendPolish => "media_send_polish",
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
+            FeatureFlagKey::PresenceReceiptPrivacyControls => "presence_receipt_privacy_controls",
         }
     }
 }

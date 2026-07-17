@@ -191,10 +191,10 @@ describe("matrix web transport", () => {
     ],
     [
       "mark_room_read",
-      { roomId: "!r:example.org" },
+      { roomId: "!r:example.org", private: false },
       "POST",
       "/api/rooms/!r%3Aexample.org/mark-read",
-      undefined,
+      { private: false },
     ],
     [
       "set_room_favourite",
