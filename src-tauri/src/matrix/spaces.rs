@@ -150,6 +150,23 @@ async fn fetch_hierarchy_chunks(
     }
 }
 
+/// True if `room_id` appears anywhere in `ancestor_id`'s live recursive
+/// hierarchy, per the server's `/hierarchy` endpoint (the same one
+/// `list_space_hierarchy` uses) — i.e. `ancestor_id` is already an ancestor
+/// of `room_id`. Used by [`add_existing_space_child_impl`] to guard against
+/// adding `ancestor_id` as a child of `room_id`, which would otherwise form
+/// a cycle; queries the server directly rather than the local
+/// `parent_space_ids` derived from this client's own sync-populated store,
+/// for the same staleness reason as `live_child_content`.
+async fn live_hierarchy_contains(
+    client: &Client,
+    ancestor_id: &RoomId,
+    room_id: &str,
+) -> Result<bool, String> {
+    let chunks = fetch_hierarchy_chunks(client, ancestor_id.to_owned(), false).await?;
+    Ok(chunks.iter().any(|chunk| chunk.summary.room_id == room_id))
+}
+
 fn next_hierarchy_page_token(
     seen_page_tokens: &mut HashSet<String>,
     next_batch: Option<String>,
@@ -444,6 +461,10 @@ pub async fn add_existing_space_child_impl(
             ))
         }
     }
+    // Local-store fast path: cheap, and catches the common case without a
+    // network round trip — but not authoritative on its own (see the live
+    // checks below), since this client's own sync may be behind another
+    // device's recent edit.
     let parents_by_room = super::rooms::parent_space_ids(client).await;
     if let Some(existing_children) = parents_by_room.get(child_room_id) {
         if existing_children.iter().any(|parent| parent == space_id) {
@@ -451,6 +472,22 @@ pub async fn add_existing_space_child_impl(
         }
     }
     if is_ancestor(space_id, child_room_id, &parents_by_room) {
+        return Err(format!(
+            "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
+        ));
+    }
+    // Authoritative live checks, queried against the *server* rather than
+    // this client's local sync-populated store — mirrors the live-edge
+    // checks `remove_space_child_impl`/`set_space_child_suggested_impl` use
+    // for the same reason: another device may have added or removed a
+    // parent edge that hasn't reached this client's own `/sync` yet, and
+    // the local-store checks above alone could miss a duplicate or a cycle
+    // in that window, letting this command create a genuinely cyclic
+    // hierarchy (Codex review, #290).
+    if has_live_child_via(&space, &parsed_child_id).await? {
+        return Err(format!("{child_room_id} is already a child of {space_id}"));
+    }
+    if live_hierarchy_contains(client, &parsed_child_id, space_id).await? {
         return Err(format!(
             "{child_room_id} is an ancestor of {space_id} — adding it as a child would form a cycle"
         ));
@@ -1009,6 +1046,37 @@ mod tests {
             .await;
         server.sync_joined_room(&client, child_id).await;
 
+        // The live duplicate/cycle checks now query the server directly
+        // (see `has_live_child_via`/`live_hierarchy_contains`), so this
+        // needs mocks for both even on the success path: no live edge yet,
+        // and `child_id`'s own live hierarchy doesn't contain `space_id`.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{child_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "rooms": [{
+                    "room_id": child_id,
+                    "num_joined_members": 1,
+                    "world_readable": false,
+                    "guest_can_join": false,
+                    "join_rule": "invite",
+                    "children_state": [],
+                }],
+            })))
+            .mount(server.server())
+            .await;
+
         wiremock::Mock::given(wiremock::matchers::method("PUT"))
             .and(wiremock::matchers::path(format!(
                 "/_matrix/client/v3/rooms/{space_id}/state/m.space.child/{child_id}"
@@ -1029,6 +1097,99 @@ mod tests {
         assert!(
             result.is_ok(),
             "expected the existing room to be added as a child, got {result:?}"
+        );
+    }
+
+    /// The live cycle check backing `add_existing_space_child_impl` queries
+    /// the *server*, not this client's local sync-populated store — covers
+    /// the case a Codex review flagged on #290: another device may have
+    /// added a parent edge that hasn't reached this client's own `/sync`
+    /// yet, so the local `parent_space_ids`-based pre-check alone would miss
+    /// a cycle that the live server hierarchy already reflects.
+    #[tokio::test]
+    async fn add_existing_space_child_impl_sees_a_cycle_the_local_store_missed() {
+        use matrix_sdk_test::event_factory::EventFactory;
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        // Root and Child are both known locally with no edge between them
+        // yet — so the local pre-check sees no cycle — but the *server*
+        // already has Root as a descendant of Child (another device added
+        // it after this client's last sync).
+        let root_id = matrix_sdk::ruma::room_id!("!root:example.org");
+        let child_id = matrix_sdk::ruma::room_id!("!child:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        let root_create_event = EventFactory::new()
+            .room(root_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(root_id).add_state_event(root_create_event),
+            )
+            .await;
+        let child_create_event = EventFactory::new()
+            .room(child_id)
+            .sender(&ALICE)
+            .create(&ALICE, matrix_sdk::ruma::RoomVersionId::V11)
+            .with_space_type();
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(child_id).add_state_event(child_create_event),
+            )
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{child_id}/state/m.space.child/{root_id}"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(404).set_body_json(json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount(server.server())
+            .await;
+        // The server's live hierarchy for Child already includes Root as a
+        // descendant — this is what the local store hasn't caught up to.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{root_id}/hierarchy"
+            )))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "rooms": [
+                    {
+                        "room_id": root_id,
+                        "num_joined_members": 1,
+                        "world_readable": false,
+                        "guest_can_join": false,
+                        "join_rule": "invite",
+                        "room_type": "m.space",
+                        "children_state": [],
+                    },
+                    {
+                        "room_id": child_id,
+                        "num_joined_members": 1,
+                        "world_readable": false,
+                        "guest_can_join": false,
+                        "join_rule": "invite",
+                        "room_type": "m.space",
+                        "children_state": [],
+                    },
+                ],
+            })))
+            .mount(server.server())
+            .await;
+
+        let result =
+            add_existing_space_child_impl(&client, child_id.as_str(), root_id.as_str()).await;
+        assert!(
+            result.is_err(),
+            "expected the server-visible cycle (missed by the local store) to be rejected, got {result:?}"
         );
     }
 
