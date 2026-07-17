@@ -1101,6 +1101,48 @@ describe("ChatShell", () => {
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
   });
 
+  it("does not carry a focused-view Jump to Present pill over into a newly-selected room (Codex review fix)", async () => {
+    // Room A's bookmark jump installs a focused view (hasFocusedView).
+    // Switching to room B must not leave that pill rendered over room B's
+    // own first frame, and clicking it must not call resetToLive() for the
+    // wrong room.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+
+    expect(screen.queryByRole("button", { name: "Jump to present" })).not.toBeInTheDocument();
+  });
+
   it("clears an already-visible jump-to-present pill immediately when switching rooms, before room B's own atBottomStateChange fires", async () => {
     // Regression test: `atBottom`/`newMessageCount` live in `ChatShell`, not
     // in `useChatTimeline` or on the (per-room-remounted) Virtuoso instance,

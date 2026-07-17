@@ -265,12 +265,6 @@ export function ChatShell({
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
-    // A genuinely different room's own room-open effect already forces its
-    // timeline live (`useChatTimeline`'s `forceLive` fetch) — this flag is
-    // specifically about *this* room possibly still being focused from an
-    // earlier jump, which doesn't carry over to a different room id.
-    mightHaveFocusedViewRef.current = false;
-    setHasFocusedView(false);
     if (fileDragLeaveTimerRef.current !== null) {
       clearTimeout(fileDragLeaveTimerRef.current);
       fileDragLeaveTimerRef.current = null;
@@ -376,6 +370,21 @@ export function ChatShell({
   // user with no in-room way to reset back to live short of leaving and
   // reopening the room.
   const [hasFocusedView, setHasFocusedView] = useState(false);
+  // Review fix: set from `loadTimelineAroundEvent`'s own
+  // `installed_focused_view` flag — *not* preemptively before calling it.
+  // An earlier version set this unconditionally whenever the call was made
+  // at all, but most jumps resolve via the cheap already-cached-live-
+  // timeline or bounded-backward-pagination paths, neither of which ever
+  // installs a `TimelineFocus::Event` backend timeline — only the rarer
+  // server `/context` fallback does. Setting it regardless meant
+  // `handleJumpToPresent` forced an unnecessary live re-fetch (replacing
+  // `messages` and disrupting Virtuoso's scroll) for the much more common
+  // non-focusing case. Read by `handleJumpToPresent` to decide whether it's
+  // worth forcing that re-fetch — see its own comment for why that must
+  // stay conditional rather than unconditional. Declared here (not lower,
+  // where it's actually assigned) so the synchronous room-change reset
+  // below — which runs during render, not in an effect — can reference it.
+  const mightHaveFocusedViewRef = useRef(false);
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
     handleAtBottomStateChange(bottom);
     setAtBottom(bottom);
@@ -461,11 +470,26 @@ export function ChatShell({
   // runs *after* paint, so room B's first frame would still show room A's
   // stale pill (and could even count an immediate room-B update as "arrived
   // while scrolled away") for one frame before the effect caught up.
+  //
+  // Review fix: `hasFocusedView`/`mightHaveFocusedViewRef` used to be reset
+  // in a separate `useEffect` instead of here — that effect fires after
+  // this same room change, but still one paint *after* this synchronous
+  // block runs, so room B's first frame could briefly render the generic
+  // "Jump to present" pill left over from room A's focused jump (and
+  // clicking it would call `resetToLive()` for the wrong room, since
+  // `handleJumpToPresent` reads these same two values). Consolidated into
+  // this same synchronous reset so both frames stay correct together.
   const previousActiveRoomIdForPillRef = useRef(activeRoomId);
   if (previousActiveRoomIdForPillRef.current !== activeRoomId) {
     previousActiveRoomIdForPillRef.current = activeRoomId;
     setAtBottom(true);
     setNewMessageCount(0);
+    // A genuinely different room's own room-open effect already forces its
+    // timeline live (`useChatTimeline`'s `forceLive` fetch) — these two are
+    // specifically about *this* room possibly still being focused from an
+    // earlier jump, which doesn't carry over to a different room id.
+    mightHaveFocusedViewRef.current = false;
+    setHasFocusedView(false);
   }
   // Tracks which message rows have already been rendered once, keyed by
   // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
@@ -528,19 +552,6 @@ export function ChatShell({
   // guards against re-firing it on every subsequent `messages` update while
   // that request is still in flight.
   const loadRequestedForRef = useRef<string | null>(null);
-  // Review fix: set from `loadTimelineAroundEvent`'s own
-  // `installed_focused_view` flag — *not* preemptively before calling it.
-  // An earlier version set this unconditionally whenever the call was made
-  // at all, but most jumps resolve via the cheap already-cached-live-
-  // timeline or bounded-backward-pagination paths, neither of which ever
-  // installs a `TimelineFocus::Event` backend timeline — only the rarer
-  // server `/context` fallback does. Setting it regardless meant
-  // `handleJumpToPresent` forced an unnecessary live re-fetch (replacing
-  // `messages` and disrupting Virtuoso's scroll) for the much more common
-  // non-focusing case. Read by `handleJumpToPresent` to decide whether it's
-  // worth forcing that re-fetch — see its own comment for why that must
-  // stay conditional rather than unconditional.
-  const mightHaveFocusedViewRef = useRef(false);
   // Review fix: fallback for a `found: true` `loadTimelineAroundEvent`
   // result whose corresponding `timeline:update` never lands (or is
   // dropped) — see that branch's own comment for why this is needed.
