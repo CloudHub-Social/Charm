@@ -296,8 +296,25 @@ pub async fn list_bookmarks(
 
     let mut entries = Vec::with_capacity(bookmarks.len());
     for bookmark in bookmarks {
+        // Review fix: this loop awaits per-bookmark (`peek_timeline`,
+        // `resolve_from_timeline`), so a logout/account-switch can land
+        // mid-loop. `peek_timeline` reads the process-wide, room-id-keyed
+        // timeline cache — if the active session has since changed, it may
+        // now hold a *different* account's timeline for the same room id.
+        // Without this re-check, `resolve_from_timeline` would resolve this
+        // (account A's) bookmark's preview against that other account's
+        // cached timeline data using the stale `client` snapshot, the same
+        // cross-account leak class this command's own top-of-function fix
+        // already closed for the single-fetch case. Re-checking per
+        // iteration (by device id — see the `timeline.rs` re-checks for the
+        // same reasoning) and falling back to unresolved instead closes it
+        // for this multi-await loop too.
+        let still_active = state
+            .require_client()
+            .await
+            .is_ok_and(|current| current.device_id() == client.device_id());
         let resolved = match RoomId::parse(&bookmark.room_id) {
-            Ok(parsed_room_id) => {
+            Ok(parsed_room_id) if still_active => {
                 match state.peek_timeline(&parsed_room_id).await {
                     Some(timeline) => {
                         resolve_from_timeline(&bookmark.event_id, &client, &timeline).await

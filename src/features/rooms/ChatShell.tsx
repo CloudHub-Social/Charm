@@ -296,6 +296,7 @@ export function ChatShell({
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    resetToLive,
   } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
@@ -361,6 +362,16 @@ export function ChatShell({
     if (bottom) setNewMessageCount(0);
   }
   function handleJumpToPresent() {
+    // Review fix: if a Saved Messages jump previously fell back to the Rust
+    // `TimelineFocus::Event` path, the room's cached backend `Timeline` is
+    // still the focused one — nothing else resets it back to live for an
+    // already-open room (see `resetToLive`'s own comment). Without this,
+    // "Jump to Present" would only scroll within whatever's loaded in that
+    // possibly-narrow focused window and the room would keep missing live
+    // updates entirely. Fire-and-forget: `scrollToIndex` below still runs
+    // immediately for the common (already-live) case, and `applyMessages`
+    // re-renders once this resolves for the focused-view case.
+    resetToLive().catch(logAndIgnore);
     // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
     // own sentinel for "the actual last data item," regardless of
     // `firstItemIndex` — reads slightly clearer than the plain arithmetic and

@@ -437,8 +437,19 @@ impl MatrixState {
         // once — checking `timelines` first and dropping that guard before
         // touching `transitioning_timelines` at all — removes the nesting
         // entirely, so there's no ordering to invert.
+        // Review fix (Sentry, efficiency-only): if another concurrent call
+        // (a `replace_timeline` for this same room, e.g. an in-flight
+        // Saved Messages jump for a *different* target still resolving)
+        // has already marked this room as transitioning, skip this call's
+        // own reset-to-live entirely rather than racing it — checking
+        // `is_focused` and then popping moments later could otherwise pop
+        // and tear down a *freshly-installed* focused timeline that other
+        // call just pushed, forcing redundant listener spawn/abort work
+        // (the final live timeline this function builds further below ends
+        // up correct either way, since that doesn't depend on what was
+        // popped here — this is purely about not doing pointless work).
         let mut inserted_transition_marker = false;
-        if force_live {
+        if force_live && !self.transitioning_timelines.lock().await.contains(room_id) {
             let is_focused = {
                 let timelines = self.timelines.lock().await;
                 matches!(timelines.peek(room_id), Some((_, _, true)))
@@ -467,12 +478,24 @@ impl MatrixState {
         // anymore. `Result`/`?` can't run async cleanup on unwind (no async
         // `Drop`), so the two error paths below clear it explicitly before
         // returning.
+        //
+        // Review fix (Codex P3): every removal below is now gated on
+        // `inserted_transition_marker` — this specific call's own flag for
+        // whether *it* inserted the marker. Unconditionally removing it
+        // (the previous behavior) could delete a marker a *different*,
+        // concurrent `get_or_create_timeline`/`replace_timeline` call for
+        // this same room id had inserted for its own still-in-progress
+        // focused-to-live swap — reopening the same `is_timeline_open`
+        // false-negative window this marker exists to close, for that other
+        // call's in-flight room-open notification handling.
         {
             let mut timelines = self.timelines.lock().await;
             if let Some((existing, _, _)) = timelines.get(room_id) {
                 let existing = std::sync::Arc::clone(existing);
                 drop(timelines);
-                self.transitioning_timelines.lock().await.remove(room_id);
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
                 return Ok(existing);
             }
         }
@@ -504,7 +527,9 @@ impl MatrixState {
         if let Some((existing, _, _)) = timelines.get(room_id) {
             let existing = std::sync::Arc::clone(existing);
             drop(timelines);
-            self.transitioning_timelines.lock().await.remove(room_id);
+            if inserted_transition_marker {
+                self.transitioning_timelines.lock().await.remove(room_id);
+            }
             return Ok(existing);
         }
 
@@ -530,7 +555,9 @@ impl MatrixState {
         // block every other `get_or_create_timeline`/`is_timeline_open`
         // caller for however long that task takes to unwind, for no reason.
         drop(timelines);
-        self.transitioning_timelines.lock().await.remove(room_id);
+        if inserted_transition_marker {
+            self.transitioning_timelines.lock().await.remove(room_id);
+        }
         if let Some((_, (_, evicted_handle, _))) = evicted {
             evicted_handle.abort();
             // Genuinely wait for it to stop (see `abort_current_sync_loop`'s

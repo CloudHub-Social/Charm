@@ -313,6 +313,43 @@ export function useChatTimeline(
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `applyMessages` closes over refs/setState, not state that should re-run this effect.
   }, [room?.room_id]);
 
+  // Review fix: once a Saved Messages jump falls back to the Rust
+  // `TimelineFocus::Event` path (the live-tail-only client-side scan in
+  // `load_timeline_around_event` gave up and it resolved the target via the
+  // server's `/context` endpoint instead), the room's cached backend
+  // `Timeline` stays swapped to that focused view — `replace_timeline`
+  // installs it, and nothing resets it back to live afterward. The
+  // room-open effect above is the *only* place that passes `forceLive:
+  // true`, and it's keyed on `room?.room_id`, which never changes for this
+  // case (the user is still in the same room, just scrolled to older
+  // history within it) — so it never re-runs. Without an explicit reset,
+  // "Jump to Present" only scrolls within whatever's loaded in that
+  // (possibly narrow) focused window, and the room stops receiving live
+  // updates entirely (the listener is on the focused timeline, not the live
+  // one) until the user leaves and reopens the room. `ChatShell`'s
+  // "Jump to Present" handler calls this to force the same live-tail
+  // re-fetch/reset the room-open path does, without needing a room switch.
+  async function resetToLive() {
+    if (!room) return;
+    const targetRoomId = room.room_id;
+    setLoadingMore(false);
+    setHasMore(false);
+    setPaginationError(false);
+    setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
+    setPrependedCount(0);
+    setLoading(true);
+    try {
+      const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
+      applyMessages(page.messages);
+      nextCursorRef.current = page.next_cursor;
+      setHasMore(page.next_cursor !== null);
+    } catch (err) {
+      logAndIgnore(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     const listenerRoomId = room?.room_id;
     if (!listenerRoomId) return undefined;
@@ -357,8 +394,8 @@ export function useChatTimeline(
     // above can both apply to the very same room-open (opening a *new*
     // room via a bookmark jump) — resetting to a bare `false` here would
     // undo that render's own correct suppression.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-runs on room change; reads the latest hasPendingJump from this render's closure.
     suppressMarkReadRef.current = hasPendingJump;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-runs on room change; reads the latest hasPendingJump from this render's closure.
   }, [room?.room_id]);
 
   // Mark the room read as soon as it becomes active — deduped on room id
@@ -429,9 +466,21 @@ export function useChatTimeline(
     // waiting for — Virtuoso reporting a real post-jump scroll position,
     // not just `hasPendingJump` having flipped back to `false` on a
     // possibly-earlier render. Clearing it here (rather than wherever
-    // `hasPendingJump` changes) is what closes the gap the review finding
-    // describes.
-    suppressMarkReadRef.current = false;
+    // `hasPendingJump` changes) is what closes that gap.
+    //
+    // Review fix: only while a jump *isn't* pending, though — Virtuoso can
+    // still report `atBottom=true` for the room's initial live-tail
+    // snapshot before a not-yet-loaded bookmark's own `loadTimelineAroundEvent`
+    // has resolved and scrolled anywhere (that resolution, and the
+    // `scrollToIndex` it triggers, is what actually clears `hasPendingJump`
+    // — see `ChatShell`'s jump effect). Clearing suppression on *that*
+    // report would mark read off the room's unrelated live tail while the
+    // jump to older, unseen history is still in flight. The render-time
+    // `if (hasPendingJump) suppressMarkReadRef.current = true` above already
+    // re-asserts suppression on every render while a jump is pending, but
+    // this callback can run independently of that render cycle (a child's
+    // effect, not a state update), so it must not undo it in between.
+    if (!hasPendingJump) suppressMarkReadRef.current = false;
     if (atBottom) markReadIfAtBottom();
   }
 
@@ -552,5 +601,6 @@ export function useChatTimeline(
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    resetToLive,
   };
 }

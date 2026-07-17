@@ -600,6 +600,44 @@ describe("ChatShell", () => {
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
+  it("resets the timeline to live when Jump to Present is clicked, so a focused bookmark view doesn't stay stuck (Codex review fix)", async () => {
+    // Once a Saved Messages jump falls back to the Rust `TimelineFocus::Event`
+    // path, the room's cached backend timeline stays focused — clicking
+    // "Jump to Present" is the one place a still-open room can force it
+    // back to live, since the room id itself never changes to re-trigger
+    // the room-open `forceLive` fetch. This asserts the wiring: clicking
+    // the pill must re-fetch with `forceLive: true`, not just scroll
+    // within whatever's already loaded.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("second");
+    getTimelinePage.mockClear();
+
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    await vi.waitFor(() =>
+      expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true),
+    );
+  });
+
   it("does not show a pill for the user's own message sent through the composer while scrolled away, because sending scrolls to present first", async () => {
     // Own sends don't need special-case exclusion from the pill count
     // (see the next test) — they simply never reach it, because
@@ -3244,6 +3282,33 @@ describe("ChatShell", () => {
 
     expect(markRoomRead).not.toHaveBeenCalled();
     resolveLoadAround?.(false);
+  });
+
+  it("stays suppressed if Virtuoso reports the initial live-tail snapshot as atBottom while a bookmark jump is still pending (Codex review fix)", async () => {
+    // Virtuoso can report `atBottom=true` for the room's initial render
+    // (its own live-tail snapshot) before `loadTimelineAroundEvent` for a
+    // not-yet-loaded bookmark has resolved and scrolled anywhere — that
+    // report must not be treated as "the jump settled here", or mark-read
+    // would fire off the unrelated live tail while the jump to older,
+    // unseen history is still in flight.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "latest" })],
+      next_cursor: null,
+    });
+    loadTimelineAroundEvent.mockReturnValue(new Promise(() => {}));
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("latest");
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    fireAtBottomStateChange(true);
+
+    expect(markRoomRead).not.toHaveBeenCalled();
   });
 
   it("does not mark read in the gap between onJumpHandled clearing jumpToEventId and Virtuoso's own atBottomStateChange report (Codex review fix)", async () => {
