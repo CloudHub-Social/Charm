@@ -1,17 +1,22 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SavedMessagesPanel } from "./SavedMessagesPanel";
-import type { BookmarkEntry, RoomSummary } from "@/lib/matrix";
+import type { BookmarkEntry, RoomSummary, RoomTimelineUpdate } from "@/lib/matrix";
 import { renderWithProviders } from "@/test/renderWithProviders";
 
 const listBookmarks = vi.fn();
 const listRooms = vi.fn();
 const removeBookmark = vi.fn();
+let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 
 vi.mock("@/lib/matrix", () => ({
   listBookmarks: (...args: unknown[]) => listBookmarks(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   removeBookmark: (...args: unknown[]) => removeBookmark(...args),
+  onTimelineUpdate: vi.fn((callback: (update: RoomTimelineUpdate) => void) => {
+    timelineUpdateCallback = callback;
+    return Promise.resolve(() => {});
+  }),
 }));
 
 function makeRoom(overrides: Partial<RoomSummary> = {}): RoomSummary {
@@ -40,6 +45,7 @@ describe("SavedMessagesPanel", () => {
     listBookmarks.mockReset();
     listRooms.mockReset().mockResolvedValue([makeRoom()]);
     removeBookmark.mockReset().mockResolvedValue(undefined);
+    timelineUpdateCallback = undefined;
   });
 
   it("shows an empty state when there are no bookmarks", async () => {
@@ -126,5 +132,46 @@ describe("SavedMessagesPanel", () => {
 
     resolveBookmarks([]);
     await screen.findByText("Bookmark a message from its action menu to save it here.");
+  });
+
+  it("refetches when a timeline:update touches a currently-listed bookmark", async () => {
+    // Review fix regression test: an edit/redaction landing while this
+    // panel is already open used to leave the stale pre-edit body_preview
+    // showing until something unrelated (e.g. a bookmark add/remove)
+    // happened to trigger a refetch.
+    listBookmarks
+      .mockResolvedValueOnce([makeBookmark({ event_id: "$a", body_preview: "original" })])
+      .mockResolvedValue([makeBookmark({ event_id: "$a", body_preview: "edited" })]);
+    renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
+
+    await screen.findByText("original");
+    expect(timelineUpdateCallback).toBeDefined();
+
+    timelineUpdateCallback?.({
+      room_id: "!room:localhost",
+      messages: [{ event_id: "$a" } as RoomTimelineUpdate["messages"][number]],
+    });
+
+    await screen.findByText("edited");
+  });
+
+  it("ignores a timeline:update for an event that isn't bookmarked", async () => {
+    listBookmarks.mockResolvedValue([makeBookmark({ event_id: "$a", body_preview: "original" })]);
+    renderWithProviders(<SavedMessagesPanel onJumpToMessage={vi.fn()} />);
+
+    await screen.findByText("original");
+    listBookmarks.mockResolvedValue([
+      makeBookmark({ event_id: "$a", body_preview: "should not appear" }),
+    ]);
+
+    timelineUpdateCallback?.({
+      room_id: "!room:localhost",
+      messages: [{ event_id: "$unrelated" } as RoomTimelineUpdate["messages"][number]],
+    });
+
+    // No refetch expected — give any accidental one a moment to land, then
+    // confirm the original preview is still what's shown.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await screen.findByText("original")).toBeInTheDocument();
   });
 });

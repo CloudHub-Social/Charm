@@ -1,8 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, BookmarkX } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { logAndIgnore } from "@/lib/logAndIgnore";
-import { listBookmarks, listRooms, removeBookmark, type BookmarkEntry } from "@/lib/matrix";
+import {
+  listBookmarks,
+  listRooms,
+  onTimelineUpdate,
+  removeBookmark,
+  type BookmarkEntry,
+} from "@/lib/matrix";
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
 
 const BOOKMARKS_QUERY_KEY = ["bookmarks"] as const;
@@ -51,6 +58,37 @@ export function SavedMessagesPanel({ onJumpToMessage }: SavedMessagesPanelProps)
   const { data: bookmarks } = useBookmarks();
   const { data: rooms } = useRoomNames();
   const queryClient = useQueryClient();
+
+  // Review fix: a bookmarked message's `body_preview` is resolved live from
+  // an open room's timeline (see the Rust side's `list_bookmarks`), but
+  // nothing previously refetched this query when that timeline changed —
+  // an edit or redaction landing while this panel was already open and had
+  // already resolved a preview would keep showing the stale pre-edit body
+  // until something unrelated (e.g. a bookmark add/remove) happened to
+  // trigger a refetch. Bookmarks change rarely enough that it's cheap to
+  // just invalidate whenever a currently-listed bookmark's own event shows
+  // up in a `timeline:update`, rather than plumbing a narrower per-event
+  // subscription.
+  const bookmarksRef = useRef(bookmarks);
+  bookmarksRef.current = bookmarks;
+  useEffect(() => {
+    const unlistenPromise = onTimelineUpdate((update) => {
+      const current = bookmarksRef.current;
+      if (!current) return;
+      const touchesABookmark = update.messages.some((message) =>
+        current.some(
+          (bookmark) =>
+            bookmark.room_id === update.room_id && bookmark.event_id === message.event_id,
+        ),
+      );
+      if (touchesABookmark) {
+        void queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY });
+      }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten()).catch(logAndIgnore);
+    };
+  }, [queryClient]);
 
   async function handleRemove(eventId: string) {
     // Optimistic removal, same pattern `useMessageActions.handleUnbookmark`

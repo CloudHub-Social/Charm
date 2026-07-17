@@ -460,10 +460,23 @@ impl MatrixState {
             client.user_id().map(ToOwned::to_owned),
         );
 
-        self.timelines.lock().await.push(
+        // Review fix: `push`'s return value was previously discarded. If
+        // another caller (e.g. a concurrent `get_or_create_timeline`)
+        // inserted a fresh entry for this same room in the window between
+        // the `pop` above and this `push`, that displaced entry's listener
+        // handle would otherwise be dropped — detaching, not stopping, its
+        // task (same open-handle hazard `get_or_create_timeline`'s own
+        // eviction handling exists to avoid), leaving it to keep emitting
+        // `timeline:update` against a live tail concurrently with this
+        // event-focused view.
+        let displaced = self.timelines.lock().await.push(
             room_id.to_owned(),
             (std::sync::Arc::clone(&timeline), handle),
         );
+        if let Some((_, (_, displaced_handle))) = displaced {
+            displaced_handle.abort();
+            let _ = displaced_handle.await;
+        }
 
         timeline
     }
