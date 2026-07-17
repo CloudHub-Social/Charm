@@ -35,6 +35,10 @@ interface MessageRowProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /** See `MessageRowLayoutProps.onResend`. */
+  onResend: () => void;
+  /** See `MessageRowLayoutProps.onDiscard`. */
+  onDiscard: () => void;
   /** See `MessageRowLayoutProps.onJumpToMessage`. */
   onJumpToMessage: (eventId: string) => void;
   onUserPillClick?: (userId: string, label: string) => void;

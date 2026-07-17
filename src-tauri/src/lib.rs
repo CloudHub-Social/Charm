@@ -1365,6 +1365,8 @@ pub fn run() {
             matrix::actions::can_redact,
             matrix::actions::toggle_reaction,
             matrix::actions::send_reply,
+            matrix::actions::resend_message,
+            matrix::actions::discard_failed_message,
             matrix::commands::run_command,
             matrix::members::get_room_members,
             matrix::verification::bootstrap_cross_signing,
