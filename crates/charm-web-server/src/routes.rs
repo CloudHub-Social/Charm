@@ -495,7 +495,7 @@ async fn refresh_session_cookie(
         if let Some(persistence) = &state.persistence {
             let drop_dead_session = !session
                 .awaiting_initial_persistence
-                .load(std::sync::atomic::Ordering::Relaxed);
+                .load(std::sync::atomic::Ordering::Acquire);
             // Keep the server-side activity signal `PersistenceStore::sweep_expired`
             // relies on roughly in step with the cookie's own extended
             // lifetime — throttled, since this session being resident in
@@ -523,7 +523,7 @@ async fn refresh_session_cookie(
                         // retry this flag exists to tolerate.
                         session
                             .awaiting_initial_persistence
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                            .store(false, std::sync::atomic::Ordering::Release);
                     }
                     Ok(crate::persistence::TouchOutcome::NotFound) => {
                         // A cross-instance logout landed between
@@ -1422,7 +1422,7 @@ async fn finish_login(
     if !initial_save_succeeded {
         stored
             .awaiting_initial_persistence
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     let persist = if let (Some(store), Some(matrix_session)) = (&state.persistence, &matrix_session)
@@ -1743,7 +1743,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
             // transient hiccup rather than forcing a logout on one.
             let deleted = !session
                 .awaiting_initial_persistence
-                .load(std::sync::atomic::Ordering::Relaxed)
+                .load(std::sync::atomic::Ordering::Acquire)
                 && !persistence.exists(&token).await.unwrap_or(true);
             // Staleness check — skipped entirely (no persistence read at
             // all) for a session that's genuinely active (open connection

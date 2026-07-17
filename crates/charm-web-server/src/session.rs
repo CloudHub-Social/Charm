@@ -419,6 +419,14 @@ pub struct Session {
     /// `restore_by_token`/`restore_all` — already came from a persisted
     /// record by definition, and a fresh login whose initial save actually
     /// succeeded has nothing to wait on).
+    ///
+    /// Every `store` clearing this to `false` uses `Ordering::Release` and
+    /// every `load` uses `Ordering::Acquire` — `Relaxed` gives no
+    /// happens-before guarantee at all, so on a weak memory model a request
+    /// task could otherwise observe a stale `true` after
+    /// `sync_loop::repersist_if_token_changed` (a different task) already
+    /// cleared it, and wrongly keep tolerating a genuine `NotFound` as "the
+    /// initial save is still pending" (Sentry finding on #280).
     pub awaiting_initial_persistence: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Count of this session's currently-connected WebSocket clients (zero,
     /// one, or more — the same "zero or more tabs" shape as `events`

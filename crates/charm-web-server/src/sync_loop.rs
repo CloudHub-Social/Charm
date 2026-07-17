@@ -158,7 +158,7 @@ async fn repersist_if_token_changed(
     // awaiting_initial_persistence`'s doc comment.
     persist
         .awaiting_initial_persistence
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+        .store(false, std::sync::atomic::Ordering::Release);
     Some(access_token)
 }
 
