@@ -450,6 +450,43 @@ describe("RoomList", () => {
     expect(screen.queryByText("Remove from space")).not.toBeInTheDocument();
   });
 
+  it("wires Remove from space for a favourited room row, which bypasses the hierarchy view", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    // `getScopedRooms` scopes favourites in space mode by hierarchy
+    // membership, not `parent_space_ids` alone — the favourite row is
+    // rendered separately from (and in addition to) this hierarchy fetch.
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
+  });
+
   it("does not start a second hierarchy join while another is pending", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     let resolveJoin!: () => void;

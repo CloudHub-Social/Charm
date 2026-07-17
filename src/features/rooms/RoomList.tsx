@@ -317,6 +317,19 @@ export function RoomList({
         active={room.room_id === activeRoomId}
         onSelect={() => onSelectRoom(room.room_id)}
         onReorder={(targetIndex) => reorderWithin(fullSectionRooms, room.room_id, targetIndex)}
+        // Favourite/low-priority rooms bypass the hierarchy view entirely
+        // (see `isHiddenHierarchyRoom`) and render through this same
+        // section-rows path even in space mode — so this is the only place
+        // those tagged rows can pick up `Remove from space`; the untagged
+        // hierarchy rows get theirs from `renderHierarchy` instead.
+        onRemoveFromSpace={
+          spaceRailManagementEnabled &&
+          mode === "space" &&
+          selectedSpaceId &&
+          room.parent_space_ids.includes(selectedSpaceId)
+            ? () => removeSpaceChild(selectedSpaceId, room.room_id).catch(logAndIgnore)
+            : undefined
+        }
       />
     ));
   }
@@ -949,6 +962,7 @@ interface DraggableRoomRowProps {
   active: boolean;
   onSelect: () => void;
   onReorder: (targetIndex: number) => void;
+  onRemoveFromSpace?: () => void;
 }
 
 function DraggableRoomRow({
@@ -960,6 +974,7 @@ function DraggableRoomRow({
   active,
   onSelect,
   onReorder,
+  onRemoveFromSpace,
 }: DraggableRoomRowProps) {
   const [dragOffset, setDragOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -1006,6 +1021,7 @@ function DraggableRoomRow({
       }
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
+      onRemoveFromSpace={onRemoveFromSpace}
       dragHandleProps={{ ...bind(), ref: measureRow }}
       style={{
         transform: dragging ? `translateY(${dragOffset}px)` : undefined,

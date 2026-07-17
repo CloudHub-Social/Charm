@@ -425,11 +425,23 @@ pub async fn add_existing_space_child_impl(
     // Mirrors `AddExistingToSpaceDialog`'s own candidate filter — checked
     // here too, not just in the frontend picker, since this command is
     // reachable directly over IPC. A DM's room id is otherwise exposed to
-    // every member of `space_id` once published as a child.
-    if child_room.is_direct().await.unwrap_or(false) {
-        return Err(format!(
-            "{child_room_id} is a direct message and cannot be added to a space"
-        ));
+    // every member of `space_id` once published as a child. Fails closed on
+    // a lookup error (e.g. a transient store failure) rather than treating
+    // it as "not a DM" — this guard is the only thing standing between a
+    // caller and leaking a DM's room id here, so an inconclusive answer must
+    // not be silently treated as a pass.
+    match child_room.is_direct().await {
+        Ok(true) => {
+            return Err(format!(
+                "{child_room_id} is a direct message and cannot be added to a space"
+            ));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return Err(format!(
+                "could not determine if {child_room_id} is a direct message: {e}"
+            ))
+        }
     }
     let parents_by_room = super::rooms::parent_space_ids(client).await;
     if let Some(existing_children) = parents_by_room.get(child_room_id) {
