@@ -647,6 +647,129 @@ describe("RoomList", () => {
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!fav-child:localhost");
   });
 
+  it("refetches the space hierarchy after removing a favourited row too, not just untagged hierarchy rows", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const favouriteChild = makeRoomSummary({
+      room_id: "!fav-child:localhost",
+      name: "Pinned chat",
+      is_favourite: true,
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!fav-child:localhost",
+          name: "Pinned chat",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, favouriteChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    fireEvent.contextMenu(await screen.findByText("Pinned chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+  });
+
+  it("discards a manual hierarchy refetch that resolves after the user has switched to a different space", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const spaceA = makeRoomSummary({
+      room_id: "!space-a:localhost",
+      is_space: true,
+      name: "Team A",
+    });
+    const spaceB = makeRoomSummary({
+      room_id: "!space-b:localhost",
+      is_space: true,
+      name: "Team B",
+    });
+    const childOfA = makeRoomSummary({
+      room_id: "!child-a:localhost",
+      name: "Chat A",
+      parent_space_ids: ["!space-a:localhost"],
+    });
+    let resolveRefetch: (value: unknown) => void = () => {};
+    listSpaceHierarchy
+      .mockResolvedValueOnce([
+        {
+          child: {
+            room_id: "!child-a:localhost",
+            name: "Chat A",
+            topic: null,
+            num_joined_members: 1,
+            join_rule: "invite",
+            is_space: false,
+          },
+          children: [],
+        },
+      ])
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRefetch = resolve;
+          }),
+      )
+      .mockResolvedValueOnce([]);
+
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (selectedSpace: typeof spaceA, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [spaceA, spaceB, childOfA],
+              mode: "space",
+              selectedSpace,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withProps(spaceA, 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    // A manual refetch (e.g. from Add Existing) starts for space A but never
+    // settles before the user switches to space B.
+    rerender(withProps(spaceA, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+
+    rerender(withProps(spaceB, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(3));
+
+    // Now the stale space-A request finally resolves — it must not clobber
+    // space B's (empty) hierarchy with space A's rooms.
+    resolveRefetch([
+      {
+        child: {
+          room_id: "!child-a:localhost",
+          name: "Chat A",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
+  });
+
   it("does not start a second hierarchy join while another is pending", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     let resolveJoin!: () => void;

@@ -300,8 +300,18 @@ export function RoomList({
   // instead of only after the user navigates away and back.
   function refetchSpaceHierarchy() {
     if (mode !== "space" || !selectedSpaceId) return;
-    listSpaceHierarchy(selectedSpaceId)
-      .then((result) => setSpaceHierarchy(result))
+    const requestedSpaceId = selectedSpaceId;
+    listSpaceHierarchy(requestedSpaceId)
+      .then((result) => {
+        // The user may have switched to a different space (or out of space
+        // mode entirely) while this request was in flight — applying it now
+        // would overwrite the *current* space's hierarchy with a stale
+        // snapshot of the one this request was actually for.
+        const current = currentScopeRef.current;
+        if (current.mode === "space" && current.selectedSpaceId === requestedSpaceId) {
+          setSpaceHierarchy(result);
+        }
+      })
       .catch(logAndIgnore);
   }
 
@@ -368,9 +378,9 @@ export function RoomList({
           room.parent_space_ids.includes(selectedSpaceId)
             ? () => {
                 setRemoveError(null);
-                removeSpaceChild(selectedSpaceId, room.room_id).catch((err) =>
-                  setRemoveError(err instanceof Error ? err.message : String(err)),
-                );
+                removeSpaceChild(selectedSpaceId, room.room_id)
+                  .then(refetchSpaceHierarchy)
+                  .catch((err) => setRemoveError(err instanceof Error ? err.message : String(err)));
               }
             : undefined
         }
