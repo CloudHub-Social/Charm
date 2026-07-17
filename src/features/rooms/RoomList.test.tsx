@@ -489,6 +489,62 @@ describe("RoomList", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
   });
 
+  it("clears a Remove-from-space error when the user leaves that space's context", async () => {
+    // A Remove failure is specific to the space it happened in — it
+    // shouldn't keep rendering as a banner once the user navigates to
+    // Home, DMs, or a different space (Codex review, #290).
+    featureFlagMocks.spaceRailManagement = true;
+    removeSpaceChild.mockRejectedValueOnce(new Error("insufficient power level"));
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const otherSpace = makeRoomSummary({
+      room_id: "!other:localhost",
+      is_space: true,
+      name: "Other",
+    });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withSelectedSpace = (selectedSpace: typeof space) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space, otherSpace, joinedChild],
+              mode: "space",
+              selectedSpace,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withSelectedSpace(space));
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
+
+    rerender(withSelectedSpace(otherSpace));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("refetches the space hierarchy after Add Existing adds a room, via the hierarchyRefreshToken prop", async () => {
     featureFlagMocks.spaceRailManagement = true;
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });

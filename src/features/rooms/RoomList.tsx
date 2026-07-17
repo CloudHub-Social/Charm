@@ -348,6 +348,12 @@ export function RoomList({
       setSpaceError(null);
       setJoinError(null);
       setSpaceLoading(false);
+      // A Remove-from-space failure from a prior space shouldn't keep
+      // rendering as a banner after the user navigates to Home, DMs, or a
+      // different space — this error is specific to whatever space it
+      // happened in, unlike a join failure the user might still want to
+      // retry from the same view.
+      setRemoveError(null);
       return;
     }
     const requestId = ++hierarchyRequestIdRef.current;
@@ -355,6 +361,7 @@ export function RoomList({
     setSpaceError(null);
     setJoinError(null);
     setSpaceHierarchy([]);
+    setRemoveError(null);
     listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
         if (hierarchyRequestIdRef.current === requestId) setSpaceHierarchy(result);
