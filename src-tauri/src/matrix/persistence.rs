@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use matrix_sdk::authentication::matrix::MatrixSession;
@@ -231,15 +232,40 @@ pub(crate) const ORPHAN_TEMP_STORE_MIN_AGE: std::time::Duration =
 
 /// Pure, `AppHandle`-free variant of [`sweep_orphan_temp_stores`].
 pub fn sweep_orphan_temp_stores_at(root: &Path) -> Result<(), String> {
-    sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE)
+    sweep_orphan_temp_stores_at_with_min_age(root, ORPHAN_TEMP_STORE_MIN_AGE, &HashSet::new())
 }
 
-/// Core logic behind [`sweep_orphan_temp_stores_at`], taking the minimum age
+/// Variant of [`sweep_orphan_temp_stores`] that never discards a `tmp-*`
+/// directory whose name appears in `protected`, regardless of age. Used by
+/// `lib.rs`'s delayed second sweep pass: that pass runs `ORPHAN_TEMP_STORE_
+/// MIN_AGE` after the first one, at which point age alone can no longer
+/// distinguish a genuine crash orphan from a *still-pending* SSO/QR login —
+/// unlike password login/register, those flows have no inherent time limit
+/// (waiting on a browser redirect or a QR scan), so one running long is
+/// completely ordinary, not evidence of anything stale (Codex review on
+/// #288, P2: the delayed pass reintroduced exactly the false-positive-
+/// delete risk the age check exists to prevent). `protected` should be
+/// gathered fresh, immediately before sweeping, from whatever the app
+/// currently considers "SSO/QR login in flight" — see its call site.
+pub fn sweep_orphan_temp_stores_excluding(
+    app: &AppHandle,
+    protected: &HashSet<String>,
+) -> Result<(), String> {
+    sweep_orphan_temp_stores_at_with_min_age(
+        &matrix_store_root(app)?,
+        ORPHAN_TEMP_STORE_MIN_AGE,
+        protected,
+    )
+}
+
+/// Core logic behind [`sweep_orphan_temp_stores_at`]/
+/// [`sweep_orphan_temp_stores_excluding`], taking the minimum age
 /// explicitly so tests can use a near-zero threshold instead of waiting on
 /// real wall-clock time.
 fn sweep_orphan_temp_stores_at_with_min_age(
     root: &Path,
     min_age: std::time::Duration,
+    protected: &HashSet<String>,
 ) -> Result<(), String> {
     let now = std::time::SystemTime::now();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
@@ -254,6 +280,9 @@ fn sweep_orphan_temp_stores_at_with_min_age(
             continue;
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
+            if protected.contains(&name) {
+                continue;
+            }
             // Best-effort, with two distinct failure modes handled
             // differently:
             // - mtime unreadable at all: err toward sweeping it, matching
@@ -1547,7 +1576,12 @@ mod tests {
         std::fs::create_dir_all(&backup_path).unwrap();
         let _ = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         assert!(!temp_path.exists());
         assert!(!backup_path.exists());
@@ -1581,8 +1615,12 @@ mod tests {
         let temp_path = store_path_at(&root.0, &temp_key).unwrap();
         let _ = get_or_create_passphrase(&temp_key).unwrap();
 
-        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::from_secs(300))
-            .unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::from_secs(300),
+            &HashSet::new(),
+        )
+        .unwrap();
 
         assert!(
             temp_path.exists(),
@@ -1594,6 +1632,41 @@ mod tests {
             temp_entry.get_password().is_ok(),
             "its passphrase must survive the sweep too"
         );
+    }
+
+    #[test]
+    fn sweep_orphan_temp_stores_never_discards_a_protected_key_even_past_the_min_age() {
+        // Codex review on #288, P2: lib.rs's delayed second sweep pass runs
+        // `ORPHAN_TEMP_STORE_MIN_AGE` after the first, at which point age
+        // alone can no longer distinguish a genuine crash orphan from a
+        // still-pending SSO/QR login — those flows have no inherent time
+        // limit, so one running long by then is completely ordinary. A
+        // `min_age` of zero here stands in for that: even a directory that's
+        // definitely old enough to sweep by age must still survive if its
+        // name is in `protected`.
+        let root = ScratchRoot::new("sweep-protected");
+        let temp_key = temp_store_key();
+        let temp_path = store_path_at(&root.0, &temp_key).unwrap();
+        let _ = get_or_create_passphrase(&temp_key).unwrap();
+
+        let mut protected = HashSet::new();
+        protected.insert(temp_key.clone());
+        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO, &protected)
+            .unwrap();
+
+        assert!(
+            temp_path.exists(),
+            "a protected temp store must survive the sweep regardless of age"
+        );
+        let temp_entry =
+            keyring::Entry::new(KEYCHAIN_SERVICE, &passphrase_account(&temp_key)).unwrap();
+        assert!(
+            temp_entry.get_password().is_ok(),
+            "its passphrase must survive the sweep too"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_path);
+        let _ = temp_entry.delete_credential();
     }
 
     #[test]
@@ -1613,7 +1686,12 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         // The backup is restored to the account's path, not discarded.
         assert!(!backup_path.exists());
@@ -1656,7 +1734,12 @@ mod tests {
         std::fs::write(backup_path.join("existing.txt"), b"recoverable").unwrap();
         let backup_passphrase = get_or_create_passphrase(&backup_key).unwrap();
 
-        sweep_orphan_temp_stores_at_with_min_age(&root.0, std::time::Duration::ZERO).unwrap();
+        sweep_orphan_temp_stores_at_with_min_age(
+            &root.0,
+            std::time::Duration::ZERO,
+            &HashSet::new(),
+        )
+        .unwrap();
 
         // The uncommitted store is discarded; the backup takes its place.
         assert!(!backup_path.exists());

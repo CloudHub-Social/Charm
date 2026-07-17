@@ -1315,10 +1315,33 @@ pub fn run() {
                 // more closes that gap within this same session: by then,
                 // anything that was still "fresh" at the first pass and
                 // hasn't since been relocated to its permanent path is
-                // genuinely stale, not racing an in-progress flow.
+                // genuinely stale, not racing an in-progress flow — *except*
+                // a still-pending SSO/QR login, which has no inherent time
+                // limit (waiting on a browser redirect or a QR scan) and can
+                // legitimately outlive this delay; unlike the first pass,
+                // age alone can no longer tell those apart by now. Gathered
+                // fresh right before sweeping (not once, up front) so a
+                // login that started or finished partway through the sleep
+                // is still read accurately (Codex review on #288, P2).
                 tokio::time::sleep(matrix::persistence::ORPHAN_TEMP_STORE_MIN_AGE).await;
+                let matrix_state = sweep_handle.state::<matrix::MatrixState>();
+                let mut protected_temp_keys = std::collections::HashSet::new();
+                if let Some(pending) = matrix_state.pending_sso.lock().await.as_ref() {
+                    protected_temp_keys.insert(pending.store_key.clone());
+                }
+                if let Some(key) = matrix_state
+                    .pending_qr_temp_store_key
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .as_ref()
+                {
+                    protected_temp_keys.insert(key.clone());
+                }
                 let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
-                if let Err(e) = matrix::persistence::sweep_orphan_temp_stores(&sweep_handle) {
+                if let Err(e) = matrix::persistence::sweep_orphan_temp_stores_excluding(
+                    &sweep_handle,
+                    &protected_temp_keys,
+                ) {
                     eprintln!("delayed orphan temp-store sweep failed: {e}");
                 }
             });
