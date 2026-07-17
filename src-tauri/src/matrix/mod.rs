@@ -424,19 +424,34 @@ impl MatrixState {
         // `timelines`. `transitioning_timelines` is what keeps
         // `is_timeline_open` correct while this room briefly has no entry
         // cached during that pop-to-repush span.
+        //
+        // Review fix (deadlock): this used to check-and-pop `timelines`
+        // and insert into `transitioning_timelines` under one nested
+        // critical section (holding `timelines` for the whole block, so
+        // `transitioning_timelines` was acquired *while already holding*
+        // `timelines`) — the opposite nesting order from `replace_timeline`,
+        // which locks `transitioning_timelines` and lets that guard drop
+        // before separately locking `timelines`. Two tasks hitting these
+        // paths for the same room at the same time could each be holding
+        // one lock while waiting on the other. Never holding both locks at
+        // once — checking `timelines` first and dropping that guard before
+        // touching `transitioning_timelines` at all — removes the nesting
+        // entirely, so there's no ordering to invert.
+        let mut inserted_transition_marker = false;
         if force_live {
-            let previous = {
-                let mut timelines = self.timelines.lock().await;
-                match timelines.peek(room_id) {
-                    Some((_, _, true)) => {
-                        self.transitioning_timelines
-                            .lock()
-                            .await
-                            .insert(room_id.to_owned());
-                        timelines.pop(room_id)
-                    }
-                    _ => None,
-                }
+            let is_focused = {
+                let timelines = self.timelines.lock().await;
+                matches!(timelines.peek(room_id), Some((_, _, true)))
+            };
+            let previous = if is_focused {
+                self.transitioning_timelines
+                    .lock()
+                    .await
+                    .insert(room_id.to_owned());
+                inserted_transition_marker = true;
+                self.timelines.lock().await.pop(room_id)
+            } else {
+                None
             };
             if let Some((_, previous_handle, _)) = previous {
                 previous_handle.abort();
@@ -444,6 +459,14 @@ impl MatrixState {
             }
         }
 
+        // Review fix (Codex P2): every error return from here on must clear
+        // `transitioning_timelines` if this call set it above — otherwise a
+        // `client.get_room`/`room.timeline()` failure below would leave the
+        // marker set forever, permanently reporting this room as open to
+        // `is_timeline_open` even though no listener is cached for it
+        // anymore. `Result`/`?` can't run async cleanup on unwind (no async
+        // `Drop`), so the two error paths below clear it explicitly before
+        // returning.
         {
             let mut timelines = self.timelines.lock().await;
             if let Some((existing, _, _)) = timelines.get(room_id) {
@@ -454,10 +477,24 @@ impl MatrixState {
             }
         }
 
-        let room = client
-            .get_room(room_id)
-            .ok_or_else(|| format!("room {room_id} not found"))?;
-        let timeline = std::sync::Arc::new(room.timeline().await.map_err(|e| e.to_string())?);
+        let room = match client.get_room(room_id) {
+            Some(room) => room,
+            None => {
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
+                return Err(format!("room {room_id} not found"));
+            }
+        };
+        let timeline = match room.timeline().await {
+            Ok(timeline) => std::sync::Arc::new(timeline),
+            Err(e) => {
+                if inserted_transition_marker {
+                    self.transitioning_timelines.lock().await.remove(room_id);
+                }
+                return Err(e.to_string());
+            }
+        };
 
         let mut timelines = self.timelines.lock().await;
         // Re-check: another concurrent call may have built and inserted one
