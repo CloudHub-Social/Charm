@@ -268,6 +268,8 @@ fn sweep_orphan_temp_stores_at_with_min_age(
     protected: &HashSet<String>,
 ) -> Result<(), String> {
     let now = std::time::SystemTime::now();
+    let mut temp_store_entries = Vec::new();
+    let mut stale_backup_entries = Vec::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
         let Ok(entry) = entry else { continue };
         let Ok(file_type) = entry.file_type() else {
@@ -280,36 +282,56 @@ fn sweep_orphan_temp_stores_at_with_min_age(
             continue;
         };
         if name.starts_with(TEMP_STORE_PREFIX) {
-            if protected.contains(&name) {
-                continue;
-            }
-            // Best-effort, with two distinct failure modes handled
-            // differently:
-            // - mtime unreadable at all: err toward sweeping it, matching
-            //   the pre-existing behavior for every other failure mode in
-            //   this best-effort cleanup pass — an unreadable mtime is
-            //   itself unusual enough to suggest genuine filesystem trouble
-            //   rather than a live directory.
-            // - mtime reads as *later* than `now` (clock skew, or a write
-            //   landing between reading `now` and stat'ing this entry): err
-            //   toward treating it as fresh — `duration_since` returning
-            //   `Err` here means "younger than `now`, however you slice it,"
-            //   which is the one thing this check exists to protect against
-            //   sweeping.
-            let is_fresh = match entry.metadata().and_then(|metadata| metadata.modified()) {
-                Ok(modified) => match now.duration_since(modified) {
-                    Ok(age) => age < min_age,
-                    Err(_) => true,
-                },
-                Err(_) => false,
-            };
-            if is_fresh {
-                continue;
-            }
-            discard_temp_store(&entry.path(), &name);
+            temp_store_entries.push((name, entry.path()));
         } else if let Some(account_key) = name.strip_suffix(STALE_BACKUP_SUFFIX) {
-            recover_or_discard_stale_backup(root, account_key, &name, &entry.path());
+            stale_backup_entries.push((account_key.to_string(), name, entry.path()));
         }
+    }
+
+    // Stale-backup recovery first, in its own pass, *before* any temp-store
+    // discards — not interleaved in one `read_dir` order (whatever the
+    // filesystem happens to return, unrelated to which matters more).
+    // `try_restore_session` waits on this whole function via
+    // `wait_for_startup_sweep`/`mark_startup_sweep_complete`, so a launch
+    // with many stranded `tmp-*` directories (each a deletion, plus a
+    // keychain credential removal) but only one recoverable
+    // `.stale-backup` shouldn't make that recovery wait behind all of them
+    // — the temp-store discards are the part that scales with disk state,
+    // recovery does not (Codex review on #288, P2: a restore that's
+    // otherwise ready can be delayed by unrelated cleanup work it doesn't
+    // depend on).
+    for (account_key, name, path) in stale_backup_entries {
+        recover_or_discard_stale_backup(root, &account_key, &name, &path);
+    }
+
+    for (name, path) in temp_store_entries {
+        if protected.contains(&name) {
+            continue;
+        }
+        // Best-effort, with two distinct failure modes handled
+        // differently:
+        // - mtime unreadable at all: err toward sweeping it, matching
+        //   the pre-existing behavior for every other failure mode in
+        //   this best-effort cleanup pass — an unreadable mtime is
+        //   itself unusual enough to suggest genuine filesystem trouble
+        //   rather than a live directory.
+        // - mtime reads as *later* than `now` (clock skew, or a write
+        //   landing between reading `now` and stat'ing this entry): err
+        //   toward treating it as fresh — `duration_since` returning
+        //   `Err` here means "younger than `now`, however you slice it,"
+        //   which is the one thing this check exists to protect against
+        //   sweeping.
+        let is_fresh = match std::fs::metadata(&path).and_then(|metadata| metadata.modified()) {
+            Ok(modified) => match now.duration_since(modified) {
+                Ok(age) => age < min_age,
+                Err(_) => true,
+            },
+            Err(_) => false,
+        };
+        if is_fresh {
+            continue;
+        }
+        discard_temp_store(&path, &name);
     }
     Ok(())
 }
