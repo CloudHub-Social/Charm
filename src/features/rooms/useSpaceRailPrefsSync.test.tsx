@@ -333,6 +333,38 @@ describe("useSpaceRailPrefsSync", () => {
     resolveAccountAWrite();
   });
 
+  it("retries an edit that failed to sync before an app restart instead of losing it to an older remote value", async () => {
+    getAccountData.mockResolvedValueOnce(null);
+    setAccountData.mockRejectedValueOnce(new Error("offline"));
+    const first = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      first.result.current[1]({ order: [], unpinned: ["!offline-edit:localhost"] });
+    });
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(1));
+
+    // Simulates an app restart: this hook instance unmounts with the write
+    // still unsynced (the failed attempt never got a chance to retry).
+    first.unmount();
+
+    // The next mount's own read returns a well-formed but *older* remote
+    // value — without the persisted pending-sync marker, this would
+    // silently clobber the still-unsynced local edit above.
+    getAccountData.mockResolvedValueOnce({ order: [], unpinned: ["!stale-remote:localhost"] });
+    setAccountData.mockResolvedValueOnce(undefined);
+    const second = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(2));
+
+    expect(second.result.current[0]).toEqual({ order: [], unpinned: ["!offline-edit:localhost"] });
+    await waitFor(() =>
+      expect(setAccountData).toHaveBeenLastCalledWith("social.cloudhub.charm.space_rail_prefs", {
+        order: [],
+        unpinned: ["!offline-edit:localhost"],
+      }),
+    );
+  });
+
   it("does not let a write queued before unmount land after a different account signs in", async () => {
     getAccountData.mockResolvedValue(null);
     let resolveFirstWrite: () => void = () => {};

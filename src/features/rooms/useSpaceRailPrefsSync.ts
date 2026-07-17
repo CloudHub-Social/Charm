@@ -2,7 +2,9 @@ import { useAtom } from "jotai";
 import { useCallback, useEffect, useRef } from "react";
 import { getAccountData, setAccountData } from "@/lib/matrix";
 import {
+  hasUnsyncedSpaceRailPrefs,
   isSpaceRailPrefs,
+  setSpaceRailPrefsPendingSync,
   SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE,
   spaceRailPrefsAtomFamily,
   type SpaceRailPrefs,
@@ -81,16 +83,23 @@ export function useSpaceRailPrefsSync(userId: string) {
   }, []);
 
   const queueWrite = useCallback((forUserId: string, value: SpaceRailPrefs) => {
+    // Set before the attempt (not just on failure) so a crash/kill mid-write
+    // is treated the same as a failure — an edit isn't "synced" until the
+    // request actually succeeds.
+    setSpaceRailPrefsPendingSync(forUserId, true);
     writeQueueRef.current = writeQueueRef.current.then(async () => {
       if (unmountedRef.current || latestUserIdRef.current !== forUserId) return;
       try {
         await setAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE, value satisfies SpaceRailPrefs);
+        setSpaceRailPrefsPendingSync(forUserId, false);
       } catch {
         // Best-effort — the local write already succeeded via the atom's
         // own storage effect; a failed remote mirror just means this
         // device's change won't show up elsewhere until the next
         // successful write. Caught here (not left to reject the queue)
         // so one failed write doesn't permanently stall every write after it.
+        // The pending-sync marker (still set) is what lets the *next* mount
+        // retry it instead of silently losing it — see the load effect.
       }
     });
   }, []);
@@ -109,7 +118,16 @@ export function useSpaceRailPrefsSync(userId: string) {
     // local cache the mirror effect below must not write back to account
     // data until *this* account's own read has resolved.
     loadedRef.current = false;
-    dirtySinceLoadStartRef.current = false;
+    // A previous mount may have edited prefs and had its write to account
+    // data fail (or never got the chance to retry, e.g. the app was killed
+    // mid-write) — that's persisted via `setSpaceRailPrefsPendingSync`
+    // specifically so it survives to this next mount. Seeding
+    // `dirtySinceLoadStartRef` from it reuses the same "local edit wins"
+    // logic below that already protects an in-flight edit from THIS mount,
+    // so a remote value (which may be older than the unsynced local one)
+    // doesn't silently clobber it, and the flush-on-load-complete logic
+    // further down retries the write.
+    dirtySinceLoadStartRef.current = hasUnsyncedSpaceRailPrefs(userId);
     skipNextMirrorRef.current = false;
     // Also re-arm the write queue: without this, a write still queued
     // behind a slow previous-account request would run its

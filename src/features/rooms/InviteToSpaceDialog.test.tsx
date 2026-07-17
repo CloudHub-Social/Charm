@@ -96,4 +96,68 @@ describe("InviteToSpaceDialog", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Matrix ID")).toHaveValue("");
   });
+
+  it("blocks Cancel and disables it while an invite request is in flight", async () => {
+    let resolveInvite: () => void = () => {};
+    inviteMember.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveInvite = resolve;
+      }),
+    );
+    const { onOpenChange } = renderDialog();
+
+    fireEvent.change(screen.getByLabelText("Matrix ID"), {
+      target: { value: "@bob:example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+    const cancelButton = screen.getByRole("button", { name: "Cancel" });
+    expect(cancelButton).toBeDisabled();
+
+    fireEvent.click(cancelButton);
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    resolveInvite();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("does not close a re-targeted dialog when an earlier request for a different space settles", async () => {
+    let resolveFirstInvite: () => void = () => {};
+    inviteMember.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveFirstInvite = resolve;
+      }),
+    );
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <InviteToSpaceDialog
+        spaceId="!team:localhost"
+        spaceName="Team"
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Matrix ID"), {
+      target: { value: "@bob:example.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send invite" }));
+
+    // The parent re-targets the dialog at a different space directly
+    // (without the caller going through onOpenChange(false) first).
+    rerender(
+      <InviteToSpaceDialog
+        spaceId="!other:localhost"
+        spaceName="Other"
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    resolveFirstInvite();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The stale request's completion must not close the dialog now showing
+    // a different target.
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -33,6 +33,13 @@ export function AddExistingToSpaceDialog({
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Mirrors `spaceId` on every render so an in-flight `handleAdd` can tell,
+  // once its request settles, whether the dialog has since been re-targeted
+  // at a different space — closing/updating state for a stale target would
+  // otherwise dismiss (or misreport an error for) whatever the dialog is
+  // *now* showing.
+  const latestSpaceIdRef = useRef(spaceId);
+  latestSpaceIdRef.current = spaceId;
 
   // Guards against stale state if `spaceId` changes while the dialog stays
   // open — `handleClose`'s reset only runs on an open->closed transition.
@@ -57,6 +64,12 @@ export function AddExistingToSpaceDialog({
   }, [rooms, excludedIds, query]);
 
   function handleClose(open: boolean) {
+    // Ignore dismiss attempts (Escape, outside click, the close button)
+    // while a request is in flight — closing here wouldn't cancel it, so
+    // the user could back out while still about to add the room, and (were
+    // this not guarded) a later re-target could get closed by the earlier
+    // request's own completion instead.
+    if (!open && pendingId !== null) return;
     if (!open) {
       setQuery("");
       setPendingId(null);
@@ -67,16 +80,23 @@ export function AddExistingToSpaceDialog({
 
   async function handleAdd(childRoomId: string) {
     if (!spaceId) return;
+    const requestSpaceId = spaceId;
     setError(null);
     setPendingId(childRoomId);
     try {
-      await addExistingSpaceChild(spaceId, childRoomId);
+      await addExistingSpaceChild(requestSpaceId, childRoomId);
+      // The dialog may have been re-targeted at a different space while this
+      // request was in flight (only possible now that dismissal is blocked
+      // while pending, but the parent could still swap `spaceId` directly) —
+      // don't close/notify on behalf of a target that's no longer showing.
+      if (latestSpaceIdRef.current !== requestSpaceId) return;
       onAdded?.();
       handleClose(false);
     } catch (err) {
+      if (latestSpaceIdRef.current !== requestSpaceId) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPendingId(null);
+      if (latestSpaceIdRef.current === requestSpaceId) setPendingId(null);
     }
   }
 

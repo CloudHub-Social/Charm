@@ -486,6 +486,17 @@ describe("SpaceRail", () => {
     );
   });
 
+  it("calls onSpaceChildrenChanged after successfully removing a nested space, so a sibling RoomList can refresh", async () => {
+    const onSpaceChildrenChanged = vi.fn();
+    renderRail({ onSpaceChildrenChanged });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+
+    await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
+  });
+
   it("surfaces a visible error when removing a space child fails instead of failing silently", async () => {
     removeSpaceChild.mockRejectedValueOnce(new Error("lacking power level"));
     renderRail();

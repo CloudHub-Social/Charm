@@ -51,11 +51,11 @@ interface SpaceRailProps {
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
   onCreateJoin: () => void;
-  /** Called after "Add Existing" successfully files a room/space under a
-   * space — lets a sibling `RoomList` showing that space's lobby (a
-   * separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
+  /** Called after "Add Existing" or "Remove from space" successfully edits a
+   * space's children — lets a sibling `RoomList` showing that space's lobby
+   * (a separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
    * current) refresh immediately. */
-  onSpaceChildAdded?: () => void;
+  onSpaceChildrenChanged?: () => void;
 }
 
 export function SpaceRail({
@@ -68,7 +68,7 @@ export function SpaceRail({
   onSelectDms,
   onSelectSpace,
   onCreateJoin,
-  onSpaceChildAdded,
+  onSpaceChildrenChanged,
 }: SpaceRailProps) {
   const managementEnabled = useFlag("space_rail_management");
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
@@ -323,7 +323,9 @@ export function SpaceRail({
                   </ContextMenuItem>
                   <ContextMenuItem
                     onSelect={() =>
-                      removeSpaceChild(parentId, space.room_id).catch(reportActionError)
+                      removeSpaceChild(parentId, space.room_id)
+                        .then(onSpaceChildrenChanged)
+                        .catch(reportActionError)
                     }
                   >
                     <DoorOpen aria-hidden="true" />
@@ -467,7 +469,7 @@ export function SpaceRail({
         onOpenChange={(open) => {
           if (!open) setAddExistingTarget(null);
         }}
-        onAdded={onSpaceChildAdded}
+        onAdded={onSpaceChildrenChanged}
       />
     </TooltipProvider>
   );

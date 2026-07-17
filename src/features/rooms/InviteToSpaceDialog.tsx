@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,6 +33,11 @@ export function InviteToSpaceDialog({
   const [userId, setUserId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // Mirrors `spaceId` on every render so an in-flight `handleInvite` can
+  // tell, once its request settles, whether the dialog has since been
+  // re-targeted at a different space.
+  const latestSpaceIdRef = useRef(spaceId);
+  latestSpaceIdRef.current = spaceId;
 
   // Guards against stale state if `spaceId` changes while the dialog stays
   // open — `handleClose`'s reset only runs on an open->closed transition.
@@ -43,6 +48,9 @@ export function InviteToSpaceDialog({
   }, [spaceId]);
 
   function handleClose(open: boolean) {
+    // Ignore dismiss attempts while a request is in flight — see
+    // `LeaveSpaceDialog`'s identical guard for the full rationale.
+    if (!open && pending) return;
     if (!open) {
       setUserId("");
       setError(null);
@@ -57,15 +65,18 @@ export function InviteToSpaceDialog({
       setError("Enter a valid Matrix ID, e.g. @user:example.org");
       return;
     }
+    const requestSpaceId = spaceId;
     setError(null);
     setPending(true);
     try {
-      await inviteMember(spaceId, userId);
+      await inviteMember(requestSpaceId, userId);
+      if (latestSpaceIdRef.current !== requestSpaceId) return;
       handleClose(false);
     } catch (err) {
+      if (latestSpaceIdRef.current !== requestSpaceId) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPending(false);
+      if (latestSpaceIdRef.current === requestSpaceId) setPending(false);
     }
   }
 
@@ -90,7 +101,7 @@ export function InviteToSpaceDialog({
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleClose(false)}>
+          <Button variant="outline" onClick={() => handleClose(false)} disabled={pending}>
             Cancel
           </Button>
           <Button onClick={handleInvite} disabled={pending}>

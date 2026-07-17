@@ -30,6 +30,39 @@ export const spaceRailPrefsAtomFamily = atomFamily((userId: string) =>
   atomWithStorage<SpaceRailPrefs>(`charm.spaceRailPrefs.${userId}`, DEFAULT_PREFS),
 );
 
+function pendingSyncStorageKey(userId: string) {
+  return `charm.spaceRailPrefs.pendingSync.${userId}`;
+}
+
+/** Marks (or clears) that `userId`'s local `spaceRailPrefs` cache has an edit
+ * not yet confirmed written to account data — set right before a write
+ * attempt, cleared only once that write actually succeeds. Persisted (not
+ * just in-memory) so it survives a restart: without it, an edit made while
+ * offline that never got a chance to retry would be silently overwritten by
+ * an older server value on the next launch's remote-load, since nothing else
+ * distinguishes "clean" from "edited but unsynced" across a fresh mount. */
+export function setSpaceRailPrefsPendingSync(userId: string, pending: boolean) {
+  try {
+    if (pending) {
+      localStorage.setItem(pendingSyncStorageKey(userId), "1");
+    } else {
+      localStorage.removeItem(pendingSyncStorageKey(userId));
+    }
+  } catch {
+    // Storage unavailable (private browsing, quota, etc.) — the in-memory
+    // `dirtySinceLoadStartRef` guard still covers the common case; this is
+    // only the cross-restart extension of it.
+  }
+}
+
+export function hasUnsyncedSpaceRailPrefs(userId: string): boolean {
+  try {
+    return localStorage.getItem(pendingSyncStorageKey(userId)) === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function isSpaceRailPrefs(value: unknown): value is SpaceRailPrefs {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;

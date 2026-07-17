@@ -147,4 +147,59 @@ describe("AddExistingToSpaceDialog", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText("Search your rooms and spaces")).toHaveValue("");
   });
+
+  it("blocks dismissal while an add request is in flight", async () => {
+    let resolveAdd: () => void = () => {};
+    addExistingSpaceChild.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveAdd = resolve;
+      }),
+    );
+    const { onOpenChange } = renderDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: /Design/ }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    resolveAdd();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("does not close a re-targeted dialog when an earlier request for a different space settles", async () => {
+    let resolveFirstAdd: () => void = () => {};
+    addExistingSpaceChild.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveFirstAdd = resolve;
+      }),
+    );
+    const onOpenChange = vi.fn();
+    const { rerender } = render(
+      <AddExistingToSpaceDialog
+        spaceId="!team:localhost"
+        spaceName="Team"
+        rooms={rooms}
+        excludedIds={new Set()}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Design/ }));
+
+    rerender(
+      <AddExistingToSpaceDialog
+        spaceId="!other:localhost"
+        spaceName="Other"
+        rooms={rooms}
+        excludedIds={new Set()}
+        onOpenChange={onOpenChange}
+      />,
+    );
+
+    resolveFirstAdd();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onOpenChange).not.toHaveBeenCalled();
+  });
 });

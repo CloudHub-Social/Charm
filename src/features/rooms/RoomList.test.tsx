@@ -1134,6 +1134,40 @@ describe("RoomList", () => {
     expect(screen.queryByText("No rooms yet")).not.toBeInTheDocument();
   });
 
+  it("clears a stale hierarchy load error once a manual refetch succeeds", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy
+      .mockRejectedValueOnce(new Error("hierarchy unavailable"))
+      .mockResolvedValueOnce([]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    expect(await screen.findByText("Error: hierarchy unavailable")).toBeInTheDocument();
+
+    // Connectivity recovers and a mutation (Add Existing/Remove) triggers a
+    // manual refetch, which succeeds this time.
+    rerender(withToken(1));
+
+    await waitFor(() =>
+      expect(screen.queryByText("Error: hierarchy unavailable")).not.toBeInTheDocument(),
+    );
+  });
+
   it("shows all non-DM rooms from Home when Show all rooms is enabled", () => {
     const child = makeRoomSummary({
       room_id: "!child:localhost",

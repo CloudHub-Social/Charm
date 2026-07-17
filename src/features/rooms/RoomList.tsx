@@ -264,32 +264,39 @@ export function RoomList({
     return filterSpaceChildrenByQuery(unjoinedChildren, searchQuery);
   }, [isSearching, unreadOnly, mode, selectedSpaceId, spaceHierarchy, roomById, searchQuery]);
 
+  // Every hierarchy fetch (the mount/mode-switch effect below, plus any
+  // manual `refetchSpaceHierarchy` call after a mutation) claims the next
+  // id and only applies its result if it's still the *latest* one issued —
+  // not just "not stale for its own effect run". Without a single shared
+  // counter, an older mount-time request that happens to resolve after a
+  // newer post-mutation refetch (or vice versa) could win the race and
+  // silently overwrite the more current result.
+  const hierarchyRequestIdRef = useRef(0);
+
   useEffect(() => {
     if (mode !== "space" || !selectedSpaceId) {
+      hierarchyRequestIdRef.current += 1;
       setSpaceHierarchy([]);
       setSpaceError(null);
       setJoinError(null);
       setSpaceLoading(false);
-      return undefined;
+      return;
     }
-    let stale = false;
+    const requestId = ++hierarchyRequestIdRef.current;
     setSpaceLoading(true);
     setSpaceError(null);
     setJoinError(null);
     setSpaceHierarchy([]);
     listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
-        if (!stale) setSpaceHierarchy(result);
+        if (hierarchyRequestIdRef.current === requestId) setSpaceHierarchy(result);
       })
       .catch((err) => {
-        if (!stale) setSpaceError(String(err));
+        if (hierarchyRequestIdRef.current === requestId) setSpaceError(String(err));
       })
       .finally(() => {
-        if (!stale) setSpaceLoading(false);
+        if (hierarchyRequestIdRef.current === requestId) setSpaceLoading(false);
       });
-    return () => {
-      stale = true;
-    };
   }, [mode, selectedSpaceId]);
 
   // `spaceHierarchy` is a point-in-time `/hierarchy` snapshot, not something
@@ -300,17 +307,16 @@ export function RoomList({
   // instead of only after the user navigates away and back.
   function refetchSpaceHierarchy() {
     if (mode !== "space" || !selectedSpaceId) return;
-    const requestedSpaceId = selectedSpaceId;
-    listSpaceHierarchy(requestedSpaceId)
+    const requestId = ++hierarchyRequestIdRef.current;
+    listSpaceHierarchy(selectedSpaceId)
       .then((result) => {
-        // The user may have switched to a different space (or out of space
-        // mode entirely) while this request was in flight — applying it now
-        // would overwrite the *current* space's hierarchy with a stale
-        // snapshot of the one this request was actually for.
-        const current = currentScopeRef.current;
-        if (current.mode === "space" && current.selectedSpaceId === requestedSpaceId) {
-          setSpaceHierarchy(result);
-        }
+        if (hierarchyRequestIdRef.current !== requestId) return;
+        setSpaceHierarchy(result);
+        // A prior load failure shouldn't keep masking a hierarchy that has
+        // since recovered — e.g. connectivity returned and this refetch
+        // (triggered by a successful mutation, which implies the server is
+        // reachable) succeeded.
+        setSpaceError(null);
       })
       .catch(logAndIgnore);
   }
