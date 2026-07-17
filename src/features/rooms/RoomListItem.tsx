@@ -214,6 +214,14 @@ export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListIt
   if (prev.active !== next.active) return false;
   if (prev.style !== next.style) return false;
   if (prev.dragHandleProps !== next.dragHandleProps) return false;
+  // Unlike the other callback props, this one's mere *presence* gates
+  // whether the "Remove from space" menu item renders at all (see below) —
+  // toggling the `space_rail_management` flag flips `RoomList`'s
+  // `onRemoveFromSpace={flag ? handler : undefined}` between a function and
+  // `undefined` for an already-mounted row whose other compared fields
+  // don't change, so without this check the row would keep showing (or
+  // hiding) the action until some unrelated prop forced a re-render.
+  if (Boolean(prev.onRemoveFromSpace) !== Boolean(next.onRemoveFromSpace)) return false;
 
   const a = prev.room;
   const b = next.room;

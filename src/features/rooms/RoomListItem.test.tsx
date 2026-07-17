@@ -450,4 +450,22 @@ describe("roomListItemPropsEqual", () => {
     };
     expect(roomListItemPropsEqual(prev, next)).toBe(false);
   });
+
+  it("treats onRemoveFromSpace appearing or disappearing as unequal even with an unchanged room", () => {
+    // Toggling the `space_rail_management` feature flag flips
+    // `RoomList`'s `onRemoveFromSpace={flag ? handler : undefined}` for an
+    // already-mounted row without changing any other compared field — the
+    // comparator must not let a fresh callback's mere presence/absence slip
+    // past as "equal" the way other callback props deliberately do.
+    const withHandler = { ...baseProps, onRemoveFromSpace: vi.fn() };
+    const withoutHandler = { ...baseProps, onRemoveFromSpace: undefined };
+    expect(roomListItemPropsEqual(withoutHandler, withHandler)).toBe(false);
+    expect(roomListItemPropsEqual(withHandler, withoutHandler)).toBe(false);
+  });
+
+  it("treats two different onRemoveFromSpace callbacks as equal, matching other callback props", () => {
+    const prev = { ...baseProps, onRemoveFromSpace: vi.fn() };
+    const next = { ...baseProps, onRemoveFromSpace: vi.fn() };
+    expect(roomListItemPropsEqual(prev, next)).toBe(true);
+  });
 });
