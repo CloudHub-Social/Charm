@@ -549,6 +549,21 @@ async fn refresh_session_cookie(
                         }
                     }
                     Err(e) => {
+                        // Skip the refresh (not just the throttle advance)
+                        // rather than sending a fresh `Max-Age`-extended
+                        // cookie for a session whose persisted
+                        // `last_seen_unix` didn't actually move — sending
+                        // it anyway would let the cookie's implied
+                        // freshness silently drift ahead of what's on disk;
+                        // if this session goes idle/pinned or the process
+                        // restarts before a later touch finally succeeds,
+                        // `restore_all`/`sweep_expired` would then reject
+                        // or revoke a cookie the browser still considers
+                        // valid, forcing a re-login (Codex review finding
+                        // on #280). This request itself still succeeds —
+                        // only the `Set-Cookie` header is withheld this one
+                        // time, self-healing on the next successful touch.
+                        refresh_cookie = false;
                         tracing::warn!(
                             "failed to durably bump last-seen timestamp before refreshing a \
                              session cookie, leaving the throttle unadvanced so the next \
@@ -738,17 +753,21 @@ mod refresh_session_cookie_gating_tests {
     }
 
     /// Regression test for the Codex review findings on #280 ("Await
-    /// last-seen persistence before refreshing cookies", then "Advance
-    /// touch throttle only after a successful write"): a failed durable
-    /// last-seen touch must not prevent this middleware from still
-    /// refreshing the session cookie — the touch is now awaited (not
-    /// fire-and-forget) so it completes *before* the cookie is sent, but a
-    /// transient write failure there is deliberately tolerated (logged, not
-    /// propagated) rather than degrading the request, since the in-memory
-    /// session being resident in `SessionStore` at all already exempts it
-    /// from `sweep_expired` regardless of this particular bump succeeding.
-    /// It must also leave `last_persistence_touch_unix` unadvanced on
-    /// failure — an earlier revision of this consumed the once-an-hour
+    /// last-seen persistence before refreshing cookies", "Advance touch
+    /// throttle only after a successful write", then "Suppress cookie
+    /// refresh when last-seen write fails"): a failed durable last-seen
+    /// touch must not fail *the request itself* — the in-memory session
+    /// being resident in `SessionStore` at all already exempts it from
+    /// `sweep_expired` regardless of this particular bump succeeding — but
+    /// it must withhold the cookie refresh, not send one anyway. An earlier
+    /// revision of this sent a freshly `Max-Age`-extended cookie even on a
+    /// failed write, letting the cookie's implied freshness silently drift
+    /// ahead of what's actually on disk — if this session then goes
+    /// idle/pinned or the process restarts before a later touch finally
+    /// succeeds, `restore_all`/`sweep_expired` would reject or revoke a
+    /// cookie the browser still considers valid, forcing an unnecessary
+    /// re-login. Must also leave `last_persistence_touch_unix` unadvanced
+    /// on failure — an earlier revision of this consumed the once-an-hour
     /// throttle unconditionally *before* attempting the write, so a single
     /// failed touch would hide a genuinely stale `last_seen_unix` for a
     /// full hour before the next request even tried again. Forces the
@@ -759,7 +778,7 @@ mod refresh_session_cookie_gating_tests {
     /// tolerates as a no-op.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_failed_durable_touch_does_not_prevent_the_cookie_from_still_refreshing() {
+    async fn a_failed_durable_touch_withholds_the_cookie_refresh_but_not_the_request() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join(format!(
@@ -841,12 +860,20 @@ mod refresh_session_cookie_gating_tests {
              #280)"
         );
 
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "the request itself must still complete normally (this route's own 401 here is \
+             from `dummy_live_session`'s bare Client having no real device_id, unrelated to \
+             the persistence touch) — a failed durable touch must not fail the request"
+        );
         assert!(
-            response
+            !response
                 .headers()
                 .contains_key(axum::http::header::SET_COOKIE),
-            "a failed durable touch must not prevent the session cookie from still being \
-             refreshed"
+            "a failed durable touch must withhold the cookie refresh — sending one anyway \
+             would let the cookie's implied freshness drift ahead of what's actually \
+             durable on disk"
         );
     }
 
