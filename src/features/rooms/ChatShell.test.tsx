@@ -3290,6 +3290,62 @@ describe("ChatShell", () => {
     expect(markRoomRead).not.toHaveBeenCalled();
   });
 
+  it("does not leak mark-read suppression into a different room after a bookmark jump is interrupted by a room switch (Sentry review fix)", async () => {
+    // Room A's jump target is never found (loadTimelineAroundEvent hangs),
+    // so Virtuoso never gets to report a post-jump position and clear the
+    // suppression the normal way — the user instead manually switches to
+    // room B, which has no pending jump of its own and should mark-read
+    // normally once it settles at the bottom.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockReturnValue(new Promise(() => {}));
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$never-found" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$never-found"),
+    );
+
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    // The room-open blanket mark-read (keyed off `hasPendingJump`, which is
+    // already correctly `false` for room B) fires regardless — clear it so
+    // the assertion below is specifically about the bottom-visibility path,
+    // which is what a leaked `suppressMarkReadRef` would actually break.
+    markRoomRead.mockClear();
+
+    // A new message arrives while room B sits at its default (never
+    // toggled) at-bottom state — this re-triggers the bottom-visibility
+    // mark-read path via the changed `latestEventId`, without needing a
+    // fresh `atBottomStateChange` call. If `suppressMarkReadRef` had leaked
+    // `true` from room A's interrupted jump, this would stay suppressed
+    // forever for room B since nothing in room B's own flow would ever
+    // clear it.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: roomB.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "room B msg 2" }),
+        ],
+      });
+    });
+    await screen.findByText("room B msg 2");
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(roomB.room_id));
+  });
+
   it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],

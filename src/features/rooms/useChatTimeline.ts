@@ -346,6 +346,19 @@ export function useChatTimeline(
 
   useEffect(() => {
     lastMarkedReadEventId.current = null;
+    // Review fix: without this, a jump interrupted by a manual room switch
+    // before Virtuoso ever reported a post-jump position (the only thing
+    // that otherwise clears it — see `suppressMarkReadRef`'s own comment)
+    // would leave mark-read suppressed forever for whatever room the user
+    // opens next, even though that room has no pending jump of its own.
+    // Set (not unconditionally cleared) from the current `hasPendingJump`
+    // rather than hardcoded `false`: this effect and the render-time
+    // `if (hasPendingJump) suppressMarkReadRef.current = true` statement
+    // above can both apply to the very same room-open (opening a *new*
+    // room via a bookmark jump) — resetting to a bare `false` here would
+    // undo that render's own correct suppression.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-runs on room change; reads the latest hasPendingJump from this render's closure.
+    suppressMarkReadRef.current = hasPendingJump;
   }, [room?.room_id]);
 
   // Mark the room read as soon as it becomes active — deduped on room id
