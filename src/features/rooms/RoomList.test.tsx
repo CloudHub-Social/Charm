@@ -770,6 +770,111 @@ describe("RoomList", () => {
     expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
   });
 
+  it("discards a manual refetch triggered from a stale render after the user has switched spaces", async () => {
+    // Covers the `currentScopeRef` fix in `refetchSpaceHierarchy`: a mutation
+    // (e.g. Remove from space) kicked off while space A was selected can
+    // resolve its `.then()` callback after the user has since switched to
+    // space B. The stale closure's own `mode`/`selectedSpaceId` values are
+    // no longer enough — the callback must consult current scope at
+    // resolution time, not issue time, even for a *manually triggered*
+    // refetch (not just the auto-fetch-on-selection covered by the test
+    // above).
+    featureFlagMocks.spaceRailManagement = true;
+    const spaceA = makeRoomSummary({
+      room_id: "!space-a:localhost",
+      is_space: true,
+      name: "Team A",
+    });
+    const spaceB = makeRoomSummary({
+      room_id: "!space-b:localhost",
+      is_space: true,
+      name: "Team B",
+    });
+    const childOfA = makeRoomSummary({
+      room_id: "!child-a:localhost",
+      name: "Chat A",
+      parent_space_ids: ["!space-a:localhost"],
+    });
+
+    let resolveManualRefetch: (value: unknown) => void = () => {};
+    listSpaceHierarchy
+      // Initial auto-fetch for space A.
+      .mockResolvedValueOnce([
+        {
+          child: {
+            room_id: "!child-a:localhost",
+            name: "Chat A",
+            topic: null,
+            num_joined_members: 1,
+            join_rule: "invite",
+            is_space: false,
+          },
+          children: [],
+        },
+      ])
+      // A manual refetch (bumping hierarchyRefreshToken) kicked off while
+      // space A was still selected — never settles before the switch.
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveManualRefetch = resolve;
+          }),
+      )
+      // Auto-fetch for space B once the user switches.
+      .mockResolvedValueOnce([]);
+
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (selectedSpace: typeof spaceA, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [spaceA, spaceB, childOfA],
+              mode: "space",
+              selectedSpace,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withProps(spaceA, 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    // A manual refetch is triggered (e.g. a sibling SpaceRail row's Remove
+    // from space succeeding) while space A is still selected — this is the
+    // render whose closure the fix must NOT rely on.
+    rerender(withProps(spaceA, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+
+    // The user switches to space B before that manual refetch resolves.
+    rerender(withProps(spaceB, 1));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(3));
+
+    // The stale manual refetch (issued for space A) now resolves — it must
+    // not clobber space B's (empty) hierarchy with space A's rooms, even
+    // though it was a manually-triggered refetch rather than an
+    // auto-fetch-on-selection.
+    resolveManualRefetch([
+      {
+        child: {
+          room_id: "!child-a:localhost",
+          name: "Chat A",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(screen.queryByText("Chat A")).not.toBeInTheDocument();
+  });
+
   it("does not start a second hierarchy join while another is pending", async () => {
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
     let resolveJoin!: () => void;

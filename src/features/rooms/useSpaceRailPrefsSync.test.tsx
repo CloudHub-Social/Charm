@@ -365,6 +365,53 @@ describe("useSpaceRailPrefsSync", () => {
     );
   });
 
+  it("keeps the pending-sync marker set until the latest queued write succeeds, not just any write", async () => {
+    getAccountData.mockResolvedValueOnce(null);
+    setAccountData.mockResolvedValueOnce(undefined); // write 1: resolves quickly
+    let resolveWrite2: () => void = () => {};
+    setAccountData.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWrite2 = resolve;
+        }),
+    ); // write 2: stays pending
+    const first = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(1));
+
+    // Two edits fire in quick succession — write 1 is already queued and
+    // starts executing before write 2 is even requested.
+    act(() => {
+      first.result.current[1]({ order: [], unpinned: ["!edit-1:localhost"] });
+    });
+    act(() => {
+      first.result.current[1]({ order: [], unpinned: ["!edit-2:localhost"] });
+    });
+    // Write 1 (resolving immediately) and write 2 (controllable, still
+    // pending) both get their `setAccountData` call started — write 1
+    // settles while write 2 (the *actual* latest local state) stays queued.
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(2));
+
+    // App restarts with write 2 still unsynced.
+    first.unmount();
+
+    getAccountData.mockResolvedValueOnce({ order: [], unpinned: ["!stale-remote:localhost"] });
+    setAccountData.mockResolvedValueOnce(undefined);
+    const second = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(2));
+
+    // The marker correctly survived write 1's success, so write 2's edit —
+    // not the stale remote value — is what the next mount keeps and retries.
+    expect(second.result.current[0]).toEqual({ order: [], unpinned: ["!edit-2:localhost"] });
+    await waitFor(() =>
+      expect(setAccountData).toHaveBeenLastCalledWith("social.cloudhub.charm.space_rail_prefs", {
+        order: [],
+        unpinned: ["!edit-2:localhost"],
+      }),
+    );
+
+    resolveWrite2();
+  });
+
   it("does not let a write queued before unmount land after a different account signs in", async () => {
     getAccountData.mockResolvedValue(null);
     let resolveFirstWrite: () => void = () => {};

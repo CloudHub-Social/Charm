@@ -306,11 +306,21 @@ export function RoomList({
   // settle so the open lobby's row list reflects the edit immediately
   // instead of only after the user navigates away and back.
   function refetchSpaceHierarchy() {
-    if (mode !== "space" || !selectedSpaceId) return;
+    // Reads `currentScopeRef` rather than closing over `mode`/`selectedSpaceId`
+    // directly — this function is often invoked from a `.then()` attached to
+    // a mutation kicked off in an earlier render (e.g. `onRemoveFromSpace`
+    // for a row that belonged to a space the user has since navigated away
+    // from). Using the closed-over values would fetch (and let win, via
+    // `hierarchyRequestIdRef`) a *stale* space's hierarchy over whatever the
+    // user is actually looking at now.
+    const scope = currentScopeRef.current;
+    if (scope.mode !== "space" || !scope.selectedSpaceId) return;
+    const requestedSpaceId = scope.selectedSpaceId;
     const requestId = ++hierarchyRequestIdRef.current;
-    listSpaceHierarchy(selectedSpaceId)
+    listSpaceHierarchy(requestedSpaceId)
       .then((result) => {
         if (hierarchyRequestIdRef.current !== requestId) return;
+        if (currentScopeRef.current.selectedSpaceId !== requestedSpaceId) return;
         setSpaceHierarchy(result);
         // A prior load failure shouldn't keep masking a hierarchy that has
         // since recovered — e.g. connectivity returned and this refetch

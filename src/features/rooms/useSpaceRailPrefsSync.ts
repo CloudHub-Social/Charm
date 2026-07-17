@@ -68,6 +68,14 @@ export function useSpaceRailPrefsSync(userId: string) {
   // the queued continuation would still see it match and write the old
   // account's prefs into whatever account is signed in by the time it runs.
   const unmountedRef = useRef(false);
+  // Each `queueWrite` call claims the next generation; the pending-sync
+  // marker is only cleared by the write that's *still* the latest one
+  // claimed when its request succeeds. Without this, two rapid edits (write
+  // A queued, then write B queued before A settles) could have A's success
+  // clear the marker even though B — a newer edit — is still in flight or
+  // hasn't been attempted yet; a restart before B settles would then treat
+  // the cache as clean and let an older remote value silently win.
+  const writeGenerationRef = useRef(0);
   useEffect(() => {
     // Re-arm on every (re-)mount, not just via the `useRef(false)` initial
     // value — React 18 StrictMode (see `src/main.tsx`) double-invokes this
@@ -87,11 +95,18 @@ export function useSpaceRailPrefsSync(userId: string) {
     // is treated the same as a failure — an edit isn't "synced" until the
     // request actually succeeds.
     setSpaceRailPrefsPendingSync(forUserId, true);
+    const generation = ++writeGenerationRef.current;
     writeQueueRef.current = writeQueueRef.current.then(async () => {
       if (unmountedRef.current || latestUserIdRef.current !== forUserId) return;
       try {
         await setAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE, value satisfies SpaceRailPrefs);
-        setSpaceRailPrefsPendingSync(forUserId, false);
+        // Only the *latest* claimed write clears the marker — if a newer
+        // edit was queued after this one started, the cache is still
+        // "unsynced" from that edit's perspective even though this older
+        // write just succeeded.
+        if (writeGenerationRef.current === generation) {
+          setSpaceRailPrefsPendingSync(forUserId, false);
+        }
       } catch {
         // Best-effort — the local write already succeeded via the atom's
         // own storage effect; a failed remote mirror just means this
