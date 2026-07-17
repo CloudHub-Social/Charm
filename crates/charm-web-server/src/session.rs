@@ -402,14 +402,24 @@ pub struct Session {
     /// identically and force-logged out a brand-new session still waiting
     /// on its first successful save, defeating the documented
     /// keep-it-live-and-retry fallback entirely (Codex review finding on
-    /// #280). Cleared back to `false` the moment a touch finally succeeds
-    /// (`TouchOutcome::Touched`), proof the object now exists — after that,
-    /// a further `NotFound` is unambiguously a real cross-instance logout
-    /// again. `false` for every other construction path (restored sessions
-    /// — `restore_by_token`/`restore_all` — already came from a persisted
+    /// #280). Cleared back to `false` the moment *any* save actually lands
+    /// — either `routes::refresh_session_cookie`'s durable touch succeeding
+    /// (`TouchOutcome::Touched`), or `sync_loop::repersist_if_token_changed`'s
+    /// own `SaveMode::RetryInitialSave` retry succeeding first, whichever
+    /// happens sooner (a further Codex review finding on #280: without also
+    /// clearing it from the retry-save path, a rolling-deploy/load-balanced
+    /// sequence — retry succeeds, another instance logs the session out,
+    /// this instance's next request arrives after that delete — would still
+    /// misread the resulting `NotFound` as "initial save still pending"
+    /// instead of a real cross-instance logout). `Arc`-wrapped so
+    /// `sync_loop::PersistHandle` can share and clear the exact same flag
+    /// `require_session`/`refresh_session_cookie` read, not a
+    /// `sync_loop`-local copy that would never reach them. `false` for
+    /// every other construction path (restored sessions —
+    /// `restore_by_token`/`restore_all` — already came from a persisted
     /// record by definition, and a fresh login whose initial save actually
     /// succeeded has nothing to wait on).
-    pub awaiting_initial_persistence: std::sync::atomic::AtomicBool,
+    pub awaiting_initial_persistence: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Count of this session's currently-connected WebSocket clients (zero,
     /// one, or more — the same "zero or more tabs" shape as `events`
     /// above). `crate::routes::handle_socket` increments this on connect and
@@ -511,7 +521,9 @@ impl Session {
             last_active: std::sync::Mutex::new(std::time::Instant::now()),
             last_validated_active: std::sync::Mutex::new(std::time::Instant::now()),
             last_persistence_touch_unix: std::sync::atomic::AtomicU64::new(0),
-            awaiting_initial_persistence: std::sync::atomic::AtomicBool::new(false),
+            awaiting_initial_persistence: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             ws_connections: std::sync::atomic::AtomicUsize::new(0),
             events,
         }

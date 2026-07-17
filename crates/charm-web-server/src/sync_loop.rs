@@ -90,6 +90,19 @@ pub struct PersistHandle {
     /// save`'s doc comment on why a re-save must reuse, not regenerate, the
     /// pair a session was first persisted with).
     pub crypto: Option<crate::session::CryptoStoreHandle>,
+    /// The same `Arc<AtomicBool>` as this session's own `Session::
+    /// awaiting_initial_persistence` — cleared here the moment a
+    /// `SaveMode::RetryInitialSave` retry actually lands, not just from
+    /// `routes::refresh_session_cookie`'s durable touch. Without also
+    /// clearing it here, a rolling-deploy/load-balanced sequence — this
+    /// retry succeeds, another instance then logs the session out, this
+    /// instance's next request arrives after that delete but before its
+    /// own throttled touch ever fires — would still misread the resulting
+    /// `TouchOutcome::NotFound`/`PersistenceStore::exists() == false` as
+    /// "initial save still pending" instead of a real cross-instance
+    /// logout (Codex review finding on #280). See that field's own doc
+    /// comment for the full picture.
+    pub awaiting_initial_persistence: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Re-saves the session if (and only if) its access token has changed since
@@ -138,6 +151,14 @@ async fn repersist_if_token_changed(
         tracing::warn!("failed to re-persist refreshed session: {e}");
         return last_saved_access_token;
     }
+    // Proof the object now exists — clears the same flag
+    // `routes::refresh_session_cookie`'s own successful touch clears, so a
+    // `RetryInitialSave` that lands here isn't left waiting for that
+    // middleware's next throttled write to notice. See `Session::
+    // awaiting_initial_persistence`'s doc comment.
+    persist
+        .awaiting_initial_persistence
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     Some(access_token)
 }
 
@@ -766,4 +787,83 @@ pub async fn request_device_verification(
     });
 
     Ok(flow_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the Codex review finding on #280 ("Clear
+    /// awaiting flag after retry save succeeds"): a `SaveMode::RetryInitialSave`
+    /// that actually lands must clear `PersistHandle::awaiting_initial_persistence`
+    /// itself, not rely solely on `routes::refresh_session_cookie`'s own
+    /// successful touch to do it later. Without this, a rolling-deploy/
+    /// load-balanced sequence — this retry succeeds, another instance then
+    /// logs the session out, this instance's next request arrives after
+    /// that delete but before its own throttled touch ever fires — would
+    /// still misread the resulting `NotFound` as "initial save still
+    /// pending" instead of a real cross-instance logout.
+    #[tokio::test]
+    async fn repersist_clears_awaiting_initial_persistence_on_a_successful_retry_save() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-sync-loop-repersist-clears-awaiting-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = std::sync::Arc::new(crate::persistence::PersistenceStore::new_for_test(
+            &dir, [69u8; 32],
+        ));
+
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        let matrix_session = matrix_sdk::authentication::matrix::MatrixSession {
+            meta: matrix_sdk::SessionMeta {
+                user_id: matrix_sdk::ruma::UserId::parse("@retry-clears-flag:example.invalid")
+                    .unwrap(),
+                device_id: matrix_sdk::ruma::device_id!("TESTDEVICE").to_owned(),
+            },
+            tokens: matrix_sdk::authentication::SessionTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+            },
+        };
+        client
+            .matrix_auth()
+            .restore_session(
+                matrix_session,
+                matrix_sdk::store::RoomLoadSettings::default(),
+            )
+            .await
+            .unwrap();
+
+        let awaiting_initial_persistence =
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let persist = PersistHandle {
+            store,
+            token: "tok-retry-clears-flag".to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            initial_access_token: None,
+            crypto: None,
+            awaiting_initial_persistence: awaiting_initial_persistence.clone(),
+        };
+
+        let result = repersist_if_token_changed(&client, &persist, None).await;
+
+        assert_eq!(
+            result.as_deref(),
+            Some("test-access-token"),
+            "the retry save must have succeeded and returned the newly-saved access token"
+        );
+        assert!(
+            !awaiting_initial_persistence.load(std::sync::atomic::Ordering::Relaxed),
+            "a successful RetryInitialSave must clear awaiting_initial_persistence itself, \
+             not leave it for refresh_session_cookie's own touch to clear later"
+        );
+    }
 }

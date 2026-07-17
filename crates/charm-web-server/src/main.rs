@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 homeserver_url,
                 initial_access_token: Some(initial_access_token),
                 crypto: session.persisted_crypto.clone(),
+                awaiting_initial_persistence: session.awaiting_initial_persistence.clone(),
             });
             let handle = sync_loop::spawn(
                 session.client.clone(),

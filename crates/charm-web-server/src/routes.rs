@@ -1434,6 +1434,7 @@ async fn finish_login(
             initial_access_token: initial_save_succeeded
                 .then(|| matrix_session.tokens.access_token.clone()),
             crypto: stored.persisted_crypto.clone(),
+            awaiting_initial_persistence: stored.awaiting_initial_persistence.clone(),
         })
     } else {
         None
@@ -1861,6 +1862,7 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         homeserver_url,
         initial_access_token: Some(initial_access_token),
         crypto: session.persisted_crypto.clone(),
+        awaiting_initial_persistence: session.awaiting_initial_persistence.clone(),
     });
     let handle = crate::sync_loop::spawn(
         session.client.clone(),
