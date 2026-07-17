@@ -261,13 +261,39 @@ pub fn sweep_orphan_temp_stores_excluding(
 /// Core logic behind [`sweep_orphan_temp_stores_at`]/
 /// [`sweep_orphan_temp_stores_excluding`], taking the minimum age
 /// explicitly so tests can use a near-zero threshold instead of waiting on
-/// real wall-clock time.
+/// real wall-clock time. Thin wrapper over [`recover_stale_backups_at`] +
+/// [`discard_stale_temp_stores`] for callers that want both phases run
+/// back-to-back — see those functions' doc comments for why `lib.rs`'s
+/// first sweep pass calls them separately instead (Codex review on #288,
+/// P2).
 fn sweep_orphan_temp_stores_at_with_min_age(
     root: &Path,
     min_age: std::time::Duration,
     protected: &HashSet<String>,
 ) -> Result<(), String> {
-    let now = std::time::SystemTime::now();
+    let temp_store_entries = recover_stale_backups_at(root)?;
+    discard_stale_temp_stores(temp_store_entries, min_age, protected);
+    Ok(())
+}
+
+/// Recovers every [`STALE_BACKUP_SUFFIX`] directory under `root` and
+/// returns the `tmp-*` directories found in the same scan, deferred for the
+/// caller to discard separately via [`discard_stale_temp_stores`] — a
+/// single `read_dir` pass serves both phases; splitting them apart doesn't
+/// mean scanning twice.
+///
+/// Split out from the combined sweep so `lib.rs`'s first pass can signal
+/// `mark_startup_sweep_complete` right after this returns, instead of only
+/// after temp-store discards (each a directory removal plus a keychain
+/// credential delete, unboundedly many on an install with a lot of
+/// stranded state) finish too. `try_restore_session` only actually needs
+/// the backups this function recovers — see its own doc comment — so
+/// gating its bounded wait on the *slower*, unrelated discard phase just
+/// replaces one blocking window with another, even after moving the sweep
+/// out of `.setup()` (Codex review on #288, P2: "moving the sweep out of
+/// .setup() merely replaces a blocked window with a blank one" if discards
+/// still sit in front of the readiness signal).
+fn recover_stale_backups_at(root: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let mut temp_store_entries = Vec::new();
     let mut stale_backup_entries = Vec::new();
     for entry in std::fs::read_dir(root).map_err(|e| e.to_string())? {
@@ -288,22 +314,23 @@ fn sweep_orphan_temp_stores_at_with_min_age(
         }
     }
 
-    // Stale-backup recovery first, in its own pass, *before* any temp-store
-    // discards — not interleaved in one `read_dir` order (whatever the
-    // filesystem happens to return, unrelated to which matters more).
-    // `try_restore_session` waits on this whole function via
-    // `wait_for_startup_sweep`/`mark_startup_sweep_complete`, so a launch
-    // with many stranded `tmp-*` directories (each a deletion, plus a
-    // keychain credential removal) but only one recoverable
-    // `.stale-backup` shouldn't make that recovery wait behind all of them
-    // — the temp-store discards are the part that scales with disk state,
-    // recovery does not (Codex review on #288, P2: a restore that's
-    // otherwise ready can be delayed by unrelated cleanup work it doesn't
-    // depend on).
     for (account_key, name, path) in stale_backup_entries {
         recover_or_discard_stale_backup(root, &account_key, &name, &path);
     }
 
+    Ok(temp_store_entries)
+}
+
+/// Discards each `(name, path)` from [`recover_stale_backups_at`]'s
+/// deferred list whose age is at least `min_age` and whose name isn't in
+/// `protected` — the second, slower phase of the sweep, meant to run after
+/// readiness has already been signaled (see that function's doc comment).
+fn discard_stale_temp_stores(
+    temp_store_entries: Vec<(String, PathBuf)>,
+    min_age: std::time::Duration,
+    protected: &HashSet<String>,
+) {
+    let now = std::time::SystemTime::now();
     for (name, path) in temp_store_entries {
         if protected.contains(&name) {
             continue;
@@ -333,7 +360,27 @@ fn sweep_orphan_temp_stores_at_with_min_age(
         }
         discard_temp_store(&path, &name);
     }
-    Ok(())
+}
+
+/// `AppHandle`-based entry point for `lib.rs`'s first sweep pass: recovers
+/// stale backups and returns the deferred temp-store list for a later,
+/// separate call to [`DeferredTempStoreDiscards::discard`] — see
+/// [`recover_stale_backups_at`]'s doc comment for why these are split.
+pub fn recover_stale_backups(app: &AppHandle) -> Result<DeferredTempStoreDiscards, String> {
+    let root = matrix_store_root(app)?;
+    let entries = recover_stale_backups_at(&root)?;
+    Ok(DeferredTempStoreDiscards(entries))
+}
+
+/// Deferred temp-store discard list from [`recover_stale_backups`], to be
+/// resolved once the caller is done treating recovery as the
+/// readiness-gating part of the sweep.
+pub struct DeferredTempStoreDiscards(Vec<(String, PathBuf)>);
+
+impl DeferredTempStoreDiscards {
+    pub fn discard(self, protected: &HashSet<String>) {
+        discard_stale_temp_stores(self.0, ORPHAN_TEMP_STORE_MIN_AGE, protected);
+    }
 }
 
 fn discard_temp_store(path: &Path, temp_key: &str) {

@@ -1289,18 +1289,37 @@ pub fn run() {
             // against another restore.
             let sweep_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                let sweep_result = async {
+                // Recovery only, not the full sweep — see
+                // `recover_stale_backups`'s doc comment (Codex review on
+                // #288, P2): signaling readiness right after this (not
+                // after the temp-store discards below too, which scale
+                // with however many stranded stores are on disk) means
+                // `try_restore_session`'s wait only ever blocks on the part
+                // it actually needs.
+                let recovery_result = async {
                     let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
-                    matrix::persistence::sweep_orphan_temp_stores(&sweep_handle)
+                    matrix::persistence::recover_stale_backups(&sweep_handle)
                 }
                 .await;
-                if let Err(e) = sweep_result {
-                    eprintln!("orphan temp-store sweep failed: {e}");
-                }
+                let deferred_discards = match recovery_result {
+                    Ok(deferred) => Some(deferred),
+                    Err(e) => {
+                        eprintln!("orphan temp-store sweep (recovery phase) failed: {e}");
+                        None
+                    }
+                };
                 // Unblocks `try_restore_session`'s bounded wait regardless of
                 // outcome — see `wait_for_startup_sweep`'s doc comment
                 // (Codex review on #288, P1).
                 matrix::persistence::mark_startup_sweep_complete();
+
+                // Temp-store discards run after the signal above, not
+                // before — nothing waits on this phase, so there's no
+                // reason to make it block startup restore too.
+                if let Some(deferred) = deferred_discards {
+                    let _restore_store_guard = matrix::auth::restore_store_lock().lock().await;
+                    deferred.discard(&std::collections::HashSet::new());
+                }
 
                 // A second, delayed pass: this first sweep's own grace
                 // period (`ORPHAN_TEMP_STORE_MIN_AGE`) means a genuine crash
