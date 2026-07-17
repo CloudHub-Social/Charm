@@ -68,6 +68,12 @@ import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
 import { MessagePillProfileDialog, type MessagePillProfile } from "./MessagePillProfileDialog";
 
+// How long a successful `loadTimelineAroundEvent` gets to have its
+// `timeline:update` land (and clear the jump the normal way) before the
+// jump-in-progress effect force-clears it itself — see that fallback's own
+// comment for why this exists at all.
+const JUMP_FALLBACK_TIMEOUT_MS = 5000;
+
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
@@ -521,6 +527,13 @@ export function ChatShell({
   // decide whether it's worth forcing a live re-fetch — see its own
   // comment for why that must stay conditional rather than unconditional.
   const mightHaveFocusedViewRef = useRef(false);
+  // Review fix: fallback for a `found: true` `loadTimelineAroundEvent`
+  // result whose corresponding `timeline:update` never lands (or is
+  // dropped) — see that branch's own comment for why this is needed.
+  // Holds the pending fallback's timer id, so the normal (update-arrives)
+  // path can cancel it instead of leaving a stale timer that could
+  // force-clear a *later*, unrelated jump for the same room+event key.
+  const jumpFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!jumpToEventId || !room) return;
     // Review fix: keyed by room *and* event, not event alone — if the user
@@ -534,6 +547,12 @@ export function ChatShell({
     if (index >= 0) {
       handleJumpToMessage(jumpToEventId);
       loadRequestedForRef.current = null;
+      // The normal path landed — cancel any fallback still pending from
+      // this same jump so it can't later force-clear a subsequent one.
+      if (jumpFallbackTimeoutRef.current !== null) {
+        clearTimeout(jumpFallbackTimeoutRef.current);
+        jumpFallbackTimeoutRef.current = null;
+      }
       onJumpHandled?.();
       return;
     }
@@ -572,11 +591,33 @@ export function ChatShell({
         if (!found) {
           loadRequestedForRef.current = null;
           onJumpHandled?.();
+          return;
         }
-        // A `true` result doesn't call `onJumpHandled` here: the
-        // `timeline:update` triggered by that pagination will land in
-        // `messages` and re-run this effect, which then takes the
-        // already-loaded branch above.
+        // A `true` result doesn't call `onJumpHandled` here directly: the
+        // `timeline:update` triggered by that pagination normally lands in
+        // `messages` and re-runs this effect, which then takes the
+        // already-loaded branch above (scrolling to the message *and*
+        // clearing the jump together).
+        //
+        // Review fix: if that update is ever missed or dropped, nothing
+        // else would clear `jumpToEventId` — the effect's dedup key
+        // (`loadRequestedForRef`) already matches this request, so it would
+        // never re-issue `loadTimelineAroundEvent` either, leaving the jump
+        // permanently "in progress" and the Saved Messages entry stuck
+        // showing as unresolved. This fallback timer gives the normal path
+        // a window to land first (preserving the scroll-to-message
+        // behavior in the common case), and only force-clears the jump —
+        // without a scroll — if it hasn't.
+        if (jumpFallbackTimeoutRef.current !== null) {
+          clearTimeout(jumpFallbackTimeoutRef.current);
+        }
+        jumpFallbackTimeoutRef.current = setTimeout(() => {
+          jumpFallbackTimeoutRef.current = null;
+          if (loadRequestedForRef.current === requestKey) {
+            loadRequestedForRef.current = null;
+            onJumpHandled?.();
+          }
+        }, JUMP_FALLBACK_TIMEOUT_MS);
       })
       .catch((err) => {
         // Same "is this still the current request" guard as the `.then()`

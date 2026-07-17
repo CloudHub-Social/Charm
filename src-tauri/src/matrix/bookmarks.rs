@@ -364,7 +364,27 @@ pub async fn list_bookmarks(
         });
     }
 
-    Ok(entries)
+    // Review fix: the per-iteration `still_active` check above only guards
+    // preview *resolution* against a mid-loop account switch — but
+    // `entries` itself is built from `bookmarks`, loaded under the
+    // account snapshotted at the top of this command, and would otherwise
+    // be returned unconditionally regardless of what's active by now.
+    // React Query's cache key for this data (`["bookmarks"]`) is
+    // account-agnostic, so a stale response landing after a logout/switch
+    // would populate the *newly* signed-in account's Saved Messages panel
+    // with the *previous* account's bookmarked room/event ids — the same
+    // cross-account leak class this command's other fixes already close,
+    // just reopened at the return path. One last re-check right before
+    // returning closes it here too.
+    if state
+        .require_client()
+        .await
+        .is_ok_and(|current| current.device_id() == client.device_id())
+    {
+        Ok(entries)
+    } else {
+        Err("account changed while resolving bookmarks".to_string())
+    }
 }
 
 #[cfg(test)]
