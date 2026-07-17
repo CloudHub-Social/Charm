@@ -30,6 +30,8 @@ export function IrcMessageRow({
   onDelete,
   onCopy,
   onCopyLink,
+  onResend,
+  onDiscard,
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
@@ -141,6 +143,7 @@ export function IrcMessageRow({
             canRedact={canRedact}
             disableRelationActions={disableRelationActions}
             isUndecrypted={isUndecrypted}
+            isError={isError}
             className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
             onReply={onReply}
             onReact={onReact}
@@ -148,6 +151,8 @@ export function IrcMessageRow({
             onDelete={onDelete}
             onCopy={onCopy}
             onCopyLink={onCopyLink}
+            onResend={onResend}
+            onDiscard={onDiscard}
           />
         </>
       )}

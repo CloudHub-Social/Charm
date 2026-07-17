@@ -35,6 +35,8 @@ export function DiscordMessageRow({
   onDelete,
   onCopy,
   onCopyLink,
+  onResend,
+  onDiscard,
   onJumpToMessage,
   onUserPillClick,
   onRoomPillClick,
@@ -131,6 +133,7 @@ export function DiscordMessageRow({
               canRedact={canRedact}
               disableRelationActions={disableRelationActions}
               isUndecrypted={isUndecrypted}
+              isError={isError}
               className="opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
               onReply={onReply}
               onReact={onReact}
@@ -138,6 +141,8 @@ export function DiscordMessageRow({
               onDelete={onDelete}
               onCopy={onCopy}
               onCopyLink={onCopyLink}
+              onResend={onResend}
+              onDiscard={onDiscard}
             />
           )}
         </div>

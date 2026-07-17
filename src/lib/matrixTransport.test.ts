@@ -453,6 +453,20 @@ describe("matrix web transport", () => {
       "/api/verification/devices/DEVICE/request",
       undefined,
     ],
+    [
+      "resend_message",
+      { roomId: "!r:example.org", transactionId: "txn-1" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/send-queue/txn-1/resend",
+      undefined,
+    ],
+    [
+      "discard_failed_message",
+      { roomId: "!r:example.org", transactionId: "txn-1" },
+      "POST",
+      "/api/rooms/!r%3Aexample.org/send-queue/txn-1/discard",
+      undefined,
+    ],
   ])("maps %s to the companion server route", async (command, args, method, path, body) => {
     await invoke(command, args);
 

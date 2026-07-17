@@ -573,7 +573,14 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
       setReplyTarget,
       stopTyping,
     });
-  const { handleToggleReaction, handleDelete, handleReply, handleEdit } = useMessageActions({
+  const {
+    handleToggleReaction,
+    handleDelete,
+    handleReply,
+    handleEdit,
+    handleResend,
+    handleDiscard,
+  } = useMessageActions({
     roomId: activeRoomId,
     setReplyTarget,
     setEditingEventId,
@@ -960,6 +967,12 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                       }
                     }}
                     onCopy={() => navigator.clipboard?.writeText(message.body)}
+                    onResend={() => {
+                      if (message.transaction_id) void handleResend(message.transaction_id);
+                    }}
+                    onDiscard={() => {
+                      if (message.transaction_id) void handleDiscard(message.transaction_id);
+                    }}
                     onCopyLink={() => {
                       if (!navigator.clipboard?.writeText || !permalinkViaServer) return;
                       navigator.clipboard
