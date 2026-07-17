@@ -3685,42 +3685,38 @@ describe("ChatShell", () => {
     await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
   });
 
-  it(
-    "force-clears a bookmark jump if loadTimelineAroundEvent finds the event but its timeline:update never lands (Sentry review fix)",
-    async () => {
-      // A successful (`found: true`) loadTimelineAroundEvent normally clears
-      // the jump via its own timeline:update re-running this effect through
-      // the already-loaded branch. If that update is ever missed or
-      // dropped, nothing else would clear jumpToEventId — this fallback
-      // timer is what prevents the jump from getting stuck forever. Uses
-      // real timers (not `vi.useFakeTimers`) since the fallback's own
-      // `setTimeout` is scheduled from inside a real, already-resolved
-      // mock promise's `.then()` — fake timers enabled only after that
-      // point wouldn't retroactively apply to a timer already scheduled on
-      // the real clock.
-      getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
-      loadTimelineAroundEvent.mockResolvedValue(true);
-      const onJumpHandled = vi.fn();
-      render(
-        <JotaiProvider store={createStore()}>
-          <ChatShell
-            room={room}
-            currentUserId="@me:localhost"
-            jumpToEventId="$never-updates"
-            onJumpHandled={onJumpHandled}
-          />
-        </JotaiProvider>,
-      );
-      await waitFor(() =>
-        expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$never-updates"),
-      );
+  it("force-clears a bookmark jump if loadTimelineAroundEvent finds the event but its timeline:update never lands (Sentry review fix)", async () => {
+    // A successful (`found: true`) loadTimelineAroundEvent normally clears
+    // the jump via its own timeline:update re-running this effect through
+    // the already-loaded branch. If that update is ever missed or
+    // dropped, nothing else would clear jumpToEventId — this fallback
+    // timer is what prevents the jump from getting stuck forever. Uses
+    // real timers (not `vi.useFakeTimers`) since the fallback's own
+    // `setTimeout` is scheduled from inside a real, already-resolved
+    // mock promise's `.then()` — fake timers enabled only after that
+    // point wouldn't retroactively apply to a timer already scheduled on
+    // the real clock.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue(true);
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$never-updates"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$never-updates"),
+    );
 
-      // No timeline:update is ever fired for this jump — only the fallback
-      // timer (JUMP_FALLBACK_TIMEOUT_MS = 5000ms) should eventually clear it.
-      await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce(), { timeout: 7000 });
-    },
-    10000,
-  );
+    // No timeline:update is ever fired for this jump — only the fallback
+    // timer (JUMP_FALLBACK_TIMEOUT_MS = 5000ms) should eventually clear it.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce(), { timeout: 7000 });
+  }, 10000);
 
   it("does not call onJumpHandled for a stale request's late rejection once a newer jump has started", async () => {
     getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });

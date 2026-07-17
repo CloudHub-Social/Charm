@@ -178,6 +178,24 @@ pub struct MatrixState {
     /// check "is this room mid-transition" so it stays correct even while
     /// `timelines` itself briefly has no entry for it.
     transitioning_timelines: Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
+    /// Per-room "most recently requested" Saved Messages jump target event
+    /// id — set by `timeline::load_timeline_around_event` before it starts
+    /// working, and checked by `timeline::load_focused_event_timeline`
+    /// immediately before it calls `replace_timeline`. Review fix: without
+    /// this, starting a second jump (event B) in a room while an earlier
+    /// jump (event A) is still awaiting its own server `/context` lookup
+    /// has no way to know it's been superseded — if A's slower request
+    /// finishes *after* B's, A would call `replace_timeline` last and
+    /// silently swap the room back to A's focused context, even though the
+    /// user is looking at (and the frontend's own `jumpToEventId` reflects)
+    /// B by then. Only the request whose target still matches this map
+    /// entry is allowed to install its focused timeline; a superseded one
+    /// reports "not found" instead, matching how the frontend already
+    /// treats it (see `ChatShell`'s jump effect ignoring a stale request's
+    /// resolution once a newer one has started).
+    latest_jump_target: Mutex<
+        std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, matrix_sdk::ruma::OwnedEventId>,
+    >,
     /// The task driving the current background sync loop (see
     /// `sync::spawn_sync_loop`). Login/session-restore has several independent
     /// success paths (password, SSO, QR, restored-session) and none of them
@@ -260,6 +278,7 @@ impl Default for MatrixState {
                     .expect("MAX_LIVE_TIMELINES is a nonzero constant"),
             )),
             transitioning_timelines: Mutex::default(),
+            latest_jump_target: Mutex::default(),
             sync_loop_handle: std::sync::Mutex::default(),
             presence_task_handle: std::sync::Mutex::default(),
             focused_room_id: std::sync::Mutex::default(),

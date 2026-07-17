@@ -1045,6 +1045,17 @@ pub async fn load_timeline_around_event(
 ) -> Result<bool, String> {
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+    // Review fix: registers this call as the room's *current* jump target
+    // before doing any work — see `MatrixState::latest_jump_target`'s own
+    // doc comment. Starting a second jump for this room immediately
+    // supersedes an earlier one still in flight, so that earlier call's own
+    // later check (in `load_focused_event_timeline`) can tell it's stale.
+    state
+        .latest_jump_target
+        .lock()
+        .await
+        .insert(parsed_room_id.to_owned(), parsed_event_id.to_owned());
     // `force_live: false` — this is the jump machinery itself; it should
     // start from whatever's already cached, including a focused view left
     // over from a previous jump in this same room this session, not force a
@@ -1088,7 +1099,6 @@ pub async fn load_timeline_around_event(
     // history — the event may simply be deeper than we're willing to page
     // through client-side. Fall back to a direct server-side lookup instead
     // of reporting failure.
-    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
     load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id).await
 }
 
@@ -1162,6 +1172,23 @@ async fn load_focused_event_timeline(
         Err(_) => false,
     };
     if !still_active {
+        return Ok(false);
+    }
+
+    // Review fix: this call may have been superseded by a *newer* jump for
+    // this same room (targeting a different event) started while the
+    // `/context` lookup above was still in flight — see
+    // `MatrixState::latest_jump_target`'s own doc comment. Only the request
+    // whose target still matches gets to install its focused timeline;
+    // treat a superseded one the same as "not found" rather than letting it
+    // clobber whatever the newer jump already installed.
+    let still_latest = state
+        .latest_jump_target
+        .lock()
+        .await
+        .get(room_id)
+        .is_some_and(|target| target.as_str() == event_id.as_str());
+    if !still_latest {
         return Ok(false);
     }
 
