@@ -518,14 +518,29 @@ export function ChatShell({
         // A `false` result means the event isn't reachable at all (further
         // back than the pagination cap, or no longer in this room's
         // history) — nothing more to try, so give up rather than leaving
-        // the caller's `jumpToEventId` set forever.
-        if (!found) onJumpHandled?.();
+        // the caller's `jumpToEventId` set forever. Also reset the ref: left
+        // set to `jumpToEventId`, the dedup check above would permanently
+        // block a retry of the exact same jump (e.g. the caller re-sets the
+        // same `jumpToEventId` after the panel is reopened) even though this
+        // attempt is now finished.
+        if (!found) {
+          loadRequestedForRef.current = null;
+          onJumpHandled?.();
+        }
         // A `true` result doesn't call `onJumpHandled` here: the
         // `timeline:update` triggered by that pagination will land in
         // `messages` and re-run this effect, which then takes the
         // already-loaded branch above.
       })
-      .catch(logAndIgnore);
+      .catch((err) => {
+        // Same rationale as the `!found` branch above: an errored jump
+        // attempt is also finished, so the dedup ref must not keep blocking
+        // a retry of the same `jumpToEventId` forever.
+        if (loadRequestedForRef.current === jumpToEventId) {
+          loadRequestedForRef.current = null;
+        }
+        logAndIgnore(err);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpToEventId, room?.room_id, messages, loading, activeRoomId]);
   // The memo callback below is pure — no ref mutation inside it. `React.

@@ -8,7 +8,8 @@ export type BookmarkEntry = { room_id: string, event_id: string,
  */
 saved_at_ms: number, sender: string, sender_display_name: string | null, 
 /**
- * Truncated preview of the message body at save time — see the module
- * doc for why this is snapshotted rather than re-resolved live.
+ * Truncated preview of the message body, resolved live from the room's
+ * timeline at read time if it's open — see the module doc. Never
+ * persisted to disk.
  */
 body_preview: string, timestamp_ms: number, };

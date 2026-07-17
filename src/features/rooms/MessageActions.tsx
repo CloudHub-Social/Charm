@@ -266,14 +266,27 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
               </DropdownMenuItem>
             )}
             {bookmarksEnabled &&
+              // Review fix: `disableRelationActions` already identifies a
+              // pending/failed local echo, whose `event_id` is a
+              // transaction id rather than a real Matrix event id — a
+              // bookmark saved against that id would either fail server-side
+              // or, worse, silently point at nothing once the real event id
+              // is assigned. Gate on the same flag other relation-dependent
+              // actions (reply/edit) already use, not just `isUndecrypted`.
               (isBookmarked && onUnbookmark ? (
-                <DropdownMenuItem onSelect={onUnbookmark} disabled={isUndecrypted}>
+                <DropdownMenuItem
+                  onSelect={onUnbookmark}
+                  disabled={disableRelationActions || isUndecrypted}
+                >
                   <BookmarkX />
                   Remove bookmark
                 </DropdownMenuItem>
               ) : (
                 onBookmark && (
-                  <DropdownMenuItem onSelect={onBookmark} disabled={isUndecrypted}>
+                  <DropdownMenuItem
+                    onSelect={onBookmark}
+                    disabled={disableRelationActions || isUndecrypted}
+                  >
                     <Bookmark />
                     Bookmark
                   </DropdownMenuItem>

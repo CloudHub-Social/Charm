@@ -1299,6 +1299,32 @@ fn bookmarks_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> 
     Ok(dir.join(format!("{account_key}.json")))
 }
 
+/// Process-wide map of per-account mutexes guarding read-modify-write access
+/// to that account's bookmarks file. Review fix: `bookmarks::add_bookmark`/
+/// `remove_bookmark` each read the whole file, mutate the in-memory `Vec`,
+/// then write it back wholesale — with no lock, two concurrent calls for the
+/// same account (e.g. bookmarking from two windows) could both read the
+/// pre-mutation list and the later write would silently clobber the
+/// earlier one's change. Keyed by `account_key` (not a single global lock)
+/// so unrelated accounts never contend; a `tokio::sync::Mutex` (not
+/// `std::sync::Mutex`) since callers hold it across the async command's
+/// lifetime alongside other awaits in the same command.
+static BOOKMARKS_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Returns (creating if necessary) the mutex guarding `account_key`'s
+/// bookmarks file. Callers should acquire this *before* loading the current
+/// list and hold it until the corresponding save completes.
+pub fn bookmarks_lock(account_key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let mut locks = BOOKMARKS_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    std::sync::Arc::clone(
+        locks
+            .entry(account_key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))),
+    )
+}
+
 /// Reads `account_key`'s bookmarks list, or an empty `Vec` if the file
 /// doesn't exist yet (never bookmarked anything) — not an error, matching
 /// [`has_onboarding_flag`]'s "absence means default" convention.

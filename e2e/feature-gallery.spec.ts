@@ -93,3 +93,48 @@ test("focus mode renders as an active native setting", async ({ page }) => {
   await expect(page.getByLabel("Do Not Disturb is active")).toBeVisible();
   await captureSnapshot(page, "feature-focus-mode");
 });
+
+test("saved messages lists a bookmark with room and sender context", async ({ page }) => {
+  await page.addInitScript(enableFlags, { bookmarks: true });
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "FEATURE_DOCS",
+    room: ROOM,
+    initialMessages: [
+      {
+        event_id: "$feature-bookmark",
+        sender: "@alice:cloudhub.social",
+        sender_display_name: "Alice",
+        sender_avatar_url: null,
+        sender_avatar_path: null,
+        body: "Let's ship the bookmarks feature this week.",
+        formatted_body: null,
+        timestamp_ms: 1735689600000,
+        edited: false,
+        redacted: false,
+        reactions: [],
+        in_reply_to: null,
+        transaction_id: null,
+        send_state: { state: "sent" },
+      },
+    ],
+    bookmarks: [
+      {
+        room_id: ROOM.room_id,
+        event_id: "$feature-bookmark",
+        saved_at_ms: 1735689600000,
+        sender: "@alice:cloudhub.social",
+        sender_display_name: "Alice",
+        body_preview: "Let's ship the bookmarks feature this week.",
+        timestamp_ms: 1735689600000,
+      },
+    ],
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Open settings" }).click();
+  await page.getByRole("tab", { name: "Saved Messages" }).click();
+  await expect(page.getByText("Let's ship the bookmarks feature this week.")).toBeVisible();
+  await expect(page.getByText("Alice", { exact: true })).toBeVisible();
+  await captureSnapshot(page, "feature-bookmarks-saved-messages");
+});

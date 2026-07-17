@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   addBookmark,
   discardFailedMessage,
@@ -12,6 +13,12 @@ import {
 import type { ReplyRef } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
+import { isWebBuild } from "@/lib/platform";
+
+// Shared with `SavedMessagesPanel`, which is the source of truth for the
+// cross-room bookmarks list — keep this key in sync with that file's
+// `BOOKMARKS_QUERY_KEY` so an invalidation here also refetches that view.
+const BOOKMARKS_QUERY_KEY = ["bookmarks"] as const;
 
 interface UseMessageActionsOptions {
   roomId: string | null;
@@ -33,9 +40,17 @@ export function useMessageActions({
   // rather than waiting on a round trip.
   const [bookmarkedEventIds, setBookmarkedEventIds] = useState<Set<string>>(new Set());
   const bookmarksEnabled = useFlag("bookmarks");
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    if (!roomId || !bookmarksEnabled) {
+    // Bookmarks are backed by a local per-account file the Tauri process
+    // owns (see `SettingsScreen`'s `webUnsupported` note) — the web
+    // companion build has no `invokeWeb` case for `list_bookmarks`, so
+    // calling it there throws `UnsupportedCommand` into the console even
+    // though the flag defaults off. Guard on `isWebBuild()` directly rather
+    // than relying solely on the flag default, since a local override could
+    // otherwise flip `bookmarksEnabled` on for a web build too.
+    if (!roomId || !bookmarksEnabled || isWebBuild()) {
       setBookmarkedEventIds(new Set());
       return undefined;
     }
@@ -142,7 +157,21 @@ export function useMessageActions({
       await removeBookmark(eventId);
     } catch (err) {
       console.error(err);
-      setBookmarkedEventIds((prev) => new Set(prev).add(eventId));
+      // Review fix: blindly re-adding the id on failure can be wrong if a
+      // concurrent request (e.g. the same removal from `SavedMessagesPanel`
+      // in another tab/window) already succeeded — this optimistic local
+      // state would then disagree with the source of truth. Invalidate the
+      // shared bookmarks query instead, so both surfaces refetch and
+      // reconcile against what's actually persisted, matching the pattern
+      // `SavedMessagesPanel.handleRemove` already uses.
+      queryClient.invalidateQueries({ queryKey: BOOKMARKS_QUERY_KEY }).catch(logAndIgnore);
+      listBookmarks()
+        .then((bookmarks) => {
+          setBookmarkedEventIds(
+            new Set(bookmarks.filter((b) => b.room_id === roomId).map((b) => b.event_id)),
+          );
+        })
+        .catch(logAndIgnore);
     }
   }
 

@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMessageActions } from "./useMessageActions";
 import type { BookmarkEntry, RoomMessageSummary } from "@/lib/matrix";
@@ -30,12 +31,19 @@ function setup(
     setEditingEventId: (eventId: string | null) => void;
   }> = {},
 ) {
-  return renderHook(() =>
-    useMessageActions({
-      roomId,
-      setReplyTarget: overrides.setReplyTarget ?? vi.fn(),
-      setEditingEventId: overrides.setEditingEventId ?? vi.fn(),
-    }),
+  const queryClient = new QueryClient();
+  return renderHook(
+    () =>
+      useMessageActions({
+        roomId,
+        setReplyTarget: overrides.setReplyTarget ?? vi.fn(),
+        setEditingEventId: overrides.setEditingEventId ?? vi.fn(),
+      }),
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    },
   );
 }
 

@@ -333,6 +333,25 @@ impl MatrixState {
         self.timelines.lock().await.contains(room_id)
     }
 
+    /// Returns `room_id`'s live `Timeline` if one is already cached, without
+    /// creating one — unlike `get_or_create_timeline`, a miss here is not
+    /// followed by `Room::timeline()`/spawning a listener. Used by
+    /// `bookmarks::list_bookmarks` to resolve a bookmark's sender/preview
+    /// from the already-decrypted in-memory timeline when the room happens
+    /// to be open, without paying the cost (or side effect) of opening a
+    /// room the caller never asked to open just to read one bookmark's
+    /// preview.
+    pub(crate) async fn peek_timeline(
+        &self,
+        room_id: &matrix_sdk::ruma::RoomId,
+    ) -> Option<std::sync::Arc<matrix_sdk_ui::Timeline>> {
+        self.timelines
+            .lock()
+            .await
+            .peek(room_id)
+            .map(|(timeline, _)| std::sync::Arc::clone(timeline))
+    }
+
     /// Returns the live `Timeline` for `room_id`, building (and spawning its
     /// `timeline:update`-emitting listener task) on first use if it isn't
     /// already held. Bounded LRU: opening more than [`MAX_LIVE_TIMELINES`]
