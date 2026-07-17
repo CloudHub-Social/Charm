@@ -22,9 +22,24 @@ preference. When enabled, room rows replace the plain ambient-unread dot with th
 existing `RoomSummary.unread_messages` total while retaining notification badges
 as the higher-priority signal.
 
-Sorting controls, last-message previews, typing indicators, topic previews, and
-sidebar resizing remain follow-up work. This spec is therefore not shipped or
-complete.
+**Last-message preview shipped behind a second, independent default-off flag,
+`room_list_message_preview`.** `RoomSummary` gained a `last_message_preview`
+field (sender id, resolved display name, and a truncated text snippet, capped
+at 100 characters with a trailing `…`), computed in `snapshot_rooms` via
+matrix-sdk's own `LatestEvents` tracker — the SDK's dedicated mechanism for a
+room-list's last-message summary, kept current off the same event-cache
+updates the sync loop already produces rather than a separate per-room fetch.
+A non-text `m.room.message` (image/video/audio/file/location) renders a short
+human summary ("Sent an image", etc.) instead of the raw, often filename-only
+event body; a pending invite, a still-sending local echo, or an
+as-yet-uncomputed value all fall back to `None`, and the row shows just the
+room name as before. `RoomListItem.tsx` renders the preview as a second,
+`truncate`d line under the room name when the flag is on. This is a separate
+flag from `room_list_unread_filter` because it's an independently shippable
+slice of this spec, not gated by the unread-filter's own on/off state.
+
+Sorting controls, typing indicators, topic previews, and sidebar resizing
+remain follow-up work. This spec is therefore not shipped or complete.
 
 :::note[Historical baseline]
 The proposal below is retained as the full design. Statements that Charm has no

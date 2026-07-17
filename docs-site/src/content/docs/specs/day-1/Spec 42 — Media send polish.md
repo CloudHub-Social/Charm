@@ -10,11 +10,13 @@ status: in-progress
 
 **In progress behind the default-off `media_send_polish` feature flag.** The first
 independently releasable slice adds a full-chat drop-target overlay while a file is
-dragged over the active room. It uses drag-depth tracking so crossing nested message
-or composer elements does not flicker the target, ignores non-file drags, clears on
-drop, leave, or room switch, and keeps the existing desktop/web attachment payload
-handling unchanged. The public media-and-attachments gallery entry now identifies
-this flag as a preview rollout while the broader attachment experience remains usable.
+dragged over the active room. It uses related-target containment plus a deferred
+leave guard so crossing nested message or composer elements does not flicker the
+target. Non-file drags remain inert without showing the upload affordance; file-drag
+state clears on drop, leave, or room switch, and the existing desktop/web attachment
+payload handling remains unchanged. The public media-and-attachments gallery entry
+now identifies this flag as a preview rollout while the broader attachment experience
+remains usable.
 
 Captions, upload-size preflight, actual upload cancellation, GIF autoplay controls,
 and default EXIF stripping remain planned. This spec is therefore not shipped or

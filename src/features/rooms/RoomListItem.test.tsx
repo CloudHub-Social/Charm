@@ -264,4 +264,86 @@ describe("RoomListItem", () => {
     expect(getPresence).not.toHaveBeenCalled();
     expect(screen.queryByText("Online")).not.toBeInTheDocument();
   });
+
+  describe("last-message preview", () => {
+    function renderWithPreview(overrides: Parameters<typeof makeRoomSummary>[0] = {}) {
+      featureFlagTestHooks.setCache({ room_list_message_preview: true });
+      return render(
+        <RoomListItem
+          room={makeRoomSummary({
+            last_message_preview: {
+              sender_id: "@alice:example.org",
+              sender_display_name: "Alice",
+              text: "see you at 6",
+            },
+            ...overrides,
+          })}
+          active={false}
+          onSelect={() => {}}
+        />,
+      );
+    }
+
+    it("renders the sender label and text when the flag is on", () => {
+      renderWithPreview();
+      expect(screen.getByText("Alice:", { exact: false })).toBeInTheDocument();
+      expect(screen.getByText("see you at 6", { exact: false })).toBeInTheDocument();
+    });
+
+    it("falls back to the sender's localpart when no display name is known", () => {
+      renderWithPreview({
+        last_message_preview: {
+          sender_id: "@bob:example.org",
+          sender_display_name: null,
+          text: "hi there",
+        },
+      });
+      expect(screen.getByText("bob:", { exact: false })).toBeInTheDocument();
+    });
+
+    it("does not render a preview when there is none", () => {
+      featureFlagTestHooks.setCache({ room_list_message_preview: true });
+      render(
+        <RoomListItem
+          room={makeRoomSummary({ last_message_preview: null })}
+          active={false}
+          onSelect={() => {}}
+        />,
+      );
+      expect(screen.queryByText("see you at 6")).not.toBeInTheDocument();
+    });
+
+    it("does not render a preview when the flag is off, even if one is present", () => {
+      featureFlagTestHooks.setCache({ room_list_message_preview: false });
+      render(
+        <RoomListItem
+          room={makeRoomSummary({
+            last_message_preview: {
+              sender_id: "@alice:example.org",
+              sender_display_name: "Alice",
+              text: "see you at 6",
+            },
+          })}
+          active={false}
+          onSelect={() => {}}
+        />,
+      );
+      expect(screen.queryByText("see you at 6", { exact: false })).not.toBeInTheDocument();
+    });
+
+    it("truncates a very long preview via CSS rather than growing the row", () => {
+      const longText = "a".repeat(300);
+      const { container } = renderWithPreview({
+        last_message_preview: {
+          sender_id: "@alice:example.org",
+          sender_display_name: "Alice",
+          text: longText,
+        },
+      });
+      const preview = container.querySelector("p");
+      expect(preview).not.toBeNull();
+      expect(preview).toHaveClass("truncate");
+      expect(preview).toHaveTextContent(longText);
+    });
+  });
 });

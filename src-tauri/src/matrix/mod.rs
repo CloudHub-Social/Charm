@@ -175,6 +175,16 @@ pub struct MatrixState {
     /// same single source of truth. See `dnd`'s module doc comment for why
     /// Rust (not the frontend) owns persistence here, unlike appearance.
     pub(crate) dnd: std::sync::Mutex<dnd::DndRuntimeState>,
+    /// Room ids currently registered with `matrix-sdk`'s `LatestEvents`
+    /// tracker for Spec 54's message-preview slice
+    /// (`rooms::last_message_preview`). Tracked so `rooms::snapshot_rooms`
+    /// can `forget_room` a registration once the `room_list_message_preview`
+    /// flag is turned off or a room is no longer joined — `LatestEvents`
+    /// keeps listening for a room until explicitly forgotten, so without
+    /// this the background work (and the flag's kill-switch) would outlive
+    /// both of those conditions.
+    pub(crate) preview_registered_rooms:
+        std::sync::Mutex<std::collections::HashSet<matrix_sdk::ruma::OwnedRoomId>>,
 }
 
 impl Default for MatrixState {
@@ -202,6 +212,7 @@ impl Default for MatrixState {
             push_transport: std::sync::Mutex::default(),
             push_status: std::sync::Mutex::new(crate::push::PushStatus::default()),
             dnd: std::sync::Mutex::default(),
+            preview_registered_rooms: std::sync::Mutex::default(),
         }
     }
 }
@@ -213,6 +224,26 @@ impl MatrixState {
             .await
             .clone()
             .ok_or_else(|| "not logged in".to_string())
+    }
+
+    /// Whether `room_id` already has a live `Timeline` cached — a cheap peek
+    /// (`LruCache::contains`, which doesn't touch recency order) for callers
+    /// that want to tell a cold open (this returns `false`, then
+    /// `get_or_create_timeline` does the real work: `Room::timeline()` plus
+    /// spawning the listener) apart from a request against an already-open
+    /// room (this returns `true`, `get_or_create_timeline` is just a cache
+    /// hit) — e.g. `timeline::get_timeline_page` uses this to pick a
+    /// distinct Sentry transaction name so cold-open latency and
+    /// steady-state pagination latency don't get averaged together under
+    /// one metric (Codex review on #289).
+    ///
+    /// Racing this against a concurrent `get_or_create_timeline` for the
+    /// same room can misclassify (a `false` here immediately followed by
+    /// another caller creating the entry first) — acceptable for a
+    /// best-effort trace label, not something any caller should treat as a
+    /// correctness guarantee.
+    pub(crate) async fn has_cached_timeline(&self, room_id: &matrix_sdk::ruma::RoomId) -> bool {
+        self.timelines.lock().await.contains(room_id)
     }
 
     /// Returns the live `Timeline` for `room_id`, building (and spawning its

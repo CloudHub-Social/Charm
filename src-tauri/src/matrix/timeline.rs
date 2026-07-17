@@ -135,6 +135,56 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
     }
 }
 
+/// A short, human-readable summary of a `m.room.message` for contexts that
+/// show only a single line of text (the room-list last-message preview, Spec
+/// 54) — text/emote/notice bodies are shown verbatim, but a raw `body()` for
+/// a media msgtype is often just the file's name (or, for some clients,
+/// empty), which reads as a stray filename rather than a description of what
+/// was sent. Kept alongside [`message_type_to_media`] since both switch on
+/// the same `MessageType` variants; this one is pure text, no info/thumbnail
+/// metadata, so callers that already have a [`MediaContent`] don't need this
+/// too.
+pub(crate) fn message_type_preview_text(msgtype: &MessageType) -> String {
+    match msgtype {
+        MessageType::Text(content) => content.body.clone(),
+        MessageType::Emote(content) => content.body.clone(),
+        MessageType::Notice(content) => content.body.clone(),
+        MessageType::Image(_) => "Sent an image".to_string(),
+        MessageType::Video(_) => "Sent a video".to_string(),
+        MessageType::Audio(_) => "Sent an audio message".to_string(),
+        MessageType::File(_) => "Sent a file".to_string(),
+        MessageType::Location(_) => "Sent a location".to_string(),
+        other => other.body().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod message_type_preview_text_tests {
+    use matrix_sdk::ruma::events::room::message::{
+        ImageMessageEventContent, TextMessageEventContent,
+    };
+    use matrix_sdk::ruma::events::room::ImageInfo;
+
+    use super::*;
+
+    #[test]
+    fn text_message_shows_body_verbatim() {
+        let msgtype = MessageType::Text(TextMessageEventContent::plain("see you at 6"));
+        assert_eq!(message_type_preview_text(&msgtype), "see you at 6");
+    }
+
+    #[test]
+    fn image_message_shows_a_human_summary_not_the_filename() {
+        let mut content = ImageMessageEventContent::plain(
+            "vacation.jpg".to_string(),
+            matrix_sdk::ruma::mxc_uri!("mxc://example.org/abc123").to_owned(),
+        );
+        content.info = Some(Box::new(ImageInfo::new()));
+        let msgtype = MessageType::Image(content);
+        assert_eq!(message_type_preview_text(&msgtype), "Sent an image");
+    }
+}
+
 /// Extracts a message's `org.matrix.custom.html` formatted body, if it has
 /// one — `None` for plain-text messages/emotes/notices or ones formatted
 /// with anything other than HTML (the only format Matrix currently defines).
@@ -857,12 +907,41 @@ pub async fn get_timeline_page(
     let client = state.require_client().await?;
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
 
-    let timeline = state
-        .get_or_create_timeline(&app, &client, &parsed_room_id)
-        .await?;
-    let media_cache = state.require_media_cache(&app).await.ok();
+    // Distinguishes a cold open (`timeline.get_page.cold_open` — this room
+    // has no cached `Timeline` yet, so `get_or_create_timeline` below does
+    // the real work: `Room::timeline()` plus spawning the listener) from a
+    // request against an already-open room (`timeline.get_page.pagination`
+    // — normally a `paginate_backwards` call against the cached Timeline,
+    // e.g. scrolling up through history). Codex review on #289: reporting
+    // both under one transaction name mixed steady-state pagination latency
+    // into the percentile meant to represent cold-open/decryption latency.
+    let cold_open = !state.has_cached_timeline(&parsed_room_id).await;
+    let transaction_name = if cold_open {
+        "timeline.get_page.cold_open"
+    } else {
+        "timeline.get_page.pagination"
+    };
 
-    get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+    // Self-contained Sentry transaction (see `observability_trace::traced`'s
+    // doc comment). No dedicated decrypt hook exists to time directly — the
+    // SDK's own crypto plumbing decrypts as part of building/paginating the
+    // `Timeline` internally — so this is the closest proxy for "how long did
+    // it take to see this room's (decrypted) messages." Wraps
+    // `get_or_create_timeline` too, not just `get_timeline_page_impl`: on a
+    // room's first open (or after LRU eviction), that call itself does the
+    // cold-open work — `Room::timeline()` plus spawning the listener — which
+    // is exactly the slow-path latency this is meant to measure. Starting
+    // the transaction after it, as an earlier version of this change did,
+    // would systematically exclude that cost and underreport cold opens.
+    crate::observability_trace::traced(transaction_name, "matrix.timeline", async {
+        let timeline = state
+            .get_or_create_timeline(&app, &client, &parsed_room_id)
+            .await?;
+        let media_cache = state.require_media_cache(&app).await.ok();
+
+        get_timeline_page_impl(&client, &timeline, media_cache, limit).await
+    })
+    .await
 }
 
 /// Core logic behind [`get_timeline_page`], taking an already-resolved

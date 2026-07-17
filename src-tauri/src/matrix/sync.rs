@@ -59,7 +59,35 @@ pub enum SyncStateEvent {
 async fn emit_room_list_and_badge(app: &AppHandle, client: &Client) {
     let state = app.state::<MatrixState>();
     let media_cache = state.require_media_cache(app).await.ok();
-    let snapshot = rooms::snapshot_rooms(client, media_cache).await;
+    let include_message_preview = app.path().app_data_dir().is_ok_and(|dir| {
+        crate::feature_flags::flag(
+            &dir,
+            crate::feature_flags::FeatureFlagKey::RoomListMessagePreview,
+        )
+    });
+    // Self-contained, *downsampled* Sentry transaction (see
+    // `observability_trace::traced_infallible_sampled`'s doc comment) — this
+    // call was the single largest measured contributor to login/steady-state
+    // latency before its per-room loop was parallelized; tracing it lets
+    // that fix (and any future regression) show up as real duration data
+    // instead of only being visible via profiling. Sampled well below the
+    // client-wide rate (Codex review on #289) because this runs on every
+    // `/sync` long-poll response — including ordinary empty ones — for as
+    // long as the app is open, unlike login or a cold timeline open, which
+    // happen a handful of times per session at most.
+    const SNAPSHOT_ROOMS_TRACE_SAMPLE_RATE: f64 = 0.05;
+    let snapshot = crate::observability_trace::traced_infallible_sampled(
+        "sync.snapshot_rooms",
+        "matrix.sync",
+        SNAPSHOT_ROOMS_TRACE_SAMPLE_RATE,
+        rooms::snapshot_rooms(
+            client,
+            media_cache,
+            include_message_preview,
+            &state.preview_registered_rooms,
+        ),
+    )
+    .await;
     let badge = shell::compute_badge_state(&snapshot);
     let _ = app.emit("room_list:update", snapshot);
     let _ = app.emit("badge:update", &badge);
@@ -427,6 +455,20 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 
     let handle = tokio::spawn(async move {
         let _ = app.emit("sync:state", SyncStateEvent::Syncing);
+
+        // Subscribing spawns the task that listens to
+        // `client.subscribe_to_all_room_updates()` — the event cache (and
+        // `LatestEvents`, which `rooms::last_message_preview` reads for
+        // Spec 54's message preview) only sees a room's events from the
+        // point this subscription starts. Doing it before the initial
+        // `sync_once` below, rather than only later in
+        // `emit_room_list_and_badge`'s `last_message_preview` call, means
+        // existing rooms' latest messages are already known by the time the
+        // first `room_list:update` is emitted, instead of showing no preview
+        // until the next message arrives. Cheap/idempotent per its own doc
+        // comment, so unconditional here regardless of whether the preview
+        // flag ends up enabled.
+        let _ = client.event_cache().subscribe();
 
         // Establish initial sync state before entering the long-running loop below.
         let initial_response = match client.sync_once(SyncSettings::default()).await {
