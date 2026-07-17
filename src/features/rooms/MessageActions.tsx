@@ -268,7 +268,15 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
             {canPin && !isError && (isPinned ? onUnpin : onPin) && (
               <DropdownMenuItem
                 onSelect={isPinned ? onUnpin : onPin}
-                disabled={disableRelationActions || isUndecrypted}
+                // Review fix: `unpin_event` only needs the event ID — it
+                // doesn't touch message content — so an already-pinned but
+                // currently-undecrypted event (e.g. after a key gap or
+                // restore) must still be unpinnable. Gating Unpin on
+                // `isUndecrypted` the same way Pin/reply/react/edit are
+                // would leave it stuck pinned forever with no other way to
+                // remove it, since this is the only unpin affordance Spec
+                // day-2/04 defines.
+                disabled={disableRelationActions || (isUndecrypted && !isPinned)}
               >
                 {isPinned ? <PinOff /> : <Pin />}
                 {isPinned ? "Unpin" : "Pin"}

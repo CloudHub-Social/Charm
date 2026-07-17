@@ -719,10 +719,12 @@ pub struct PinnedMessageSummary {
 
 /// Resolves each of `room_id`'s currently-pinned event ids (per
 /// `RoomDetails.pinned_event_ids`) against synced timeline/event-fetch
-/// machinery, for the pinned-messages panel. Uses `Room::event`, which
-/// checks the local event cache before falling back to a `/rooms/{id}/event`
-/// homeserver request — the same resolve-by-id primitive
-/// `load_or_fetch_event` wraps — rather than requiring every pinned event to
+/// machinery, for the pinned-messages panel. Uses `Room::load_or_fetch_event`
+/// — checks the local event cache first, only falling back to a
+/// `/rooms/{id}/event` homeserver request on a cache miss — rather than
+/// `Room::event` (review fix: that always issues a homeserver request
+/// unconditionally, decrypting only afterward, even for an event the cache
+/// already has decrypted and ready). Doesn't require every pinned event to
 /// already be inside the currently-loaded timeline window, since a message
 /// pinned long ago is routinely outside it.
 ///
@@ -738,6 +740,23 @@ pub async fn get_pinned_messages(
     get_pinned_messages_impl(&client, &room_id).await
 }
 
+/// Appends `sender`'s MXID to `name` when it's ambiguous (shared with
+/// another room member), matching `timeline::sender_profile_fields`'s
+/// disambiguation convention — pulled out as a pure function so it's
+/// unit-testable without a mocked homeserver's `/members` endpoint (which
+/// `RoomMember::name_ambiguous` needs a live/synced member list to compute).
+fn disambiguated_display_name(
+    name: &str,
+    ambiguous: bool,
+    sender: &matrix_sdk::ruma::UserId,
+) -> String {
+    if ambiguous {
+        format!("{name} ({sender})")
+    } else {
+        name.to_string()
+    }
+}
+
 /// Core logic behind [`get_pinned_messages`].
 pub async fn get_pinned_messages_impl(
     client: &Client,
@@ -748,7 +767,7 @@ pub async fn get_pinned_messages_impl(
 
     let mut summaries = Vec::with_capacity(pinned_event_ids.len());
     for event_id in pinned_event_ids {
-        let Ok(timeline_event) = room.event(&event_id, None).await else {
+        let Ok(timeline_event) = room.load_or_fetch_event(&event_id, None).await else {
             continue;
         };
         let Ok(raw_event) = timeline_event.raw().deserialize() else {
@@ -756,12 +775,22 @@ pub async fn get_pinned_messages_impl(
         };
 
         let sender = raw_event.sender().to_owned();
-        let sender_display_name = room
-            .get_member(&sender)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|member| member.display_name().map(ToOwned::to_owned));
+        // Review fix: disambiguate a shared display name the same way
+        // `timeline::sender_profile_fields` does for the main timeline — the
+        // Matrix spec requires this (`RoomMember::name_ambiguous`) so one
+        // member can't pick a display name matching another's to impersonate
+        // them; the pinned-messages panel is a second surface showing a
+        // sender name, so it needs the same treatment.
+        let sender_display_name =
+            room.get_member(&sender)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|member| {
+                    member.display_name().map(|name| {
+                        disambiguated_display_name(name, member.name_ambiguous(), &sender)
+                    })
+                });
         let timestamp_ms: u64 = raw_event.origin_server_ts().0.into();
         let is_redacted = raw_event.is_redacted();
 
@@ -1286,6 +1315,21 @@ mod tests {
         assert!(!summaries[0].is_undecrypted);
         assert_eq!(summaries[1].event_id, second.to_string());
         assert_eq!(summaries[1].preview, "then this");
+    }
+
+    /// Review fix regression test: a sender whose display name is shared
+    /// with another room member must have the MXID appended, matching
+    /// `timeline::sender_profile_fields`'s disambiguation convention for the
+    /// main timeline — otherwise a member could pick a display name matching
+    /// another's to impersonate them in the pinned-messages panel too.
+    #[test]
+    fn disambiguated_display_name_appends_mxid_only_when_ambiguous() {
+        let alice = matrix_sdk::ruma::user_id!("@alice:example.org");
+        assert_eq!(disambiguated_display_name("Alex", false, alice), "Alex");
+        assert_eq!(
+            disambiguated_display_name("Alex", true, alice),
+            "Alex (@alice:example.org)"
+        );
     }
 
     #[tokio::test]

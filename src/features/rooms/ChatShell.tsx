@@ -237,7 +237,15 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
   // the whole surface (header button/badge, mobile menu entry, and the
   // MessageActions Pin/Unpin item below), not just the send call, so the
   // feature is fully dark until rolled out.
-  const messagePinningEnabled = useFlag("message_pinning");
+  //
+  // Review fix: also unconditionally off on the web companion build —
+  // `matrixTransport.ts`'s `invokeWeb` has no case for `get_pinned_messages`/
+  // `pin_event`/`unpin_event`, and the companion server
+  // (`crates/charm-web-server`) has no routes for them either. Same
+  // native-only reasoning as Focus/General/Notifications/Privacy elsewhere
+  // in this codebase — adding web transport/route support for pinning is out
+  // of scope for this spec.
+  const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const mobile = layout === "mobile" && mobileChatRedesignEnabled;
   const [showMobileFormatting, setShowMobileFormatting] = useState(false);
   const composerRef = useRef<ComposerHandle>(null);

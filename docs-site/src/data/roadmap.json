@@ -1,15 +1,22 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T15:54:21.813Z",
+  "generatedAt": "2026-07-17T16:58:43.513Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
-    "follow-up": 9,
-    "in-progress": 3,
+    "follow-up": 10,
+    "in-progress": 2,
     "planned": 34
   },
   "attention": [
+    {
+      "type": "pull-request",
+      "number": 291,
+      "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
+      "url": "https://github.com/CloudHub-Social/Charm/pull/291",
+      "detail": "Day-1 Spec 40 · ready for review"
+    },
     {
       "type": "pull-request",
       "number": 294,
@@ -25,11 +32,11 @@
       "detail": "Day-2 Spec 04 · ready for review"
     },
     {
-      "type": "pull-request",
-      "number": 291,
-      "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/291",
-      "detail": "Day-1 Spec 40 · ready for review"
+      "type": "issue",
+      "number": 296,
+      "title": "User Feedback: Recovery key entry crashes application",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/296",
+      "detail": "bug · Sentry"
     },
     {
       "type": "issue",
@@ -150,8 +157,8 @@
       ],
       "counts": {
         "shipped": 0,
-        "follow-up": 0,
-        "in-progress": 2,
+        "follow-up": 1,
+        "in-progress": 1,
         "planned": 11
       }
     }
@@ -1095,20 +1102,20 @@
       "status": "in-progress",
       "pullRequests": [
         {
+          "number": 291,
+          "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
+          "url": "https://github.com/CloudHub-Social/Charm/pull/291",
+          "state": "open",
+          "draft": false,
+          "updatedAt": "2026-07-17T16:38:05Z"
+        },
+        {
           "number": 292,
           "title": "feat(privacy): presence and receipt privacy controls (Spec 40)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/292",
           "state": "closed",
           "draft": false,
           "updatedAt": "2026-07-17T01:34:22Z"
-        },
-        {
-          "number": 291,
-          "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
-          "url": "https://github.com/CloudHub-Social/Charm/pull/291",
-          "state": "open",
-          "draft": false,
-          "updatedAt": "2026-07-17T01:27:02Z"
         }
       ],
       "issues": []
@@ -1246,7 +1253,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/245",
           "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-14T04:43:27Z"
+          "updatedAt": "2026-07-17T15:54:49Z"
         },
         {
           "number": 242,
@@ -1457,7 +1464,7 @@
       "number": 4,
       "title": "Message pinning",
       "route": "/specs/day-2/spec-04--message-pinning/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 293,
@@ -1554,7 +1561,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/294",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T14:47:41Z"
+          "updatedAt": "2026-07-17T16:20:02Z"
         }
       ],
       "issues": []
