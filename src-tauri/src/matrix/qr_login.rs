@@ -93,7 +93,6 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
     let matrix_state = app.state::<MatrixState>();
     let reservation = ReservedTempStoreGuard::new(&matrix_state, temp_key.clone());
     let client = super::auth::build_client(&app, &homeserver_url, &temp_key).await?;
-    reservation.defuse();
 
     // Device-code grant only — this client only ever needs to be the "new
     // device" side of QR login, never a full browser-based OAuth login.
@@ -119,6 +118,13 @@ pub async fn start_qr_login(app: AppHandle, homeserver_url: String) -> Result<()
         .pending_qr_temp_store_key
         .lock()
         .unwrap_or_else(|e| e.into_inner()) = Some(temp_key.clone());
+    // Defused only now that `pending_qr_temp_store_key` protects the key
+    // itself (Codex review on #288, P2, same finding as `start_sso_login`'s
+    // identical reordering): defusing right after `build_client` instead
+    // would leave a gap — no `.await` in between here, but a spawned sweep
+    // task on a multi-threaded runtime doesn't need one to run concurrently
+    // with this thread's plain synchronous code.
+    reservation.defuse();
 
     let temp_key_for_task = temp_key.clone();
     let task = tokio::spawn(async move {

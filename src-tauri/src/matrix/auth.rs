@@ -728,13 +728,19 @@ pub async fn start_sso_login(
     let client = build_client(&app, &homeserver_url, &store_key).await?;
     let attempt_state = generate_sso_state();
     let sso_url = get_sso_login_url(&client, &attempt_state).await?;
-    reservation.defuse();
 
+    // Publish to `pending_sso` *before* defusing the reservation, not after
+    // (Codex review on #288, P2): defusing first would leave a gap between
+    // that call and this one (an `.await` for the lock apart) where the key
+    // was protected by neither set, exactly the race
+    // `ReservedTempStoreGuard` exists to close. This order means the
+    // reservation is still live for the whole handoff.
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
         state: attempt_state,
         store_key,
     });
+    reservation.defuse();
     // A double-start (e.g. a double click) would otherwise overwrite the
     // previous attempt's `PendingSso` without ever discarding its temp
     // store/passphrase — same leak `cancel_sso_login` guards against, just
