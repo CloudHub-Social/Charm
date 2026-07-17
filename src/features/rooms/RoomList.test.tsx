@@ -5,6 +5,7 @@ import { createStore, Provider } from "jotai";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
 import { RoomList } from "./RoomList";
+import type { RoomListMode } from "./SpaceRail";
 import { makeRoomSummary } from "./testFixtures";
 
 const featureFlagMocks = vi.hoisted(() => ({
@@ -524,6 +525,55 @@ describe("RoomList", () => {
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
 
     rerender(withToken(1));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Newly added")).toBeInTheDocument();
+  });
+
+  it("uses the current mode/space, not a stale closure, when hierarchyRefreshToken changes after switching into space mode", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!new-child:localhost",
+          name: "Newly added",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withProps = (mode: RoomListMode, hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode,
+              selectedSpace: mode === "space" ? space : null,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    // Mounts in Home — mode/selectedSpaceId change in a *separate* later
+    // render from the eventual token bump, matching the stale-closure
+    // scenario a reviewer raised (and which this test disproves: a plain
+    // function declaration re-created every render, called from an effect
+    // that fires on the render where the token actually changed, always
+    // sees that render's own `mode`/`selectedSpaceId`, not an earlier one).
+    const { rerender } = render(withProps("home", 0));
+
+    rerender(withProps("space", 0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    rerender(withProps("space", 1));
 
     await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("Newly added")).toBeInTheDocument();
