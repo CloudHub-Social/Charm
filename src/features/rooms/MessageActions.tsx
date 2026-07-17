@@ -1,5 +1,15 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { Copy, Link2, MoreHorizontal, Pencil, Reply, SmilePlus, Trash2 } from "lucide-react";
+import {
+  Copy,
+  Link2,
+  MoreHorizontal,
+  Pencil,
+  Reply,
+  RotateCw,
+  SmilePlus,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +32,14 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /**
+   * Retries a failed send in place (SDK send-queue retry, not a
+   * re-composed re-send). Only rendered when `isError` is set — see that
+   * prop's doc comment.
+   */
+  onResend?: () => void;
+  /** Discards a failed send's local echo. Only rendered when `isError` is set. */
+  onDiscard?: () => void;
   className?: string;
   /**
    * Set while the message is still a local echo (`send_state.state ===
@@ -41,6 +59,14 @@ export interface MessageActionsProps {
    * timeline emits a fresh diff with real content and this flips back off.
    */
   isUndecrypted?: boolean;
+  /**
+   * Set while the message's send-queue local echo has failed
+   * (`send_state.state === "error"`) — shows Resend/Discard instead of the
+   * usual relation actions, since a failed send has no real event to
+   * reply/react/edit against (see `disableRelationActions`) and re-sending
+   * or discarding it are the only actions that make sense.
+   */
+  isError?: boolean;
 }
 
 /** Imperative handle so a parent can drive the long-press-to-open behavior
@@ -54,7 +80,10 @@ export interface MessageActionsHandle {
 /**
  * Per-timeline-item action menu: Reply/React/Edit/Delete/Copy, gated by
  * `isOwn` (Edit is sender-only per spec) and `canRedact` (Delete is gated by
- * the room's redact power level, read by the caller). Opens via the trigger
+ * the room's redact power level, read by the caller). When `isError` is set
+ * (a failed send's local echo), the menu instead offers Resend/Discard in
+ * place of Delete — matching `disableRelationActions`, which is already
+ * true for a failed send since it never got a real event id. Opens via the trigger
  * button (revealed on hover by the parent bubble's `group` styling) or via a
  * long-press — either directly on this component, or forwarded from a
  * parent-owned element (e.g. the message bubble itself, which is what's
@@ -74,9 +103,12 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDelete,
       onCopy,
       onCopyLink,
+      onResend,
+      onDiscard,
       className,
       disableRelationActions = false,
       isUndecrypted = false,
+      isError = false,
     },
     ref,
   ) {
@@ -216,7 +248,19 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 Copy link
               </DropdownMenuItem>
             )}
-            {canRedact && (
+            {messageActionParityEnabled && isError && onResend && (
+              <DropdownMenuItem onSelect={onResend}>
+                <RotateCw />
+                Resend
+              </DropdownMenuItem>
+            )}
+            {messageActionParityEnabled && isError && onDiscard && (
+              <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
+                <X />
+                Discard
+              </DropdownMenuItem>
+            )}
+            {canRedact && !isError && (
               <DropdownMenuItem
                 variant="destructive"
                 onSelect={onDelete}
