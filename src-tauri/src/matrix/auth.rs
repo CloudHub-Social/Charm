@@ -233,6 +233,17 @@ pub async fn try_restore_session(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Option<LoginResponse>, String> {
+    // Must happen *before* taking `restore_store_lock` below, not after:
+    // the background startup sweep takes that same lock for its own
+    // duration, so waiting on the sweep while already holding it would
+    // deadlock the two against each other. Bounded — see
+    // `wait_for_startup_sweep`'s doc comment (Codex review on #288, P1):
+    // `known_account_keys` below skips a not-yet-recovered stale-backup
+    // directory entirely, so this restore could otherwise run ahead of the
+    // sweep's recovery pass and wrongly treat a perfectly restorable
+    // account as having no store at all.
+    persistence::wait_for_startup_sweep(std::time::Duration::from_secs(5)).await;
+
     // Held for the whole restore attempt: without this, a startup restore
     // building a client against `account_key`'s store could overlap an
     // interactive login relocating that same store — on Windows this can

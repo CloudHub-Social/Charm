@@ -1297,6 +1297,10 @@ pub fn run() {
                 if let Err(e) = sweep_result {
                     eprintln!("orphan temp-store sweep failed: {e}");
                 }
+                // Unblocks `try_restore_session`'s bounded wait regardless of
+                // outcome — see `wait_for_startup_sweep`'s doc comment
+                // (Codex review on #288, P1).
+                matrix::persistence::mark_startup_sweep_complete();
             });
             matrix::dnd::init(&handle);
             #[cfg(desktop)]

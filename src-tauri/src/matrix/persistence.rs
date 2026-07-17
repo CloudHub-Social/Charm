@@ -162,6 +162,46 @@ pub fn sweep_orphan_temp_stores(app: &AppHandle) -> Result<(), String> {
     sweep_orphan_temp_stores_at(&matrix_store_root(app)?)
 }
 
+static STARTUP_SWEEP_READY: std::sync::OnceLock<(
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+)> = std::sync::OnceLock::new();
+
+fn startup_sweep_channel() -> &'static (
+    tokio::sync::watch::Sender<bool>,
+    tokio::sync::watch::Receiver<bool>,
+) {
+    STARTUP_SWEEP_READY.get_or_init(|| tokio::sync::watch::channel(false))
+}
+
+/// Called once by `lib.rs`'s `.setup()` after the background
+/// `sweep_orphan_temp_stores` task finishes (success or failure — a failed
+/// sweep still shouldn't leave startup restore waiting forever). See
+/// [`wait_for_startup_sweep`].
+pub fn mark_startup_sweep_complete() {
+    let _ = startup_sweep_channel().0.send(true);
+}
+
+/// `try_restore_session` awaits this before iterating `known_account_keys`
+/// (Codex review on #288, P1): that sweep is also what recovers a
+/// [`STALE_BACKUP_SUFFIX`] directory left by a crash mid-relocation, and
+/// `known_account_keys` skips such directories entirely — if restore ran
+/// first, it would see no store at all for that account and skip it, even
+/// though the account has a perfectly recoverable session. Bounded so a
+/// sweep that panics or never runs (there's no other caller of
+/// `mark_startup_sweep_complete`) can't hang startup restore forever; a
+/// timeout is logged and restore proceeds with whatever's on disk, same as
+/// before this coordination existed.
+pub async fn wait_for_startup_sweep(timeout: std::time::Duration) {
+    let mut rx = startup_sweep_channel().1.clone();
+    if *rx.borrow() {
+        return;
+    }
+    if tokio::time::timeout(timeout, rx.changed()).await.is_err() {
+        eprintln!("timed out waiting for startup orphan-temp-store sweep before restoring session");
+    }
+}
+
 /// A `tmp-*` directory younger than this is never swept, regardless of how
 /// long the sweep itself has been running (Codex review on #288, P1). This
 /// sweep now runs as a spawned background task rather than blocking window
