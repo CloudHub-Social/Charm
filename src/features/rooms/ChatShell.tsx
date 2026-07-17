@@ -120,6 +120,13 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
 
   useEffect(() => {
     setCanRedactOthersInRoom(false);
+    // No room selected (ChatShell's empty state, before its `if (!room)`
+    // early return further down) — `canRedactOthers("")` would fail on
+    // both the Rust IPC path (`RoomId::parse("")`) and the web transport
+    // (`/api/rooms//can-redact-others`), surfacing as a spurious
+    // backend/Sentry error on nothing but opening/closing a room (Codex
+    // review on #287, P2).
+    if (!roomId) return;
     const requestedForRoomId = roomId;
     canRedactOthers(roomId)
       .then((allowed) => {
@@ -524,7 +531,10 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   function isGroupBreakAt(index: number): boolean {
     return isDateDividerBoundary(messages, index) || index === unreadStartIdx;
   }
-  const senders = messages.map((m) => m.sender);
+  // Memoized, not a plain `.map()`, because `useCanRedactMap` uses this as
+  // a `useMemo` dependency — a fresh array every render would defeat that
+  // memoization entirely (Sentry review on #287, LOW).
+  const senders = useMemo(() => messages.map((m) => m.sender), [messages]);
   // Best-effort display-name lookup for read-receipt tooltips ("Read by
   // {name}") — built from senders already present in the loaded timeline
   // rather than a dedicated member-list fetch, since a reader is virtually
