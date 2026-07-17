@@ -1,6 +1,5 @@
 ---
-title: "Charm 2.0 Spec — Sidebar and space management (pin, reorder, context
-  menu, add existing)"
+title: "Charm 2.0 Spec — Sidebar and space management (pin, reorder, context menu, add existing)"
 type: spec
 project: Charm 2.0
 created: "2026-07-16"

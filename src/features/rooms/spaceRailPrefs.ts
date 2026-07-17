@@ -64,7 +64,26 @@ export function moveSpaceInOrder(
   if (index === -1) return order;
   const swapWith = direction === "up" ? index - 1 : index + 1;
   if (swapWith < 0 || swapWith >= current.length) return order;
-  const next = [...current];
-  [next[index], next[swapWith]] = [next[swapWith], next[index]];
+  const swapId = current[swapWith];
+
+  // Keep the result sparse: only `spaceId` (and, when needed, `swapId`)
+  // become explicit here — every other id already absent from `order` stays
+  // absent, still falling back to natural order. Fully re-materializing the
+  // whole visible list into `order` on every move (the previous behavior)
+  // permanently froze natural ordering for every space the user had ever
+  // seen, so a newly joined space could never again interleave with
+  // never-explicitly-ordered ones — it would just append after all of them.
+  const next = order.filter((id) => id !== spaceId);
+  const swapPosition = next.indexOf(swapId);
+  if (swapPosition === -1) {
+    // `swapId` isn't explicit either. Since every explicit id ranks above
+    // every natural (absent-from-`order`) one, moving `spaceId` past a
+    // natural-order `swapId` requires making both explicit — appended
+    // together at the end of whatever was already explicit, in their new
+    // relative order, so existing explicit entries keep their positions.
+    next.push(...(direction === "up" ? [spaceId, swapId] : [swapId, spaceId]));
+    return next;
+  }
+  next.splice(direction === "up" ? swapPosition : swapPosition + 1, 0, spaceId);
   return next;
 }

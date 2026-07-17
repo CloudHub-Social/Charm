@@ -160,4 +160,85 @@ describe("useSpaceRailPrefsSync", () => {
       }),
     );
   });
+
+  it("keeps a local edit made while the initial read is still in flight", async () => {
+    let resolveRead: (value: unknown) => void = () => {};
+    getAccountData.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+
+    const { result } = renderWithStore();
+
+    // The user pins/unpins before the account-data read has resolved.
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!local-edit:localhost"] });
+    });
+
+    act(() => {
+      resolveRead({ order: [], unpinned: ["!stale-remote:localhost"] });
+    });
+    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
+
+    // The remote value must not clobber the edit the user already made.
+    expect(result.current[0]).toEqual({ order: [], unpinned: ["!local-edit:localhost"] });
+  });
+
+  it("applies the remote value when no local edit happened during the read", async () => {
+    let resolveRead: (value: unknown) => void = () => {};
+    getAccountData.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+
+    const { result } = renderWithStore();
+
+    act(() => {
+      resolveRead({ order: [], unpinned: ["!remote:localhost"] });
+    });
+    await waitFor(() =>
+      expect(result.current[0]).toEqual({ order: [], unpinned: ["!remote:localhost"] }),
+    );
+  });
+
+  it("serializes rapid consecutive writes instead of letting them race", async () => {
+    getAccountData.mockResolvedValue(null);
+    const writeOrder: string[] = [];
+    let resolveFirstWrite: () => void = () => {};
+    setAccountData.mockImplementationOnce(() => {
+      writeOrder.push("first-started");
+      return new Promise<void>((resolve) => {
+        resolveFirstWrite = () => {
+          writeOrder.push("first-resolved");
+          resolve();
+        };
+      });
+    });
+    setAccountData.mockImplementationOnce(() => {
+      writeOrder.push("second-started");
+      return Promise.resolve();
+    });
+
+    const { result } = renderWithStore();
+    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
+
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!first:localhost"] });
+    });
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(1));
+
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!second:localhost"] });
+    });
+    // The second write must not start until the first has settled — proves
+    // the requests are chained, not fired concurrently where an
+    // out-of-order server arrival could let the first overwrite the second.
+    expect(setAccountData).toHaveBeenCalledTimes(1);
+
+    resolveFirstWrite();
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(2));
+    expect(writeOrder).toEqual(["first-started", "first-resolved", "second-started"]);
+  });
 });
