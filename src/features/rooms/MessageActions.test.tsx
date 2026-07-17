@@ -13,6 +13,8 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
   const onDelete = vi.fn();
   const onCopy = vi.fn();
   const onCopyLink = vi.fn();
+  const onResend = vi.fn();
+  const onDiscard = vi.fn();
 
   render(
     <MessageActions
@@ -24,11 +26,13 @@ function renderActions(overrides: Partial<Parameters<typeof MessageActions>[0]> 
       onDelete={onDelete}
       onCopy={onCopy}
       onCopyLink={onCopyLink}
+      onResend={onResend}
+      onDiscard={onDiscard}
       {...overrides}
     />,
   );
 
-  return { onReply, onReact, onEdit, onDelete, onCopy, onCopyLink };
+  return { onReply, onReact, onEdit, onDelete, onCopy, onCopyLink, onResend, onDiscard };
 }
 
 /** Radix's DropdownMenu opens on pointerdown, not click, in jsdom. */
@@ -165,6 +169,50 @@ describe("MessageActions", () => {
     fireEvent.click(await screen.findByText("Copy"));
 
     expect(onCopy).not.toHaveBeenCalled();
+  });
+
+  it("does not show Resend or Discard for a normal (non-failed) message", async () => {
+    renderActions({ isOwn: true, canRedact: true, isError: false });
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Resend")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discard")).not.toBeInTheDocument();
+  });
+
+  it("shows Resend and Discard, and hides Delete, for a failed send", async () => {
+    renderActions({ isOwn: true, canRedact: true, isError: true, disableRelationActions: true });
+    openMenu();
+
+    expect(await screen.findByText("Resend")).toBeInTheDocument();
+    expect(screen.getByText("Discard")).toBeInTheDocument();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  it("hides Resend and Discard when message-action parity is disabled, even for a failed send", async () => {
+    mockUseFlag.mockReturnValue(false);
+    renderActions({ isOwn: true, canRedact: true, isError: true });
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Resend")).not.toBeInTheDocument();
+    expect(screen.queryByText("Discard")).not.toBeInTheDocument();
+  });
+
+  it("calls onResend when Resend is selected", async () => {
+    const { onResend } = renderActions({ isError: true });
+    openMenu();
+    fireEvent.click(await screen.findByText("Resend"));
+
+    expect(onResend).toHaveBeenCalledOnce();
+  });
+
+  it("calls onDiscard when Discard is selected", async () => {
+    const { onDiscard } = renderActions({ isError: true });
+    openMenu();
+    fireEvent.click(await screen.findByText("Discard"));
+
+    expect(onDiscard).toHaveBeenCalledOnce();
   });
 
   afterEach(() => {
