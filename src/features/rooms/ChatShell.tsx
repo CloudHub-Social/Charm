@@ -259,6 +259,11 @@ export function ChatShell({
   useEffect(() => {
     setShowMobileFormatting(false);
     setRedactionTargetEventId(null);
+    // A genuinely different room's own room-open effect already forces its
+    // timeline live (`useChatTimeline`'s `forceLive` fetch) — this flag is
+    // specifically about *this* room possibly still being focused from an
+    // earlier jump, which doesn't carry over to a different room id.
+    mightHaveFocusedViewRef.current = false;
     if (fileDragLeaveTimerRef.current !== null) {
       clearTimeout(fileDragLeaveTimerRef.current);
       fileDragLeaveTimerRef.current = null;
@@ -368,10 +373,23 @@ export function ChatShell({
     // already-open room (see `resetToLive`'s own comment). Without this,
     // "Jump to Present" would only scroll within whatever's loaded in that
     // possibly-narrow focused window and the room would keep missing live
-    // updates entirely. Fire-and-forget: `scrollToIndex` below still runs
-    // immediately for the common (already-live) case, and `applyMessages`
-    // re-renders once this resolves for the focused-view case.
-    resetToLive().catch(logAndIgnore);
+    // updates entirely.
+    //
+    // Review fix (E2E regression): only when `mightHaveFocusedViewRef` is
+    // set — i.e. a jump for *this* room actually called
+    // `loadTimelineAroundEvent` at some point — not on every click. The far
+    // more common case (no bookmark jump ever happened, or the jump
+    // resolved from the already-loaded live page without ever calling
+    // `loadTimelineAroundEvent`) never touched the backend's focused-view
+    // path at all, so forcing a network re-fetch here is both unnecessary
+    // and actively wrong: it replaces `messages` out from under the
+    // scroll Virtuoso is mid-animating to, which is what broke
+    // `e2e/timeline-scroll.spec.ts`'s plain "scroll away, new message
+    // arrives, click the pill" case.
+    if (mightHaveFocusedViewRef.current) {
+      mightHaveFocusedViewRef.current = false;
+      resetToLive().catch(logAndIgnore);
+    }
     // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
     // own sentinel for "the actual last data item," regardless of
     // `firstItemIndex` — reads slightly clearer than the plain arithmetic and
@@ -494,6 +512,15 @@ export function ChatShell({
   // guards against re-firing it on every subsequent `messages` update while
   // that request is still in flight.
   const loadRequestedForRef = useRef<string | null>(null);
+  // Review fix: set when a jump for *this room* actually calls
+  // `loadTimelineAroundEvent` below — the one path that can end up
+  // installing a `TimelineFocus::Event` backend timeline (via its Rust
+  // `/context`-lookup fallback) in place of the room's live one. A jump
+  // resolved entirely from the already-loaded page (the `index >= 0` branch
+  // above) never touches that path at all. Read by `handleJumpToPresent` to
+  // decide whether it's worth forcing a live re-fetch — see its own
+  // comment for why that must stay conditional rather than unconditional.
+  const mightHaveFocusedViewRef = useRef(false);
   useEffect(() => {
     if (!jumpToEventId || !room) return;
     // Review fix: keyed by room *and* event, not event alone — if the user
@@ -524,6 +551,7 @@ export function ChatShell({
     if (!initialLoadSettled) return;
     if (loadRequestedForRef.current === requestKey) return;
     loadRequestedForRef.current = requestKey;
+    mightHaveFocusedViewRef.current = true;
     loadTimelineAroundEvent(room.room_id, jumpToEventId)
       .then((found) => {
         // Only act on this request if it's still the current one — cleared

@@ -600,14 +600,67 @@ describe("ChatShell", () => {
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
   });
 
-  it("resets the timeline to live when Jump to Present is clicked, so a focused bookmark view doesn't stay stuck (Codex review fix)", async () => {
-    // Once a Saved Messages jump falls back to the Rust `TimelineFocus::Event`
-    // path, the room's cached backend timeline stays focused — clicking
+  it("resets the timeline to live when Jump to Present is clicked after a jump used loadTimelineAroundEvent, so a focused bookmark view doesn't stay stuck (Codex review fix)", async () => {
+    // Once a Saved Messages jump actually calls `loadTimelineAroundEvent`
+    // (not the already-loaded fast path — see `mightHaveFocusedViewRef`'s
+    // own comment), the room's cached backend timeline *may* have been
+    // swapped to the Rust `TimelineFocus::Event` fallback — clicking
     // "Jump to Present" is the one place a still-open room can force it
     // back to live, since the room id itself never changes to re-trigger
-    // the room-open `forceLive` fetch. This asserts the wiring: clicking
-    // the pill must re-fetch with `forceLive: true`, not just scroll
-    // within whatever's already loaded.
+    // the room-open `forceLive` fetch.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue(true);
+    const { rerender } = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    // Simulates the successful jump's own `timeline:update` landing with
+    // the target now present, resolving the jump.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    rerender(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    getTimelinePage.mockClear();
+
+    fireAtBottomStateChange(true); // clear jump suppression before the pill click below
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    await vi.waitFor(() =>
+      expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true),
+    );
+  });
+
+  it("does not re-fetch on Jump to Present when no bookmark jump ever used loadTimelineAroundEvent for this room (Codex review fix)", async () => {
+    // The common case: no Saved Messages jump ever happened (or the jump
+    // resolved entirely from the already-loaded page). Forcing a network
+    // re-fetch here regardless would replace `messages` out from under
+    // Virtuoso's own scroll, which is what broke
+    // `e2e/timeline-scroll.spec.ts`'s plain scroll-away/jump-to-present case.
     getTimelinePage.mockResolvedValue({
       messages: [
         summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
@@ -633,9 +686,7 @@ describe("ChatShell", () => {
     const pill = await screen.findByRole("button", { name: "1 new message" });
     fireEvent.click(pill);
 
-    await vi.waitFor(() =>
-      expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true),
-    );
+    expect(getTimelinePage).not.toHaveBeenCalled();
   });
 
   it("does not show a pill for the user's own message sent through the composer while scrolled away, because sending scrolls to present first", async () => {
