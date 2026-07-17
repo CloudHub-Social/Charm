@@ -505,6 +505,15 @@ async fn refresh_session_cookie(
         // a single failed touch would silently hide a genuinely stale
         // `last_seen_unix` for a full hour before the next request even
         // tried again (Codex review finding on #280).
+        // `false` once the throttled touch below finds the persisted
+        // session is genuinely gone — most likely another instance already
+        // processed this token's logout in the narrow window since this
+        // instance's own in-memory `SessionStore` last heard about it. In
+        // that case this instance must not send a freshly `Max-Age`-extended
+        // cookie for a session another instance already killed (Codex
+        // review finding on #280) — nor keep serving it locally, so the
+        // local entry is dropped (aborting its sync loop) right alongside.
+        let mut refresh_cookie = true;
         if let Some(persistence) = &state.persistence {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -515,10 +524,23 @@ async fn refresh_session_cookie(
                 .load(std::sync::atomic::Ordering::Relaxed);
             if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
                 match persistence.touch_last_seen_now(&token).await {
-                    Ok(()) => {
+                    Ok(crate::persistence::TouchOutcome::Touched) => {
                         session
                             .last_persistence_touch_unix
                             .store(now, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(crate::persistence::TouchOutcome::NotFound) => {
+                        refresh_cookie = false;
+                        if let Some(dead_session) = state.sessions.remove(&token).await {
+                            if let Some(handle) = dead_session
+                                .sync_handle
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .take()
+                            {
+                                handle.abort();
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -530,10 +552,13 @@ async fn refresh_session_cookie(
                 }
             }
         }
-        if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string()) {
-            response
-                .headers_mut()
-                .append(axum::http::header::SET_COOKIE, value);
+        if refresh_cookie {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&session_cookie(token).to_string())
+            {
+                response
+                    .headers_mut()
+                    .append(axum::http::header::SET_COOKIE, value);
+            }
         }
     }
     response
@@ -816,6 +841,72 @@ mod refresh_session_cookie_gating_tests {
                 .contains_key(axum::http::header::SET_COOKIE),
             "a failed durable touch must not prevent the session cookie from still being \
              refreshed"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Avoid
+    /// refreshing cookies after the durable session is gone"): in the
+    /// multi-instance path this crate supports, another instance can
+    /// process a logout (deleting the persisted record) in the narrow
+    /// window before this instance's own in-memory `SessionStore` hears
+    /// about it — this instance's next request for that token would then
+    /// find it still resident locally and the throttled touch would report
+    /// `TouchOutcome::NotFound`. That must not be treated the same as a
+    /// confirmed durable touch: refreshing the cookie here would re-install
+    /// a fresh 30-day cookie for a session another instance already killed,
+    /// and this instance must also stop serving it locally rather than
+    /// keep the now-orphaned entry resident. Simulates the race by never
+    /// persisting anything for the token at all — from `touch_last_seen_now`'s
+    /// perspective, "never existed" and "already deleted by another
+    /// instance" look identical, both surfacing as `TouchOutcome::NotFound`.
+    #[tokio::test]
+    async fn a_session_with_no_persisted_record_is_dropped_and_its_cookie_is_not_refreshed() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-refresh-cookie-not-found-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [64u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        state
+            .sessions
+            .insert(
+                "tok-already-gone".to_string(),
+                dummy_live_session("@already-gone:example.invalid").await,
+            )
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(axum::http::header::COOKIE, "charm_session=tok-already-gone")
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::SET_COOKIE),
+            "a session with no persisted record left (already logged out on another \
+             instance) must not have its cookie refreshed"
+        );
+        assert!(
+            sessions.get("tok-already-gone").await.is_none(),
+            "and must be dropped from this instance's own SessionStore too, rather than \
+             staying resident and authenticating locally after another instance already \
+             killed it"
         );
     }
 }

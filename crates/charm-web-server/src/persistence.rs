@@ -265,6 +265,20 @@ pub enum SaveMode {
     RetryInitialSave,
 }
 
+/// Result of [`PersistenceStore::touch_last_seen_now`] — whether there was
+/// actually a persisted entry to durably bump. `routes::refresh_session_cookie`
+/// needs this distinction, not just `Result<(), String>`'s success/failure:
+/// on `NotFound`, the persisted session is genuinely gone — most likely
+/// another instance already processed this token's logout — so refreshing
+/// the cookie or leaving the in-memory session resident would let this
+/// instance keep serving a session another instance already killed (Codex
+/// review finding on #280).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TouchOutcome {
+    Touched,
+    NotFound,
+}
+
 pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
@@ -1193,9 +1207,14 @@ impl PersistenceStore {
     /// with multiple instances against, does support it), preserving
     /// today's in-process-only protection there rather than failing outright.
     ///
-    /// `Ok(())`, not an error, if the entry was removed by a racing logout
-    /// before this could even acquire the lock or read it — same tolerance
-    /// `read_one`/`read_all` already give a missing entry.
+    /// `Ok(TouchOutcome::NotFound)`, not an error, if the entry was removed
+    /// by a racing logout before this could even acquire the lock or read
+    /// it — same tolerance `read_one`/`read_all` already give a missing
+    /// entry, just distinguished from [`TouchOutcome::Touched`] rather than
+    /// collapsed into a single `Ok(())`: `routes::refresh_session_cookie`
+    /// needs to tell "durably touched" apart from "there was nothing to
+    /// touch" (see that call site for why — a cross-instance rolling-deploy
+    /// race, Codex review finding on #280).
     ///
     /// `pub(crate)`, not private: `routes::refresh_session_cookie` also
     /// calls this directly (awaited, not fire-and-forget like
@@ -1208,7 +1227,7 @@ impl PersistenceStore {
     /// moved, so a restart's `restore_all`/`sweep_expired` would then
     /// reject that still-present cookie as expired (Codex review finding
     /// on #280).
-    pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<(), String> {
+    pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<TouchOutcome, String> {
         let lock = self.token_write_lock(token);
         let _guard = lock.lock().await;
         // Bounded retry on a `Precondition` conflict, not an automatic
@@ -1239,7 +1258,7 @@ impl PersistenceStore {
             // bump and end up hiding a real `last_seen_unix` staleness for
             // another hour (Codex review finding on #280).
             let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
-                return Ok(());
+                return Ok(TouchOutcome::NotFound);
             };
             entry.last_seen_unix = Some(now_unix());
             let path = object_path_for_token(&entry.token);
@@ -1254,7 +1273,7 @@ impl PersistenceStore {
                 .put_opts(&path, PutPayload::from(json.clone()), opts)
                 .await
             {
-                Ok(_) => return Ok(()),
+                Ok(_) => return Ok(TouchOutcome::Touched),
                 Err(object_store::Error::Precondition { .. })
                     if attempt + 1 < MAX_TOUCH_ATTEMPTS =>
                 {
@@ -1276,7 +1295,7 @@ impl PersistenceStore {
                         .store
                         .put(&path, PutPayload::from(json))
                         .await
-                        .map(|_| ())
+                        .map(|_| TouchOutcome::Touched)
                         .map_err(|e| e.to_string());
                 }
                 Err(e) => return Err(e.to_string()),
