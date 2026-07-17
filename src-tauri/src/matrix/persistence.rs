@@ -324,6 +324,17 @@ fn recover_or_discard_stale_backup(
     backup_key: &str,
     backup_path: &Path,
 ) -> bool {
+    // Same `RELOCATE_LOCK` every `relocate_store_and_save_*` takes (Codex
+    // review on #288, P2): this function and SSO/QR login completion's
+    // relocation both rename/delete the same `account_path` and backup
+    // path for a given account. Before this, only `relocate_store_and_
+    // save_*` serialized against *each other* — the background startup
+    // sweep calling this function held no lock at all, so it could run
+    // concurrently with an SSO/QR completion relocating the very same
+    // account (a race impossible before the sweep moved off the
+    // synchronous, pre-interactive `.setup()` path), corrupting whichever
+    // one lost.
+    let _guard = RELOCATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let account_path = root.join(account_key);
     let backup_passphrase_entry =
         SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(backup_key));

@@ -204,17 +204,37 @@ export function RoomList({
   // the wrong branch on click (Codex review on #288, P2). Refs sidestep
   // this: any closure created from `handleSelectSearchResult`, however old,
   // always reads the current scope when it's actually invoked.
+  //
+  // Resolving by `room_id` through `roomByIdRef` (rather than trusting the
+  // `RoomSummary` object baked into a search-result row's `onSelect`
+  // closure) closes a related staleness gap Codex re-flagged after the
+  // above fix (comments 3599666130/3599749219): `roomListItemPropsEqual`
+  // doesn't compare `parent_space_ids` (unbounded-length array, not a cheap
+  // per-field check like the rest), so a memoized row can survive a sync
+  // update that changes it — and `onSelectSearchResult`
+  // (`selectRoomInVisibleMode`) reads exactly that field to decide whether
+  // to land on Home or a space. The stale closure still fires the right
+  // *branch* now (scope check is ref-backed above), but was still handing
+  // that branch a possibly-outdated room. Looking it up fresh here means
+  // even a maximally stale closure always acts on current routing data.
+  const roomByIdRef = useRef(roomById);
+  roomByIdRef.current = roomById;
   const scopedRoomIdsRef = useRef(scopedRoomIds);
   scopedRoomIdsRef.current = scopedRoomIds;
   const onSelectSearchResultRef = useRef(onSelectSearchResult);
   onSelectSearchResultRef.current = onSelectSearchResult;
   const handleSelectSearchResult = useCallback(
-    (room: RoomSummary) => {
-      const inScope = scopedRoomIdsRef.current.has(room.room_id);
+    (roomId: string) => {
+      const inScope = scopedRoomIdsRef.current.has(roomId);
       if (!inScope && onSelectSearchResultRef.current) {
-        onSelectSearchResultRef.current(room);
+        // `roomById` only indexes joined rooms (see its definition above),
+        // which is exactly this callback's domain — an out-of-scope search
+        // result being switched to must already be joined, or there'd be no
+        // scope for `onSelectSearchResult` to switch into.
+        const current = roomByIdRef.current.get(roomId);
+        if (current) onSelectSearchResultRef.current(current);
       } else {
-        onSelectRoom(room.room_id);
+        onSelectRoom(roomId);
       }
       setSearchQuery("");
       setSearchEverywhere(false);
@@ -362,7 +382,7 @@ export function RoomList({
         // so `selectRoomInVisibleMode` re-selects the same space id), which
         // is a no-op state update that never triggers that effect, leaving
         // the search box and "Search everywhere" stuck on.
-        onSelect={() => handleSelectSearchResult(room)}
+        onSelect={() => handleSelectSearchResult(room.room_id)}
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
         }
