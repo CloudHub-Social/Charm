@@ -60,7 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     if let Some(persistence) = &persistence {
-        let restored = persistence.restore_all().await;
+        let restored = persistence
+            .restore_all(charm_web_server::session::session_revocation_grace())
+            .await;
         tracing::info!("restored {} persisted session(s)", restored.len());
         for (token, homeserver_url, session, initial_response, initial_access_token) in restored {
             let persist = Some(sync_loop::PersistHandle {
@@ -69,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 homeserver_url,
                 initial_access_token: Some(initial_access_token),
                 crypto: session.persisted_crypto.clone(),
+                awaiting_initial_persistence: session.awaiting_initial_persistence.clone(),
             });
             let handle = sync_loop::spawn(
                 session.client.clone(),
@@ -99,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // idle timeout, with no way back short of a fresh login.
     if let Some(persistence) = &persistence {
         spawn_idle_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
+        spawn_expired_session_sweeper(state.sessions.clone(), Arc::clone(persistence));
     }
 
     let addr =
@@ -261,7 +265,13 @@ fn spawn_idle_session_sweeper(
                     tracing::warn!("failed to snapshot crypto store before idle eviction: {e}");
                 }
                 if let Err(e) = persistence
-                    .save(&token, &homeserver_url, &matrix_session, crypto)
+                    .save(
+                        &token,
+                        &homeserver_url,
+                        &matrix_session,
+                        crypto,
+                        charm_web_server::persistence::SaveMode::Resave,
+                    )
                     .await
                 {
                     // Evicted anyway — an earlier version of this tried to
@@ -287,6 +297,52 @@ fn spawn_idle_session_sweeper(
                          anyway: {e}"
                     );
                 }
+            }
+        }
+    });
+}
+
+/// How often the expired-session sweep below runs. Daily, not tied to
+/// `session::SWEEP_INTERVAL` (5 minutes) — unlike idle eviction, this only
+/// ever acts on sessions already `SESSION_COOKIE_MAX_AGE_SECS` (30 days)
+/// stale, so there's no benefit to checking anywhere near that often, and a
+/// daily cadence keeps this well clear of the per-request-touch write
+/// volume `PersistenceStore::touch_last_seen` already adds.
+const EXPIRED_SESSION_SWEEP_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+
+/// Periodically revokes and removes persisted sessions whose browser cookie
+/// (`routes::session_cookie`'s `SESSION_COOKIE_MAX_AGE_SECS`) has almost
+/// certainly already expired — see `PersistenceStore::sweep_expired`'s doc
+/// comment for why that field, not idle-eviction, is what this needs to
+/// track, and why sessions still resident in `SessionStore` are skipped
+/// rather than judged by it. Runs for the lifetime of the process, same as
+/// [`spawn_idle_session_sweeper`]; nothing to join it against on shutdown.
+fn spawn_expired_session_sweeper(
+    sessions: charm_web_server::session::SessionStore,
+    persistence: Arc<PersistenceStore>,
+) {
+    let max_age = charm_web_server::session::session_revocation_grace();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(EXPIRED_SESSION_SWEEP_INTERVAL);
+        // Deliberately does *not* skip the first tick the way
+        // `spawn_idle_session_sweeper` does — that skip is safe there
+        // because nothing can have gone idle in the instant the process
+        // starts, but a session can already be past `max_age` *before* this
+        // process even started (e.g. a redeploy after downtime, or a
+        // frequently-redeployed instance). `restore_all` only filters
+        // already-expired entries out of memory; it never revokes or
+        // removes them, so without an immediate sweep here they'd sit with
+        // a valid access token and crypto store for up to a full
+        // `EXPIRED_SESSION_SWEEP_INTERVAL` after every single restart
+        // (Codex review finding on #280). `tokio::time::interval`'s first
+        // `tick()` already resolves immediately by default — this loop
+        // relies on that, rather than sleeping once before the first sweep.
+        loop {
+            interval.tick().await;
+            let swept = persistence.sweep_expired(max_age, &sessions).await;
+            if swept > 0 {
+                tracing::info!("swept {swept} expired persisted session(s)");
             }
         }
     });

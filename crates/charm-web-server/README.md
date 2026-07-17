@@ -170,6 +170,35 @@ For local dev or any other non-TLS deployment, set
 `CHARM_WEB_SERVER_INSECURE_COOKIES=1` to drop the `Secure` flag; never set
 this in a production deployment that's actually behind TLS.
 
+The cookie carries an explicit 30-day `Max-Age`
+(`session::SESSION_COOKIE_MAX_AGE_SECS`), not just the security attributes
+above — a cookie with no `Max-Age`/`Expires` is a browser-session cookie that
+most browsers discard as soon as the browser fully closes, which forced a
+full re-login (and, since e2ee device verification doesn't survive that, a
+fresh recovery-key prompt) far sooner than the persisted session behind it
+actually expired. `routes::refresh_session_cookie` re-issues the cookie with
+a fresh 30-day window on every authenticated request that resolves to a
+still-active session, so a browser in continuous daily use never runs out the
+clock; only real inactivity for the full window does.
+`persistence::PersistenceStore::sweep_expired` runs at startup and then once
+a day thereafter, and is the server-side half of that same window: it
+revokes the Matrix access token and deletes the persisted session and crypto
+store for any session whose last known genuine activity is older than 30
+days (`session::session_revocation_grace`, not the bare `Max-Age`, to absorb
+the touch throttle described below). `PersistedSession::last_seen_unix` is
+bumped only by an actual authenticated request — `save(bump_last_seen: true)`
+at login/register, and `touch_last_seen` (throttled to at most once/hour per
+session) on an on-demand restore or a live-session cookie refresh — not by
+`save(bump_last_seen: false)`'s idle-eviction re-save or token-refresh
+repersist, which deliberately preserve whatever `last_seen_unix` was already
+there. A session still resident in `SessionStore` is skipped only when
+`session::SessionStore::is_genuinely_active` says so (an open connection, or
+`last_active` within that same window) — `sweep_idle`'s own
+pending-verification/unpersisted-room exemptions can otherwise keep a
+session in memory indefinitely with no idle timeout at all, so bare
+residency alone isn't proof of activity. Revoking a still-resident session
+also removes it from `SessionStore` and aborts its sync loop.
+
 ### Session persistence env vars
 
 - `CHARM_WEB_SERVER_MASTER_KEY` — base64-encoded 32-byte AES-256 key

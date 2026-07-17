@@ -54,6 +54,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -113,6 +114,55 @@ struct PersistedSession {
     /// `None` exactly when `crypto_store_key` is `None`, for the same reason.
     #[serde(default)]
     crypto_passphrase: Option<String>,
+    /// Unix timestamp of the last time this session was known to be in
+    /// active use — either a fresh login/register (`save`, called there) or
+    /// an on-demand restore of an idle-evicted session (`touch_last_seen`,
+    /// called from `routes::require_session`). Consulted only by
+    /// [`PersistenceStore::sweep_expired`] to decide whether a session's
+    /// browser cookie has almost certainly already expired
+    /// (`SESSION_COOKIE_MAX_AGE_SECS`) and so nothing server-side should go
+    /// on trusting it either.
+    ///
+    /// `Option<u64>`, not a bare `u64` defaulting to "now" at deserialize
+    /// time — a session persisted before this field existed has `None` here
+    /// on disk, and every *read* of that same object (this crate decrypts
+    /// the whole blob fresh each time; there's no in-memory cache to make a
+    /// computed default "stick") would otherwise look freshly seen again on
+    /// every single sweep forever, never actually aging into
+    /// `sweep_expired`'s revoke-and-remove path (Codex review finding on
+    /// #280). `sweep_expired` backfills `None` to a concrete `Some(now)` the
+    /// first time it encounters one — see that function's doc comment — so
+    /// this only ever needs interpreting as "now" once, not on every read.
+    #[serde(default)]
+    last_seen_unix: Option<u64>,
+}
+
+/// Current wall-clock time as a Unix timestamp — clamped to 0 rather than
+/// panicking if the system clock is ever set before 1970 (never expected in
+/// practice, but a `sweep_expired` comparison degrading to "everything looks
+/// ancient" is a far better failure mode than a startup panic).
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Whether a persisted entry's recorded activity is old enough that
+/// [`PersistenceStore::sweep_expired`] and [`PersistenceStore::restore_all`]
+/// should both treat it as expired. Shared between them so they can never
+/// disagree on the definition — the bug this fixed (Codex review finding on
+/// #280) was exactly that disagreement: `restore_all` used to restore *any*
+/// persisted entry unconditionally, so an already-expired one got loaded
+/// into `SessionStore` at startup, which made `sweep_expired`'s live-session
+/// skip treat it as current and exempt it from that day's sweep. `None`
+/// (not yet backfilled — see `sweep_expired`'s doc comment) is never
+/// expired: that entry hasn't had a chance to age normally yet.
+fn entry_is_expired(last_seen_unix: Option<u64>, now: u64, max_age_secs: u64) -> bool {
+    match last_seen_unix {
+        Some(last_seen_unix) => now.saturating_sub(last_seen_unix) >= max_age_secs,
+        None => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,10 +237,76 @@ fn virtual_hosted_endpoint(bucket: &str, region_endpoint: &str) -> String {
     }
 }
 
+/// Which of [`PersistenceStore::save`]'s three genuinely distinct callers
+/// this call is — a bare `bool` (an earlier revision of this parameter) can
+/// only distinguish two cases, but a missing object means something
+/// different for each of `Resave` and `RetryInitialSave` even though both
+/// otherwise behave identically (preserve `last_seen_unix`, retry past a
+/// benign conflict).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaveMode {
+    /// A fresh login/register (`routes::finish_login`) — a browser request
+    /// genuinely just happened, so `last_seen_unix` bumps to now, and the
+    /// write unconditionally wins regardless of whatever's currently there.
+    FreshLogin,
+    /// An ordinary re-save of a session already known to be persisted —
+    /// `main.rs`'s idle-eviction re-save, and `sync_loop`'s token-refresh
+    /// repersist once its very first save has already landed
+    /// (`PersistHandle::initial_access_token` is `Some`). A missing object
+    /// here is indistinguishable from another process's logout having just
+    /// deleted it, so it must never be resurrected.
+    Resave,
+    /// `sync_loop`'s token-refresh repersist when
+    /// `PersistHandle::initial_access_token` is `None` — `finish_login`'s
+    /// own initial save never landed (a transient disk/lock error), and
+    /// this is the retry that's supposed to actually persist the session
+    /// for the first time. Unlike `Resave`, a missing object here is the
+    /// *expected* case to create, not a resurrection.
+    RetryInitialSave,
+}
+
+/// Result of [`PersistenceStore::touch_last_seen_now`] — whether there was
+/// actually a persisted entry to durably bump. `routes::refresh_session_cookie`
+/// needs this distinction, not just `Result<(), String>`'s success/failure:
+/// on `NotFound`, the persisted session is genuinely gone — most likely
+/// another instance already processed this token's logout — so refreshing
+/// the cookie or leaving the in-memory session resident would let this
+/// instance keep serving a session another instance already killed (Codex
+/// review finding on #280).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TouchOutcome {
+    Touched,
+    NotFound,
+}
+
 pub struct PersistenceStore {
     key: Aes256Gcm,
     store: Arc<dyn ObjectStore>,
     crypto_backup: Option<Arc<crate::crypto_backup::CryptoBackupStore>>,
+    /// Serializes [`Self::save`] and [`Self::touch_last_seen`] against each
+    /// other, per token — without this, `touch_last_seen`'s read-then-write
+    /// (fired detached from `routes::require_session`) can interleave with a
+    /// concurrent `save` from `sync_loop`'s `repersist_if_token_changed`
+    /// (e.g. an idle-evicted restore whose initial sync refreshes the access
+    /// token): whichever write lands second wins the whole object, so a
+    /// `touch_last_seen` that read the *pre-refresh* entry before losing the
+    /// race would silently put the stale, already-invalidated token pair
+    /// back on disk (Codex review finding on #280). Each entry's lock is
+    /// only ever held for the few in-process, no-network operations inside
+    /// one `save`/`touch_last_seen` call — never across the `Client`
+    /// rebuild/homeserver round-trips in `restore_one` or
+    /// `restore_client_for_revocation` — so this can't become a bottleneck
+    /// or a cross-await deadlock risk. Entries are never removed while
+    /// still in use (that would reopen the exact same race against an
+    /// in-flight `save`/`touch_last_seen` for that same token that started
+    /// just before logout) — but see
+    /// [`Self::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD`]: bare map growth is
+    /// bounded past that point, since an unauthenticated client can drive
+    /// unbounded growth here simply by sending `routes::logout` a stream of
+    /// forged cookie values before `require_session` ever gets a chance to
+    /// reject them (Codex review finding on #280).
+    token_write_locks:
+        std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl PersistenceStore {
@@ -251,6 +367,7 @@ impl PersistenceStore {
             key,
             store,
             crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }))
     }
 
@@ -263,7 +380,48 @@ impl PersistenceStore {
             key,
             store: Arc::new(store),
             crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    /// The per-token write lock backing [`Self::save`]/[`Self::touch_last_seen`]'s
+    /// serialization — see [`Self::token_write_locks`]'s doc comment for why.
+    /// Above this many cached locks, [`Self::token_write_lock`] prunes
+    /// before inserting another — see that function's doc comment for why
+    /// pruning by reference count (not a real LRU/TTL) is both necessary
+    /// and safe here.
+    const TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD: usize = 10_000;
+
+    fn token_write_lock(&self, token: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .token_write_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // `token_write_locks` is otherwise never pruned (see its own doc
+        // comment) — that's fine for real sessions, bounded by actual
+        // logged-in users, but `routes::logout` calls `remove()` (and so
+        // this) for *any* request carrying a `charm_session` cookie, valid
+        // or not, before `require_session` ever runs. An unauthenticated
+        // client sending a stream of forged cookie values could otherwise
+        // grow this map without bound (Codex review finding on #280).
+        // Retaining only entries with `Arc::strong_count > 1` is safe
+        // specifically because it only ever drops locks nobody is
+        // currently holding: every real holder (a `save`/`touch_last_seen`/
+        // `remove` call in flight) keeps its own clone of the `Arc` for the
+        // duration of that call, independent of whether this map still
+        // references it — dropping the map's clone can't invalidate an
+        // already-acquired guard, and a *future* call for that same token
+        // simply gets a freshly inserted lock, which still correctly
+        // serializes against every other call that reads the map from that
+        // point on.
+        if locks.len() >= Self::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+        Arc::clone(
+            locks
+                .entry(token.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     pub fn with_crypto_backup(
@@ -398,45 +556,152 @@ impl PersistenceStore {
     /// folded into `None` — same fail-open tolerance `read_all` gives a
     /// single bad entry, just scoped to the one object a caller asked for.
     async fn read_one(&self, token: &str) -> Option<PersistedSession> {
+        self.read_one_with_version(token)
+            .await
+            .map(|(entry, _)| entry)
+    }
+
+    /// [`Self::read_one`], additionally returning the object's
+    /// [`object_store::UpdateVersion`] (ETag/version at the moment of this
+    /// read) — for [`Self::touch_last_seen_now`]'s conditional write, which
+    /// needs to know it's overwriting the *same* object version it read,
+    /// not a different one written or deleted since (see that function's
+    /// doc comment for why).
+    async fn read_one_with_version(
+        &self,
+        token: &str,
+    ) -> Option<(PersistedSession, object_store::UpdateVersion)> {
+        self.read_one_with_version_result(token)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("{e}");
+                None
+            })
+    }
+
+    /// Same read as [`Self::read_one_with_version`], but keeping "genuinely
+    /// not there" (`Ok(None)`) distinguishable from a transient
+    /// object-store read/body/decode error (`Err`) — needed by
+    /// [`Self::save`]'s `Resave`/`RetryInitialSave` path, which must not
+    /// treat a hiccuped read the same as "another process's logout deleted
+    /// it" and silently skip persisting a refreshed token pair, leaving the
+    /// disk copy holding a token the homeserver already invalidated until
+    /// the next restart forces an avoidable re-login (Codex review finding
+    /// on #280). A decrypted-but-corrupt entry (bad nonce, wrong key,
+    /// token/path mismatch) is still treated as `Ok(None)`, not an error —
+    /// that data is never coming back regardless of how many times this is
+    /// retried, so it stays lumped in with "not found" rather than wedging
+    /// a refresh loop on a session that's unrecoverable either way.
+    async fn read_one_with_version_result(
+        &self,
+        token: &str,
+    ) -> Result<Option<(PersistedSession, object_store::UpdateVersion)>, String> {
         let path = object_path_for_token(token);
-        let bytes = match self.store.get(&path).await {
-            Ok(result) => match result.bytes().await {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    tracing::warn!("failed to read persisted session object {path}: {e}");
-                    return None;
-                }
-            },
-            Err(object_store::Error::NotFound { .. }) => return None,
+        let result = match self.store.get(&path).await {
+            Ok(result) => result,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
             Err(e) => {
-                tracing::warn!("failed to read persisted session object {path}: {e}");
-                return None;
+                return Err(format!(
+                    "failed to read persisted session object {path}: {e}"
+                ));
+            }
+        };
+        let version = object_store::UpdateVersion {
+            e_tag: result.meta.e_tag.clone(),
+            version: result.meta.version.clone(),
+        };
+        let bytes = match result.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return Err(format!(
+                    "failed to read persisted session object {path}: {e}"
+                ));
             }
         };
         let blob: EncryptedBlob = match serde_json::from_slice(&bytes) {
             Ok(blob) => blob,
             Err(e) => {
                 tracing::warn!("dropping unreadable persisted session object {path}: {e}");
-                return None;
+                return Ok(None);
             }
         };
         match self.decrypt(&blob, &path) {
             Ok(session)
                 if session.token == token && object_path_for_token(&session.token) == path =>
             {
-                Some(session)
+                Ok(Some((session, version)))
             }
             Ok(_) => {
                 tracing::warn!(
                     "dropping persisted session object {path}: decrypted token does not match lookup token"
                 );
-                None
+                Ok(None)
             }
             Err(e) => {
                 tracing::warn!("dropping unreadable persisted session object {path}: {e}");
-                None
+                Ok(None)
             }
         }
+    }
+
+    /// Plain existence check — a single object-store read, no write, no
+    /// per-token lock. `routes::refresh_session_cookie` calls this on
+    /// *every* authenticated+validated request, unlike the durable
+    /// `last_seen_unix` touch/write below (throttled to at most once per
+    /// `PERSISTENCE_TOUCH_THROTTLE_SECS`, since a write costs real money and
+    /// latency on every request of a continuously-live session): a
+    /// cross-instance deletion — another instance already processed this
+    /// token's logout — needs to be caught on the very next request, not
+    /// only once an hour, or a stale instance could keep re-installing a
+    /// fresh cookie for (and keep locally serving) a session another
+    /// instance already killed for up to that whole throttle window (Codex
+    /// review finding on #280). A read is far cheaper than the write this
+    /// deliberately stays split from.
+    pub(crate) async fn exists(&self, token: &str) -> Result<bool, String> {
+        Ok(self.read_one_with_version_result(token).await?.is_some())
+    }
+
+    /// Cheap, no-`Client`-required check for whether `token`'s persisted
+    /// session is already past `max_age` — a single object-store read, not
+    /// a homeserver round trip. Called from `routes::require_session`
+    /// *before* [`Self::restore_by_token`], for the same reason
+    /// [`Self::restore_all`] now filters by [`entry_is_expired`] before
+    /// restoring: without it, a cookie whose token is already past the
+    /// retention window but hasn't been swept yet (the daily
+    /// `sweep_expired` skips its very first tick right after startup, and
+    /// only runs once every 24 hours after that) could still be restored
+    /// on demand, and that restore's own `touch_last_seen` would reset its
+    /// clock — letting a non-browser client (or a stolen cookie) that keeps
+    /// presenting an already-expired token stay resurrected indefinitely
+    /// instead of ever actually hitting the retention limit (Codex review
+    /// finding on #280). `false` (not expired) for a never-persisted token
+    /// or one with `last_seen_unix: None` — both fall through to
+    /// `restore_by_token`'s own, more thorough handling of those same
+    /// cases.
+    ///
+    /// `true` (fail closed, i.e. treated as expired) for a *read* error —
+    /// deliberately not the same `false` a genuinely missing entry gets.
+    /// `require_session` calls this immediately before `restore_by_token`,
+    /// and a transient read failure here has no reason to also fail the
+    /// very next read a few lines later: without this distinction, an
+    /// already-expired-but-not-yet-swept token whose expiry check happened
+    /// to hit a transient error would fall through as "not expired", then
+    /// have `restore_by_token`'s own (successful) read restore it anyway —
+    /// resetting its retention clock right back to "now" via the restore's
+    /// `touch_last_seen`, exactly the resurrection this check exists to
+    /// prevent (Codex review finding on #280).
+    pub async fn is_expired(&self, token: &str, max_age: std::time::Duration) -> bool {
+        let entry = match self.read_one_with_version_result(token).await {
+            Ok(Some((entry, _))) => entry,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(
+                    "treating a persisted session as expired: failed to read it to check: {e}"
+                );
+                return true;
+            }
+        };
+        entry_is_expired(entry.last_seen_unix, now_unix(), max_age.as_secs())
     }
 
     /// On-demand counterpart to [`Self::restore_all`] — rebuilds a live
@@ -655,34 +920,191 @@ impl PersistenceStore {
     /// created once, at login, and its durable snapshots must keep pointing
     /// at that same identity. Persisting a different pair later would orphan
     /// both the original local store and its remote snapshots.
+    ///
+    /// `mode` selects among the three genuinely distinct callers of this
+    /// function — see [`SaveMode`]'s own doc comment for what each one
+    /// means and why a plain `bool` (an earlier revision of this parameter)
+    /// couldn't tell all three apart (Codex review finding on #280).
     pub async fn save(
         &self,
         token: &str,
         homeserver_url: &str,
         session: &MatrixSession,
         crypto: Option<(&str, &str)>,
+        mode: SaveMode,
     ) -> Result<(), String> {
-        let (crypto_store_key, crypto_passphrase) = match crypto {
-            Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
-            None => (None, None),
-        };
-        let path = object_path_for_token(token);
-        let blob = self.encrypt(
-            &PersistedSession {
-                token: token.to_string(),
-                homeserver_url: homeserver_url.to_string(),
-                session: session.clone(),
-                crypto_store_key,
-                crypto_passphrase,
-            },
-            &path,
-        )?;
-        let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
-        self.store
-            .put(&path, PutPayload::from(json))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        // See `token_write_locks`'s doc comment — held for this whole call so
+        // a concurrent `touch_last_seen` for the same token can't read a
+        // stale entry out from under this write and clobber it back on top.
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+
+        if mode == SaveMode::FreshLogin {
+            // A fresh login/register is meant to unconditionally win
+            // regardless of whatever's currently there. No read, no
+            // conflict possible, nothing to retry.
+            let (crypto_store_key, crypto_passphrase) = match crypto {
+                Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
+                None => (None, None),
+            };
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(
+                &PersistedSession {
+                    token: token.to_string(),
+                    homeserver_url: homeserver_url.to_string(),
+                    session: session.clone(),
+                    crypto_store_key,
+                    crypto_passphrase,
+                    last_seen_unix: Some(now_unix()),
+                },
+                &path,
+            )?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            return self
+                .store
+                .put(&path, PutPayload::from(json))
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+        }
+
+        // `Resave` (`main.rs`'s idle-eviction re-save, `sync_loop`'s
+        // ordinary token-refresh repersist) and `RetryInitialSave`
+        // (`sync_loop`'s repersist when `PersistHandle::initial_access_token`
+        // is `None` — `finish_login`'s own initial save never landed) both
+        // preserve the existing `last_seen_unix` rather than bumping it —
+        // neither is a sign the browser actually did anything just now, and
+        // resetting the clock would silently grant an otherwise-abandoned
+        // session another full retention window with no corresponding
+        // cookie refresh. They differ only in what a missing object means:
+        // for `Resave`, the token was already live in `SessionStore`, which
+        // is only ever populated from an already-persisted record, so a
+        // missing object is indistinguishable from "another process's
+        // logout just deleted it" and must never be resurrected. For
+        // `RetryInitialSave` specifically, nothing may have ever landed on
+        // disk yet — that retry exists *because* the very first save may
+        // have failed — so a missing object there is the expected case to
+        // create, not a resurrection (Codex review finding on #280: an
+        // earlier revision of this treated every `bump_last_seen: false`
+        // call the same as `Resave`, which broke exactly this retry).
+        //
+        // Bounded retry on a `Precondition` conflict against an object that
+        // *does* still exist, though, is correct and necessary for both:
+        // this write's payload can be the new, just-refreshed Matrix token
+        // pair, and a benign conflict (e.g. a `touch_last_seen_now` from
+        // another instance, not a logout) silently treated as a no-op would
+        // drop that refresh on the floor.
+        const MAX_SAVE_ATTEMPTS: u32 = 5;
+        for attempt in 0..MAX_SAVE_ATTEMPTS {
+            // The `Result`-returning read, not the `Option`-collapsing
+            // `read_one_with_version` — a transient read/decode error must
+            // propagate as `Err` here, not get treated as "not found" and
+            // silently skipped as if a racing logout had happened (Codex
+            // review finding on #280): callers like
+            // `sync_loop::repersist_if_token_changed` read `Ok(())` as
+            // proof the refreshed token pair actually landed on disk and
+            // advance their tracking on that basis, so swallowing a
+            // transient error here would leave the old, already-invalidated
+            // token on disk with no future call ever retrying the write.
+            let existing = self.read_one_with_version_result(token).await?;
+            let (last_seen_unix, existing_version) = match &existing {
+                Some((entry, version)) => (entry.last_seen_unix, Some(version.clone())),
+                // `RetryInitialSave` creating a genuinely new object (nothing
+                // was ever there) is the one case that stamps a concrete
+                // `Some(now_unix())` here rather than preserving `None` —
+                // `None` is reserved for pre-existing legacy entries that
+                // predate this field, which `sweep_expired` backfills and
+                // skips for one round on sight. A *freshly created* object
+                // writing `None` would look exactly like one of those
+                // legacy entries and get the same one-round grace it
+                // doesn't need, silently extending an abandoned session's
+                // effective retention window past `SESSION_COOKIE_MAX_AGE_SECS`
+                // (Codex review finding on #280).
+                None if mode == SaveMode::RetryInitialSave => (Some(now_unix()), None),
+                None => {
+                    tracing::info!(
+                        "skipped a re-save for a persisted session: removed by a racing \
+                         logout on another instance"
+                    );
+                    return Ok(());
+                }
+            };
+            let (crypto_store_key, crypto_passphrase) = match crypto {
+                Some((key, passphrase)) => (Some(key.to_string()), Some(passphrase.to_string())),
+                None => (None, None),
+            };
+            let path = object_path_for_token(token);
+            let blob = self.encrypt(
+                &PersistedSession {
+                    token: token.to_string(),
+                    homeserver_url: homeserver_url.to_string(),
+                    session: session.clone(),
+                    crypto_store_key,
+                    crypto_passphrase,
+                    last_seen_unix,
+                },
+                &path,
+            )?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            let Some(version) = existing_version else {
+                // `RetryInitialSave` with nothing there yet — plain create,
+                // the same as `FreshLogin`, just without bumping
+                // `last_seen_unix` (there's no browser activity to
+                // attribute this one to; `repersist_if_token_changed` calls
+                // this from a background sync cycle, not a request).
+                return self
+                    .store
+                    .put(&path, PutPayload::from(json))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+            };
+            let opts = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json.clone()), opts)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(object_store::Error::Precondition { .. }) => {
+                    if attempt + 1 == MAX_SAVE_ATTEMPTS {
+                        // Must be an error, not `Ok(())`: `sync_loop::
+                        // repersist_if_token_changed` treats `Ok` as proof
+                        // the refreshed token actually landed on disk and
+                        // advances its own `last_saved_access_token`
+                        // tracking accordingly — silently swallowing
+                        // exhausted retries here would mean a refreshed
+                        // token that never got persisted is never retried
+                        // either, until the *next* rotation happens to
+                        // trigger another repersist attempt (Codex review
+                        // finding on #280).
+                        return Err(format!(
+                            "giving up re-saving a persisted session after \
+                             {MAX_SAVE_ATTEMPTS} version conflicts"
+                        ));
+                    }
+                    continue;
+                }
+                Err(object_store::Error::NotImplemented) => {
+                    // The read above already confirmed the object exists,
+                    // so an unconditional overwrite here is a same-object
+                    // update, not a resurrection — safe even without
+                    // conditional-write support (`LocalFileSystem`, used
+                    // for local dev/every test in this module).
+                    return self
+                        .store
+                        .put(&path, PutPayload::from(json))
+                        .await
+                        .map(|_| ())
+                        .map_err(|e| e.to_string());
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        unreachable!("the loop above always returns on its final attempt")
     }
 
     /// Removes `token`'s persisted session (logout) — a no-op, not an error,
@@ -727,6 +1149,13 @@ impl PersistenceStore {
         token: &str,
         live_crypto: Option<(&str, &str)>,
     ) -> Result<(), String> {
+        // See `token_write_locks`'s doc comment — without holding this for
+        // the whole call, a `touch_last_seen` (or `save`) racing a logout
+        // can read the entry before this deletes it and `put` it right back
+        // afterward, resurrecting a session the browser was just told is
+        // logged out (Codex review finding on #280).
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
         let entry = self.read_one(token).await;
 
         match self.store.delete(&object_path_for_token(token)).await {
@@ -763,6 +1192,365 @@ impl PersistenceStore {
         Ok(())
     }
 
+    /// Core of [`Self::touch_last_seen`] (and [`Self::sweep_expired`]'s
+    /// legacy-entry backfill) — lock, *re-read fresh under that lock*, bump
+    /// only `last_seen_unix`, write back conditionally on the version just
+    /// read. Awaitable directly rather than fire-and-forget: `sweep_expired`'s
+    /// backfill needs to know whether the write actually happened before
+    /// deciding whether to log a failure, and re-reading here (rather than
+    /// reusing an entry the caller read earlier, e.g. from a `read_all`
+    /// snapshot) is exactly what closes the *in-process* half of the race
+    /// `token_write_locks` exists to prevent — a caller writing back a stale
+    /// snapshot's token pair, racing a concurrent `save` (e.g. `sync_loop`'s
+    /// post-refresh repersist) that landed in between, would silently
+    /// resurrect an already-invalidated access/refresh token (Codex review
+    /// finding on #280).
+    ///
+    /// `token_write_locks` alone only serializes writers *within this one
+    /// process* — DO App Platform can briefly run the old and new instance
+    /// of a rolling deploy side by side, and a `touch_last_seen` in flight on
+    /// one instance has no way to see a `logout` that lands on the other in
+    /// that window. The conditional [`object_store::PutMode::Update`] below
+    /// closes that cross-process gap: the write only lands if the object is
+    /// still exactly the version this call read, so a logout's `delete`
+    /// (from any process) landing in between makes this write fail with
+    /// `Precondition` instead of resurrecting the just-removed session with
+    /// its now-invalid tokens — logged and treated as a no-op, the same
+    /// outcome as if this call had lost the race to acquire the in-process
+    /// lock in the first place. Falls back to a plain unconditional `put`
+    /// only when the backend reports `NotImplemented` for conditional
+    /// writes (`LocalFileSystem`, used for local dev and every test in this
+    /// module — DO Spaces, the only backend this crate actually deploys
+    /// with multiple instances against, does support it), preserving
+    /// today's in-process-only protection there rather than failing outright.
+    ///
+    /// `Ok(TouchOutcome::NotFound)`, not an error, if the entry was removed
+    /// by a racing logout before this could even acquire the lock or read
+    /// it — same tolerance `read_one`/`read_all` already give a missing
+    /// entry, just distinguished from [`TouchOutcome::Touched`] rather than
+    /// collapsed into a single `Ok(())`: `routes::refresh_session_cookie`
+    /// needs to tell "durably touched" apart from "there was nothing to
+    /// touch" (see that call site for why — a cross-instance rolling-deploy
+    /// race, Codex review finding on #280).
+    ///
+    /// `pub(crate)`, not private: `routes::refresh_session_cookie` also
+    /// calls this directly (awaited, not fire-and-forget like
+    /// [`Self::touch_last_seen`]) so the durable timestamp bump completes
+    /// *before* that middleware appends a freshly `Max-Age`-extended
+    /// `Set-Cookie` header — otherwise a crash or write failure landing in
+    /// the gap between the fire-and-forget spawn and the response being
+    /// sent could leave the browser holding a cookie claiming 30 more days
+    /// of validity while the persisted `last_seen_unix` never actually
+    /// moved, so a restart's `restore_all`/`sweep_expired` would then
+    /// reject that still-present cookie as expired (Codex review finding
+    /// on #280).
+    pub(crate) async fn touch_last_seen_now(&self, token: &str) -> Result<TouchOutcome, String> {
+        let lock = self.token_write_lock(token);
+        let _guard = lock.lock().await;
+        // Bounded retry on a `Precondition` conflict, not an automatic
+        // `Ok(())` — in the multi-instance path this whole store supports,
+        // that conflict isn't only a racing logout/delete (which this loop
+        // still tells apart cleanly: the *next* re-read below finds nothing
+        // and returns `Ok(())` on its own, same tolerance `read_one`/
+        // `read_all` already give a missing entry). It can just as easily
+        // be a concurrent `SaveMode::Resave` from another instance's
+        // `sync_loop` after a token refresh, which preserves whatever
+        // `last_seen_unix` this touch just read — silently giving up there
+        // would let `refresh_session_cookie` treat the touch as durable and
+        // advance its throttle/send a freshly `Max-Age`-extended cookie
+        // anyway, even though the persisted timestamp never actually moved
+        // (Codex review finding on #280): a restart's `restore_all`/
+        // `sweep_expired` could then reject that still-present cookie as
+        // expired. Re-reading fresh each attempt (not reusing the entry
+        // from a failed attempt) is what makes this retry safe — same
+        // pattern [`Self::save`]'s own retry loop uses.
+        const MAX_TOUCH_ATTEMPTS: u32 = 5;
+        for attempt in 0..MAX_TOUCH_ATTEMPTS {
+            // The `Result`-returning read, not `read_one_with_version` — a
+            // transient read error must propagate as `Err` here too, not get
+            // silently collapsed into the same `Ok(())` "nothing to touch" a
+            // genuine `NotFound` takes. `routes::refresh_session_cookie` relies
+            // on that `Err` to skip advancing its once-an-hour throttle, so a
+            // hiccuped read doesn't get treated the same as a confirmed durable
+            // bump and end up hiding a real `last_seen_unix` staleness for
+            // another hour (Codex review finding on #280).
+            let Some((mut entry, version)) = self.read_one_with_version_result(token).await? else {
+                return Ok(TouchOutcome::NotFound);
+            };
+            entry.last_seen_unix = Some(now_unix());
+            let path = object_path_for_token(&entry.token);
+            let blob = self.encrypt(&entry, &path)?;
+            let json = serde_json::to_vec(&blob).map_err(|e| e.to_string())?;
+            let opts = object_store::PutOptions {
+                mode: object_store::PutMode::Update(version),
+                ..Default::default()
+            };
+            match self
+                .store
+                .put_opts(&path, PutPayload::from(json.clone()), opts)
+                .await
+            {
+                Ok(_) => return Ok(TouchOutcome::Touched),
+                Err(object_store::Error::Precondition { .. })
+                    if attempt + 1 < MAX_TOUCH_ATTEMPTS =>
+                {
+                    tracing::info!(
+                        "retrying a last-seen touch after a benign version conflict \
+                         (attempt {}/{MAX_TOUCH_ATTEMPTS})",
+                        attempt + 1
+                    );
+                }
+                Err(object_store::Error::Precondition { .. }) => {
+                    return Err(
+                        "exhausted retries touching last-seen timestamp after repeated \
+                         version conflicts"
+                            .to_string(),
+                    );
+                }
+                Err(object_store::Error::NotImplemented) => {
+                    return self
+                        .store
+                        .put(&path, PutPayload::from(json))
+                        .await
+                        .map(|_| TouchOutcome::Touched)
+                        .map_err(|e| e.to_string());
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        unreachable!("the loop above always returns on its final attempt")
+    }
+
+    /// Best-effort activity-timestamp bump for `token`'s persisted session —
+    /// fired (not awaited) from `routes::require_session` whenever a request
+    /// restores an idle-evicted session. This is the only reliable "the user
+    /// is still around" signal [`Self::sweep_expired`] gets for a session
+    /// that isn't continuously resident in `SessionStore` (a long-lived tab
+    /// left open never re-triggers this — `sweep_expired`'s own doc comment
+    /// covers that case separately). Independent of [`Self::save`]'s
+    /// token-pair semantics — see [`Self::touch_last_seen_now`] for why it
+    /// re-reads rather than trusting any entry the caller might already
+    /// have in hand.
+    pub fn touch_last_seen(self: &Arc<Self>, token: &str) {
+        let this = Arc::clone(self);
+        let token = token.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = this.touch_last_seen_now(&token).await {
+                tracing::warn!("failed to bump last-seen timestamp for a persisted session: {e}");
+            }
+        });
+    }
+
+    /// Revokes and removes every persisted session whose last recorded
+    /// activity is older than `max_age` — the server-side half of
+    /// `routes::session_cookie`'s `SESSION_COOKIE_MAX_AGE_SECS`. Without
+    /// this, a session whose browser cookie has already expired and been
+    /// discarded still leaves its access token valid at the homeserver and
+    /// its crypto store sitting on this host's disk indefinitely — nothing
+    /// else in this file ever revisits a persisted session once it's no
+    /// longer being restored by a live cookie (Codex review finding on
+    /// #280).
+    ///
+    /// `sessions` (`SessionStore`) is consulted *fresh, per entry* — not a
+    /// single snapshot taken once before the loop starts, and via
+    /// [`session::SessionStore::is_genuinely_active`], not bare map
+    /// presence: a session continuously live in memory for the entire
+    /// `max_age` window (e.g. a tab left open for weeks against a
+    /// homeserver that never rotates its access token) would otherwise never
+    /// have a reason to re-trigger [`Self::save`] or [`Self::touch_last_seen`],
+    /// and so would look just as stale on disk as one nobody has opened in
+    /// months — but `sweep_idle`'s own pending-verification/unpersisted-room
+    /// exemptions keep a session resident in that map *indefinitely*, with
+    /// no idle timeout at all, so bare presence alone isn't the
+    /// provably-current signal it looks like (Codex review finding on
+    /// #280); `is_genuinely_active` also requires an open connection or a
+    /// genuinely recent `last_active`. Rechecking per entry, right
+    /// before revocation rather than once up front, matters because
+    /// `read_all` and this loop both take real time (network round-trips to
+    /// decrypt/list every object, then per-entry homeserver revocation
+    /// calls): a session idle-evicted-but-not-yet-expired when the sweep
+    /// started can be restored by a genuinely active browser mid-sweep, and
+    /// a stale up-front snapshot would still delete it out from under that
+    /// browser (Codex review finding on #280). This narrows, not fully
+    /// closes, the race — a restore landing in the instant between this
+    /// check and the revoke/remove below can still lose — but that window is
+    /// now single-entry-sized instead of whole-sweep-sized.
+    ///
+    /// An entry with `last_seen_unix: None` (persisted before that field
+    /// existed) is backfilled to `Some(now)` and written back to disk on the
+    /// spot, then skipped for this round — not treated as already-expired,
+    /// and not left as `None` for the *next* sweep to reinterpret as "now"
+    /// all over again (seeing `None` and calling `now_unix()` inline here,
+    /// the way [`PersistedSession::last_seen_unix`]'s old always-`now`
+    /// serde default used to, would never actually persist a concrete
+    /// timestamp, so a legacy session that's never separately re-saved would
+    /// look freshly seen on every sweep forever and never reach expiry).
+    pub async fn sweep_expired(
+        &self,
+        max_age: std::time::Duration,
+        sessions: &crate::session::SessionStore,
+    ) -> usize {
+        let now = now_unix();
+        let max_age_secs = max_age.as_secs();
+        let mut swept = 0;
+        for entry in self.read_all().await {
+            let Some(last_seen_unix) = entry.last_seen_unix else {
+                // `touch_last_seen_now`, not `save` with this loop's own
+                // `entry` — that snapshot came from `read_all` at the top of
+                // this function and can be stale by now; writing it back
+                // directly would risk resurrecting an already-invalidated
+                // token pair if a concurrent `save` (e.g. `sync_loop`'s
+                // post-refresh repersist) landed in between (Codex review
+                // finding on #280). `touch_last_seen_now` re-reads fresh
+                // under the per-token lock instead.
+                if let Err(e) = self.touch_last_seen_now(&entry.token).await {
+                    tracing::warn!(
+                        "failed to backfill last-seen timestamp for a legacy persisted \
+                         session: {e}"
+                    );
+                }
+                continue;
+            };
+            if now.saturating_sub(last_seen_unix) < max_age_secs {
+                continue;
+            }
+            // Rechecked fresh here, not from a snapshot taken before this
+            // loop started, and via `is_genuinely_active` rather than bare
+            // presence — see this function's doc comment.
+            if sessions.is_genuinely_active(&entry.token, max_age).await {
+                continue;
+            }
+            // A token that reaches here can still be resident in
+            // `SessionStore` — the only way that happens is `sweep_idle`'s
+            // pending-verification/unpersisted-room exemptions, which pin a
+            // session in memory indefinitely regardless of activity.
+            // Removed (and its sync loop aborted) *before* this loop reads
+            // the persisted entry below to revoke, not after: that live
+            // session's own sync loop keeps running for as long as it
+            // stays resident, and a token refresh it repersists
+            // mid-revocation — the homeserver round trip below
+            // (`restore_client_for_revocation` plus `logout()`) can take
+            // real time — would silently land a *new* access/refresh token
+            // pair on disk for a token this sweep is about to revoke and
+            // delete using the *old* one it already read, orphaning the
+            // newer pair with nothing left on disk for any future sweep to
+            // ever revoke it (Codex review finding on #280). Removing
+            // (which also takes the sync handle out and aborts it) closes
+            // that window entirely rather than narrowing it, regardless of
+            // whether revocation below actually succeeds.
+            //
+            // This removal is permanent, even if revocation below fails or
+            // times out — deliberately *not* reinserted back into
+            // `SessionStore` on that path. An earlier revision of this did
+            // reinsert the same `Arc<Session>` to avoid dropping an
+            // otherwise-still-valid session on a merely transient failure,
+            // but that left a "zombie" behind: the map entry still
+            // authenticates fine (`require_session`'s fast path only checks
+            // presence), but its sync loop was already aborted above and
+            // never restarted, so the browser would silently stop receiving
+            // any live updates — for up to 24 hours, until the next daily
+            // sweep — with no indication anything was wrong (Sentry finding
+            // on #280). The persisted record (see below) is still left
+            // untouched on a failed/unconfirmed revocation either way, so
+            // no data is lost — a subsequent request for this token simply
+            // falls through to `require_session`'s existing on-demand
+            // restore path, which already knows how to spawn a fresh,
+            // fully-functional sync loop, exactly as it would for any other
+            // idle-evicted session.
+            if let Some(session) = sessions.remove(&entry.token).await {
+                if let Some(handle) = session
+                    .sync_handle
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    handle.abort();
+                }
+            }
+            // Removal only happens after a *confirmed* revocation — never
+            // on a best-effort basis. Deleting the local record before the
+            // homeserver has actually invalidated the access token would
+            // leave that token valid indefinitely with no persisted copy
+            // left for a later sweep to retry revoking (Codex review
+            // finding on #280): a temporarily unreachable homeserver or a
+            // failed `logout()` call must leave this entry exactly as it
+            // was, not silently treat "couldn't revoke" the same as
+            // "revoked".
+            let Some(client) = self.restore_client_for_revocation(&entry.token).await else {
+                tracing::warn!(
+                    "could not rebuild a client to revoke an expired persisted session's \
+                     access token; leaving it for the next sweep to retry"
+                );
+                continue;
+            };
+            // Bounded, unlike `routes::logout`'s equivalent call (which
+            // can afford to `tokio::spawn` it fire-and-forget because
+            // there's a live HTTP response to send regardless): this
+            // runs serially in a background sweep with nothing else
+            // racing it, so an unbounded `await` here would let one
+            // slow/unresponsive homeserver stall every other expired
+            // session behind it in the same sweep (Codex review finding
+            // on #280).
+            match tokio::time::timeout(RESTORE_TIMEOUT, client.matrix_auth().logout()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "failed to revoke access token for an expired persisted session, \
+                         leaving it for the next sweep to retry: {e}"
+                    );
+                    continue;
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "timed out revoking access token for an expired persisted session \
+                         after {RESTORE_TIMEOUT:?}, leaving it for the next sweep to retry"
+                    );
+                    continue;
+                }
+            }
+            // The access token was just revoked above — a subsequent sweep
+            // can no longer retry that step (`restore_client_for_revocation`
+            // will correctly fail to rebuild a client from a now-dead
+            // token, so this entry would otherwise be stuck forever, never
+            // reaching this `remove` call again). Retry the local delete a
+            // few times in-place before giving up, so only a persistently
+            // failing store (not one transient error) leaves an orphaned
+            // record behind (Codex review finding on #280, "remember
+            // successful revocation across delete retries").
+            const MAX_REMOVE_ATTEMPTS: u32 = 3;
+            let mut removed = false;
+            for attempt in 0..MAX_REMOVE_ATTEMPTS {
+                match self.remove(&entry.token, None).await {
+                    Ok(()) => {
+                        removed = true;
+                        break;
+                    }
+                    Err(e) if attempt + 1 < MAX_REMOVE_ATTEMPTS => {
+                        tracing::warn!(
+                            "failed to remove an expired persisted session after revoking \
+                             its access token (attempt {}/{MAX_REMOVE_ATTEMPTS}), retrying: {e}",
+                            attempt + 1
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "failed to remove an expired persisted session after revoking \
+                             its access token; its Matrix session is dead but the local \
+                             record could not be cleaned up and will not be retried by a \
+                             later sweep (the token can no longer be re-revoked) — manual \
+                             cleanup may be needed: {e}"
+                        );
+                    }
+                }
+            }
+            if !removed {
+                continue;
+            }
+            swept += 1;
+        }
+        swept
+    }
+
     /// Rebuilds a live `Client` (and runs an initial sync, same as
     /// `auth::login`/`auth::register`) for every persisted session, paired
     /// with the token it should be reinserted into `SessionStore` under.
@@ -779,8 +1567,23 @@ impl PersistenceStore {
     /// since that `sync_once` can itself trigger a token refresh; see
     /// `sync_loop::PersistHandle::initial_access_token`'s doc comment for
     /// why that distinction matters.
+    ///
+    /// `max_age` (pass [`crate::session::session_revocation_grace`]) skips
+    /// restoring — not just building a live `Client` for, but even
+    /// attempting — any entry already past [`Self::sweep_expired`]'s
+    /// retention window. Without this, a session already expired *before* a
+    /// deploy/restart would still get loaded into `SessionStore` here,
+    /// which makes `sweep_expired`'s live-session skip treat it as
+    /// provably-current and exempt it from that day's sweep; the next idle
+    /// eviction would then re-`save` it with a fresh `last_seen_unix`,
+    /// silently granting an already-abandoned session another full 30-day
+    /// grace period on every restart instead of ever actually being revoked
+    /// (Codex review finding on #280). An entry with `last_seen_unix: None`
+    /// (not yet backfilled — see [`Self::sweep_expired`]'s doc comment) is
+    /// restored as normal, same as any other legacy entry.
     pub async fn restore_all(
         &self,
+        max_age: std::time::Duration,
     ) -> Vec<(
         String,
         String,
@@ -797,8 +1600,20 @@ impl PersistenceStore {
         // accepting connections. `RESTORE_TIMEOUT` bounds how long any
         // single entry can hold up the rest: a homeserver that never
         // responds at all can't block startup indefinitely either.
-        let entries = self.read_all().await;
-        let attempts = entries.into_iter().map(|entry| async move {
+        let now = now_unix();
+        let max_age_secs = max_age.as_secs();
+        let entries = self.read_all().await.into_iter().filter(|entry| {
+            let expired = entry_is_expired(entry.last_seen_unix, now, max_age_secs);
+            if expired {
+                tracing::info!(
+                    "dropping persisted session for {}: already past the retention window \
+                     at startup",
+                    entry.session.meta.user_id
+                );
+            }
+            !expired
+        });
+        let attempts = entries.map(|entry| async move {
             let originally_persisted_access_token = entry.session.tokens.access_token.clone();
             // `restore_all` only ever runs at startup, right after a
             // process restart — there's no in-memory `evicted_presence` to
@@ -1023,6 +1838,40 @@ async fn restore_one(
         persisted_crypto,
         crypto_store_opened,
     );
+    // `Session::new` seeds `last_active` at `Instant::now()` — fine for a
+    // fresh login, wrong for a restore: without this, a session that stays
+    // resident only via `sweep_idle`'s pending-verification/unpersisted-room
+    // exemptions would look freshly active to
+    // `SessionStore::is_genuinely_active` on every single restart,
+    // regardless of how stale `entry.last_seen_unix` actually is — a
+    // redeploy could keep resetting that clock indefinitely, letting an
+    // already-expired session dodge `sweep_expired` forever (Codex review
+    // finding on #280). Backdating from `entry.last_seen_unix` (the same
+    // timestamp that expiry decision is actually based on) instead keeps
+    // `idle_for()` meaningful across a restart. Left at `Instant::now()`
+    // only for a legacy entry with no `last_seen_unix` yet — same
+    // "backfill to now, not to the epoch" reasoning as
+    // `PersistedSession::last_seen_unix`'s own doc comment.
+    if let Some(last_seen_unix) = entry.last_seen_unix {
+        let age = std::time::Duration::from_secs(now_unix().saturating_sub(last_seen_unix));
+        let backdated = std::time::Instant::now() - age;
+        *session
+            .last_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        // Same reasoning, for the same reason — `last_seen_unix` is itself
+        // only ever bumped by validated activity (a fresh login/register,
+        // or `touch_last_seen`/`routes::refresh_session_cookie`'s own
+        // validated touch), so it's exactly the right backdating source for
+        // `last_validated_active` too. Left at `Instant::now()` here would
+        // reopen the same restart-resets-the-clock gap `last_active`'s
+        // backdating above closes, just for `is_genuinely_active` this time
+        // instead of `sweep_idle` (Codex review finding on #280).
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+    }
     if let Some(presence) = initial_presence {
         *session
             .sync_presence
@@ -1055,12 +1904,53 @@ async fn restore_one(
     Ok((session, initial_response))
 }
 
+/// Directly overwrites `token`'s persisted object with a chosen
+/// `last_seen_unix`, bypassing `save`'s always-`now_unix()` timestamp — the
+/// only way a test can construct a session that looks stale without
+/// waiting real wall-clock time. `pub(crate)`, not private to this file's
+/// own `mod tests`: `routes.rs`'s tests need the same capability to
+/// construct a persisted-but-stale entry for `require_session`'s fast-path
+/// expiry check.
+#[cfg(test)]
+pub(crate) async fn save_with_last_seen_for_test(
+    store: &PersistenceStore,
+    token: &str,
+    last_seen_unix: u64,
+) {
+    let entry = PersistedSession {
+        token: token.to_string(),
+        homeserver_url: "https://example.invalid".to_string(),
+        session: MatrixSession {
+            meta: matrix_sdk::SessionMeta {
+                user_id: matrix_sdk::ruma::UserId::parse("@test-user:example.invalid").unwrap(),
+                device_id: matrix_sdk::ruma::device_id!("TESTDEVICE").to_owned(),
+            },
+            tokens: matrix_sdk::authentication::SessionTokens {
+                access_token: "test-access-token".to_string(),
+                refresh_token: None,
+            },
+        },
+        crypto_store_key: None,
+        crypto_passphrase: None,
+        last_seen_unix: Some(last_seen_unix),
+    };
+    let path = object_path_for_token(token);
+    let blob = store.encrypt(&entry, &path).unwrap();
+    let json = serde_json::to_vec(&blob).unwrap();
+    store
+        .store
+        .put(&path, PutPayload::from(json))
+        .await
+        .unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use matrix_sdk::authentication::SessionTokens;
     use matrix_sdk::ruma::device_id;
     use matrix_sdk::SessionMeta;
+    use std::collections::HashSet;
 
     fn scratch_dir(name: &str) -> PathBuf {
         let suffix: String = format!("{:x}", rand::random::<u64>());
@@ -1102,6 +1992,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1126,6 +2017,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@alice:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1157,6 +2049,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@restart:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1232,6 +2125,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@bob:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1253,6 +2147,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@carol:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1271,6 +2166,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@dave:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1280,6 +2176,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@erin:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1301,6 +2198,7 @@ mod tests {
                 "https://old.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1310,6 +2208,7 @@ mod tests {
                 "https://new.example.invalid",
                 &dummy_session("@frank:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1333,6 +2232,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@grace:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1376,6 +2276,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1404,6 +2305,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@iris:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1436,6 +2338,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@judy:example.invalid"),
                 Some(("store-key-abc", "passphrase-xyz")),
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1529,6 +2432,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@kevin:example.invalid"),
                 Some(("storeKeyLogout", "passphrase-logout")),
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1752,6 +2656,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@henry:example.invalid"),
                 None,
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1779,6 +2684,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@nadia:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1822,6 +2728,7 @@ mod tests {
                 "https://example.invalid",
                 &dummy_session("@mallory:example.invalid"),
                 Some(("nonexistentstorekey", "some-passphrase")),
+                SaveMode::FreshLogin,
             )
             .await
             .unwrap();
@@ -1856,6 +2763,7 @@ mod tests {
             session: dummy_session("@laura:example.invalid"),
             crypto_store_key: Some("nonexistentstorekey".to_string()),
             crypto_passphrase: Some("some-passphrase".to_string()),
+            last_seen_unix: Some(now_unix()),
         };
 
         let crypto = persisted_crypto_from_entry(&entry).expect(
@@ -1874,8 +2782,940 @@ mod tests {
             session: dummy_session("@mallory:example.invalid"),
             crypto_store_key: None,
             crypto_passphrase: None,
+            last_seen_unix: Some(now_unix()),
         };
 
         assert!(persisted_crypto_from_entry(&entry).is_none());
+    }
+
+    /// Directly overwrites `token`'s persisted object with a chosen
+    /// `last_seen_unix`, bypassing `save`'s always-`now_unix()` timestamp —
+    /// the only way these tests can construct a session that looks stale
+    /// without waiting real wall-clock time.
+    async fn save_with_last_seen(store: &PersistenceStore, token: &str, last_seen_unix: u64) {
+        let entry = PersistedSession {
+            token: token.to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@sweep-target:example.invalid"),
+            crypto_store_key: None,
+            crypto_passphrase: None,
+            last_seen_unix: Some(last_seen_unix),
+        };
+        let path = object_path_for_token(token);
+        let blob = store.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .store
+            .put(&path, PutPayload::from(json))
+            .await
+            .unwrap();
+    }
+
+    /// Same shape as `session::tests::dummy_session` (private to that
+    /// module) — a `Client` against an unreachable homeserver is enough to
+    /// construct a `Session` without any real network access, just to put
+    /// something live in a `SessionStore` for `sweep_expired` to check
+    /// against.
+    async fn dummy_live_session(user_id: &str) -> crate::session::Session {
+        let client = matrix_sdk::Client::builder()
+            .homeserver_url("http://localhost:1")
+            .build()
+            .await
+            .expect(
+                "building a client against an unreachable homeserver shouldn't require network \
+                 access",
+            );
+        crate::session::Session::new(client, user_id.to_string(), None, false)
+    }
+
+    /// A stale-but-`live_tokens`-exempt session is never even considered for
+    /// revocation, regardless of whether revocation could succeed — proven
+    /// here against an unreachable homeserver where revocation itself is
+    /// impossible in this test environment (see the sibling
+    /// `sweep_expired_does_not_remove_a_stale_session_when_revocation_fails`
+    /// test for why `swept == 0` and nothing gets deleted is now the
+    /// *correct* outcome for `tok-stale`, not a gap in this test).
+    #[tokio::test]
+    async fn sweep_expired_never_touches_a_stale_but_live_session() {
+        let dir = scratch_dir("sweep-expired-live-skip");
+        let store = PersistenceStore::new_for_test(&dir, [42u8; 32]);
+        let now = now_unix();
+        let one_hour = 60 * 60;
+        let sixty_days = 60 * 24 * 60 * 60;
+
+        save_with_last_seen(&store, "tok-fresh", now.saturating_sub(one_hour)).await;
+        save_with_last_seen(&store, "tok-stale-but-live", now.saturating_sub(sixty_days)).await;
+
+        let sessions = crate::session::SessionStore::new();
+        sessions
+            .insert(
+                "tok-stale-but-live".to_string(),
+                dummy_live_session("@stale-but-live:example.invalid").await,
+            )
+            .await;
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        let remaining: HashSet<String> = store
+            .read_all()
+            .await
+            .into_iter()
+            .map(|entry| entry.token)
+            .collect();
+        assert_eq!(
+            remaining,
+            HashSet::from(["tok-fresh".to_string(), "tok-stale-but-live".to_string()]),
+            "a stale session still resident in SessionStore must never be touched by the sweep"
+        );
+    }
+
+    /// Regression test for the actual review finding: `sweep_expired` must
+    /// only delete a persisted session after a *confirmed* revocation — a
+    /// homeserver that can't be reached (here: every test in this module
+    /// uses `https://example.invalid`, which fails DNS resolution) must
+    /// leave the entry exactly as it was, not silently delete it and lose
+    /// the only local record of a still-valid access token. Previously this
+    /// deleted the entry regardless of whether revocation actually
+    /// succeeded.
+    #[tokio::test]
+    async fn sweep_expired_does_not_remove_a_stale_session_when_revocation_fails() {
+        let dir = scratch_dir("sweep-expired-revocation-fails");
+        let store = PersistenceStore::new_for_test(&dir, [53u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(&store, "tok-stale", now.saturating_sub(sixty_days)).await;
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &crate::session::SessionStore::new(),
+            )
+            .await;
+
+        assert_eq!(
+            swept, 0,
+            "nothing should be reported swept when revocation could not be confirmed"
+        );
+        assert!(
+            store.read_one("tok-stale").await.is_some(),
+            "a stale session must stay persisted until its revocation is confirmed, not \
+             deleted on a best-effort basis"
+        );
+    }
+
+    /// Regression test for two related review findings on #280. Codex
+    /// ("Revoke live expired sessions before restoring"): a stale-but-pinned
+    /// session's sync loop must be aborted *before* this sweep reads the
+    /// persisted entry to attempt revocation, not only after a confirmed
+    /// success — otherwise it could race a repersist of a freshly refreshed
+    /// token against this sweep's read/logout/remove sequence, orphaning
+    /// the newer token with nothing on disk for any future sweep to ever
+    /// revoke. Sentry (flagged against an earlier fix for the Codex
+    /// finding above): once that abort has happened, the live entry must
+    /// *not* be put back if revocation itself then fails or times out —
+    /// an earlier revision of this reinserted the same `Arc<Session>` to
+    /// avoid dropping an otherwise-still-valid session on a merely
+    /// transient failure, but that left a "zombie" behind: the map entry
+    /// still authenticates fine, but its sync loop was already aborted and
+    /// never restarted, so the browser would silently stop receiving any
+    /// live updates for up to 24 hours with no indication anything was
+    /// wrong. The correct behavior this test pins: the live entry and its
+    /// sync loop are gone for good the moment this sweep decides to revoke,
+    /// regardless of whether that revocation succeeds — the persisted
+    /// record stays untouched on failure either way, so a later request
+    /// simply falls through to `require_session`'s existing on-demand
+    /// restore path and gets a fresh, fully-functional session back.
+    #[tokio::test]
+    async fn sweep_expired_permanently_drops_a_pinned_sessions_live_entry_even_when_revocation_fails(
+    ) {
+        let dir = scratch_dir("sweep-expired-pinned-revocation-fails");
+        let store = PersistenceStore::new_for_test(&dir, [54u8; 32]);
+        let now = now_unix();
+        let sixty_days = 60 * 24 * 60 * 60;
+        save_with_last_seen(&store, "tok-pinned", now.saturating_sub(sixty_days)).await;
+
+        let sessions = crate::session::SessionStore::new();
+        let session = dummy_live_session("@pinned:example.invalid").await;
+        let backdated = std::time::Instant::now() - std::time::Duration::from_secs(sixty_days);
+        *session.last_active.lock().unwrap() = backdated;
+        // `is_genuinely_active` reads `last_validated_active`, not
+        // `last_active` — without also backdating this, a freshly
+        // constructed `Session`'s `Instant::now()` default reads as
+        // genuinely active and this sweep skips the entry before ever
+        // reaching the failed-revocation path this test means to exercise.
+        *session
+            .last_validated_active
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = backdated;
+        let handle = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        });
+        *session
+            .sync_handle
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        sessions.insert("tok-pinned".to_string(), session).await;
+
+        // Against an unreachable homeserver (see `dummy_live_session`),
+        // `restore_client_for_revocation`/`logout()` cannot succeed here —
+        // this sweep's revocation attempt is guaranteed to fail.
+        store
+            .sweep_expired(std::time::Duration::from_secs(30 * 24 * 60 * 60), &sessions)
+            .await;
+
+        assert!(
+            sessions.get("tok-pinned").await.is_none(),
+            "a pinned session's live entry (and its already-aborted sync loop) must not be \
+             put back on a failed revocation — that would leave a zombie session behind: \
+             resident and authenticating, but with no sync loop ever restarted"
+        );
+        assert!(
+            store.read_one("tok-pinned").await.is_some(),
+            "the persisted record must still stay untouched on a failed/unconfirmed \
+             revocation, for a later sweep to retry"
+        );
+    }
+
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` — the shape `main.rs`'s idle-eviction re-save and
+    /// `sync_loop`'s token-refresh repersist both use — must preserve
+    /// whatever `last_seen_unix` was already on disk, not silently reset it
+    /// to "now". Resetting it there would grant an otherwise-abandoned
+    /// session another full retention window on every idle eviction or
+    /// token rotation, with no corresponding browser cookie refresh to
+    /// match.
+    #[tokio::test]
+    async fn save_without_bump_preserves_the_existing_last_seen() {
+        let dir = scratch_dir("save-no-bump");
+        let store = PersistenceStore::new_for_test(&dir, [49u8; 32]);
+        let old = now_unix().saturating_sub(29 * 24 * 60 * 60);
+        save_with_last_seen(&store, "tok-idle-resave", old).await;
+
+        store
+            .save(
+                "tok-idle-resave",
+                "https://example.invalid",
+                &dummy_session("@idle-resave:example.invalid"),
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.read_one("tok-idle-resave").await.unwrap();
+        assert_eq!(
+            entry.last_seen_unix,
+            Some(old),
+            "save(bump_last_seen: false) must not reset last_seen_unix"
+        );
+    }
+
+    /// Regression test for the actual review finding: a `Precondition`
+    /// conflict on `save(bump_last_seen: false)` must not be treated as an
+    /// automatic no-op the way `touch_last_seen_now`'s is — this call's
+    /// payload can carry a genuinely new, just-refreshed Matrix token pair
+    /// (`sync_loop`'s repersist), and silently dropping that write on a
+    /// benign conflict (e.g. a concurrent `touch_last_seen` from another
+    /// instance, not a logout) would leave the persisted session pointing
+    /// at an already-invalidated token. Runs two real concurrent writers
+    /// against a shared `InMemory` backend (which supports conditional
+    /// writes, unlike `LocalFileSystem`) and asserts the token-carrying
+    /// `save` still lands somewhere in the final state rather than being
+    /// silently discarded by the race.
+    #[tokio::test]
+    async fn save_without_bump_retries_past_a_benign_concurrent_conflict() {
+        let key_bytes = [55u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-concurrent-conflict",
+                "https://example.invalid",
+                &dummy_session("@concurrent-conflict:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        let mut refreshed = dummy_session("@concurrent-conflict:example.invalid");
+        refreshed.tokens.access_token = "refreshed-access-token".to_string();
+
+        // Two independent `PersistenceStore`s (no shared in-process lock,
+        // same as two real instances) racing a write against the same
+        // token: process A carries a genuinely new token pair; process B
+        // is a plain activity touch. Neither should cause the other's
+        // write to vanish.
+        let (save_result, _) = tokio::join!(
+            process_a.save(
+                "tok-concurrent-conflict",
+                "https://example.invalid",
+                &refreshed,
+                None,
+                SaveMode::Resave,
+            ),
+            process_b.touch_last_seen_now("tok-concurrent-conflict"),
+        );
+        save_result.unwrap();
+
+        let entry = process_a.read_one("tok-concurrent-conflict").await.unwrap();
+        assert_eq!(
+            entry.session.tokens.access_token, "refreshed-access-token",
+            "a benign concurrent conflict must not cause save() to silently drop a genuinely \
+             refreshed token pair"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Return an
+    /// error when resave cannot read the session object"): a read failure
+    /// distinct from "not found" inside `save`'s `Resave`/`RetryInitialSave`
+    /// path must propagate as `Err`, not get collapsed into the same
+    /// `Ok(())` "skipped, removed by a racing logout" branch a genuine
+    /// missing object takes. Collapsing the two would let
+    /// `sync_loop::repersist_if_token_changed` believe a refreshed token
+    /// pair was durably saved when it wasn't, stranding the old
+    /// (soon-to-be-invalidated) token on disk. Simulates the failure by
+    /// making the on-disk object unreadable (`chmod 000`) rather than a
+    /// mock `ObjectStore` — `LocalFileSystem`'s `get` surfaces a permission
+    /// error the same way any other transient backend error would, without
+    /// needing a hand-rolled pass-through wrapper for the whole trait.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_without_bump_propagates_a_transient_read_error_instead_of_treating_it_as_a_racing_logout(
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("save-no-bump-transient-read-error");
+        let store = PersistenceStore::new_for_test(&dir, [59u8; 32]);
+        store
+            .save(
+                "tok-flaky-read",
+                "https://example.invalid",
+                &dummy_session("@flaky-read:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        let file_path = object_file_path(&dir, "tok-flaky-read");
+        let original_perms = std::fs::metadata(&file_path).unwrap().permissions();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut refreshed = dummy_session("@flaky-read:example.invalid");
+        refreshed.tokens.access_token = "refreshed-access-token".to_string();
+        let result = store
+            .save(
+                "tok-flaky-read",
+                "https://example.invalid",
+                &refreshed,
+                None,
+                SaveMode::Resave,
+            )
+            .await;
+
+        // Restore permissions before any assertion can panic and leave an
+        // unreadable file behind for the OS to clean up.
+        std::fs::set_permissions(&file_path, original_perms).unwrap();
+
+        assert!(
+            result.is_err(),
+            "a transient read error must propagate as Err, not be swallowed as if the entry \
+             had been removed by a racing logout"
+        );
+
+        let entry = store.read_one("tok-flaky-read").await.unwrap();
+        assert_eq!(
+            entry.session.tokens.access_token, "test-access-token",
+            "the refreshed token pair must not have been silently dropped without either \
+             being written or the caller being told the write failed"
+        );
+    }
+
+    /// Regression test for the actual review finding: `token_write_locks`
+    /// must not grow without bound when `routes::logout` calls `remove()`
+    /// (via `token_write_lock`) for tokens that were never real sessions —
+    /// an unauthenticated client can drive that path with forged cookie
+    /// values before `require_session` ever runs. Once the map passes
+    /// [`PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD`], entries with
+    /// no other outstanding reference get pruned on the next insert.
+    #[test]
+    fn token_write_lock_prunes_unused_entries_past_the_threshold() {
+        let dir = scratch_dir("token-write-lock-prune-unused");
+        let store = PersistenceStore::new_for_test(&dir, [56u8; 32]);
+        for i in 0..(PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD + 10) {
+            // Every returned `Arc` is dropped immediately — nothing holds a
+            // second reference, so every one of these is prunable.
+            let _ = store.token_write_lock(&format!("forged-token-{i}"));
+        }
+        let locks = store.token_write_locks.lock().unwrap();
+        assert!(
+            locks.len() <= PersistenceStore::TOKEN_WRITE_LOCKS_PRUNE_THRESHOLD,
+            "the lock map must not keep growing past the prune threshold once entries are \
+             no longer in use: had {} entries",
+            locks.len()
+        );
+    }
+
+    /// Counterpart to the above: `save(bump_last_seen: true)` — the shape
+    /// a fresh login/register uses — must set `last_seen_unix` to "now",
+    /// same as before this parameter existed.
+    #[tokio::test]
+    async fn save_with_bump_sets_last_seen_to_now() {
+        let dir = scratch_dir("save-with-bump");
+        let store = PersistenceStore::new_for_test(&dir, [51u8; 32]);
+        let before = now_unix();
+
+        store
+            .save(
+                "tok-fresh-login",
+                "https://example.invalid",
+                &dummy_session("@fresh-login:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.read_one("tok-fresh-login").await.unwrap();
+        assert!(
+            entry.last_seen_unix.unwrap() >= before,
+            "save(bump_last_seen: true) must set last_seen_unix to now"
+        );
+    }
+
+    #[tokio::test]
+    async fn touch_last_seen_updates_the_persisted_timestamp() {
+        let dir = scratch_dir("touch-last-seen");
+        let store = Arc::new(PersistenceStore::new_for_test(&dir, [43u8; 32]));
+        let old = now_unix().saturating_sub(60 * 24 * 60 * 60);
+        save_with_last_seen(&store, "tok-touch", old).await;
+
+        store.touch_last_seen("tok-touch");
+        // `touch_last_seen` is fire-and-forget (`tokio::spawn`) — give the
+        // spawned task a moment to actually run before reading it back.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let entry = store.read_one("tok-touch").await.unwrap();
+        assert!(
+            entry.last_seen_unix.unwrap() > old,
+            "touch_last_seen should have bumped last_seen_unix forward"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Retry
+    /// last-seen touches after benign version conflicts"): a `Precondition`
+    /// conflict inside `touch_last_seen_now` must be retried, not
+    /// automatically treated as success — in the multi-instance path this
+    /// store supports, that conflict isn't only a racing logout (already
+    /// covered by the sibling `touch_last_seen_does_not_resurrect_*` tests);
+    /// it can just as easily be a concurrent, non-deleting write from
+    /// another instance (e.g. a `SaveMode::Resave` after a token refresh).
+    /// Silently giving up there would let `routes::refresh_session_cookie`
+    /// treat the touch as durable and advance its throttle even though
+    /// `last_seen_unix` never actually moved. Runs two real concurrent
+    /// writers against a shared `InMemory` backend (which supports
+    /// conditional writes, unlike `LocalFileSystem`) and asserts the touch
+    /// still lands rather than being silently dropped by the race.
+    #[tokio::test]
+    async fn touch_last_seen_now_retries_past_a_benign_concurrent_conflict() {
+        let key_bytes = [63u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-touch-conflict",
+                "https://example.invalid",
+                &dummy_session("@touch-conflict:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // Two independent `PersistenceStore`s (no shared in-process lock,
+        // same as two real instances) racing a write against the same
+        // token: process A's durable touch races process B's own touch.
+        // Neither should cause the other's write to vanish — process A's
+        // touch must retry past process B's conflicting write and still
+        // land.
+        let (touch_result, _) = tokio::join!(
+            process_a.touch_last_seen_now("tok-touch-conflict"),
+            process_b.touch_last_seen_now("tok-touch-conflict"),
+        );
+
+        assert!(
+            touch_result.is_ok(),
+            "a benign concurrent conflict must not cause touch_last_seen_now to give up \
+             instead of retrying: {touch_result:?}"
+        );
+        assert!(
+            process_a
+                .read_one("tok-touch-conflict")
+                .await
+                .unwrap()
+                .last_seen_unix
+                .is_some(),
+            "the object must still exist with a last_seen_unix set after both touches"
+        );
+    }
+
+    /// Regression test for the actual review finding: `remove` (logout) must
+    /// serialize against `touch_last_seen` via the same per-token lock, not
+    /// just `save` — otherwise a `touch_last_seen` task that read the entry
+    /// before a racing logout deletes it could `put` it right back
+    /// afterward, resurrecting a session the browser was just told is gone.
+    /// This drives them in the deterministic order the lock guarantees
+    /// (`remove` fully completes, including releasing the lock, before
+    /// `touch_last_seen` gets to acquire it) rather than trying to force an
+    /// actual race — the lock makes every interleaving collapse to one of
+    /// the two orderings this and the earlier `touch_last_seen_updates_*`
+    /// test already cover.
+    #[tokio::test]
+    async fn touch_last_seen_after_remove_does_not_resurrect_the_session() {
+        let dir = scratch_dir("touch-after-remove");
+        let store = Arc::new(PersistenceStore::new_for_test(&dir, [45u8; 32]));
+        save_with_last_seen(&store, "tok-removed", now_unix()).await;
+
+        store.remove("tok-removed", None).await.unwrap();
+        store.touch_last_seen("tok-removed");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert!(
+            store.read_one("tok-removed").await.is_none(),
+            "a touch_last_seen racing a logout must not resurrect the removed session"
+        );
+    }
+
+    /// Regression test for the actual review finding: `token_write_locks`
+    /// only serializes writers *within one process* — two independent
+    /// `PersistenceStore`s sharing the same backend (simulating two DO App
+    /// Platform instances briefly overlapping during a rolling deploy) have
+    /// no shared lock at all. `LocalFileSystem` (`new_for_test`, used by
+    /// every other test in this module) doesn't implement conditional
+    /// writes, so this uses `object_store::memory::InMemory` directly,
+    /// which does — the same backend family (S3-compatible) as the DO
+    /// Spaces bucket this crate actually deploys against.
+    #[tokio::test]
+    async fn touch_last_seen_does_not_resurrect_a_session_removed_by_another_process() {
+        let key_bytes = [50u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-cross-process",
+                "https://example.invalid",
+                &dummy_session("@cross-process:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // process A's touch reads the object's current version...
+        let (mut entry, version) = process_a
+            .read_one_with_version("tok-cross-process")
+            .await
+            .unwrap();
+
+        // ...then process B's logout removes it before process A's write
+        // lands — the same interleaving `token_write_locks` prevents
+        // in-process but can't prevent across two real processes.
+        process_b.remove("tok-cross-process", None).await.unwrap();
+
+        // process A's already-in-flight conditional write must fail, not
+        // resurrect the object process B just removed.
+        entry.last_seen_unix = Some(now_unix());
+        let path = object_path_for_token("tok-cross-process");
+        let blob = process_a.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        let opts = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        let result = process_a
+            .store
+            .put_opts(&path, PutPayload::from(json), opts)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a conditional write against an object removed since it was read must fail"
+        );
+        assert!(
+            process_a.read_one("tok-cross-process").await.is_none(),
+            "the session must stay removed, not get resurrected by the losing write"
+        );
+    }
+
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` — main.rs's idle-eviction re-save, sync_loop's token-refresh
+    /// repersist — reads the existing entry before writing (to preserve
+    /// `last_seen_unix`), which reopened the same cross-process resurrection
+    /// risk `touch_last_seen_now` already closes. `save` itself does its
+    /// read and write atomically within one call, so — same as
+    /// `touch_last_seen_does_not_resurrect_a_session_removed_by_another_process`
+    /// — this reads the version manually first (simulating the read half of
+    /// process A's in-flight `save`), lets process B's logout land, then
+    /// replicates `save`'s own conditional-write logic to confirm it
+    /// declines to resurrect rather than blindly overwriting.
+    #[tokio::test]
+    async fn save_without_bump_does_not_resurrect_a_session_removed_by_another_process() {
+        let key_bytes = [52u8; 32];
+        let shared: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let new_process = || PersistenceStore {
+            key: Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes)),
+            store: Arc::clone(&shared),
+            crypto_backup: None,
+            token_write_locks: std::sync::Mutex::new(std::collections::HashMap::new()),
+        };
+        let process_a = new_process();
+        let process_b = new_process();
+        process_a
+            .save(
+                "tok-cross-process-resave",
+                "https://example.invalid",
+                &dummy_session("@cross-process-resave:example.invalid"),
+                None,
+                SaveMode::FreshLogin,
+            )
+            .await
+            .unwrap();
+
+        // process A's in-flight idle-eviction re-save reads the version
+        // first, the same as `save(bump_last_seen: false)` does internally.
+        let (entry, version) = process_a
+            .read_one_with_version("tok-cross-process-resave")
+            .await
+            .unwrap();
+
+        // process B's logout removes the object before process A's write
+        // lands.
+        process_b
+            .remove("tok-cross-process-resave", None)
+            .await
+            .unwrap();
+
+        // process A's already-in-flight conditional write must fail, not
+        // resurrect the object process B just removed.
+        let path = object_path_for_token("tok-cross-process-resave");
+        let blob = process_a.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        let opts = object_store::PutOptions {
+            mode: object_store::PutMode::Update(version),
+            ..Default::default()
+        };
+        let result = process_a
+            .store
+            .put_opts(&path, PutPayload::from(json), opts)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a conditional write against an object removed since it was read must fail"
+        );
+        assert!(
+            process_a
+                .read_one("tok-cross-process-resave")
+                .await
+                .is_none(),
+            "the session must stay removed, not get resurrected by a bump_last_seen: false \
+             re-save"
+        );
+    }
+
+    /// Regression test for the actual review finding: `save(bump_last_seen:
+    /// false)` must not create a fresh object when its *very first* read
+    /// already finds nothing — not just when the object vanishes mid-retry
+    /// (the case the test above covers). The two are indistinguishable
+    /// from inside this call (an object gone before the call started looks
+    /// identical to one gone during it), and `main.rs`/`sync_loop`'s
+    /// call sites only ever fire for a token that was already live in
+    /// `SessionStore`, which itself only ever came from an already-persisted
+    /// record — so there's no legitimate "never persisted yet" case for
+    /// this call shape to fall back to creating.
+    #[tokio::test]
+    async fn save_without_bump_does_not_create_when_nothing_was_ever_there() {
+        let dir = scratch_dir("save-no-bump-nothing-there");
+        let store = PersistenceStore::new_for_test(&dir, [57u8; 32]);
+
+        store
+            .save(
+                "tok-never-persisted",
+                "https://example.invalid",
+                &dummy_session("@never-persisted:example.invalid"),
+                None,
+                SaveMode::Resave,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            store.read_one("tok-never-persisted").await.is_none(),
+            "a bump_last_seen: false save must never create a new persisted session"
+        );
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Preserve
+    /// retries after an initial persistence failure"): `sync_loop`'s
+    /// `repersist_if_token_changed` must still be able to create the
+    /// persisted object when `finish_login`'s own initial save failed and
+    /// nothing has ever landed on disk yet for this token —
+    /// `SaveMode::RetryInitialSave` exists specifically to allow that,
+    /// unlike `SaveMode::Resave` (tested above) which must never resurrect
+    /// a genuinely deleted session.
+    #[tokio::test]
+    async fn save_retry_initial_creates_when_nothing_was_ever_there() {
+        let dir = scratch_dir("save-retry-initial-nothing-there");
+        let store = PersistenceStore::new_for_test(&dir, [58u8; 32]);
+
+        store
+            .save(
+                "tok-retry-initial",
+                "https://example.invalid",
+                &dummy_session("@retry-initial:example.invalid"),
+                None,
+                SaveMode::RetryInitialSave,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.read_one("tok-retry-initial").await;
+        assert!(
+            entry.is_some(),
+            "SaveMode::RetryInitialSave must create a fresh object when the initial \
+             login save previously failed and nothing was ever persisted"
+        );
+        // Regression test for the Codex review finding on #280 ("Stamp
+        // first retry saves with a real last-seen time"): this create path
+        // must stamp a concrete `Some(now)`, not leave `last_seen_unix:
+        // None` — `None` is reserved for legacy pre-field entries, which
+        // `sweep_expired` backfills and skips for one extra round on sight.
+        // A freshly created object writing `None` would get that same
+        // one-round grace it doesn't need, silently extending an abandoned
+        // session's effective retention window.
+        assert!(
+            entry.unwrap().last_seen_unix.is_some(),
+            "a freshly created object must not carry last_seen_unix: None — that's reserved \
+             for legacy pre-field entries, not new writes"
+        );
+    }
+
+    #[test]
+    fn entry_is_expired_is_true_only_once_last_seen_reaches_max_age() {
+        let max_age_secs: u64 = 30 * 24 * 60 * 60;
+        let now = max_age_secs * 10;
+        assert!(!entry_is_expired(
+            Some(now - max_age_secs + 1),
+            now,
+            max_age_secs
+        ));
+        assert!(entry_is_expired(
+            Some(now - max_age_secs),
+            now,
+            max_age_secs
+        ));
+        assert!(entry_is_expired(
+            Some(now - max_age_secs - 1),
+            now,
+            max_age_secs
+        ));
+    }
+
+    #[test]
+    fn entry_is_expired_is_false_for_a_not_yet_backfilled_entry() {
+        assert!(!entry_is_expired(None, now_unix(), 0));
+    }
+
+    /// Regression test for the actual review finding: `restore_all` must not
+    /// even attempt to restore an entry that was already past the retention
+    /// window before this process started, or restoring it into
+    /// `SessionStore` would make `sweep_expired`'s live-session skip treat
+    /// it as current — silently granting an already-abandoned session
+    /// another full grace period on every restart. Both entries here use an
+    /// unreachable homeserver so a restore attempt (if one happened) would
+    /// fail fast and be dropped either way — the assertion that matters is
+    /// on `read_all` afterward, proving the expired entry was never
+    /// filtered *out of persistence entirely*, just out of this restore
+    /// pass (it's still `sweep_expired`'s job to actually revoke it later).
+    #[tokio::test]
+    async fn restore_all_skips_an_already_expired_entry_without_attempting_it() {
+        let dir = scratch_dir("restore-all-skips-expired");
+        let store = PersistenceStore::new_for_test(&dir, [46u8; 32]);
+        let now = now_unix();
+        let thirty_days = 30 * 24 * 60 * 60;
+
+        save_with_last_seen(&store, "tok-expired", now.saturating_sub(thirty_days + 1)).await;
+        save_with_last_seen(&store, "tok-fresh", now.saturating_sub(60)).await;
+
+        let restored = store
+            .restore_all(std::time::Duration::from_secs(thirty_days))
+            .await;
+
+        assert!(
+            restored.iter().all(|(token, ..)| token != "tok-expired"),
+            "an already-expired entry must never appear in restore_all's output"
+        );
+        // Neither entry actually restores (unreachable homeserver in both
+        // cases), so `tok-fresh` isn't in `restored` either — this just
+        // confirms `restore_all` didn't delete anything from persistence
+        // itself; that's `sweep_expired`'s job, not this function's.
+        let remaining: HashSet<String> = store
+            .read_all()
+            .await
+            .into_iter()
+            .map(|entry| entry.token)
+            .collect();
+        assert_eq!(
+            remaining,
+            HashSet::from(["tok-expired".to_string(), "tok-fresh".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn is_expired_reflects_last_seen_against_max_age() {
+        let dir = scratch_dir("is-expired");
+        let store = PersistenceStore::new_for_test(&dir, [47u8; 32]);
+        let now = now_unix();
+        let thirty_days = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+
+        save_with_last_seen(
+            &store,
+            "tok-old",
+            now.saturating_sub(thirty_days.as_secs() + 1),
+        )
+        .await;
+        save_with_last_seen(&store, "tok-recent", now.saturating_sub(60)).await;
+
+        assert!(store.is_expired("tok-old", thirty_days).await);
+        assert!(!store.is_expired("tok-recent", thirty_days).await);
+        assert!(
+            !store.is_expired("tok-never-persisted", thirty_days).await,
+            "an unknown token must not be reported as expired"
+        );
+    }
+
+    /// Regression test for the actual review finding: an idle-evicted
+    /// session already past the retention window, but not yet swept by the
+    /// (at most once/day) background sweeper, must still be rejected by
+    /// `is_expired` rather than restored — otherwise a client that keeps
+    /// presenting an already-expired cookie could stay resurrected
+    /// indefinitely via `require_session`'s on-demand restore path.
+    #[tokio::test]
+    async fn is_expired_catches_a_session_the_daily_sweep_has_not_reached_yet() {
+        let dir = scratch_dir("is-expired-not-yet-swept");
+        let store = PersistenceStore::new_for_test(&dir, [48u8; 32]);
+        let now = now_unix();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        save_with_last_seen(
+            &store,
+            "tok-overdue",
+            now.saturating_sub(max_age.as_secs() + 1),
+        )
+        .await;
+
+        assert!(store.is_expired("tok-overdue", max_age).await);
+    }
+
+    /// Regression test for the Codex review finding on #280 ("Fail closed
+    /// when the expiry read fails"): a transient read error must make
+    /// `is_expired` report `true` (fail closed), not `false` the way a
+    /// genuinely missing entry does. `routes::require_session` calls this
+    /// immediately before `restore_by_token`'s own read — collapsing a
+    /// read error here to "not expired" would let an already-expired
+    /// session that merely hit a transient read hiccup fall through to a
+    /// successful restore a few lines later, which resets its retention
+    /// clock right back to "now" via that restore's `touch_last_seen`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn is_expired_fails_closed_on_a_transient_read_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("is-expired-transient-read-error");
+        let store = PersistenceStore::new_for_test(&dir, [60u8; 32]);
+        let now = now_unix();
+        let max_age = std::time::Duration::from_secs(30 * 24 * 60 * 60);
+        save_with_last_seen(
+            &store,
+            "tok-unreadable",
+            now.saturating_sub(max_age.as_secs() + 1),
+        )
+        .await;
+
+        let file_path = object_file_path(&dir, "tok-unreadable");
+        let original_perms = std::fs::metadata(&file_path).unwrap().permissions();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let result = store.is_expired("tok-unreadable", max_age).await;
+
+        std::fs::set_permissions(&file_path, original_perms).unwrap();
+
+        assert!(
+            result,
+            "a transient read error must be treated as expired (fail closed), not as \
+             \"not expired\" the way a genuinely missing entry is"
+        );
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_backfills_a_legacy_entry_instead_of_removing_it() {
+        let dir = scratch_dir("sweep-expired-legacy-backfill");
+        let store = PersistenceStore::new_for_test(&dir, [44u8; 32]);
+        let entry = PersistedSession {
+            token: "tok-legacy-no-timestamp".to_string(),
+            homeserver_url: "https://example.invalid".to_string(),
+            session: dummy_session("@legacy:example.invalid"),
+            crypto_store_key: None,
+            crypto_passphrase: None,
+            last_seen_unix: None,
+        };
+        let path = object_path_for_token(&entry.token);
+        let blob = store.encrypt(&entry, &path).unwrap();
+        let json = serde_json::to_vec(&blob).unwrap();
+        store
+            .store
+            .put(&path, PutPayload::from(json))
+            .await
+            .unwrap();
+
+        let swept = store
+            .sweep_expired(
+                std::time::Duration::from_secs(30 * 24 * 60 * 60),
+                &crate::session::SessionStore::new(),
+            )
+            .await;
+
+        assert_eq!(
+            swept, 0,
+            "a freshly-backfilled entry must not be swept in the same pass"
+        );
+        let reloaded = store.read_one("tok-legacy-no-timestamp").await.unwrap();
+        assert!(
+            reloaded.last_seen_unix.is_some(),
+            "sweep_expired must persist a concrete timestamp, not leave it None to be \
+             reinterpreted as \"now\" again on the next sweep"
+        );
     }
 }
