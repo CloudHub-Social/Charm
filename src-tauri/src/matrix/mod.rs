@@ -467,25 +467,44 @@ impl MatrixState {
         // (the final live timeline this function builds further below ends
         // up correct either way, since that doesn't depend on what was
         // popped here — this is purely about not doing pointless work).
+        //
+        // Review fix (Codex): a separate `contains()` pre-check followed by
+        // an unconditional `insert()` (with its return value discarded)
+        // wasn't atomic — another call could win the race and insert
+        // between this call's `contains()` and its own `insert()`, leaving
+        // `inserted_transition_marker` set to `true` here even though this
+        // call didn't actually claim the marker. That caused this call to
+        // later *remove* the other call's marker while its own pop-to-
+        // repush was still in flight, reopening the `is_timeline_open`
+        // false-negative window the marker exists to close. `HashSet::insert`
+        // is atomic under the lock and its own return value (`true` only
+        // when this call is the one that actually inserted a new entry) is
+        // now the sole ownership signal — no separate pre-check needed.
         let mut inserted_transition_marker = false;
-        if force_live && !self.transitioning_timelines.lock().await.contains(room_id) {
+        if force_live {
             let is_focused = {
                 let timelines = self.timelines.lock().await;
                 matches!(timelines.peek(room_id), Some((_, _, true)))
             };
-            let previous = if is_focused {
-                self.transitioning_timelines
+            if is_focused {
+                let claimed = self
+                    .transitioning_timelines
                     .lock()
                     .await
                     .insert(room_id.to_owned());
-                inserted_transition_marker = true;
-                self.timelines.lock().await.pop(room_id)
-            } else {
-                None
-            };
-            if let Some((_, previous_handle, _)) = previous {
-                previous_handle.abort();
-                let _ = previous_handle.await;
+                if claimed {
+                    inserted_transition_marker = true;
+                    let previous = self.timelines.lock().await.pop(room_id);
+                    if let Some((_, previous_handle, _)) = previous {
+                        previous_handle.abort();
+                        let _ = previous_handle.await;
+                    }
+                }
+                // Else: another concurrent transition already owns this
+                // room's reset-to-live — skip this call's own pop/abort
+                // entirely rather than racing it (see the efficiency note
+                // above; the final live timeline built below is correct
+                // either way).
             }
         }
 
@@ -679,12 +698,16 @@ impl MatrixState {
         // needs that same lock to clear the cache, so it can't run between
         // this check and this push once the guard is held.
         let mut timelines = self.timelines.lock().await;
-        let still_active = self
-            .client
-            .lock()
-            .await
-            .as_ref()
-            .is_some_and(|current| current.device_id() == client.device_id());
+        // Review fix: `device_id()` alone isn't a globally unique session
+        // identity — it's only scoped to be unique *per Matrix user*, so a
+        // logout of account A followed by a login of a *different* account
+        // B could coincidentally mint a device id string equal to one A had
+        // used, passing this check for the wrong account. Comparing
+        // `user_id()` too closes that (astronomically unlikely, but not
+        // impossible) gap.
+        let still_active = self.client.lock().await.as_ref().is_some_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        });
         if !still_active {
             drop(timelines);
             self.transitioning_timelines.lock().await.remove(room_id);

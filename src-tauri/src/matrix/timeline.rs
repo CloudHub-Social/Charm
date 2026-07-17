@@ -1202,13 +1202,22 @@ async fn load_focused_event_timeline(
     // it has its own internal await (stopping the previous listener) that
     // this check alone can't cover.
     //
-    // Review fix: compares `device_id()`, not `user_id()` — a `user_id()`
-    // comparison alone would pass for a logout-then-re-login into the
-    // *same* account, even though that mints a fresh session (new device,
-    // revoked old tokens). `device_id()` is unique per login session, so it
-    // also catches that case, not just a switch to a different account.
+    // Review fix: compares `device_id()`, not just `user_id()` — a
+    // `user_id()`-only comparison would pass for a logout-then-re-login
+    // into the *same* account, even though that mints a fresh session (new
+    // device, revoked old tokens). `device_id()` is unique per login
+    // session, so it also catches that case, not just a switch to a
+    // different account.
+    //
+    // Review fix: `device_id()` alone isn't globally unique either — it's
+    // only scoped to be unique per Matrix user, so a switch to a
+    // *different* account could coincidentally mint a device id string
+    // equal to one the previous account had used. Comparing `user_id()`
+    // too closes that gap.
     let still_active = match state.require_client().await {
-        Ok(current) => current.device_id() == client.device_id(),
+        Ok(current) => {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }
         Err(_) => false,
     };
     if !still_active {

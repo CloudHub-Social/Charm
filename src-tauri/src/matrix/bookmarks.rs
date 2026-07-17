@@ -309,10 +309,14 @@ pub async fn list_bookmarks(
         // iteration (by device id — see the `timeline.rs` re-checks for the
         // same reasoning) and falling back to unresolved instead closes it
         // for this multi-await loop too.
-        let still_active = state
-            .require_client()
-            .await
-            .is_ok_and(|current| current.device_id() == client.device_id());
+        //
+        // Review fix: compares `user_id()` too, not just `device_id()` —
+        // device ids are only unique per Matrix user, not globally, so a
+        // switch to a different account could coincidentally mint one
+        // equal to the previous account's.
+        let still_active = state.require_client().await.is_ok_and(|current| {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        });
         let resolved = match RoomId::parse(&bookmark.room_id) {
             Ok(parsed_room_id) if still_active => {
                 match state.peek_timeline(&parsed_room_id).await {
@@ -376,11 +380,12 @@ pub async fn list_bookmarks(
     // cross-account leak class this command's other fixes already close,
     // just reopened at the return path. One last re-check right before
     // returning closes it here too.
-    if state
-        .require_client()
-        .await
-        .is_ok_and(|current| current.device_id() == client.device_id())
-    {
+    //
+    // Review fix: compares `user_id()` too — see the per-iteration check
+    // above for why `device_id()` alone isn't a sufficient session identity.
+    if state.require_client().await.is_ok_and(|current| {
+        current.user_id() == client.user_id() && current.device_id() == client.device_id()
+    }) {
         Ok(entries)
     } else {
         Err("account changed while resolving bookmarks".to_string())
