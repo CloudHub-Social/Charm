@@ -13,12 +13,21 @@ interface LeaveSpaceDialogProps {
   spaceId: string | null;
   spaceName: string | null;
   onOpenChange: (open: boolean) => void;
+  /** Called with the space's id right after a successful leave — distinct from
+   * `onOpenChange(false)` (which also fires on plain Cancel) so the caller can
+   * redirect out of a now-inaccessible space without reacting to a cancel. */
+  onLeft?: (spaceId: string) => void;
 }
 
 /** Confirmation dialog for leaving a space from `SpaceRail`'s context menu — leaving is
  * destructive enough (loses access to every private child room too) to warrant a confirm
  * step, unlike the reversible Pin/Remove-from-space actions next to it in the same menu. */
-export function LeaveSpaceDialog({ spaceId, spaceName, onOpenChange }: LeaveSpaceDialogProps) {
+export function LeaveSpaceDialog({
+  spaceId,
+  spaceName,
+  onOpenChange,
+  onLeft,
+}: LeaveSpaceDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -44,6 +53,7 @@ export function LeaveSpaceDialog({ spaceId, spaceName, onOpenChange }: LeaveSpac
     setPending(true);
     try {
       await leaveRoom(spaceId);
+      onLeft?.(spaceId);
       handleClose(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

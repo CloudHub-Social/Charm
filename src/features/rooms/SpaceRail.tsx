@@ -440,6 +440,14 @@ export function SpaceRail({
         onOpenChange={(open) => {
           if (!open) setLeaveTarget(null);
         }}
+        onLeft={(spaceId) => {
+          // The rail's own `activeSpaceId` prop won't update until the
+          // parent re-renders with the left space gone from `rooms` — if
+          // that was the space currently open, redirect out of it now
+          // rather than leaving the room list stuck showing a space the
+          // user no longer has access to.
+          if (spaceId === activeSpaceId) onSelectHome();
+        }}
       />
       <AddExistingToSpaceDialog
         spaceId={addExistingTarget?.spaceId ?? null}

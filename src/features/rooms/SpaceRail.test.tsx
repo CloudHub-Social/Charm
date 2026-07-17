@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -421,6 +421,27 @@ describe("SpaceRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Leave" }));
     expect(leaveRoom).toHaveBeenCalledWith("!space:localhost");
     await screen.findByRole("navigation", { name: "Spaces" });
+  });
+
+  it("redirects home after leaving the currently active space", async () => {
+    const props = renderRail({ activeMode: "space", activeSpaceId: "!space:localhost" });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+
+    await waitFor(() => expect(props.onSelectHome).toHaveBeenCalledOnce());
+  });
+
+  it("does not redirect when leaving a space other than the active one", async () => {
+    const props = renderRail({ activeMode: "space", activeSpaceId: "!child-space:localhost" });
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+
+    await waitFor(() => expect(leaveRoom).toHaveBeenCalledWith("!space:localhost"));
+    expect(props.onSelectHome).not.toHaveBeenCalled();
   });
 
   it("opens the Add Existing dialog for a space from its context menu", () => {
