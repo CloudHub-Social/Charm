@@ -198,9 +198,12 @@ export function RoomsScreen({
 
   // Spec 40 auto-idle/away: flag-gated (the settings surface itself is
   // gated by `presence_privacy_controls`, so `idle_timeout_minutes` can
-  // never be non-null with the flag off) — `useQuery`'s `enabled` keeps this
-  // from even fetching privacy settings when the flag is off.
-  const { data: privacySettings } = usePrivacySettings();
+  // never be non-null with the flag off) — `usePrivacySettings`'s `enabled`
+  // arg keeps this from even fetching privacy settings when the flag is off
+  // (review fix: it previously always fetched regardless of the flag, and
+  // regardless of web build — `usePrivacySettings` now also refuses to fire
+  // on the web companion build, which has no transport for this command).
+  const { data: privacySettings } = usePrivacySettings(presencePrivacyControlsEnabled);
   useIdlePresence(presencePrivacyControlsEnabled ? privacySettings : undefined);
 
   const joinedRooms = useMemo(() => rooms.filter((room) => room.membership === "join"), [rooms]);

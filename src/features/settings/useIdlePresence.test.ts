@@ -66,19 +66,16 @@ describe("useIdlePresence", () => {
   });
 
   it("resumes to online after activity following an idle transition", () => {
-    const { rerender } = renderHook(
-      ({ settings }) => useIdlePresence(settings),
-      {
-        initialProps: {
-          settings: {
-            hide_read_receipts: false,
-            hide_typing: false,
-            appear_offline: false,
-            idle_timeout_minutes: 5,
-          },
+    const { rerender } = renderHook(({ settings }) => useIdlePresence(settings), {
+      initialProps: {
+        settings: {
+          hide_read_receipts: false,
+          hide_typing: false,
+          appear_offline: false,
+          idle_timeout_minutes: 5,
         },
       },
-    );
+    });
 
     vi.advanceTimersByTime(6 * 60_000);
     expect(setPresence).toHaveBeenCalledWith("unavailable");

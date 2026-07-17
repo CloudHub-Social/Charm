@@ -22,7 +22,13 @@ describe("SeenByChips", () => {
   });
 
   it("clicking the overflow '+N' chip expands the full ordered seen-by list", () => {
-    const readers = ["@a:localhost", "@b:localhost", "@c:localhost", "@d:localhost", "@e:localhost"];
+    const readers = [
+      "@a:localhost",
+      "@b:localhost",
+      "@c:localhost",
+      "@d:localhost",
+      "@e:localhost",
+    ];
     const senderNameByUserId = new Map([
       ["@a:localhost", "Alice"],
       ["@d:localhost", "Dave"],

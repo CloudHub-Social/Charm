@@ -8,7 +8,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use super::{ephemeral, presence, profiles, room_admin, rooms, shell, verification, MatrixState};
+use super::presence::PresenceStateDto;
+use super::{
+    ephemeral, presence, privacy_settings, profiles, room_admin, rooms, shell, verification,
+    MatrixState,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../src/bindings/")]
@@ -437,10 +441,39 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
 
     // Best-effort: some homeservers disable presence entirely, and a failure
     // here shouldn't ever block or fail login/session-restore.
+    //
+    // Review fix: this used to unconditionally call `set_presence_online`,
+    // ignoring a persisted `appear_offline` privacy setting (Spec 40) — so a
+    // user who'd asked to appear offline would be shown online again after
+    // every app restart or session restore, until they happened to re-open
+    // the Privacy settings panel and re-toggle it. Read the persisted
+    // setting first and seed both the initial presence request and
+    // `sync_presence` (so the sync loop's subsequent `sync_once` calls keep
+    // reasserting the right state, not just this one-shot call) to match.
     {
         let client = client.clone();
+        let app_for_presence = app_for_handle.clone();
         let presence_task = tokio::spawn(async move {
-            let _ = presence::set_presence_online(&client).await;
+            let privacy = privacy_settings::current_settings(
+                &app_for_presence,
+                &app_for_presence.state::<MatrixState>(),
+            )
+            .await;
+            let initial_presence = if privacy.appear_offline {
+                PresenceStateDto::Offline
+            } else {
+                PresenceStateDto::Online
+            };
+            if presence::set_presence_impl(&client, initial_presence, None)
+                .await
+                .is_ok()
+            {
+                *app_for_presence
+                    .state::<MatrixState>()
+                    .sync_presence
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = initial_presence;
+            }
         });
         let previous = app_for_handle
             .state::<MatrixState>()

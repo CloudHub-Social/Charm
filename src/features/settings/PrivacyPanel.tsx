@@ -1,5 +1,5 @@
 import { SettingsCard, SettingTile } from "./components/SettingsCard";
-import { usePrivacySettings, useSetPrivacySettings } from "./usePrivacySettings";
+import { usePatchPrivacySettings, usePrivacySettings } from "./usePrivacySettings";
 
 /** Idle-timeout presets offered in the dropdown, in minutes. `null` disables auto-idle. */
 const IDLE_TIMEOUT_OPTIONS: { label: string; minutes: number | null }[] = [
@@ -17,18 +17,15 @@ const IDLE_TIMEOUT_OPTIONS: { label: string; minutes: number | null }[] = [
  * `SettingsScreen`, matching `FocusPanel`'s pattern).
  *
  * Every toggle here writes the *entire* `PrivacySettings` object in one
- * `set_privacy_settings` call (see `usePrivacySettings`'s doc comment) so
- * two quick toggles never race each other.
+ * `set_privacy_settings` call, merged onto the freshest cached snapshot at
+ * call time (see `usePatchPrivacySettings`'s doc comment) so two quick
+ * toggles never race each other.
  */
 export function PrivacyPanel() {
   const { data: settings, isLoading } = usePrivacySettings();
-  const setSettings = useSetPrivacySettings();
+  const update = usePatchPrivacySettings();
 
   if (isLoading || !settings) return null;
-
-  const update = (patch: Partial<typeof settings>) => {
-    setSettings.mutate({ ...settings, ...patch });
-  };
 
   return (
     <div className="max-w-lg space-y-6">

@@ -65,7 +65,15 @@ const SECTIONS: {
   // transport for, same reason `general`/`notifications` above are
   // `webUnsupported` rather than adding web-side command support.
   { value: "focus", label: "Focus", flagGated: "focus_mode", webUnsupported: true },
-  { value: "privacy", label: "Privacy", flagGated: "presence_privacy_controls" },
+  // Review fix: `invokeWeb` (matrixTransport.ts) has no case for
+  // `get_privacy_settings`/`set_privacy_settings` either — same reasoning as
+  // `general`/`notifications`/`focus` above.
+  {
+    value: "privacy",
+    label: "Privacy",
+    flagGated: "presence_privacy_controls",
+    webUnsupported: true,
+  },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
   { value: "labs", label: "Labs", productionHidden: true },

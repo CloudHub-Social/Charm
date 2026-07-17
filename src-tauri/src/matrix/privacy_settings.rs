@@ -108,11 +108,43 @@ pub async fn get_privacy_settings(
     load_settings(&app, &account_key)
 }
 
-/// Persists the full settings snapshot and, if `appear_offline` changed,
-/// applies it immediately by calling the same `set_presence_impl` the
-/// existing `set_presence` command uses (Spec 40's data-flow: "wire existing
-/// setPresence to UI, no new command needed for that one" — this reuses it
-/// rather than duplicating presence-setting logic).
+/// Persists the full settings snapshot and, if `appear_offline` actually
+/// *changed*, applies that transition immediately by calling the same
+/// `set_presence_impl` the existing `set_presence` command uses (Spec 40's
+/// data-flow: "wire existing setPresence to UI, no new command needed for
+/// that one" — this reuses it rather than duplicating presence-setting
+/// logic).
+///
+/// Review fix: this used to unconditionally force presence to `Online`
+/// whenever `appear_offline` was `false` in the incoming snapshot — so
+/// toggling an *unrelated* setting (e.g. `hide_typing`) while
+/// `appear_offline` was already off would still fire, clobbering an idle
+/// user's `unavailable` status back to `Online` for no reason the user
+/// asked for. Now presence is only touched on an actual appear-offline
+/// transition: turning it on forces `Offline`; turning it *off* (previously
+/// on) restores `Online` (the auto-idle timer, if active, will re-apply
+/// `unavailable` on its own next tick if the user is still away — this just
+/// undoes the explicit hide, it doesn't need to also re-derive idle state).
+/// Toggling any other field leaves presence untouched entirely.
+/// Decides whether an `appear_offline` transition between two settings
+/// snapshots requires an explicit presence push, and if so, which state to
+/// push. Pulled out of [`set_privacy_settings`] as a pure function so the
+/// "only touch presence on an actual transition" logic (the review fix
+/// described on that command) is unit-testable without a live `Client`.
+fn appear_offline_transition(
+    previous: &PrivacySettings,
+    settings: &PrivacySettings,
+) -> Option<PresenceStateDto> {
+    if settings.appear_offline == previous.appear_offline {
+        return None;
+    }
+    Some(if settings.appear_offline {
+        PresenceStateDto::Offline
+    } else {
+        PresenceStateDto::Online
+    })
+}
+
 #[tauri::command]
 pub async fn set_privacy_settings(
     app: AppHandle,
@@ -121,21 +153,19 @@ pub async fn set_privacy_settings(
 ) -> Result<(), String> {
     let account_key = account_key_for(&state).await?;
     let _guard = PRIVACY_PREFS_LOCK.lock().await;
+    let previous = load_settings(&app, &account_key)?;
     save_settings(&app, &account_key, &settings)?;
 
-    let client = state.require_client().await?;
-    let presence = if settings.appear_offline {
-        PresenceStateDto::Offline
-    } else {
-        PresenceStateDto::Online
-    };
-    // Best-effort: a homeserver that disables presence shouldn't block
-    // saving the rest of the privacy preferences.
-    if set_presence_impl(&client, presence, None).await.is_ok() {
-        *state
-            .sync_presence
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = presence;
+    if let Some(presence) = appear_offline_transition(&previous, &settings) {
+        let client = state.require_client().await?;
+        // Best-effort: a homeserver that disables presence shouldn't block
+        // saving the rest of the privacy preferences.
+        if set_presence_impl(&client, presence, None).await.is_ok() {
+            *state
+                .sync_presence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = presence;
+        }
     }
 
     Ok(())
@@ -168,5 +198,72 @@ mod tests {
         assert!(parsed.hide_typing);
         assert!(parsed.appear_offline);
         assert_eq!(parsed.idle_timeout_minutes, Some(10));
+    }
+
+    #[test]
+    fn appear_offline_transition_forces_offline_when_turned_on() {
+        let previous = PrivacySettings::default();
+        let settings = PrivacySettings {
+            appear_offline: true,
+            ..previous
+        };
+        assert_eq!(
+            appear_offline_transition(&previous, &settings),
+            Some(PresenceStateDto::Offline)
+        );
+    }
+
+    #[test]
+    fn appear_offline_transition_restores_online_when_turned_off() {
+        let previous = PrivacySettings {
+            appear_offline: true,
+            ..PrivacySettings::default()
+        };
+        let settings = PrivacySettings {
+            appear_offline: false,
+            ..previous
+        };
+        assert_eq!(
+            appear_offline_transition(&previous, &settings),
+            Some(PresenceStateDto::Online)
+        );
+    }
+
+    /// Review fix regression test: an unrelated field changing (e.g.
+    /// `hide_typing`) while `appear_offline` stays the same must never touch
+    /// presence — that's exactly the bug where toggling any privacy setting
+    /// clobbered an idle user's `unavailable` status back to online.
+    #[test]
+    fn appear_offline_transition_is_none_when_only_an_unrelated_field_changes() {
+        let previous = PrivacySettings::default();
+        let settings = PrivacySettings {
+            hide_typing: true,
+            ..previous
+        };
+        assert_eq!(appear_offline_transition(&previous, &settings), None);
+
+        let previous_offline = PrivacySettings {
+            appear_offline: true,
+            ..PrivacySettings::default()
+        };
+        let settings_offline_and_hide_typing = PrivacySettings {
+            hide_typing: true,
+            ..previous_offline
+        };
+        assert_eq!(
+            appear_offline_transition(&previous_offline, &settings_offline_and_hide_typing),
+            None
+        );
+    }
+
+    #[test]
+    fn appear_offline_transition_is_none_when_settings_are_identical() {
+        let settings = PrivacySettings {
+            appear_offline: true,
+            hide_read_receipts: true,
+            hide_typing: true,
+            idle_timeout_minutes: Some(15),
+        };
+        assert_eq!(appear_offline_transition(&settings, &settings), None);
     }
 }

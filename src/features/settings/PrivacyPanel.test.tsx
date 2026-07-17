@@ -58,7 +58,9 @@ describe("PrivacyPanel", () => {
     fireEvent.click(typingToggle);
 
     await waitFor(() =>
-      expect(setPrivacySettings).toHaveBeenCalledWith(expect.objectContaining({ hide_typing: true })),
+      expect(setPrivacySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ hide_typing: true }),
+      ),
     );
   });
 
@@ -84,6 +86,28 @@ describe("PrivacyPanel", () => {
     await waitFor(() =>
       expect(setPrivacySettings).toHaveBeenCalledWith(
         expect.objectContaining({ idle_timeout_minutes: 15 }),
+      ),
+    );
+  });
+
+  it("toggling two switches back-to-back persists both changes, not just the last one", async () => {
+    // Review fix regression test: `update` used to merge a patch onto the
+    // `settings` object captured at the start of the current render, so two
+    // rapid toggles (before a re-render committed the first one) raced —
+    // the second call's spread silently discarded the first toggle's
+    // change. `usePatchPrivacySettings` reads the query cache directly at
+    // call time instead, which `useSetPrivacySettings`'s `onMutate` updates
+    // synchronously before this test's second `fireEvent.click` fires.
+    renderWithProviders(<PrivacyPanel />);
+    const receiptsToggle = await screen.findByRole("checkbox", { name: /send read receipts/i });
+    const typingToggle = await screen.findByRole("checkbox", { name: /send typing indicators/i });
+
+    fireEvent.click(receiptsToggle);
+    fireEvent.click(typingToggle);
+
+    await waitFor(() =>
+      expect(setPrivacySettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ hide_read_receipts: true, hide_typing: true }),
       ),
     );
   });
