@@ -276,7 +276,22 @@ export function installMockTauri(seed: {
   }
 
   function pushRoomListUpdate() {
-    emit("room_list:update", [...allRooms]);
+    // Shallow-copies every room, not just `[...allRooms]` (a fresh array of
+    // the *same* room object references): the real backend always sends a
+    // freshly-deserialized `RoomSummary` for every room on every snapshot,
+    // even ones nothing changed about — see `roomListItemPropsEqual`'s doc
+    // comment in `RoomListItem.tsx`. This mock used to mutate a room's
+    // fields in place (`set_room_muted`/`set_room_marked_unread`/etc. below)
+    // and re-emit the *same* object reference, which that comparator's
+    // `a === b` reference-equality fast path treats as "definitely
+    // unchanged" — before this fix, a genuinely mutated room reached
+    // `RoomListItem` and had the memo skip its re-render entirely, an
+    // E2E-mock-only bug (not reachable with the real backend's always-fresh
+    // objects) that a real caller mutating in place would trigger for real.
+    emit(
+      "room_list:update",
+      allRooms.map((r) => ({ ...r })),
+    );
   }
 
   // Spec 05: read receipts, typing, presence. Deliberately not modeling a
@@ -287,7 +302,19 @@ export function installMockTauri(seed: {
 
   const handlers: Record<string, (args: Record<string, unknown>) => unknown> = {
     try_restore_session: () => ({ user_id: seed.userId, device_id: seed.deviceId }),
-    list_rooms: () => (seed.hasRooms === false ? [] : allRooms),
+    // Shallow-copied for the same reason `pushRoomListUpdate` below is: the
+    // real backend never hands out a live, mutable reference the frontend
+    // could still see updates to via a later in-place mutation elsewhere in
+    // this mock (`set_room_muted` et al., via `findRoom`) — returning
+    // `allRooms` directly here made React's *very first* committed `room`
+    // props literally the same objects `set_room_muted` mutates later, so
+    // even a memo comparator that only compares fresh emissions correctly
+    // (`pushRoomListUpdate`'s fix) still saw a corrupted "previous" snapshot
+    // that had silently caught up to the "next" one without a render ever
+    // happening — the root cause of a room's list-row indicators (mute,
+    // marked-unread, rename) failing to update. `list_rooms` runs once at
+    // mount, so this copy isn't behind a hot path.
+    list_rooms: () => (seed.hasRooms === false ? [] : allRooms.map((r) => ({ ...r }))),
     get_own_profile: () => ({
       user_id: profile.user_id,
       display_name: profile.display_name,

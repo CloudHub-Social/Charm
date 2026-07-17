@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use ts_rs::TS;
 
-use super::{persistence, sync, MatrixState};
+use super::{persistence, sync, MatrixState, ReservedTempStoreGuard};
 
 /// The `charm://` deep-link the homeserver's SSO flow redirects back to with
 /// a `loginToken` query param, picked up by a dedicated `onOpenUrl`
@@ -101,6 +101,23 @@ pub async fn login(
     // motivated this: `POST /api/auth/login` showed a p75 of ~84s in the web
     // build's traces, with nothing on the Tauri side to compare it against.
     crate::observability_trace::traced("login", "matrix.auth", async move {
+        // Held for this whole closure, not just around `relocate_store_and_
+        // save_session` further down (Codex review on #288, P1): the startup
+        // orphan-temp-store sweep (`lib.rs`'s `.setup()`) now runs as a
+        // spawned background task rather than blocking window creation, so
+        // it can still be mid-`sweep_orphan_temp_stores` when this command's
+        // temp store gets created below — without serializing against it for
+        // the *entire* window this store exists unprotected (creation
+        // through relocation), the sweep's single-pass `read_dir` could
+        // still observe and delete this login's brand-new `tmp-*` directory
+        // sometime after creation but before it's relocated to a permanent
+        // account-key path, since the sweep has no way to distinguish
+        // "orphaned by a crash" from "a login in progress right now." The
+        // previous synchronous-setup path couldn't race a UI-initiated login
+        // by construction (the window wasn't interactive yet); this restores
+        // that same guarantee for the async path.
+        let _restore_store_guard = restore_store_lock().lock().await;
+
         // The account's MXID isn't known for certain until login succeeds (the
         // homeserver, not the client, has final say over the resolved server
         // name), so this opens a temp store like SSO/QR and relocates it to the
@@ -216,6 +233,24 @@ pub async fn try_restore_session(
     app: AppHandle,
     state: State<'_, MatrixState>,
 ) -> Result<Option<LoginResponse>, String> {
+    // Must happen *before* taking `restore_store_lock` below, not after:
+    // the background startup sweep takes that same lock for its own
+    // duration, so waiting on the sweep while already holding it would
+    // deadlock the two against each other. Bounded — see
+    // `wait_for_startup_sweep`'s doc comment (Codex review on #288, P1):
+    // `known_account_keys` below skips a not-yet-recovered stale-backup
+    // directory entirely, so this restore could otherwise run ahead of the
+    // sweep's recovery pass and wrongly treat a perfectly restorable
+    // account as having no store at all. 30s, not a tighter bound: the
+    // frontend calls this exactly once at startup (`App.tsx`), with no
+    // retry if it times out — a slow disk or an install with many
+    // stranded temp stores taking longer than a short bound would
+    // otherwise show a real, restorable session as logged out (Codex
+    // review on #288, P2). The bound exists only to protect against the
+    // sweep task panicking outright (its only other way to never signal
+    // completion), not to cap ordinary slowness.
+    persistence::wait_for_startup_sweep(std::time::Duration::from_secs(30)).await;
+
     // Held for the whole restore attempt: without this, a startup restore
     // building a client against `account_key`'s store could overlap an
     // interactive login relocating that same store — on Windows this can
@@ -223,8 +258,19 @@ pub async fn try_restore_session(
     // the store open), and either platform could end up publishing a
     // client backed by a store that's since been superseded. See
     // `MatrixState::login_completion_lock`'s doc comment.
-    let _completion_guard = state.login_completion_lock.lock().await;
+    //
+    // Acquired in this order — `restore_store_lock` before
+    // `login_completion_lock` — to match `login`/`register`/`handle_push`:
+    // `login`/`register` hold `restore_store_lock` from before the
+    // account's MXID is even known through the whole homeserver round trip,
+    // only taking `login_completion_lock` afterward. Taking these two in
+    // the reverse order here would be the identical ABBA deadlock already
+    // fixed between `login`/`register` and `handle_push` (Codex review on
+    // #288, P1) — a login in flight holding `restore_store_lock` while
+    // waiting on `login_completion_lock`, racing this restore holding
+    // `login_completion_lock` while waiting on `restore_store_lock`.
     let _restore_store_guard = restore_store_lock().lock().await;
+    let _completion_guard = state.login_completion_lock.lock().await;
 
     // Which account (if any) has a session worth restoring isn't known
     // up front — iterate every account this install has a store for and
@@ -527,6 +573,12 @@ pub async fn register(
     state: State<'_, MatrixState>,
     request: RegisterRequest,
 ) -> Result<LoginResponse, String> {
+    // Same rationale as `login`'s identical guard (Codex review on #288,
+    // P1): held for this whole function so the startup orphan-temp-store
+    // sweep can't delete this registration's temp store out from under it
+    // between creation and relocation.
+    let _restore_store_guard = restore_store_lock().lock().await;
+
     // Same rationale as `login`: the account isn't certain until
     // registration succeeds, so this opens a temp store and relocates it.
     let temp_key = persistence::temp_store_key();
@@ -667,15 +719,28 @@ pub async fn start_sso_login(
     // `loginToken` — open a temp store now and relocate it in
     // `complete_sso_login` once the MXID is known.
     let store_key = persistence::temp_store_key();
+    // See `MatrixState::ReservedTempStoreGuard`'s doc comment (Codex review
+    // on #288, P2): reserved before the two `.await`s below (client build,
+    // login-URL fetch) so the delayed sweep pass can't see this store as
+    // unprotected for however long that network setup takes — `pending_sso`
+    // itself isn't set until after both succeed.
+    let reservation = ReservedTempStoreGuard::new(&state, store_key.clone());
     let client = build_client(&app, &homeserver_url, &store_key).await?;
     let attempt_state = generate_sso_state();
     let sso_url = get_sso_login_url(&client, &attempt_state).await?;
 
+    // Publish to `pending_sso` *before* defusing the reservation, not after
+    // (Codex review on #288, P2): defusing first would leave a gap between
+    // that call and this one (an `.await` for the lock apart) where the key
+    // was protected by neither set, exactly the race
+    // `ReservedTempStoreGuard` exists to close. This order means the
+    // reservation is still live for the whole handoff.
     let previous = state.pending_sso.lock().await.replace(PendingSso {
         client,
         state: attempt_state,
         store_key,
     });
+    reservation.defuse();
     // A double-start (e.g. a double click) would otherwise overwrite the
     // previous attempt's `PendingSso` without ever discarding its temp
     // store/passphrase — same leak `cancel_sso_login` guards against, just
@@ -796,6 +861,46 @@ pub async fn complete_sso_login(
         return Err("SSO callback does not match the pending login attempt".to_string());
     }
     let pending = pending_sso.take().expect("checked Some above");
+
+    // See `MatrixState::completing_sso_temp_store_keys`'s doc comment
+    // (Codex review on #288, P2): tracks this store as still in flight from
+    // here through every exit path below, closing the window `pending_sso`
+    // being cleared just above would otherwise leave for the delayed sweep
+    // pass to race. `struct`+`Drop`, not a `defer!`-style macro (this crate
+    // has none) — removes itself on every return, including the early ones,
+    // without needing a matching cleanup call at each site.
+    //
+    // Inserted here — *before* `drop(pending_sso)` below, still holding
+    // that lock — not after it, which left an identical handoff gap one
+    // level down: releasing the `pending_sso` guard can wake a sweep
+    // waiting on that same lock on another worker thread, and if this
+    // insertion hadn't happened yet, the sweep would see the key in
+    // neither set (Codex review on #288, P2, same finding as
+    // `start_sso_login`'s ordering fix, now applied to this function's own
+    // internal handoff).
+    struct SsoCompletionGuard<'a> {
+        matrix_state: &'a MatrixState,
+        store_key: String,
+    }
+    impl Drop for SsoCompletionGuard<'_> {
+        fn drop(&mut self) {
+            self.matrix_state
+                .completing_sso_temp_store_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&self.store_key);
+        }
+    }
+    state
+        .completing_sso_temp_store_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(pending.store_key.clone());
+    let _completing_guard = SsoCompletionGuard {
+        matrix_state: &state,
+        store_key: pending.store_key.clone(),
+    };
+
     drop(pending_sso);
     let client = pending.client;
 

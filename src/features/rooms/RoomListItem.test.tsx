@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RoomListItem } from "./RoomListItem";
+import { RoomListItem, roomListItemPropsEqual } from "./RoomListItem";
 import { makeRoomSummary } from "./testFixtures";
 import { showUnreadCountsAtom } from "@/features/appearance/atoms";
 import { featureFlagTestHooks } from "@/featureFlags";
@@ -361,5 +361,93 @@ describe("RoomListItem", () => {
       expect(preview).toHaveClass("truncate");
       expect(preview).toHaveTextContent(longText);
     });
+  });
+});
+
+describe("roomListItemPropsEqual", () => {
+  const baseProps = { room, active: false, onSelect: () => {} };
+
+  it("treats identical props as equal", () => {
+    expect(roomListItemPropsEqual(baseProps, baseProps)).toBe(true);
+  });
+
+  it("treats a different active flag as unequal", () => {
+    expect(roomListItemPropsEqual(baseProps, { ...baseProps, active: true })).toBe(false);
+  });
+
+  it("treats a different style reference as unequal, even with equivalent content", () => {
+    const prev = { ...baseProps, style: { zIndex: 1 } };
+    const next = { ...baseProps, style: { zIndex: 1 } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("treats the same style reference as equal", () => {
+    const style = { zIndex: 1 };
+    expect(roomListItemPropsEqual({ ...baseProps, style }, { ...baseProps, style })).toBe(true);
+  });
+
+  it("treats a different dragHandleProps reference as unequal", () => {
+    const prev = { ...baseProps, dragHandleProps: { "data-foo": 1 } };
+    const next = { ...baseProps, dragHandleProps: { "data-foo": 1 } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("short-circuits to equal when both room objects are the same reference", () => {
+    expect(roomListItemPropsEqual(baseProps, { ...baseProps })).toBe(true);
+  });
+
+  it("treats a fresh room object with identical fields as equal", () => {
+    const prev = { ...baseProps, room: { ...room } };
+    const next = { ...baseProps, room: { ...room } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(true);
+  });
+
+  it.each([
+    ["room_id", { room_id: "!different:localhost" }],
+    ["name", { name: "Different name" }],
+    ["avatar_path", { avatar_path: "/different.png" }],
+    ["avatar_url", { avatar_url: "mxc://different" }],
+    ["is_direct", { is_direct: !room.is_direct }],
+    ["dm_peer_user_id", { dm_peer_user_id: "@different:localhost" }],
+    ["is_marked_unread", { is_marked_unread: !room.is_marked_unread }],
+    ["has_unread", { has_unread: !room.has_unread }],
+    ["unread_count", { unread_count: room.unread_count + 1 }],
+    ["unread_messages", { unread_messages: room.unread_messages + 1 }],
+    ["is_muted", { is_muted: !room.is_muted }],
+    ["is_favourite", { is_favourite: !room.is_favourite }],
+    ["is_low_priority", { is_low_priority: !room.is_low_priority }],
+  ] as const)("treats a changed room.%s as unequal", (_field, override) => {
+    const prev = { ...baseProps, room: { ...room, ...override } };
+    const next = { ...baseProps, room: { ...room } };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it.each([
+    ["sender_id", { sender_id: "@different:localhost" }],
+    ["sender_display_name", { sender_display_name: "Different" }],
+    ["text", { text: "different text" }],
+  ] as const)("treats a changed last_message_preview.%s as unequal", (_field, override) => {
+    const preview = { sender_id: "@a:localhost", sender_display_name: "A", text: "hi" };
+    const prev = {
+      ...baseProps,
+      room: { ...room, last_message_preview: preview },
+    };
+    const next = {
+      ...baseProps,
+      room: { ...room, last_message_preview: { ...preview, ...override } },
+    };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
+  });
+
+  it("treats null and present last_message_preview as unequal", () => {
+    const prev = { ...baseProps, room: { ...room, last_message_preview: null } };
+    const next = {
+      ...baseProps,
+      room: {
+        ...room,
+        last_message_preview: { sender_id: "@a:localhost", sender_display_name: null, text: "hi" },
+      },
+    };
+    expect(roomListItemPropsEqual(prev, next)).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { BellOff } from "lucide-react";
 import { useAtomValue } from "jotai";
-import type { CSSProperties } from "react";
+import { memo, type CSSProperties } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   ContextMenu,
@@ -37,7 +37,7 @@ interface RoomListItemProps {
   style?: CSSProperties;
 }
 
-export function RoomListItem({
+function RoomListItemImpl({
   room,
   active,
   onSelect,
@@ -190,3 +190,52 @@ export function RoomListItem({
     </ContextMenu>
   );
 }
+
+/**
+ * `RoomList` isn't virtualized (its drag-to-reorder gesture measures every
+ * row's actual DOM height to compute a drop target, which needs every row
+ * mounted — see `roomSections.targetIndexFromMeasuredHeights`), so every row
+ * re-renders on any `RoomList` state change unless memoized here.
+ *
+ * Custom comparator, not a bare `memo(...)`: `room` is a fresh `RoomSummary`
+ * object on every `room_list:update` snapshot even when nothing about *this*
+ * room actually changed (the backend snapshots the whole list every sync
+ * tick), so comparing by reference would never skip a re-render. Compares
+ * only the fields this component actually reads. Callback props
+ * (`onSelect`/`onToggleFavourite`/etc.) are deliberately excluded: `RoomList`
+ * creates fresh closures for them on every render regardless of whether
+ * their captured values changed, but a fresh closure with the same behavior
+ * is not a reason to re-render this row — comparing them would defeat the
+ * memoization entirely.
+ */
+// Exported for direct unit testing of the comparator's branches — see
+// RoomListItem.test.tsx. Not otherwise part of this module's public API.
+export function roomListItemPropsEqual(prev: RoomListItemProps, next: RoomListItemProps): boolean {
+  if (prev.active !== next.active) return false;
+  if (prev.style !== next.style) return false;
+  if (prev.dragHandleProps !== next.dragHandleProps) return false;
+
+  const a = prev.room;
+  const b = next.room;
+  if (a === b) return true;
+  return (
+    a.room_id === b.room_id &&
+    a.name === b.name &&
+    a.avatar_path === b.avatar_path &&
+    a.avatar_url === b.avatar_url &&
+    a.is_direct === b.is_direct &&
+    a.dm_peer_user_id === b.dm_peer_user_id &&
+    a.is_marked_unread === b.is_marked_unread &&
+    a.has_unread === b.has_unread &&
+    a.unread_count === b.unread_count &&
+    a.unread_messages === b.unread_messages &&
+    a.is_muted === b.is_muted &&
+    a.is_favourite === b.is_favourite &&
+    a.is_low_priority === b.is_low_priority &&
+    a.last_message_preview?.sender_id === b.last_message_preview?.sender_id &&
+    a.last_message_preview?.sender_display_name === b.last_message_preview?.sender_display_name &&
+    a.last_message_preview?.text === b.last_message_preview?.text
+  );
+}
+
+export const RoomListItem = memo(RoomListItemImpl, roomListItemPropsEqual);

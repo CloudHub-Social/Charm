@@ -2,7 +2,7 @@ import { useAtomValue } from "jotai";
 import { useDrag } from "@use-gesture/react";
 import { MoonIcon, SearchIcon, SettingsIcon } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -210,6 +210,57 @@ export function RoomList({
     () => new Set(scopedRooms.map((room) => room.room_id)),
     [scopedRooms],
   );
+  // `roomListItemPropsEqual` deliberately excludes callback props from its
+  // comparison (RoomList creates fresh closures every render regardless of
+  // whether captured values changed, so comparing them would defeat the
+  // memoization entirely). That's safe as long as a stale closure still
+  // *behaves* correctly if React skips a re-render and reuses it — which a
+  // closure over `scopedRoomIds`/`onSelectSearchResult` directly would not:
+  // a search result row could stay memoized across a scope change and fire
+  // the wrong branch on click (Codex review on #288, P2). Refs sidestep
+  // this: any closure created from `handleSelectSearchResult`, however old,
+  // always reads the current scope when it's actually invoked.
+  //
+  // Resolving by `room_id` through `roomByIdRef` (rather than trusting the
+  // `RoomSummary` object baked into a search-result row's `onSelect`
+  // closure) closes a related staleness gap Codex re-flagged after the
+  // above fix (comments 3599666130/3599749219): `roomListItemPropsEqual`
+  // doesn't compare `parent_space_ids` (unbounded-length array, not a cheap
+  // per-field check like the rest), so a memoized row can survive a sync
+  // update that changes it — and `onSelectSearchResult`
+  // (`selectRoomInVisibleMode`) reads exactly that field to decide whether
+  // to land on Home or a space. The stale closure still fires the right
+  // *branch* now (scope check is ref-backed above), but was still handing
+  // that branch a possibly-outdated room. Looking it up fresh here means
+  // even a maximally stale closure always acts on current routing data.
+  const roomByIdRef = useRef(roomById);
+  roomByIdRef.current = roomById;
+  const scopedRoomIdsRef = useRef(scopedRoomIds);
+  scopedRoomIdsRef.current = scopedRoomIds;
+  const onSelectSearchResultRef = useRef(onSelectSearchResult);
+  onSelectSearchResultRef.current = onSelectSearchResult;
+  // `onSelectRoom` ref-backed too (Sentry review, LOW): not observably
+  // buggy today since `selectRoom` doesn't currently close over anything
+  // that changes between renders, but it's the same fragile pattern this
+  // callback already guards against for its other captures, and a stale
+  // reference here was simply overlooked rather than deliberate.
+  const onSelectRoomRef = useRef(onSelectRoom);
+  onSelectRoomRef.current = onSelectRoom;
+  const handleSelectSearchResult = useCallback((roomId: string) => {
+    const inScope = scopedRoomIdsRef.current.has(roomId);
+    if (!inScope && onSelectSearchResultRef.current) {
+      // `roomById` only indexes joined rooms (see its definition above),
+      // which is exactly this callback's domain — an out-of-scope search
+      // result being switched to must already be joined, or there'd be no
+      // scope for `onSelectSearchResult` to switch into.
+      const current = roomByIdRef.current.get(roomId);
+      if (current) onSelectSearchResultRef.current(current);
+    } else {
+      onSelectRoomRef.current(roomId);
+    }
+    setSearchQuery("");
+    setSearchEverywhere(false);
+  }, []);
   const visibleScopedRooms = useMemo(
     () => (unreadOnly ? filterRoomsToUnread(scopedRooms, activeRoomId) : scopedRooms),
     [unreadOnly, scopedRooms, activeRoomId],
@@ -415,24 +466,15 @@ export function RoomList({
         key={room.room_id}
         room={room}
         active={room.room_id === activeRoomId}
-        onSelect={() => {
-          const inScope = scopedRoomIds.has(room.room_id);
-          if (!inScope && onSelectSearchResult) {
-            onSelectSearchResult(room);
-          } else {
-            onSelectRoom(room.room_id);
-          }
-          // Clear search state directly here rather than relying solely on
-          // the mode/selectedSpaceId reset effect below: `onSelectSearchResult`
-          // can land back on the *same* mode/space (e.g. a space still
-          // loading its hierarchy misjudges an in-scope room as an
-          // out-of-scope result, so `selectRoomInVisibleMode` re-selects the
-          // same space id), which is a no-op state update that never
-          // triggers that effect, leaving the search box and "Search
-          // everywhere" stuck on.
-          setSearchQuery("");
-          setSearchEverywhere(false);
-        }}
+        // Clearing search state here (inside `handleSelectSearchResult`)
+        // rather than relying solely on the mode/selectedSpaceId reset
+        // effect below matters because `onSelectSearchResult` can land back
+        // on the *same* mode/space (e.g. a space still loading its
+        // hierarchy misjudges an in-scope room as an out-of-scope result,
+        // so `selectRoomInVisibleMode` re-selects the same space id), which
+        // is a no-op state update that never triggers that effect, leaving
+        // the search box and "Search everywhere" stuck on.
+        onSelect={() => handleSelectSearchResult(room.room_id)}
         onToggleFavourite={() =>
           setRoomFavourite(room.room_id, !room.is_favourite).catch(logAndIgnore)
         }
@@ -1089,9 +1131,67 @@ function DraggableRoomRow({
     },
   );
 
-  const measureRow = (node: HTMLElement | null) => {
-    if (node) rowHeights.set(room.room_id, node.getBoundingClientRect().height);
-  };
+  // A `ResizeObserver`, not a one-shot read, because this ref callback's
+  // own identity is stable across re-renders (see `dragHandleProps` below)
+  // so React won't re-invoke it when only the row's rendered *content*
+  // changes — e.g. a `last_message_preview` arriving asynchronously and
+  // adding a second line of text (Codex review on #288, P2). The observer
+  // keeps `rowHeights` current regardless of what caused the resize.
+  const measureRow = useCallback(
+    (node: HTMLElement | null) => {
+      if (!node) return undefined;
+      rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+      const observer = new ResizeObserver(() => {
+        rowHeights.set(room.room_id, node.getBoundingClientRect().height);
+      });
+      observer.observe(node);
+      return () => observer.disconnect();
+    },
+    [room.room_id, rowHeights],
+  );
+
+  // Memoized so `RoomListItem`'s memo comparator (which checks these by
+  // reference) can actually skip a re-render when nothing relevant changed
+  // (Codex review on #288, P2) — an inline object literal here would be a
+  // fresh reference on every `RoomList` render regardless, defeating that
+  // comparator for every row in the main, non-virtualized list.
+  //
+  // `bind` deliberately excluded from the deps array (Sentry review on
+  // #288): `useDrag` returns a *new* bound function every render
+  // (`ctrl.bind.bind(ctrl)` in `@use-gesture/react`'s `useRecognizers`), so
+  // including it here would recompute this memo — and therefore defeat the
+  // downstream `React.memo` — on every single render, exactly the bug this
+  // memoization exists to prevent. `canReorder` (the one config value that
+  // actually varies — `axis`/`filterTaps` below are fixed literals) stands
+  // in for it instead: the gesture handler itself always dispatches through
+  // the same persistent `Controller` instance regardless of which render's
+  // `bind()` produced the specific function in hand (`ctrl.applyHandlers`/
+  // `ctrl.applyConfig` re-apply this render's closure unconditionally,
+  // before `useRecognizers` ever returns), so a "stale" handler is still
+  // behaviorally current — but `bind()`'s *returned props themselves* can
+  // embed config-derived values (the mocked `data-reorder-enabled` in
+  // `RoomList.test.tsx` stands in for this; verified against a regression
+  // there), which a reused call would freeze at whatever `canReorder` was
+  // on the render that produced it. Recomputing only when `canReorder`
+  // itself changes keeps both correct: memoized across unrelated
+  // re-renders, refreshed exactly when the value it's derived from does.
+  const dragHandleProps = useMemo(
+    () => ({ ...bind(), ref: measureRow }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `bind` deliberately omitted, see comment above
+    [canReorder, measureRow],
+  );
+  const style = useMemo(
+    () => ({
+      transform: dragging ? `translateY(${dragOffset}px)` : undefined,
+      position: dragging ? ("relative" as const) : undefined,
+      zIndex: dragging ? 10 : undefined,
+      // Only opt out of touch scrolling while a drag is actually in
+      // progress — applying this unconditionally would swallow a normal
+      // vertical scroll gesture that merely starts on a room row.
+      touchAction: dragging ? "none" : undefined,
+    }),
+    [dragging, dragOffset],
+  );
 
   return (
     <RoomListItem
@@ -1112,16 +1212,8 @@ function DraggableRoomRow({
       onMarkRead={() => markRoomRead(room.room_id).catch(logAndIgnore)}
       onMarkUnread={() => setRoomMarkedUnread(room.room_id, true).catch(logAndIgnore)}
       onRemoveFromSpace={onRemoveFromSpace}
-      dragHandleProps={{ ...bind(), ref: measureRow }}
-      style={{
-        transform: dragging ? `translateY(${dragOffset}px)` : undefined,
-        position: dragging ? "relative" : undefined,
-        zIndex: dragging ? 10 : undefined,
-        // Only opt out of touch scrolling while a drag is actually in
-        // progress — applying this unconditionally would swallow a normal
-        // vertical scroll gesture that merely starts on a room row.
-        touchAction: dragging ? "none" : undefined,
-      }}
+      dragHandleProps={dragHandleProps}
+      style={style}
     />
   );
 }
