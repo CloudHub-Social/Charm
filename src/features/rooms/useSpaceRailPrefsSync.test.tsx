@@ -241,4 +241,43 @@ describe("useSpaceRailPrefsSync", () => {
     await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(2));
     expect(writeOrder).toEqual(["first-started", "first-resolved", "second-started"]);
   });
+
+  it("does not make account B's write wait behind account A's still-pending write", async () => {
+    getAccountData.mockResolvedValue(null);
+    let resolveAccountAWrite: () => void = () => {};
+    setAccountData.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveAccountAWrite = resolve;
+        }),
+    );
+    setAccountData.mockImplementationOnce(() => Promise.resolve());
+
+    const { result, rerender } = renderWithAccountSwitch("@account-a:localhost");
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(1));
+
+    // Account A makes an edit; its write never settles (simulating high
+    // latency), then the user switches accounts before it does.
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!account-a-space:localhost"] });
+    });
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(1));
+
+    rerender({ userId: "@account-b:localhost" });
+    await waitFor(() => expect(getAccountData).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!account-b-space:localhost"] });
+    });
+    // Account B's write must not be blocked on account A's still-pending
+    // one — the write queue was re-armed on the account switch, so it fires
+    // immediately rather than waiting for `resolveAccountAWrite`.
+    await waitFor(() => expect(setAccountData).toHaveBeenCalledTimes(2));
+    expect(setAccountData).toHaveBeenLastCalledWith("social.cloudhub.charm.space_rail_prefs", {
+      order: [],
+      unpinned: ["!account-b-space:localhost"],
+    });
+
+    resolveAccountAWrite();
+  });
 });

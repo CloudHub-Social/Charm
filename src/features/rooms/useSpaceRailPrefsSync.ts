@@ -56,6 +56,14 @@ export function useSpaceRailPrefsSync(userId: string) {
     // data until *this* account's own read has resolved.
     loadedRef.current = false;
     dirtySinceLoadStartRef.current = false;
+    // Also re-arm the write queue: without this, a write still queued
+    // behind a slow previous-account request would run its
+    // `setAccountData` call only once that earlier write settles — by which
+    // point the signed-in session may already belong to this new account,
+    // so the stale write could land in the wrong account's data. Starting a
+    // fresh queue here means any write from here on is chained only behind
+    // other writes for *this* account.
+    writeQueueRef.current = Promise.resolve();
     let cancelled = false;
     getAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE)
       .then((remote) => {
