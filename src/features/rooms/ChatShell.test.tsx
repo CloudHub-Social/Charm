@@ -3309,12 +3309,14 @@ describe("ChatShell", () => {
     // P3).
     const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
     let resolveRoomBCheck: ((allowed: boolean) => void) | undefined;
-    canRedactOthers.mockImplementationOnce(() => Promise.resolve(true)).mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveRoomBCheck = resolve;
-        }),
-    );
+    canRedactOthers
+      .mockImplementationOnce(() => Promise.resolve(true))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveRoomBCheck = resolve;
+          }),
+      );
     getTimelinePage
       .mockResolvedValueOnce({
         messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "in room A" })],
