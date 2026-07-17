@@ -185,6 +185,37 @@ describe("useSpaceRailPrefsSync", () => {
     expect(result.current[0]).toEqual({ order: [], unpinned: ["!local-edit:localhost"] });
   });
 
+  it("flushes an edit made before the initial read settles once loading finishes", async () => {
+    let resolveRead: (value: unknown) => void = () => {};
+    getAccountData.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveRead = resolve;
+      }),
+    );
+
+    const { result } = renderWithStore();
+
+    // The user pins/unpins before the account-data read has resolved — the
+    // mirror-write effect bails out here since `loadedRef` isn't true yet.
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!cold-start-edit:localhost"] });
+    });
+    expect(setAccountData).not.toHaveBeenCalled();
+
+    act(() => {
+      resolveRead(null);
+    });
+
+    // The edit must reach account data once loading completes, even though
+    // `prefs` itself didn't change again after the read settled.
+    await waitFor(() =>
+      expect(setAccountData).toHaveBeenCalledWith("social.cloudhub.charm.space_rail_prefs", {
+        order: [],
+        unpinned: ["!cold-start-edit:localhost"],
+      }),
+    );
+  });
+
   it("applies the remote value when no local edit happened during the read", async () => {
     let resolveRead: (value: unknown) => void = () => {};
     getAccountData.mockReturnValueOnce(

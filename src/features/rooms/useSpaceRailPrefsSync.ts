@@ -40,6 +40,31 @@ export function useSpaceRailPrefsSync(userId: string) {
   // rapid local change (e.g. clicking Move up/down repeatedly) let an older
   // request that happened to arrive later silently overwrite a newer one.
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Mirrors `prefs`/`userId` on every render (not just in an effect) so a
+  // write queued for one account can check, at the moment it actually runs,
+  // whether the session has since moved to a different account and bail —
+  // resetting `writeQueueRef` on switch only stops *future* writes from
+  // chaining behind a slow one, it doesn't stop an already-queued write's
+  // own `.then()` continuation from firing late.
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+  const latestUserIdRef = useRef(userId);
+  latestUserIdRef.current = userId;
+
+  const queueWrite = useCallback((forUserId: string, value: SpaceRailPrefs) => {
+    writeQueueRef.current = writeQueueRef.current.then(async () => {
+      if (latestUserIdRef.current !== forUserId) return;
+      try {
+        await setAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE, value satisfies SpaceRailPrefs);
+      } catch {
+        // Best-effort — the local write already succeeded via the atom's
+        // own storage effect; a failed remote mirror just means this
+        // device's change won't show up elsewhere until the next
+        // successful write. Caught here (not left to reject the queue)
+        // so one failed write doesn't permanently stall every write after it.
+      }
+    });
+  }, []);
 
   const setPrefs = useCallback<SetSpaceRailPrefs>(
     (update) => {
@@ -77,7 +102,19 @@ export function useSpaceRailPrefsSync(userId: string) {
         // until the next successful sync.
       })
       .finally(() => {
-        if (!cancelled) loadedRef.current = true;
+        if (cancelled) return;
+        loadedRef.current = true;
+        if (dirtySinceLoadStartRef.current) {
+          // A local edit already landed while this read was still in
+          // flight (and was correctly kept above, not clobbered) — but the
+          // mirror-write effect below bailed out on that edit's own render
+          // because `loadedRef` wasn't true yet, and its `[prefs]` deps
+          // won't fire again on their own since `prefs` hasn't changed
+          // since. Flush that edit out explicitly now that writes are
+          // allowed, so a cold-start edit doesn't stay local-only until the
+          // user happens to make a second change.
+          queueWrite(userId, prefsRef.current);
+        }
       });
     return () => {
       cancelled = true;
@@ -93,18 +130,9 @@ export function useSpaceRailPrefsSync(userId: string) {
     // would race the read and could clobber a remote value with the local
     // (possibly stale, possibly just-reset-to-default) cache.
     if (!loadedRef.current) return;
-    writeQueueRef.current = writeQueueRef.current.then(() =>
-      setAccountData(SPACE_RAIL_PREFS_ACCOUNT_DATA_TYPE, prefs satisfies SpaceRailPrefs).catch(
-        () => {
-          // Best-effort — the local write already succeeded via the atom's
-          // own storage effect; a failed remote mirror just means this
-          // device's change won't show up elsewhere until the next
-          // successful write. Caught here (not left to reject the queue)
-          // so one failed write doesn't permanently stall every write after it.
-        },
-      ),
-    );
-  }, [prefs]);
+    queueWrite(userId, prefs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs, userId]);
 
   return [prefs, setPrefs] as const;
 }
