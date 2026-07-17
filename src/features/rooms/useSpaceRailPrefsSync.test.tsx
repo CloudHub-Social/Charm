@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
+import { StrictMode } from "react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as MatrixLib from "@/lib/matrix";
@@ -362,5 +363,34 @@ describe("useSpaceRailPrefsSync", () => {
     // session under a new user id) must never see a write land from the
     // unmounted instance.
     expect(setAccountData).toHaveBeenCalledTimes(1);
+  });
+
+  it("still writes after React.StrictMode's dev-only double-invoke of the unmount-guard effect", async () => {
+    getAccountData.mockResolvedValue(null);
+    const store = createStore();
+    const strictModeWrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>
+        <Provider store={store}>{children}</Provider>
+      </StrictMode>
+    );
+    // StrictMode intentionally runs every effect's setup -> cleanup ->
+    // setup once on a real mount (dev only) — without re-arming
+    // `unmountedRef` on setup, that first synthetic cleanup would strand it
+    // at `true` for the component's entire real lifetime.
+    const { result } = renderHook(() => useSpaceRailPrefsSync(TEST_USER_ID), {
+      wrapper: strictModeWrapper,
+    });
+    await waitFor(() => expect(getAccountData).toHaveBeenCalled());
+
+    act(() => {
+      result.current[1]({ order: [], unpinned: ["!after-strict-mode:localhost"] });
+    });
+
+    await waitFor(() =>
+      expect(setAccountData).toHaveBeenCalledWith("social.cloudhub.charm.space_rail_prefs", {
+        order: [],
+        unpinned: ["!after-strict-mode:localhost"],
+      }),
+    );
   });
 });

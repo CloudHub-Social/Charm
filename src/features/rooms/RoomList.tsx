@@ -81,6 +81,11 @@ interface RoomListProps {
   onShowAllRoomsChange: (showAll: boolean) => void;
   onAcceptInvite?: (roomId: string) => Promise<void>;
   onDeclineInvite?: (roomId: string) => Promise<void>;
+  /** Bumped by the caller after "Add Existing" (owned by a sibling
+   * `SpaceRail`) files a room/space under the selected space — the open
+   * lobby's own `/hierarchy` fetch below doesn't otherwise know a mutation
+   * happened, since `mode`/`selectedSpaceId` haven't changed. */
+  hierarchyRefreshToken?: number;
 }
 
 const noopInviteAction = (): Promise<void> => Promise.resolve();
@@ -113,6 +118,7 @@ export function RoomList({
   onShowAllRoomsChange,
   onAcceptInvite = noopInviteAction,
   onDeclineInvite = noopInviteAction,
+  hierarchyRefreshToken,
 }: RoomListProps) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState("");
@@ -136,6 +142,11 @@ export function RoomList({
   const [pendingRoomId, setPendingRoomId] = useState<string | null>(null);
   const [pendingInviteRoomId, setPendingInviteRoomId] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
+  // Space-child mutations aren't power-level-gated in the UI (Remove from
+  // space is offered unconditionally), so a rejection — missing power
+  // level, offline, a since-removed link — is a normal reachable outcome
+  // that needs to be visible, not silently dropped.
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const pendingJoinRoomIdRef = useRef<string | null>(null);
   const currentScopeRef = useRef({ mode, selectedSpaceId: selectedSpace?.room_id ?? null });
   // Rows aren't a fixed height (the message-preview flag grows some rows a
@@ -281,6 +292,34 @@ export function RoomList({
     };
   }, [mode, selectedSpaceId]);
 
+  // `spaceHierarchy` is a point-in-time `/hierarchy` snapshot, not something
+  // Matrix sync keeps current — an `m.space.child` write (Remove from space,
+  // Add Existing) doesn't retrigger the effect above on its own, since
+  // `mode`/`selectedSpaceId` haven't changed. Called after those mutations
+  // settle so the open lobby's row list reflects the edit immediately
+  // instead of only after the user navigates away and back.
+  function refetchSpaceHierarchy() {
+    if (mode !== "space" || !selectedSpaceId) return;
+    listSpaceHierarchy(selectedSpaceId)
+      .then((result) => setSpaceHierarchy(result))
+      .catch(logAndIgnore);
+  }
+
+  // `hierarchyRefreshToken` is the "Add Existing" side of the same gap —
+  // owned by a sibling `SpaceRail`, so it can't call `refetchSpaceHierarchy`
+  // directly; the caller bumps this token instead. Skips the very first run
+  // (the mount-time fetch effect above already covers that) so mounting
+  // already in space mode doesn't fire a redundant duplicate fetch.
+  const hierarchyRefreshMountedRef = useRef(false);
+  useEffect(() => {
+    if (!hierarchyRefreshMountedRef.current) {
+      hierarchyRefreshMountedRef.current = true;
+      return;
+    }
+    refetchSpaceHierarchy();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hierarchyRefreshToken]);
+
   // A query typed in one context (Home, DMs, a specific space) shouldn't
   // silently keep filtering an unrelated one after the user switches scope —
   // `RoomList` isn't remounted on a mode/space change, so its local search
@@ -327,7 +366,12 @@ export function RoomList({
           mode === "space" &&
           selectedSpaceId &&
           room.parent_space_ids.includes(selectedSpaceId)
-            ? () => removeSpaceChild(selectedSpaceId, room.room_id).catch(logAndIgnore)
+            ? () => {
+                setRemoveError(null);
+                removeSpaceChild(selectedSpaceId, room.room_id).catch((err) =>
+                  setRemoveError(err instanceof Error ? err.message : String(err)),
+                );
+              }
             : undefined
         }
       />
@@ -660,6 +704,11 @@ export function RoomList({
               {(spaceError || joinError) && (
                 <p className="px-3 py-2 text-sm text-destructive">{spaceError ?? joinError}</p>
               )}
+              {removeError && (
+                <p role="alert" className="px-3 py-2 text-sm text-destructive">
+                  {removeError}
+                </p>
+              )}
               <RoomListSection
                 title="Invites"
                 count={invitedRooms.length}
@@ -702,6 +751,8 @@ export function RoomList({
                       onJoin: handleJoin,
                       pendingRoomId,
                       spaceManagementEnabled: spaceRailManagementEnabled,
+                      onRemoved: refetchSpaceHierarchy,
+                      onRemoveError: setRemoveError,
                     },
                     selectedSpace.room_id,
                   )}
@@ -816,6 +867,14 @@ function renderHierarchy(
      * gated behind, since this is the counterpart to its `Remove` for
      * sub-space rows. */
     spaceManagementEnabled: boolean;
+    /** Called after a successful removal — `spaceHierarchy` is a point-in-time
+     * snapshot Matrix sync doesn't keep current, so the caller needs to
+     * explicitly refetch it for the removed row to disappear immediately. */
+    onRemoved: () => void;
+    /** Called with a message when a removal is rejected (e.g. missing power
+     * level) — this action isn't power-level-gated in the UI, so a rejection
+     * is a normal reachable outcome that needs to be visible. */
+    onRemoveError: (message: string) => void;
   },
   /** The id of the space each node in `nodes` is a direct child of — root
    * spaces are children of the currently selected space; recursing into a
@@ -843,7 +902,12 @@ function renderHierarchy(
         onJoin={options.onJoin}
         onRemoveFromSpace={
           options.spaceManagementEnabled && !node.child.is_space
-            ? () => removeSpaceChild(parentSpaceId, node.child.room_id).catch(logAndIgnore)
+            ? () =>
+                removeSpaceChild(parentSpaceId, node.child.room_id)
+                  .then(options.onRemoved)
+                  .catch((err) =>
+                    options.onRemoveError(err instanceof Error ? err.message : String(err)),
+                  )
             : undefined
         }
       />,

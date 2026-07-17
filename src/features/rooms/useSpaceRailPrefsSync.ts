@@ -67,6 +67,14 @@ export function useSpaceRailPrefsSync(userId: string) {
   // account's prefs into whatever account is signed in by the time it runs.
   const unmountedRef = useRef(false);
   useEffect(() => {
+    // Re-arm on every (re-)mount, not just via the `useRef(false)` initial
+    // value — React 18 StrictMode (see `src/main.tsx`) double-invokes this
+    // effect in development, running setup -> cleanup -> setup again on a
+    // single real mount. Without resetting here, that first synthetic
+    // cleanup would permanently strand `unmountedRef.current` at `true` and
+    // silently block every future write for the rest of the component's
+    // actual lifetime.
+    unmountedRef.current = false;
     return () => {
       unmountedRef.current = true;
     };

@@ -13,6 +13,11 @@ interface AddExistingToSpaceDialogProps {
    * target space itself, its ancestors, and its current direct children. */
   excludedIds: Set<string>;
   onOpenChange: (open: boolean) => void;
+  /** Called after a successful add — lets a space's open lobby (whose room
+   * list is a separately-fetched `/hierarchy` snapshot, not something Matrix
+   * sync keeps current) refresh immediately instead of only after the user
+   * navigates away and back. */
+  onAdded?: () => void;
 }
 
 /** Spec 63's "Add Existing" flow: file an already-joined room or space under
@@ -23,6 +28,7 @@ export function AddExistingToSpaceDialog({
   rooms,
   excludedIds,
   onOpenChange,
+  onAdded,
 }: AddExistingToSpaceDialogProps) {
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -65,6 +71,7 @@ export function AddExistingToSpaceDialog({
     setPendingId(childRoomId);
     try {
       await addExistingSpaceChild(spaceId, childRoomId);
+      onAdded?.();
       handleClose(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

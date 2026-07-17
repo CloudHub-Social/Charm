@@ -419,6 +419,116 @@ describe("RoomList", () => {
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child:localhost");
   });
 
+  it("refetches the space hierarchy after a successful Remove from space, so the row disappears immediately", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    const hierarchyWithChild = [
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite" as const,
+          is_space: false,
+        },
+        children: [],
+      },
+    ];
+    listSpaceHierarchy.mockResolvedValueOnce(hierarchyWithChild).mockResolvedValueOnce([]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("Team chat")).not.toBeInTheDocument());
+  });
+
+  it("surfaces an error instead of failing silently when Remove from space is rejected", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    removeSpaceChild.mockRejectedValueOnce(new Error("insufficient power level"));
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("insufficient power level");
+  });
+
+  it("refetches the space hierarchy after Add Existing adds a room, via the hierarchyRefreshToken prop", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    listSpaceHierarchy.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        child: {
+          room_id: "!new-child:localhost",
+          name: "Newly added",
+          topic: null,
+          num_joined_members: 1,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    const store = createStore();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const withToken = (hierarchyRefreshToken: number) => (
+      <Provider store={store}>
+        <QueryClientProvider client={client}>
+          <RoomList
+            {...roomListProps({
+              rooms: [space],
+              mode: "space",
+              selectedSpace: space,
+              hierarchyRefreshToken,
+            })}
+          />
+        </QueryClientProvider>
+      </Provider>
+    );
+    const { rerender } = render(withToken(0));
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(1));
+
+    rerender(withToken(1));
+
+    await waitFor(() => expect(listSpaceHierarchy).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Newly added")).toBeInTheDocument();
+  });
+
   it("does not offer Remove from space while space_rail_management is off", async () => {
     featureFlagMocks.spaceRailManagement = false;
     const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });

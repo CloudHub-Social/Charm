@@ -51,6 +51,11 @@ interface SpaceRailProps {
   onSelectDms: () => void;
   onSelectSpace: (spaceId: string) => void;
   onCreateJoin: () => void;
+  /** Called after "Add Existing" successfully files a room/space under a
+   * space — lets a sibling `RoomList` showing that space's lobby (a
+   * separately-fetched `/hierarchy` snapshot Matrix sync doesn't keep
+   * current) refresh immediately. */
+  onSpaceChildAdded?: () => void;
 }
 
 export function SpaceRail({
@@ -63,6 +68,7 @@ export function SpaceRail({
   onSelectDms,
   onSelectSpace,
   onCreateJoin,
+  onSpaceChildAdded,
 }: SpaceRailProps) {
   const managementEnabled = useFlag("space_rail_management");
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
@@ -461,6 +467,7 @@ export function SpaceRail({
         onOpenChange={(open) => {
           if (!open) setAddExistingTarget(null);
         }}
+        onAdded={onSpaceChildAdded}
       />
     </TooltipProvider>
   );

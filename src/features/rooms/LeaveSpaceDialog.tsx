@@ -74,7 +74,8 @@ export function LeaveSpaceDialog({
           <DialogTitle>Leave {spaceName ?? "space"}?</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          You'll lose access to any of its private child rooms and need a new invite to rejoin.
+          You'll keep your membership in any of its rooms you've already joined, but will lose this
+          space's lobby and the ability to join any of its restricted rooms you haven't joined yet.
         </p>
         {error && (
           <p role="alert" className="text-sm text-destructive">
