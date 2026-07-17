@@ -26,6 +26,12 @@ interface RoomListItemProps {
   onToggleMuted?: () => void;
   onMarkRead?: () => void;
   onMarkUnread?: () => void;
+  /** Detaches `room` from the space whose lobby this row is rendered in —
+   * only passed when the row is shown inside a space's room list (not Home
+   * or DMs) and `room` is actually a child of that space. This is the
+   * counterpart to `SpaceRail`'s own `Remove from space` action, which only
+   * covers sub-space rows, not regular rooms filed under a space. */
+  onRemoveFromSpace?: () => void;
   /** Spread onto the root element by the drag-reorder gesture in `RoomList.tsx`. */
   dragHandleProps?: Record<string, unknown>;
   style?: CSSProperties;
@@ -40,6 +46,7 @@ export function RoomListItem({
   onToggleMuted,
   onMarkRead,
   onMarkUnread,
+  onRemoveFromSpace,
   dragHandleProps,
   style,
 }: RoomListItemProps) {
@@ -141,7 +148,12 @@ export function RoomListItem({
   );
 
   const hasMenuActions =
-    onToggleFavourite || onToggleLowPriority || onToggleMuted || onMarkRead || onMarkUnread;
+    onToggleFavourite ||
+    onToggleLowPriority ||
+    onToggleMuted ||
+    onMarkRead ||
+    onMarkUnread ||
+    onRemoveFromSpace;
   if (!hasMenuActions) {
     return button;
   }
@@ -168,6 +180,12 @@ export function RoomListItem({
         {(onMarkRead || onMarkUnread) && <ContextMenuSeparator />}
         {onMarkRead && <ContextMenuItem onSelect={onMarkRead}>Mark as read</ContextMenuItem>}
         {onMarkUnread && <ContextMenuItem onSelect={onMarkUnread}>Mark as unread</ContextMenuItem>}
+        {onRemoveFromSpace && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={onRemoveFromSpace}>Remove from space</ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );

@@ -208,6 +208,22 @@ describe("RoomListItem", () => {
     expect(onToggleFavourite).toHaveBeenCalledOnce();
   });
 
+  it("opens a context menu with Remove from space when onRemoveFromSpace is provided", async () => {
+    const onRemoveFromSpace = vi.fn();
+    render(
+      <RoomListItem
+        room={room}
+        active={false}
+        onSelect={() => {}}
+        onRemoveFromSpace={onRemoveFromSpace}
+      />,
+    );
+    fireEvent.contextMenu(screen.getByRole("button"));
+    const item = await screen.findByText("Remove from space");
+    fireEvent.click(item);
+    expect(onRemoveFromSpace).toHaveBeenCalledOnce();
+  });
+
   it("renders an avatar image when the room has a resolved avatar_path", async () => {
     vi.stubGlobal("Image", MockImage);
     const { container } = render(

@@ -10,12 +10,14 @@ import { makeRoomSummary } from "./testFixtures";
 const featureFlagMocks = vi.hoisted(() => ({
   roomListUnreadFilter: false,
   roomListMessagePreview: false,
+  spaceRailManagement: false,
 }));
 
 vi.mock("@/featureFlags", () => ({
   useFlag: (key: string) => {
     if (key === "room_list_unread_filter") return featureFlagMocks.roomListUnreadFilter;
     if (key === "room_list_message_preview") return featureFlagMocks.roomListMessagePreview;
+    if (key === "space_rail_management") return featureFlagMocks.spaceRailManagement;
     return false;
   },
 }));
@@ -61,6 +63,7 @@ const setRoomMarkedUnread = vi.fn().mockResolvedValue(undefined);
 const setRoomManualOrder = vi.fn().mockResolvedValue(undefined);
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const listSpaceHierarchy = vi.fn().mockResolvedValue([]);
+const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
 const joinRoom = vi.fn().mockResolvedValue(undefined);
 const knockRoom = vi.fn().mockResolvedValue(undefined);
 // Never resolves — these tests don't care about the header profile chip
@@ -83,6 +86,7 @@ vi.mock("@/lib/matrix", () => ({
   setRoomManualOrder: (...args: unknown[]) => setRoomManualOrder(...args),
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   listSpaceHierarchy: (...args: unknown[]) => listSpaceHierarchy(...args),
+  removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
   joinRoom: (...args: unknown[]) => joinRoom(...args),
   knockRoom: (...args: unknown[]) => knockRoom(...args),
   getOwnProfile: () => getOwnProfile(),
@@ -132,6 +136,7 @@ afterEach(() => {
   localStorage.clear();
   featureFlagMocks.roomListUnreadFilter = false;
   featureFlagMocks.roomListMessagePreview = false;
+  featureFlagMocks.spaceRailManagement = false;
 });
 
 describe("RoomList", () => {
@@ -379,6 +384,70 @@ describe("RoomList", () => {
     expect(await screen.findByText("Public room")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Join" }));
     expect(joinRoom).toHaveBeenCalledWith("!public:localhost");
+  });
+
+  it("wires Remove from space for a joined room row inside a space's lobby", async () => {
+    featureFlagMocks.spaceRailManagement = true;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    fireEvent.click(await screen.findByText("Remove from space"));
+
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child:localhost");
+  });
+
+  it("does not offer Remove from space while space_rail_management is off", async () => {
+    featureFlagMocks.spaceRailManagement = false;
+    const space = makeRoomSummary({ room_id: "!space:localhost", is_space: true, name: "Team" });
+    const joinedChild = makeRoomSummary({
+      room_id: "!child:localhost",
+      name: "Team chat",
+      parent_space_ids: ["!space:localhost"],
+    });
+    listSpaceHierarchy.mockResolvedValue([
+      {
+        child: {
+          room_id: "!child:localhost",
+          name: "Team chat",
+          topic: null,
+          num_joined_members: 4,
+          join_rule: "invite",
+          is_space: false,
+        },
+        children: [],
+      },
+    ]);
+    renderRoomList(
+      <RoomList
+        {...roomListProps({ rooms: [space, joinedChild], mode: "space", selectedSpace: space })}
+      />,
+    );
+
+    fireEvent.contextMenu(await screen.findByText("Team chat"));
+    expect(screen.queryByText("Remove from space")).not.toBeInTheDocument();
   });
 
   it("does not start a second hierarchy join while another is pending", async () => {

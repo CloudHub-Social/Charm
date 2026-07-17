@@ -18,6 +18,7 @@ import {
   joinRoom,
   knockRoom,
   listSpaceHierarchy,
+  removeSpaceChild,
   setRoomFavourite,
   setRoomLowPriority,
   setRoomManualOrder,
@@ -152,6 +153,10 @@ export function RoomList({
   // by DND (see `shell::compute_badge_state`'s own doc comment).
   const focusModeFlagEnabled = useFlag("focus_mode");
   const roomListUnreadFilterFlagEnabled = useFlag("room_list_unread_filter");
+  // Same flag `SpaceRail`'s own space-management actions are gated behind —
+  // "Remove from space" on a regular room row is the counterpart to that
+  // menu's `Remove` for sub-space rows, so it ships/rolls out together.
+  const spaceRailManagementEnabled = useFlag("space_rail_management");
   const { enabled: dndEnabled } = useFocusMode();
   const selectedSpaceId = selectedSpace?.room_id ?? null;
   const activeFilter: RoomListFilter = roomListUnreadFilterFlagEnabled
@@ -674,14 +679,19 @@ export function RoomList({
                   expanded={isExpanded("spaceRooms")}
                   onExpandedChange={(v) => setExpanded((prev) => ({ ...prev, spaceRooms: v }))}
                 >
-                  {renderHierarchy(filteredSpaceHierarchy, {
-                    roomById,
-                    activeRoomId,
-                    onSelectRoom,
-                    onSelectSpace,
-                    onJoin: handleJoin,
-                    pendingRoomId,
-                  })}
+                  {renderHierarchy(
+                    filteredSpaceHierarchy,
+                    {
+                      roomById,
+                      activeRoomId,
+                      onSelectRoom,
+                      onSelectSpace,
+                      onJoin: handleJoin,
+                      pendingRoomId,
+                      spaceManagementEnabled: spaceRailManagementEnabled,
+                    },
+                    selectedSpace.room_id,
+                  )}
                 </RoomListSection>
               ) : (
                 sections.spaceGroups.map(({ space, rooms: spaceRooms }) => {
@@ -788,7 +798,18 @@ function renderHierarchy(
     onSelectSpace: (id: string) => void;
     onJoin: (child: SpaceChild) => void;
     pendingRoomId: string | null;
+    /** Enables the "Remove from space" row action — the same
+     * `space_rail_management` flag `SpaceRail`'s own management actions are
+     * gated behind, since this is the counterpart to its `Remove` for
+     * sub-space rows. */
+    spaceManagementEnabled: boolean;
   },
+  /** The id of the space each node in `nodes` is a direct child of — root
+   * spaces are children of the currently selected space; recursing into a
+   * node's own `children` passes that node's own room id down, so `Remove
+   * from space` always detaches from the row's *actual* immediate parent,
+   * not the top-level selected space. */
+  parentSpaceId: string,
   depth = 0,
   path = "root",
 ): ReactElement[] {
@@ -807,8 +828,13 @@ function renderHierarchy(
         onSelectRoom={options.onSelectRoom}
         onSelectSpace={options.onSelectSpace}
         onJoin={options.onJoin}
+        onRemoveFromSpace={
+          options.spaceManagementEnabled && !node.child.is_space
+            ? () => removeSpaceChild(parentSpaceId, node.child.room_id).catch(logAndIgnore)
+            : undefined
+        }
       />,
-      ...renderHierarchy(node.children, options, depth + 1, nodeKey),
+      ...renderHierarchy(node.children, options, node.child.room_id, depth + 1, nodeKey),
     ];
   });
 }
@@ -837,6 +863,7 @@ interface HierarchyRowProps {
   onSelectRoom: (id: string) => void;
   onSelectSpace: (id: string) => void;
   onJoin: (child: SpaceChild) => void;
+  onRemoveFromSpace?: () => void;
 }
 
 function HierarchyRow({
@@ -848,6 +875,7 @@ function HierarchyRow({
   onSelectRoom,
   onSelectSpace,
   onJoin,
+  onRemoveFromSpace,
 }: HierarchyRowProps) {
   const indent = `${Math.min(depth, 6) * 16}px`;
   if (joinedRoom?.is_space) {
@@ -889,6 +917,7 @@ function HierarchyRow({
           }
           onMarkRead={() => markRoomRead(joinedRoom.room_id).catch(logAndIgnore)}
           onMarkUnread={() => setRoomMarkedUnread(joinedRoom.room_id, true).catch(logAndIgnore)}
+          onRemoveFromSpace={onRemoveFromSpace}
         />
       </div>
     );
