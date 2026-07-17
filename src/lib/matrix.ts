@@ -830,6 +830,30 @@ export function unbanMember(roomId: string, userId: string, reason?: string): Pr
   return invoke("unban_member", { roomId, userId, reason });
 }
 
+/** Leaves a room (or space) on the caller's own behalf. */
+export function leaveRoom(roomId: string): Promise<void> {
+  return invoke("leave_room", { roomId });
+}
+
+/** Adds an already-joined room or space as a child of `spaceId` (Spec 63's "Add Existing" flow). */
+export function addExistingSpaceChild(spaceId: string, childRoomId: string): Promise<void> {
+  return invoke("add_existing_space_child", { spaceId, childRoomId });
+}
+
+/** Detaches `childRoomId` from `spaceId`'s hierarchy without leaving the child room/space itself. */
+export function removeSpaceChild(spaceId: string, childRoomId: string): Promise<void> {
+  return invoke("remove_space_child", { spaceId, childRoomId });
+}
+
+/** Marks (or unmarks) `childRoomId` as a "suggested" child of `spaceId`. */
+export function setSpaceChildSuggested(
+  spaceId: string,
+  childRoomId: string,
+  suggested: boolean,
+): Promise<void> {
+  return invoke("set_space_child_suggested", { spaceId, childRoomId, suggested });
+}
+
 /** Server-published (room-directory) aliases for `roomId` — distinct from `RoomDetails.canonical_alias`/`alt_aliases`. */
 export function getRoomLocalAliases(roomId: string): Promise<string[]> {
   return invoke("get_room_local_aliases", { roomId });

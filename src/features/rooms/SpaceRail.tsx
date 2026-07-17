@@ -1,4 +1,18 @@
-import { ChevronDown, Home, LogIn, Pin, PinOff, Plus, UserPlus, Users } from "lucide-react";
+import {
+  ChevronDown,
+  DoorOpen,
+  FolderPlus,
+  Home,
+  LogIn,
+  LogOut,
+  Pin,
+  PinOff,
+  Plus,
+  Star,
+  StarOff,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
@@ -12,9 +26,11 @@ import {
 } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { badgeAtom } from "@/features/shell/badgeAtom";
-import type { RoomSummary } from "@/lib/matrix";
+import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
 import { cn } from "@/lib/utils";
+import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
 import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
+import { LeaveSpaceDialog } from "./LeaveSpaceDialog";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { moveSpaceInOrder, orderSpaceIds, spaceRailPrefsAtom } from "./spaceRailPrefs";
 
@@ -44,6 +60,11 @@ export function SpaceRail({
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [prefs, setPrefs] = useAtom(spaceRailPrefsAtom);
   const [inviteTarget, setInviteTarget] = useState<{ spaceId: string; name: string } | null>(null);
+  const [leaveTarget, setLeaveTarget] = useState<{ spaceId: string; name: string } | null>(null);
+  const [addExistingTarget, setAddExistingTarget] = useState<{
+    spaceId: string;
+    name: string;
+  } | null>(null);
   const badge = useAtomValue(badgeAtom);
   const { topLevelSpaces, childSpacesByParent, parentSpaceIdsByChild, directRooms } =
     useMemo(() => {
@@ -156,6 +177,7 @@ export function SpaceRail({
   function renderSpaceEntry(
     space: RoomSummary,
     topLevel: boolean,
+    parentId: string | null,
     ancestorIds = new Set<string>(),
   ) {
     const nextAncestorIds = new Set(ancestorIds);
@@ -236,11 +258,48 @@ export function SpaceRail({
                 )}
               </>
             )}
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
+            >
+              <FolderPlus aria-hidden="true" />
+              Add existing…
+            </ContextMenuItem>
+            {parentId && (
+              <>
+                <ContextMenuItem
+                  onSelect={() => setSpaceChildSuggested(parentId, space.room_id, true)}
+                >
+                  <Star aria-hidden="true" />
+                  Mark as suggested
+                </ContextMenuItem>
+                <ContextMenuItem
+                  onSelect={() => setSpaceChildSuggested(parentId, space.room_id, false)}
+                >
+                  <StarOff aria-hidden="true" />
+                  Unmark as suggested
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => removeSpaceChild(parentId, space.room_id)}>
+                  <DoorOpen aria-hidden="true" />
+                  Remove from space
+                </ContextMenuItem>
+              </>
+            )}
+            <ContextMenuSeparator />
+            <ContextMenuItem
+              variant="destructive"
+              onSelect={() => setLeaveTarget({ spaceId: space.room_id, name: label })}
+            >
+              <LogOut aria-hidden="true" />
+              Leave
+            </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
         {folderOpen && visibleChildren.length > 0 && (
           <div className="flex flex-col gap-1 rounded-md border border-border/60 p-1">
-            {visibleChildren.map((child) => renderSpaceEntry(child, false, nextAncestorIds))}
+            {visibleChildren.map((child) =>
+              renderSpaceEntry(child, false, space.room_id, nextAncestorIds),
+            )}
           </div>
         )}
       </div>
@@ -302,12 +361,12 @@ export function SpaceRail({
           </fieldset>
           <div className="my-1 h-px w-8 bg-border" />
           <div className="flex min-h-0 flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-1">
-            {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true))}
+            {pinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
             {unpinnedTopLevelSpaces.length > 0 && (
               <>
                 <div className="my-1 h-px w-8 bg-border" />
                 <div className="flex flex-col items-center gap-2 opacity-60">
-                  {unpinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true))}
+                  {unpinnedTopLevelSpaces.map((space) => renderSpaceEntry(space, true, null))}
                 </div>
               </>
             )}
@@ -324,8 +383,48 @@ export function SpaceRail({
           if (!open) setInviteTarget(null);
         }}
       />
+      <LeaveSpaceDialog
+        spaceId={leaveTarget?.spaceId ?? null}
+        spaceName={leaveTarget?.name ?? null}
+        onOpenChange={(open) => {
+          if (!open) setLeaveTarget(null);
+        }}
+      />
+      <AddExistingToSpaceDialog
+        spaceId={addExistingTarget?.spaceId ?? null}
+        spaceName={addExistingTarget?.name ?? null}
+        rooms={rooms}
+        excludedIds={
+          addExistingTarget
+            ? addExistingChildExclusions(addExistingTarget.spaceId, rooms, parentSpaceIdsByChild)
+            : new Set()
+        }
+        onOpenChange={(open) => {
+          if (!open) setAddExistingTarget(null);
+        }}
+      />
     </TooltipProvider>
   );
+}
+
+/** Rooms/spaces that can't be added as a child of `spaceId` without creating
+ * a duplicate or a cycle: the space itself, its ancestors, and its current
+ * direct children. */
+function addExistingChildExclusions(
+  spaceId: string,
+  rooms: RoomSummary[],
+  parentSpaceIdsByChild: Map<string, string[]>,
+) {
+  const excluded = new Set<string>([
+    spaceId,
+    ...collectAncestorSpaceIds(spaceId, parentSpaceIdsByChild),
+  ]);
+  for (const room of rooms) {
+    if (room.parent_space_ids.includes(spaceId)) {
+      excluded.add(room.room_id);
+    }
+  }
+  return excluded;
 }
 
 interface RailIconButtonProps {

@@ -3,9 +3,25 @@ import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
+import type * as MatrixLib from "@/lib/matrix";
 import type { BadgeState } from "@/lib/matrix";
 import { SpaceRail } from "./SpaceRail";
 import { makeRoomSummary } from "./testFixtures";
+
+const removeSpaceChild = vi.fn().mockResolvedValue(undefined);
+const setSpaceChildSuggested = vi.fn().mockResolvedValue(undefined);
+const addExistingSpaceChild = vi.fn().mockResolvedValue(undefined);
+const leaveRoom = vi.fn().mockResolvedValue(undefined);
+const inviteMember = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("@/lib/matrix", async (importOriginal) => ({
+  ...(await importOriginal<typeof MatrixLib>()),
+  removeSpaceChild: (...args: unknown[]) => removeSpaceChild(...args),
+  setSpaceChildSuggested: (...args: unknown[]) => setSpaceChildSuggested(...args),
+  addExistingSpaceChild: (...args: unknown[]) => addExistingSpaceChild(...args),
+  leaveRoom: (...args: unknown[]) => leaveRoom(...args),
+  inviteMember: (...args: unknown[]) => inviteMember(...args),
+}));
 
 type RenderRailOptions = Partial<ComponentProps<typeof SpaceRail>> & {
   badgeState?: BadgeState;
@@ -375,5 +391,61 @@ describe("SpaceRail", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Invite/ }));
 
     expect(screen.getByRole("dialog", { name: "Invite to Team" })).toBeInTheDocument();
+  });
+
+  it("opens a Leave confirmation dialog rather than leaving immediately", async () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Leave" }));
+
+    expect(screen.getByRole("dialog", { name: "Leave Team?" })).toBeInTheDocument();
+    expect(leaveRoom).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Leave" }));
+    expect(leaveRoom).toHaveBeenCalledWith("!space:localhost");
+    await screen.findByRole("navigation", { name: "Spaces" });
+  });
+
+  it("opens the Add Existing dialog for a space from its context menu", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Add existing/ }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Add existing room or space to Team" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers Remove and Set/Unset Suggested only on a space with a parent", () => {
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expect(screen.queryByRole("menuitem", { name: /Remove from space/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /Mark as suggested/ })).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
+    expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child-space:localhost");
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Mark as suggested" }));
+    expect(setSpaceChildSuggested).toHaveBeenCalledWith(
+      "!space:localhost",
+      "!child-space:localhost",
+      true,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unmark as suggested" }));
+    expect(setSpaceChildSuggested).toHaveBeenCalledWith(
+      "!space:localhost",
+      "!child-space:localhost",
+      false,
+    );
   });
 });
