@@ -249,6 +249,26 @@
       }
     },
     {
+      "slug": "sidebar-management",
+      "title": "Sidebar and space management",
+      "summary": "Pin, unpin, and reorder spaces on the rail, and manage a space from a right-click context menu: invite, add an existing room or space, mark it suggested, remove it from a parent, or leave.",
+      "status": "preview",
+      "spec": "Spec 63",
+      "specLinks": [
+        {
+          "label": "Spec 63",
+          "href": "/specs/day-1/spec-63--sidebar-and-space-management-pin-reorder-context-menu-add-existing/"
+        }
+      ],
+      "flag": "space_rail_management",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "space-rail-context-menu",
+        "alt": "Charm space rail with a right-click context menu open on a space",
+        "caption": "Playwright opens the context menu, verifying Invite, Add Existing, Pin, and Leave actions."
+      }
+    },
+    {
       "slug": "room-settings",
       "title": "Room administration",
       "summary": "Manage room profile, members, permissions, history visibility, join rules, avatars, and encryption from one modal.",
