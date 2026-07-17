@@ -480,113 +480,80 @@ async fn refresh_session_cookie(
         // freshly `Max-Age`-extended cookie for a session another instance
         // already killed (Codex review finding on #280) — nor keep serving
         // it locally, so the local entry is dropped (aborting its sync
-        // loop) right alongside. `drop_dead_session` below is shared by
-        // both the unthrottled existence check and the throttled touch's
-        // own (much rarer) `NotFound` case, so both take the same
-        // `awaiting_initial_persistence`-aware path.
+        // loop) right alongside. No standalone existence check here
+        // anymore — `require_session` (called earlier in this same request,
+        // inside the handler `next.run` just finished) already performs
+        // one, unthrottled, *before* the handler ran (an earlier revision
+        // of this middleware instead checked existence only here, after the
+        // handler had already executed against a possibly-already-deleted
+        // session — Codex review finding on #280: "reject deleted sessions
+        // before running handlers"). Only the throttled durable-touch write
+        // below still needs its own `NotFound` handling, for the much
+        // narrower window between `require_session`'s check and this
+        // write's own read, later in the same request.
         let mut refresh_cookie = true;
         if let Some(persistence) = &state.persistence {
             let drop_dead_session = !session
                 .awaiting_initial_persistence
                 .load(std::sync::atomic::Ordering::Relaxed);
-            // Unthrottled, unlike the durable touch/write below — a plain
-            // read, run on *every* authenticated+validated request, not
-            // just once an hour. Without this, a stale instance could keep
-            // re-installing a fresh cookie for (and keep locally serving) a
-            // session another instance already killed for up to the whole
-            // `PERSISTENCE_TOUCH_THROTTLE_SECS` window between throttled
-            // touches (Codex review finding on #280) — a cross-instance
-            // deletion needs to be caught on the very next request, and a
-            // read is far cheaper than the write this deliberately stays
-            // split from.
-            match persistence.exists(&token).await {
-                Ok(true) => {}
-                Ok(false) if drop_dead_session => {
-                    refresh_cookie = false;
-                    if let Some(dead_session) = state.sessions.remove(&token).await {
-                        if let Some(handle) = dead_session
-                            .sync_handle
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .take()
-                        {
-                            handle.abort();
-                        }
-                    }
-                }
-                // See `Session::awaiting_initial_persistence`'s doc comment
-                // — a session still waiting on its very first successful
-                // save has no persisted object yet by design, so a missing
-                // object here is the expected, ordinary state, not evidence
-                // of a cross-instance logout.
-                Ok(false) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to check whether a persisted session still exists before \
-                         refreshing its cookie, letting the refresh proceed: {e}"
-                    );
-                }
-            }
             // Keep the server-side activity signal `PersistenceStore::sweep_expired`
             // relies on roughly in step with the cookie's own extended
-            // lifetime — throttled (unlike the existence check above),
-            // since this session being resident in `SessionStore` at all
-            // already exempts it from that sweep regardless (see
-            // `sweep_expired`'s doc comment); this is a belt-and-suspenders
-            // *write* for the rare case that exemption is ever narrowed
-            // later, not something every request needs to pay an
-            // object-store write for.
-            if refresh_cookie {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let last_touch = session
-                    .last_persistence_touch_unix
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
-                    match persistence.touch_last_seen_now(&token).await {
-                        Ok(crate::persistence::TouchOutcome::Touched) => {
-                            session
-                                .last_persistence_touch_unix
-                                .store(now, std::sync::atomic::Ordering::Relaxed);
-                            // Proof the object now exists — any further
-                            // `NotFound`/`exists() == false` for this token
-                            // is unambiguously a real cross-instance logout
-                            // again, not the initial-save retry this flag
-                            // exists to tolerate.
-                            session
-                                .awaiting_initial_persistence
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        Ok(crate::persistence::TouchOutcome::NotFound) => {
-                            // Rare: the object existed for the `exists()`
-                            // check moments ago but is gone by the time this
-                            // write ran — another instance's logout landed
-                            // in between. Same handling as the unthrottled
-                            // check above, just reached from the write side
-                            // instead.
-                            if drop_dead_session {
-                                refresh_cookie = false;
-                                if let Some(dead_session) = state.sessions.remove(&token).await {
-                                    if let Some(handle) = dead_session
-                                        .sync_handle
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .take()
-                                    {
-                                        handle.abort();
-                                    }
+            // lifetime — throttled, since this session being resident in
+            // `SessionStore` at all already exempts it from that sweep
+            // regardless (see `sweep_expired`'s doc comment); this is a
+            // belt-and-suspenders *write* for the rare case that exemption
+            // is ever narrowed later, not something every request needs to
+            // pay an object-store write for.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last_touch = session
+                .last_persistence_touch_unix
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last_touch) >= session::PERSISTENCE_TOUCH_THROTTLE_SECS {
+                match persistence.touch_last_seen_now(&token).await {
+                    Ok(crate::persistence::TouchOutcome::Touched) => {
+                        session
+                            .last_persistence_touch_unix
+                            .store(now, std::sync::atomic::Ordering::Relaxed);
+                        // Proof the object now exists — any further
+                        // `NotFound` for this token is unambiguously a real
+                        // cross-instance logout again, not the initial-save
+                        // retry this flag exists to tolerate.
+                        session
+                            .awaiting_initial_persistence
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(crate::persistence::TouchOutcome::NotFound) => {
+                        // A cross-instance logout landed between
+                        // `require_session`'s own existence check earlier
+                        // in this request and this write's read — narrow,
+                        // but still handled: don't send an extended cookie
+                        // for a session that's actually gone, and drop it
+                        // locally too. See `Session::
+                        // awaiting_initial_persistence`'s doc comment for
+                        // why this is conditional.
+                        if drop_dead_session {
+                            refresh_cookie = false;
+                            if let Some(dead_session) = state.sessions.remove(&token).await {
+                                if let Some(handle) = dead_session
+                                    .sync_handle
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .take()
+                                {
+                                    handle.abort();
                                 }
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "failed to durably bump last-seen timestamp before refreshing \
-                                 a session cookie, leaving the throttle unadvanced so the next \
-                                 request retries: {e}"
-                            );
-                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "failed to durably bump last-seen timestamp before refreshing a \
+                             session cookie, leaving the throttle unadvanced so the next \
+                             request retries: {e}"
+                        );
                     }
                 }
             }
@@ -1159,6 +1126,74 @@ mod refresh_session_cookie_gating_tests {
              on every subsequent request forever"
         );
     }
+
+    /// Regression test for the Codex review finding on #280 ("Reject
+    /// deleted sessions before running handlers"): a *genuinely active*
+    /// session (open WebSocket connection) is exempt from the staleness
+    /// check above, but must not be exempt from a genuine cross-instance
+    /// deletion — a browser using the app right now can still have been
+    /// logged out from another device/instance. This session has no
+    /// persisted record at all (simulating "another instance already
+    /// deleted it") despite an open connection, and the request must still
+    /// be rejected by `require_session`'s fast path itself — not merely by
+    /// `refresh_session_cookie` afterward, which would mean this exact
+    /// request's own handler already ran against the stale session before
+    /// the rejection took effect.
+    #[tokio::test]
+    async fn a_genuinely_active_session_is_still_rejected_on_a_confirmed_deletion() {
+        let dir = std::env::temp_dir().join(format!(
+            "charm-web-server-routes-require-session-active-deleted-{:x}",
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::persistence::PersistenceStore::new_for_test(&dir, [68u8; 32]);
+
+        let state = AppState {
+            sessions: crate::session::SessionStore::new(),
+            persistence: Some(std::sync::Arc::new(store)),
+        };
+        let session = dummy_live_session("@active-deleted:example.invalid").await;
+        // Genuinely active: an open WebSocket connection, which is what
+        // `is_genuinely_active` checks first (before even looking at
+        // `last_validated_active`) — see that function's doc comment.
+        session
+            .ws_connections
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .sessions
+            .insert("tok-active-deleted".to_string(), session)
+            .await;
+        let sessions = state.sessions.clone();
+        let app = super::router(state);
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/me")
+                    .header(
+                        axum::http::header::COOKIE,
+                        "charm_session=tok-active-deleted",
+                    )
+                    .header("x-charm-operation-id", "test-op")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "a confirmed cross-instance deletion must reject the request even for a \
+             genuinely active session — an open connection exempts a session from the \
+             staleness check, not from a real deletion"
+        );
+        assert!(
+            sessions.get("tok-active-deleted").await.is_none(),
+            "and the session must be dropped locally too"
+        );
+    }
 }
 
 /// `axum::middleware::from_fn` layer emitting Sentry Application Metrics for
@@ -1675,31 +1710,55 @@ async fn require_session(state: &AppState, jar: &CookieJar) -> Result<Arc<Sessio
         .ok_or_else(|| ApiError::unauthorized("no session cookie"))?;
     if let Some(session) = state.sessions.get(&token).await {
         // This fast path used to authenticate any resident session
-        // unconditionally — the `is_expired` check a few lines below only
-        // ever ran for the *idle-evicted* branch. A session pinned in
-        // memory by `SessionStore::sweep_idle`'s pending-verification/
-        // unpersisted-room exemptions (never idle-evicted, so never
-        // reaching that branch) could stay resident and keep authenticating
-        // here forever, well past `session_revocation_grace`, with
-        // `refresh_session_cookie` even bumping `last_seen_unix` and
-        // re-extending its cookie on the way out — completely bypassing
-        // the server-side retention window this whole persistence layer
-        // exists to enforce (Codex review finding on #280). Checked only
-        // for a session that isn't genuinely active (same distinction
-        // `PersistenceStore::sweep_expired` uses, not bare presence) — a
-        // session with an open connection or recent validated activity is
-        // never subject to this at all, and skipping the persistence read
-        // entirely for that common case avoids paying it on every request
-        // for a session that's actually in active use.
+        // unconditionally — neither of the checks below ran for it at all,
+        // only for the *idle-evicted* branch further down. A session
+        // pinned in memory by `SessionStore::sweep_idle`'s
+        // pending-verification/unpersisted-room exemptions (never
+        // idle-evicted, so never reaching that branch) could stay resident
+        // and keep authenticating here forever — either well past
+        // `session_revocation_grace`, or even after being logged out on
+        // another instance entirely, with `refresh_session_cookie` bumping
+        // `last_seen_unix` and re-extending its cookie on the way out —
+        // completely bypassing the server-side retention window this whole
+        // persistence layer exists to enforce (Codex review finding on
+        // #280).
         if let Some(persistence) = &state.persistence {
-            if !state
-                .sessions
-                .is_genuinely_active(&token, session::session_revocation_grace())
-                .await
+            // Deletion check — unthrottled, every request, and *before*
+            // the handler below ever runs, regardless of whether this
+            // session is genuinely active. `refresh_session_cookie`'s own
+            // equivalent check only runs *after* `next.run`, so by the
+            // time it discovers a cross-instance logout, this request's
+            // own handler has already executed against the stale session —
+            // rejecting only the *next* request, not the one that actually
+            // observes the deletion (Codex review finding on #280). An
+            // open WebSocket connection or recent validated activity is
+            // not exempt from a genuine deletion, only from the separate
+            // staleness check below — a browser using the app right now
+            // can still have been logged out from another device.
+            // `awaiting_initial_persistence` still applies here for the
+            // same reason it does in `refresh_session_cookie` — see that
+            // field's doc comment. A read error fails open (`unwrap_or`),
+            // matching `refresh_session_cookie`'s own tolerance for a
+            // transient hiccup rather than forcing a logout on one.
+            let deleted = !session
+                .awaiting_initial_persistence
+                .load(std::sync::atomic::Ordering::Relaxed)
+                && !persistence.exists(&token).await.unwrap_or(true);
+            // Staleness check — skipped entirely (no persistence read at
+            // all) for a session that's genuinely active (open connection
+            // or recent validated activity, same distinction
+            // `PersistenceStore::sweep_expired` uses, not bare presence):
+            // that's the one case cheap enough to avoid paying for on every
+            // request of a session actually in active use.
+            let stale = !deleted
+                && !state
+                    .sessions
+                    .is_genuinely_active(&token, session::session_revocation_grace())
+                    .await
                 && persistence
                     .is_expired(&token, session::session_revocation_grace())
-                    .await
-            {
+                    .await;
+            if deleted || stale {
                 if let Some(dead_session) = state.sessions.remove(&token).await {
                     if let Some(handle) = dead_session
                         .sync_handle
