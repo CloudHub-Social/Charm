@@ -59,11 +59,18 @@ back as a row — a placeholder with `is_unresolved: true` — rather than being
 dropped from the result: a silently-omitted row would leave a pin the user has
 no way to remove, since the Unpin control lives on the row itself.
 
-The pinned-messages panel's jump-to-message action reuses `ChatShell`'s existing
-`handleJumpToMessage` (the same loaded-`messages`-array `scrollToIndex` mechanism
-the reply-preview click and search-result click use) via a new `ChatShellHandle`
-imperative ref, since the panel renders in the separate `rightPanel` layout slot —
-a sibling of `ChatShell`, not a child of it.
+The pinned-messages panel's jump-to-message action is routed through the same
+parent-owned `jumpTarget`/`jumpToEventId` mechanism Spec 12's Saved Messages
+bookmark jumps already use, not a `ChatShell`-owned imperative ref (the panel
+renders in the separate `rightPanel` layout slot — a sibling of `ChatShell`, not a
+child of it, so `ChatShell` itself has no ref for a sibling to call into).
+`RoomsScreen` sets `{roomId, eventId}` state on click; `ChatShell` tries
+`messages.findIndex` first for a plain in-loaded-window `scrollToIndex`, falling
+back to `loadTimelineAroundEvent(room_id, eventId)` (server-side `/context`
+pagination) when the target isn't in the currently-loaded window — the common
+case for a pin from well before the loaded history. This also means a pinned-
+message jump gets the same pagination fallback bookmark jumps do, which the
+earlier no-op-outside-the-loaded-window imperative-ref approach never had.
 
 ## API/contract changes
 
