@@ -185,18 +185,24 @@ export function PinnedMessagesPanel({
               >
                 <span className="flex w-full items-center justify-between gap-2">
                   <span className="truncate text-sm font-semibold text-foreground">
-                    {message.sender_display_name ?? message.sender}
+                    {message.is_unresolved
+                      ? "Unknown sender"
+                      : (message.sender_display_name ?? message.sender)}
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {formatTimestamp(message.timestamp_ms)}
-                  </span>
+                  {!message.is_unresolved && (
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatTimestamp(message.timestamp_ms)}
+                    </span>
+                  )}
                 </span>
                 <span className="line-clamp-2 text-sm text-muted-foreground">
-                  {message.is_redacted
-                    ? "This message was deleted."
-                    : message.is_undecrypted
-                      ? "Unable to decrypt message"
-                      : message.preview}
+                  {message.is_unresolved
+                    ? "This message is unavailable."
+                    : message.is_redacted
+                      ? "This message was deleted."
+                      : message.is_undecrypted
+                        ? "Unable to decrypt message"
+                        : message.preview}
                 </span>
               </button>
               {/* Review fix: every timeline row's own `MessageActions` (the

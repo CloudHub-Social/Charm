@@ -17,4 +17,17 @@ export type PinnedMessageSummary = { event_id: string, sender: string, sender_di
  * `is_redacted`/`is_undecrypted` before treating an empty body as "no
  * content".
  */
-preview: string, timestamp_ms: number, is_redacted: boolean, is_undecrypted: boolean, };
+preview: string, timestamp_ms: number, is_redacted: boolean, is_undecrypted: boolean, 
+/**
+ * `true` when the pinned event itself couldn't be resolved at all —
+ * e.g. the homeserver returns 404 for a stale/foreign event id, or
+ * history visibility denies access. Distinct from `is_redacted`
+ * (event resolved, content deliberately removed) and `is_undecrypted`
+ * (event resolved, content unreadable): here every other field is a
+ * placeholder (`sender`/`preview` empty, `timestamp_ms` 0), since
+ * nothing about the event could be read. Review fix: this row used to
+ * be silently dropped instead of returned, so `pinned_event_ids`
+ * could report a nonzero pin count with no corresponding row — and so
+ * no Unpin control — to actually remove the broken pin from Charm.
+ */
+is_unresolved: boolean, };

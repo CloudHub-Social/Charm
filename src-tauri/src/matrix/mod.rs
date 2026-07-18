@@ -248,6 +248,17 @@ pub struct MatrixState {
             Vec<matrix_sdk::ruma::OwnedEventId>,
         >,
     >,
+    /// Bumped by `clear_pinned_event_cache` (logout/re-login/account
+    /// switch). `pin_event`/`unpin_event` capture this before their
+    /// homeserver send and skip their own cache write if it's since
+    /// changed — a send that outlives a client swap (the old client clone
+    /// it's holding can still complete the request against the *old*
+    /// session after the new one is already active) must not resurrect a
+    /// stale entry into the new session's freshly-cleared cache. A plain
+    /// `std::sync::atomic::AtomicU64` (not the `tokio::sync::Mutex` the
+    /// two maps above use): read/incremented without ever needing to hold
+    /// across an `.await`.
+    pub(crate) pinned_event_cache_generation: std::sync::atomic::AtomicU64,
 }
 
 impl Default for MatrixState {
@@ -280,6 +291,7 @@ impl Default for MatrixState {
             preview_registered_rooms: std::sync::Mutex::default(),
             pinned_event_locks: Mutex::default(),
             pinned_event_cache: Mutex::default(),
+            pinned_event_cache_generation: std::sync::atomic::AtomicU64::default(),
         }
     }
 }
@@ -524,6 +536,13 @@ impl MatrixState {
     pub(crate) async fn clear_pinned_event_cache(&self) {
         self.pinned_event_cache.lock().await.clear();
         self.pinned_event_locks.lock().await.clear();
+        // Review fix: see `pinned_event_cache_generation`'s own doc comment
+        // — lets `pin_event`/`unpin_event` detect a session change that
+        // happened while their homeserver send was still in flight, so
+        // they can skip resurrecting a stale entry into the cache this
+        // just cleared.
+        self.pinned_event_cache_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Lazily initializes (on first use) and returns the shared media cache,
@@ -593,9 +612,23 @@ mod tests {
         );
         let _lock = state.pinned_event_lock(&room_id).await;
 
+        let generation_before = state
+            .pinned_event_cache_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
         state.clear_pinned_event_cache().await;
 
         assert!(state.pinned_event_cache.lock().await.is_empty());
         assert!(state.pinned_event_locks.lock().await.is_empty());
+        // Review fix regression test: `pin_event`/`unpin_event` capture
+        // this generation before their homeserver send and skip their own
+        // cache write if it's since changed — see the field's own doc
+        // comment. Without the bump, a send outliving this clear could
+        // still resurrect a stale entry into the freshly-cleared cache.
+        assert_eq!(
+            state
+                .pinned_event_cache_generation
+                .load(std::sync::atomic::Ordering::SeqCst),
+            generation_before + 1,
+        );
     }
 }

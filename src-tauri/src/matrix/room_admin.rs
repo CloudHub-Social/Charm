@@ -715,6 +715,17 @@ pub struct PinnedMessageSummary {
     pub timestamp_ms: u64,
     pub is_redacted: bool,
     pub is_undecrypted: bool,
+    /// `true` when the pinned event itself couldn't be resolved at all —
+    /// e.g. the homeserver returns 404 for a stale/foreign event id, or
+    /// history visibility denies access. Distinct from `is_redacted`
+    /// (event resolved, content deliberately removed) and `is_undecrypted`
+    /// (event resolved, content unreadable): here every other field is a
+    /// placeholder (`sender`/`preview` empty, `timestamp_ms` 0), since
+    /// nothing about the event could be read. Review fix: this row used to
+    /// be silently dropped instead of returned, so `pinned_event_ids`
+    /// could report a nonzero pin count with no corresponding row — and so
+    /// no Unpin control — to actually remove the broken pin from Charm.
+    pub is_unresolved: bool,
 }
 
 /// Resolves each of `room_id`'s currently-pinned event ids (per
@@ -737,7 +748,7 @@ pub async fn get_pinned_messages(
     room_id: String,
 ) -> Result<Vec<PinnedMessageSummary>, String> {
     let client = state.require_client().await?;
-    get_pinned_messages_impl(&client, &room_id).await
+    get_pinned_messages_impl(state.inner(), &client, &room_id).await
 }
 
 /// Appends `sender`'s MXID to `name` when it's ambiguous (shared with
@@ -832,20 +843,50 @@ async fn latest_edit_body(
     candidates.into_iter().next().map(|(_, body)| body)
 }
 
+/// A placeholder row for a pinned event id that couldn't be resolved at
+/// all — see `PinnedMessageSummary::is_unresolved`'s own doc comment.
+fn unresolved_pinned_message_summary(event_id: &matrix_sdk::ruma::EventId) -> PinnedMessageSummary {
+    PinnedMessageSummary {
+        event_id: event_id.to_string(),
+        sender: String::new(),
+        sender_display_name: None,
+        preview: String::new(),
+        timestamp_ms: 0,
+        is_redacted: false,
+        is_undecrypted: false,
+        is_unresolved: true,
+    }
+}
+
 /// Core logic behind [`get_pinned_messages`].
+///
+/// Review fix: reads through `pinned_event_cache_get_or_seed` (this
+/// module's own authoritative list — see `pin_event`'s doc comment) instead
+/// of `Room::pinned_event_ids()` directly. The latter is local, synced room
+/// state that lags a full `/sync` round-trip behind a just-completed local
+/// `pin_event`/`unpin_event` call, so opening the panel immediately after
+/// pinning a message used to show the pre-pin list until the next sync
+/// landed.
 pub async fn get_pinned_messages_impl(
+    state: &MatrixState,
     client: &Client,
     room_id: &str,
 ) -> Result<Vec<PinnedMessageSummary>, String> {
     let room = require_room(client, room_id)?;
-    let pinned_event_ids = room.pinned_event_ids().unwrap_or_default();
+    let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
+    let pinned_event_ids =
+        pinned_event_cache_get_or_seed(state, client, &parsed_room_id, room_id).await?;
 
     let mut summaries = Vec::with_capacity(pinned_event_ids.len());
     for event_id in pinned_event_ids {
+        // Review fix: return a placeholder instead of dropping the row —
+        // see `PinnedMessageSummary::is_unresolved`'s own doc comment.
         let Ok(timeline_event) = room.load_or_fetch_event(&event_id, None).await else {
+            summaries.push(unresolved_pinned_message_summary(&event_id));
             continue;
         };
         let Ok(raw_event) = timeline_event.raw().deserialize() else {
+            summaries.push(unresolved_pinned_message_summary(&event_id));
             continue;
         };
 
@@ -907,6 +948,7 @@ pub async fn get_pinned_messages_impl(
             timestamp_ms,
             is_redacted,
             is_undecrypted,
+            is_unresolved: false,
         });
     }
 
@@ -931,6 +973,16 @@ pub async fn pin_event(
     event_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
+    // Review fix: captured before this command's own network send below —
+    // if a logout/re-login/account-switch happens while that send is still
+    // in flight (this call is still holding a clone of the *old* `Client`,
+    // which can complete the request against the old session regardless),
+    // `clear_pinned_event_cache` bumps this and the write below becomes a
+    // no-op instead of resurrecting a stale entry into the new session's
+    // freshly-cleared cache.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
     // Review fix: serializes this room's pin/unpin state writes — see
     // `MatrixState::pinned_event_locks`'s own doc comment for why
     // matrix-sdk's `Room::pin_event`/`unpin_event` need this held across the
@@ -953,11 +1005,17 @@ pub async fn pin_event(
     let current =
         pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
     let new_list = pin_event_impl(&client, &room_id, &event_id, current).await?;
-    state
-        .pinned_event_cache
-        .lock()
-        .await
-        .insert(parsed_room_id, new_list);
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id, new_list);
+    }
     Ok(())
 }
 
@@ -998,6 +1056,11 @@ pub async fn unpin_event(
     event_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
+    // Review fix: same session-generation guard as `pin_event` — see that
+    // command's own comment.
+    let generation = state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
     // Review fix: same per-room serialization and authoritative-cache
     // re-check as `pin_event` — see that command's own comment.
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
@@ -1006,11 +1069,17 @@ pub async fn unpin_event(
     let current =
         pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
     let new_list = unpin_event_impl(&client, &room_id, &event_id, current).await?;
-    state
-        .pinned_event_cache
-        .lock()
-        .await
-        .insert(parsed_room_id, new_list);
+    if state
+        .pinned_event_cache_generation
+        .load(std::sync::atomic::Ordering::SeqCst)
+        == generation
+    {
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(parsed_room_id, new_list);
+    }
     Ok(())
 }
 
@@ -1721,9 +1790,10 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
-            .await
-            .expect("pinned messages should resolve");
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
 
         assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].event_id, first.to_string());
@@ -1801,9 +1871,10 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
-            .await
-            .expect("pinned messages should resolve");
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "edited body");
@@ -1894,9 +1965,10 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
-            .await
-            .expect("pinned messages should resolve");
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "newer edit");
@@ -1971,9 +2043,10 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
-            .await
-            .expect("pinned messages should resolve");
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("pinned messages should resolve");
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "original body");
@@ -1995,7 +2068,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_pinned_messages_impl_drops_events_that_fail_to_resolve() {
+    async fn get_pinned_messages_impl_returns_a_placeholder_for_events_that_fail_to_resolve() {
         use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
 
         let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
@@ -2026,13 +2099,23 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
-            .await
-            .expect("a resolve failure shouldn't fail the whole call");
-        assert!(
-            summaries.is_empty(),
-            "expected the unresolvable pin to be dropped, got {summaries:?}"
+        let summaries =
+            get_pinned_messages_impl(&MatrixState::default(), &client, room_id.as_str())
+                .await
+                .expect("a resolve failure shouldn't fail the whole call");
+        // Review fix: an unresolvable pin must still come back as a row
+        // (with `is_unresolved: true`) rather than being silently dropped
+        // — otherwise a nonzero pinned-event count has no corresponding
+        // row (and so no Unpin control) to actually remove it with.
+        assert_eq!(
+            summaries.len(),
+            1,
+            "expected a placeholder row for the unresolvable pin, got {summaries:?}"
         );
+        assert_eq!(summaries[0].event_id, missing.to_string());
+        assert!(summaries[0].is_unresolved);
+        assert!(!summaries[0].is_redacted);
+        assert!(!summaries[0].is_undecrypted);
     }
 
     #[tokio::test]

@@ -30,6 +30,7 @@ function pinnedMessage(overrides: Partial<PinnedMessageSummary> = {}): PinnedMes
     timestamp_ms: 1_700_000_000_000,
     is_redacted: false,
     is_undecrypted: false,
+    is_unresolved: false,
     ...overrides,
   };
 }
@@ -128,6 +129,37 @@ describe("PinnedMessagesPanel", () => {
     );
 
     expect(await screen.findByText("This message was deleted.")).toBeInTheDocument();
+  });
+
+  it("still renders a row (with an Unpin control) for a pinned event that couldn't be resolved at all (review fix)", async () => {
+    // Review fix regression test: an unresolvable pin (404/history-visibility
+    // denial) used to be silently dropped by the backend, leaving a nonzero
+    // pinned count with no row — and so no Unpin control — to remove it
+    // with. The panel must still render *something* clickable-to-unpin for
+    // an `is_unresolved` row.
+    const details = makeRoomDetails({ pinned_event_ids: ["$missing"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({
+        event_id: "$missing",
+        sender: "",
+        sender_display_name: null,
+        preview: "",
+        timestamp_ms: 0,
+        is_unresolved: true,
+      }),
+    ]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("This message is unavailable.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unpin message" })).toBeInTheDocument();
   });
 
   it("refetches a pinned message's preview when a timeline:update touches it (Codex review fix)", async () => {
