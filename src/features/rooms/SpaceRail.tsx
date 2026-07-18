@@ -92,21 +92,30 @@ export function SpaceRail({
       if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
     };
   }, []);
-  // Keyed by room_id. Fetched lazily when a space's context menu opens
-  // (rather than for every rail entry up front) — `RoomPermissions` isn't
-  // part of `RoomSummary`/the sync loop, so this is a dedicated, on-demand
-  // `get_room_details` call per space actually inspected. Power-level-gated
-  // items default to disabled until a result lands.
+  // Keyed by room_id. Fetched on every context-menu open (rather than for
+  // every rail entry up front, and rather than cached for the component's
+  // lifetime) — `RoomPermissions` isn't part of `RoomSummary`/the sync
+  // loop's push updates, so a stale one-shot cache would keep showing a
+  // demoted member's old (too-permissive) or a promoted member's old
+  // (too-restrictive) gating until an unrelated remount. Re-fetching per
+  // open keeps it current at the only point it's actually read. A failed
+  // fetch is swallowed, not surfaced via `reportActionError` — the user
+  // didn't take an action yet, and the gated items simply stay disabled.
   const [permissionsById, setPermissionsById] = useState<Record<string, RoomPermissions>>({});
   const permissionsFetchInFlight = useRef<Set<string>>(new Set());
   function ensurePermissionsLoaded(roomId: string) {
-    if (permissionsById[roomId] || permissionsFetchInFlight.current.has(roomId)) return;
+    if (permissionsFetchInFlight.current.has(roomId)) return;
     permissionsFetchInFlight.current.add(roomId);
     getRoomDetails(roomId)
       .then((details) => {
         setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
       })
-      .catch(reportActionError)
+      .catch(() => {
+        setPermissionsById((prev) => {
+          const { [roomId]: _removed, ...rest } = prev;
+          return rest;
+        });
+      })
       .finally(() => {
         permissionsFetchInFlight.current.delete(roomId);
       });

@@ -455,6 +455,37 @@ describe("SpaceRail", () => {
     await waitFor(() => expectMenuItemEnabled(/Invite/));
   });
 
+  it("re-fetches permissions on every menu open rather than caching a stale power level for the component's lifetime", async () => {
+    getRoomDetails.mockImplementationOnce((roomId: string) =>
+      Promise.resolve(
+        makeRoomDetails({ room_id: roomId, can: { ...makeRoomDetails().can, invite: false } }),
+      ),
+    );
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(1));
+    expectMenuItemDisabled(/Invite/);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // A different admin has since promoted the user in this space; the
+    // next `get_room_details` call reflects that. Re-opening the menu must
+    // pick it up rather than reusing the first (now stale) result.
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(2));
+    await waitFor(() => expectMenuItemEnabled(/Invite/));
+  });
+
+  it("swallows a permissions-fetch failure without surfacing the action-error toast", async () => {
+    getRoomDetails.mockRejectedValueOnce(new Error("network unreachable"));
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(1));
+    expectMenuItemDisabled(/Invite/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("keeps Invite disabled when the user lacks the invite power level in that space", async () => {
     getRoomDetails.mockImplementationOnce((roomId: string) =>
       Promise.resolve(
