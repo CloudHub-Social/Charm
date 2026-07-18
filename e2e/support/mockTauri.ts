@@ -905,6 +905,11 @@ export function installMockTauri(seed: {
       const roomId = args.roomId as string;
       const message = findMessage(roomId, args.eventId as string);
       if (message) {
+        // Stashed (not part of the real RoomMessageSummary shape) so
+        // `get_edit_history` below can still show the pre-edit body after
+        // this in-place mutation — a real edit is a separate `m.replace`
+        // event, but this mock keeps one message object per row.
+        if (!message.originalBody) message.originalBody = message.body;
         message.body = args.newBody;
         message.edited = true;
         pushTimelineUpdate(roomId);
@@ -949,6 +954,102 @@ export function installMockTauri(seed: {
         pushTimelineUpdate(roomId);
       }
       return { action };
+    },
+
+    // Spec 37 (message action parity, remaining slices): report/view-source/
+    // edit-history/reaction-details/forward. Kept intentionally minimal —
+    // just enough shape for the frontend dialogs to render real data, not a
+    // faithful re-implementation of the Rust relation-walking these back.
+
+    report_event: () => undefined,
+
+    get_event_source: (args) => {
+      const roomId = args.roomId as string;
+      const eventId = args.eventId as string;
+      const message = findMessage(roomId, eventId);
+      return JSON.stringify(
+        {
+          type: "m.room.message",
+          event_id: eventId,
+          sender: message?.sender ?? seed.userId,
+          room_id: roomId,
+          origin_server_ts: message?.timestamp_ms ?? Date.now(),
+          content: { msgtype: "m.text", body: message?.body ?? "" },
+        },
+        null,
+        2,
+      );
+    },
+
+    get_edit_history: (args) => {
+      const roomId = args.roomId as string;
+      const eventId = args.eventId as string;
+      const message = findMessage(roomId, eventId);
+      if (!message) return [];
+      const original = {
+        event_id: eventId,
+        body: (message.originalBody as string | undefined) ?? (message.body as string),
+        formatted_body: null,
+        sender: message.sender,
+        origin_server_ts: message.timestamp_ms,
+      };
+      if (!message.edited) return [original];
+      return [
+        original,
+        {
+          event_id: `${eventId}-edit-1`,
+          body: message.body,
+          formatted_body: null,
+          sender: message.sender,
+          origin_server_ts: Date.now(),
+        },
+      ];
+    },
+
+    get_reaction_details: (args) => {
+      const roomId = args.roomId as string;
+      const message = findMessage(roomId, args.targetEventId as string);
+      const key = args.key as string;
+      const reactions = (message?.reactions ?? []) as {
+        key: string;
+        count: number;
+        reacted_by_me: boolean;
+      }[];
+      const reaction = reactions.find((r) => r.key === key);
+      if (!reaction) return [];
+      const otherSenders = (seed.members ?? []).map((m) => m.user_id);
+      const senders = [seed.userId, ...otherSenders].slice(0, Math.max(reaction.count, 1));
+      return senders.map((sender, index) => ({
+        sender,
+        origin_server_ts: Date.now() - index * 1000,
+      }));
+    },
+
+    forward_message: (args) => {
+      const targetRoomId = args.targetRoomId as string;
+      const eventId = args.eventId as string;
+      const sourceRoomId = args.sourceRoomId as string;
+      const source = findMessage(sourceRoomId, eventId);
+      const transactionId = `txn-${nextTxnId++}`;
+      const forwarded = {
+        event_id: `\$${nextEventId++}`,
+        sender: seed.userId,
+        sender_display_name: null,
+        sender_avatar_url: null,
+        sender_avatar_path: null,
+        body: source?.body ?? "",
+        formatted_body: null,
+        timestamp_ms: Date.now(),
+        edited: false,
+        redacted: false,
+        reactions: [],
+        in_reply_to: null,
+        transaction_id: transactionId,
+        send_state: { state: "sent" },
+      };
+      messagesByRoom.get(targetRoomId)?.push(forwarded);
+      pushTimelineUpdate(targetRoomId);
+      return transactionId;
     },
   };
 
