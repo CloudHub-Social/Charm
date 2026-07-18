@@ -3,47 +3,83 @@ title: Charm 2.0 Spec — Room-list row enrichment, filtering and sorting
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 sidebar:
   label: "Room-list row enrichment"
 ---
 
 ## Implementation status
 
-**Partial implementation behind the default-off `room_list_unread_filter`
-feature flag.** Home, Direct messages, and selected-space lists now expose an
-explicit All / Unread control. The choice persists independently for each list
-mode, uses `RoomSummary.has_unread` as the authoritative signal, retains the open
-room, never filters pending invitations, and preserves nested-space ancestors that
+**Shipped, behind four independent default-off feature flags** so each slice
+can be staged and killed on its own: `room_list_unread_filter`,
+`room_list_message_preview`, `room_list_sort`, and
+`room_list_typing_indicator`.
+
+**Unread/activity filter (`room_list_unread_filter`).** Home, Direct
+messages, and selected-space lists expose an explicit All / Unread control.
+The choice persists independently for each list mode, uses
+`RoomSummary.has_unread` as the authoritative signal, retains the open room,
+never filters pending invitations, and preserves nested-space ancestors that
 lead to an unread or open room. Manual row reordering is disabled while the
-filtered subset is visible so hidden rows cannot corrupt the full ordering. The
-Appearance panel also offers a persisted, default-off **Unread message counts**
-preference. When enabled, room rows replace the plain ambient-unread dot with the
-existing `RoomSummary.unread_messages` total while retaining notification badges
-as the higher-priority signal.
+filtered subset is visible so hidden rows cannot corrupt the full ordering.
+The Appearance panel also offers a persisted **Unread message counts**
+preference (gated on the same flag). When enabled, room rows replace the
+plain ambient-unread dot with the existing `RoomSummary.unread_messages`
+total while retaining notification badges as the higher-priority signal.
 
-**Last-message preview shipped behind a second, independent default-off flag,
-`room_list_message_preview`.** `RoomSummary` gained a `last_message_preview`
-field (sender id, resolved display name, and a truncated text snippet, capped
-at 100 characters with a trailing `…`), computed in `snapshot_rooms` via
-matrix-sdk's own `LatestEvents` tracker — the SDK's dedicated mechanism for a
-room-list's last-message summary, kept current off the same event-cache
-updates the sync loop already produces rather than a separate per-room fetch.
-A non-text `m.room.message` (image/video/audio/file/location) renders a short
-human summary ("Sent an image", etc.) instead of the raw, often filename-only
-event body; a pending invite, a still-sending local echo, or an
-as-yet-uncomputed value all fall back to `None`, and the row shows just the
-room name as before. `RoomListItem.tsx` renders the preview as a second,
-`truncate`d line under the room name when the flag is on. This is a separate
-flag from `room_list_unread_filter` because it's an independently shippable
-slice of this spec, not gated by the unread-filter's own on/off state.
+**Last-message preview (`room_list_message_preview`).** `RoomSummary` gained
+a `last_message_preview` field (sender id, resolved display name, and a
+truncated text snippet, capped at 100 characters with a trailing `…`),
+computed in `snapshot_rooms` via matrix-sdk's own `LatestEvents` tracker —
+the SDK's dedicated mechanism for a room-list's last-message summary, kept
+current off the same event-cache updates the sync loop already produces
+rather than a separate per-room fetch. A non-text `m.room.message`
+(image/video/audio/file/location) renders a short human summary ("Sent an
+image", etc.) instead of the raw, often filename-only event body; a pending
+invite, a still-sending local echo, or an as-yet-uncomputed value all fall
+back to `None`, and the row shows just the room name as before.
+`RoomListItem.tsx` renders the preview as a second, `truncate`d line under
+the room name when the flag is on. Independent of `room_list_unread_filter`
+since it's a separately shippable slice.
 
-Sorting controls, typing indicators, topic previews, and sidebar resizing
-remain follow-up work. This spec is therefore not shipped or complete.
+**Sort control (`room_list_sort`).** Each list (Home, DMs, a space) exposes a
+`<select>` — Default / Activity / A-Z / Unread first — persisted per list
+mode the same way the unread filter is. Sorting applies within each existing
+section (Favourites, a space group, plain Rooms, Low priority), never across
+them. "Default" is a no-op over the Rust-computed
+(section, manual_order, name) order. "A-Z" and "Unread first" are pure
+frontend re-sorts (`roomListSort.ts`). "Activity" sorts by a new
+`RoomSummary.last_activity_ts` field — the latest event's own timestamp
+(remote or a still-sending local echo), computed alongside the last-message
+preview off the same `LatestEvents` subscription (or on its own when only
+the sort flag, not the preview flag, is on) — most-recent first, with rooms
+that have no known timestamp yet sorting last. A non-default sort naturally
+disables manual drag-reorder for the affected rows, reusing the existing
+"visible order must match the full section's order" check `renderSectionRooms`
+already applies for the unread filter. Space mode's hierarchy tree (the
+"Space rooms" section, as opposed to favourited/low-priority rooms filed
+under a space) is unaffected — its order comes from the `/hierarchy` API and
+sorting it is left as follow-up.
+
+**Typing-in-list indicator (`room_list_typing_indicator`).** A single shared
+`useRoomListTyping` hook subscribes once to the existing `typing:update`
+event (Spec 05) for the whole `RoomList`, tracking which rooms currently have
+someone other than the current user typing, with the same per-room auto-hide
+behavior as the in-room typing row. Rows show a small pulsing pencil icon
+next to the room name and swap the second-line preview text for "Typing…"
+(taking priority over the last-message preview) while active.
+
+**Ambient unread count.** Shipped as part of the unread-filter flag above.
+
+**Minor/deferred:** room-topic preview as a preview-line alternative, and
+sidebar width resize (`SidebarResizer` in 1.0), remain unimplemented — low
+value relative to the rest of this spec and left for a future pass if
+requested.
 
 :::note[Historical baseline]
 The proposal below is retained as the full design. Statements that Charm has no
-unread filter describe the state before the first implementation slice.
+unread filter, sort control, or typing indicator describe the state before the
+first implementation slices.
 :::
 
 **Workstream:** one PR / one agent (or split rows vs filter/sort). New spec from the

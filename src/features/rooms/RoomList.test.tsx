@@ -78,6 +78,7 @@ const onSelfProfileUpdate = vi.fn().mockResolvedValue(() => {});
 const getDndState = vi.fn().mockReturnValue(new Promise(() => {}));
 const setDndState = vi.fn().mockResolvedValue({ enabled: false, until: null });
 const onDndChanged = vi.fn().mockResolvedValue(() => {});
+const onTypingUpdate = vi.fn().mockResolvedValue(() => {});
 
 vi.mock("@/lib/matrix", () => ({
   setRoomFavourite: (...args: unknown[]) => setRoomFavourite(...args),
@@ -95,6 +96,7 @@ vi.mock("@/lib/matrix", () => ({
   getDndState: () => getDndState(),
   setDndState: (...args: unknown[]) => setDndState(...args),
   onDndChanged: (...args: unknown[]) => onDndChanged(...args),
+  onTypingUpdate: (...args: unknown[]) => onTypingUpdate(...args),
 }));
 
 // @use-gesture/react's useDrag attaches real pointer-event listeners; none of

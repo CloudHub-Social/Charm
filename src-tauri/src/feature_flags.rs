@@ -137,6 +137,13 @@ define_feature_flag_keys!(
         /// Day-2 Spec 12: personal, private message bookmarks and the global
         /// Saved Messages view.
         Bookmarks,
+        /// Spec 54 room-list sort control: switch Home, DMs, and space room
+        /// lists between the default order, alphabetical, unread-first, and
+        /// activity (most recent message) ordering.
+        RoomListSort,
+        /// Spec 54 room-list typing indicator: a per-row badge showing when
+        /// someone is currently typing in that room.
+        RoomListTypingIndicator,
     }
 );
 
@@ -160,6 +167,8 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessagePinning => false,
             FeatureFlagKey::PresencePrivacyControls => false,
             FeatureFlagKey::Bookmarks => false,
+            FeatureFlagKey::RoomListSort => false,
+            FeatureFlagKey::RoomListTypingIndicator => false,
         }
     }
 
@@ -212,6 +221,12 @@ impl FeatureFlagKey {
             FeatureFlagKey::Bookmarks => {
                 "Bookmark a message from its action menu and browse saved messages from a global Settings panel."
             }
+            FeatureFlagKey::RoomListSort => {
+                "Switch Home, direct-message, and space room lists between default, alphabetical, unread-first, and activity ordering."
+            }
+            FeatureFlagKey::RoomListTypingIndicator => {
+                "Show a typing badge on room-list rows for rooms with someone currently typing."
+            }
         }
     }
 
@@ -238,6 +253,10 @@ impl FeatureFlagKey {
                 "Spec 40 (presence and receipt privacy controls)"
             }
             FeatureFlagKey::Bookmarks => "Day-2 Spec 12 (bookmarks and saved messages)",
+            FeatureFlagKey::RoomListSort => "Spec 54 (room-list enrichment and filtering)",
+            FeatureFlagKey::RoomListTypingIndicator => {
+                "Spec 54 (room-list enrichment and filtering)"
+            }
         }
     }
 
@@ -260,6 +279,8 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessagePinning => "message_pinning",
             FeatureFlagKey::PresencePrivacyControls => "presence_privacy_controls",
             FeatureFlagKey::Bookmarks => "bookmarks",
+            FeatureFlagKey::RoomListSort => "room_list_sort",
+            FeatureFlagKey::RoomListTypingIndicator => "room_list_typing_indicator",
         }
     }
 }

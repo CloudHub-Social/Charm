@@ -112,4 +112,12 @@ inviter_user_id: string | null, inviter_display_name: string | null,
  * the room's most recent message, or `None` when none is available yet
  * — see [`last_message_preview`].
  */
-last_message_preview: LastMessagePreview | null, };
+last_message_preview: LastMessagePreview | null, 
+/**
+ * Spec 54 activity sort: the latest event's timestamp (remote or a
+ * still-sending local echo), milliseconds since the Unix epoch. `None`
+ * when activity sort is off or no latest event has been computed yet —
+ * the frontend falls back to the default section/manual-order/name
+ * ordering in that case. See [`last_activity_ts`].
+ */
+last_activity_ts: number | null, };
