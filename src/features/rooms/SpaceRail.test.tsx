@@ -3,6 +3,7 @@ import type { ComponentProps } from "react";
 import { createStore, Provider } from "jotai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { badgeAtom } from "@/features/shell/badgeAtom";
+import { makeRoomDetails } from "@/features/room-info/testUtils";
 import type * as MatrixLib from "@/lib/matrix";
 import type { BadgeState } from "@/lib/matrix";
 import { SpaceRail } from "./SpaceRail";
@@ -18,6 +19,11 @@ const inviteMember = vi.fn().mockResolvedValue(undefined);
 // back to (and stays on) the local-storage cache.
 const getAccountData = vi.fn().mockResolvedValue(null);
 const setAccountData = vi.fn().mockResolvedValue(undefined);
+// Defaults to full permissions so existing tests exercising Invite/Add
+// existing/Suggested/Remove don't need to know about power-level gating;
+// tests that specifically cover the gating (Spec 63's known-gap fix)
+// override this per-call.
+const getRoomDetails = vi.fn((roomId: string) => Promise.resolve(makeRoomDetails({ room_id: roomId })));
 
 vi.mock("@/lib/matrix", async (importOriginal) => ({
   ...(await importOriginal<typeof MatrixLib>()),
@@ -28,6 +34,7 @@ vi.mock("@/lib/matrix", async (importOriginal) => ({
   inviteMember: (...args: unknown[]) => inviteMember(...args),
   getAccountData: (...args: unknown[]) => getAccountData(...args),
   setAccountData: (...args: unknown[]) => setAccountData(...args),
+  getRoomDetails: (...args: [string]) => getRoomDetails(...args),
 }));
 
 // `space_rail_management` defaults off; these tests exercise the feature
@@ -95,10 +102,25 @@ function renderRail({ badgeState, ...overrides }: RenderRailOptions = {}) {
   return props;
 }
 
+// Radix's `ContextMenuItem` renders a `<div role="menuitem">`, not a native
+// disableable form control, so jest-dom's `toBeDisabled`/`toBeEnabled` never
+// recognize it — it always reports "enabled" regardless of `aria-disabled`.
+// Assert directly on the attribute Radix actually sets instead.
+function expectMenuItemDisabled(name: string | RegExp) {
+  expect(screen.getByRole("menuitem", { name })).toHaveAttribute("aria-disabled", "true");
+}
+function expectMenuItemEnabled(name: string | RegExp) {
+  expect(screen.getByRole("menuitem", { name })).not.toHaveAttribute("aria-disabled", "true");
+}
+
 describe("SpaceRail", () => {
   beforeEach(() => {
     localStorage.clear();
     mockUseFlag.mockReturnValue(true);
+    getRoomDetails.mockReset();
+    getRoomDetails.mockImplementation((roomId: string) =>
+      Promise.resolve(makeRoomDetails({ room_id: roomId })),
+    );
   });
 
   it("renders Home, DMs, top-level spaces, and the create/join entry", () => {
@@ -400,13 +422,45 @@ describe("SpaceRail", () => {
     ]);
   });
 
-  it("opens the Invite dialog for a space from its context menu", () => {
+  it("opens the Invite dialog for a space from its context menu", async () => {
     renderRail();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expectMenuItemEnabled(/Invite/));
     fireEvent.click(screen.getByRole("menuitem", { name: /Invite/ }));
 
     expect(screen.getByRole("dialog", { name: "Invite to Team" })).toBeInTheDocument();
+  });
+
+  it("disables Invite until the space's permissions have loaded, then re-enables it once permitted", async () => {
+    let resolveDetails: (details: ReturnType<typeof makeRoomDetails>) => void = () => {};
+    getRoomDetails.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDetails = resolve;
+      }),
+    );
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expectMenuItemDisabled(/Invite/);
+
+    resolveDetails(
+      makeRoomDetails({ room_id: "!space:localhost", can: { ...makeRoomDetails().can, invite: true } }),
+    );
+    await waitFor(() => expectMenuItemEnabled(/Invite/));
+  });
+
+  it("keeps Invite disabled when the user lacks the invite power level in that space", async () => {
+    getRoomDetails.mockImplementationOnce((roomId: string) =>
+      Promise.resolve(
+        makeRoomDetails({ room_id: roomId, can: { ...makeRoomDetails().can, invite: false } }),
+      ),
+    );
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
+    expectMenuItemDisabled(/Invite/);
   });
 
   it("opens a Leave confirmation dialog rather than leaving immediately", async () => {
@@ -444,10 +498,13 @@ describe("SpaceRail", () => {
     expect(props.onSelectHome).not.toHaveBeenCalled();
   });
 
-  it("opens the Add Existing dialog for a space from its context menu", () => {
+  it("opens the Add Existing dialog for a space from its context menu", async () => {
     renderRail();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() =>
+      expectMenuItemEnabled(/Add existing/),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: /Add existing/ }));
 
     expect(
@@ -455,7 +512,20 @@ describe("SpaceRail", () => {
     ).toBeInTheDocument();
   });
 
-  it("offers Remove and Set/Unset Suggested only on a space with a parent", () => {
+  it("disables Add existing when the user lacks power to send m.space.child in that space", async () => {
+    getRoomDetails.mockImplementationOnce((roomId: string) =>
+      Promise.resolve(
+        makeRoomDetails({ room_id: roomId, can: { ...makeRoomDetails().can, set_space_child: false } }),
+      ),
+    );
+    renderRail();
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
+    expectMenuItemDisabled(/Add existing/);
+  });
+
+  it("offers Remove and Set/Unset Suggested only on a space with a parent", async () => {
     renderRail();
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
@@ -466,10 +536,16 @@ describe("SpaceRail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
 
+    await waitFor(() =>
+      expectMenuItemEnabled("Remove from space"),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
     expect(removeSpaceChild).toHaveBeenCalledWith("!space:localhost", "!child-space:localhost");
 
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    await waitFor(() =>
+      expectMenuItemEnabled("Mark as suggested"),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: "Mark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
       "!space:localhost",
@@ -478,6 +554,9 @@ describe("SpaceRail", () => {
     );
 
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    await waitFor(() =>
+      expectMenuItemEnabled("Unmark as suggested"),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: "Unmark as suggested" }));
     expect(setSpaceChildSuggested).toHaveBeenCalledWith(
       "!space:localhost",
@@ -486,12 +565,38 @@ describe("SpaceRail", () => {
     );
   });
 
+  it("disables Remove and Set/Unset Suggested when the user lacks power in the parent space", async () => {
+    getRoomDetails.mockImplementation((roomId: string) =>
+      Promise.resolve(
+        makeRoomDetails({
+          room_id: roomId,
+          can: {
+            ...makeRoomDetails().can,
+            set_space_child: roomId !== "!space:localhost",
+          },
+        }),
+      ),
+    );
+    renderRail();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledWith("!space:localhost"));
+    expectMenuItemDisabled("Remove from space");
+    expectMenuItemDisabled("Mark as suggested");
+    expectMenuItemDisabled("Unmark as suggested");
+  });
+
   it("calls onSpaceChildrenChanged after successfully removing a nested space, so a sibling RoomList can refresh", async () => {
     const onSpaceChildrenChanged = vi.fn();
     renderRail({ onSpaceChildrenChanged });
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    await waitFor(() =>
+      expectMenuItemEnabled("Remove from space"),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
     await waitFor(() => expect(onSpaceChildrenChanged).toHaveBeenCalledOnce());
@@ -503,6 +608,9 @@ describe("SpaceRail", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Expand Team" }));
     fireEvent.contextMenu(screen.getByRole("button", { name: /^Product/ }));
+    await waitFor(() =>
+      expectMenuItemEnabled("Remove from space"),
+    );
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from space" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("lacking power level");

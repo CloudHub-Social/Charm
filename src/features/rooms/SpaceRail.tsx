@@ -27,7 +27,13 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useFlag } from "@/featureFlags";
 import { badgeAtom } from "@/features/shell/badgeAtom";
-import { removeSpaceChild, setSpaceChildSuggested, type RoomSummary } from "@/lib/matrix";
+import {
+  getRoomDetails,
+  removeSpaceChild,
+  setSpaceChildSuggested,
+  type RoomPermissions,
+  type RoomSummary,
+} from "@/lib/matrix";
 import { cn } from "@/lib/utils";
 import { AddExistingToSpaceDialog } from "./AddExistingToSpaceDialog";
 import { InviteToSpaceDialog } from "./InviteToSpaceDialog";
@@ -86,6 +92,25 @@ export function SpaceRail({
       if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
     };
   }, []);
+  // Keyed by room_id. Fetched lazily when a space's context menu opens
+  // (rather than for every rail entry up front) — `RoomPermissions` isn't
+  // part of `RoomSummary`/the sync loop, so this is a dedicated, on-demand
+  // `get_room_details` call per space actually inspected. Power-level-gated
+  // items default to disabled until a result lands.
+  const [permissionsById, setPermissionsById] = useState<Record<string, RoomPermissions>>({});
+  const permissionsFetchInFlight = useRef<Set<string>>(new Set());
+  function ensurePermissionsLoaded(roomId: string) {
+    if (permissionsById[roomId] || permissionsFetchInFlight.current.has(roomId)) return;
+    permissionsFetchInFlight.current.add(roomId);
+    getRoomDetails(roomId)
+      .then((details) => {
+        setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
+      })
+      .catch(reportActionError)
+      .finally(() => {
+        permissionsFetchInFlight.current.delete(roomId);
+      });
+  }
   function reportActionError(err: unknown) {
     setActionError(err instanceof Error ? err.message : String(err));
     if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
@@ -227,6 +252,17 @@ export function SpaceRail({
     const pinnedIndex = topLevel
       ? pinnedTopLevelSpaces.findIndex((s) => s.room_id === space.room_id)
       : -1;
+    // Power-level gates (Spec 63 known gap): default to disabled until each
+    // room's `RoomPermissions` has been fetched, rather than showing an
+    // action that would just fail server-side for members without the
+    // required power level. `Invite`/`Add existing…` are gated by this
+    // space's own permissions; `Suggested`/`Remove` mutate the *parent's*
+    // `m.space.child` edge, so they're gated by the parent's permissions.
+    const ownPermissions = permissionsById[space.room_id];
+    const parentPermissions = parentId ? permissionsById[parentId] : undefined;
+    const canInvite = ownPermissions?.invite ?? false;
+    const canEditOwnChildren = ownPermissions?.set_space_child ?? false;
+    const canEditParentChildren = parentPermissions?.set_space_child ?? false;
     const entryTrigger = (
       <div className="relative flex h-11 w-14 items-center justify-center">
         {visibleChildren.length > 0 && (
@@ -254,7 +290,13 @@ export function SpaceRail({
     return (
       <div key={space.room_id} className="flex flex-col items-center gap-1">
         {managementEnabled ? (
-          <ContextMenu>
+          <ContextMenu
+            onOpenChange={(open) => {
+              if (!open) return;
+              ensurePermissionsLoaded(space.room_id);
+              if (parentId) ensurePermissionsLoaded(parentId);
+            }}
+          >
             <ContextMenuTrigger asChild>{entryTrigger}</ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem onSelect={() => onSelectSpace(space.room_id)}>
@@ -262,6 +304,7 @@ export function SpaceRail({
                 Open lobby
               </ContextMenuItem>
               <ContextMenuItem
+                disabled={!canInvite}
                 onSelect={() => setInviteTarget({ spaceId: space.room_id, name: label })}
               >
                 <UserPlus aria-hidden="true" />
@@ -296,6 +339,7 @@ export function SpaceRail({
               )}
               <ContextMenuSeparator />
               <ContextMenuItem
+                disabled={!canEditOwnChildren}
                 onSelect={() => setAddExistingTarget({ spaceId: space.room_id, name: label })}
               >
                 <FolderPlus aria-hidden="true" />
@@ -304,6 +348,7 @@ export function SpaceRail({
               {parentId && (
                 <>
                   <ContextMenuItem
+                    disabled={!canEditParentChildren}
                     onSelect={() =>
                       setSpaceChildSuggested(parentId, space.room_id, true).catch(reportActionError)
                     }
@@ -312,6 +357,7 @@ export function SpaceRail({
                     Mark as suggested
                   </ContextMenuItem>
                   <ContextMenuItem
+                    disabled={!canEditParentChildren}
                     onSelect={() =>
                       setSpaceChildSuggested(parentId, space.room_id, false).catch(
                         reportActionError,
@@ -322,6 +368,7 @@ export function SpaceRail({
                     Unmark as suggested
                   </ContextMenuItem>
                   <ContextMenuItem
+                    disabled={!canEditParentChildren}
                     onSelect={() =>
                       removeSpaceChild(parentId, space.room_id)
                         .then(onSpaceChildrenChanged)
