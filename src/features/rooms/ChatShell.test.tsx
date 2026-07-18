@@ -2897,14 +2897,20 @@ describe("ChatShell", () => {
       el.className.includes("text-[7px]"),
     );
     if (!chip) throw new Error("read-receipt chip not found");
-    // Real DOM focus (not `fireEvent.focus`, which dispatches a plain
-    // non-bubbling `focus` event that React's `focusin`-based delegation
-    // never sees) — the chip is `tabIndex={0}` specifically so keyboard/
-    // screen-reader users can reach it, and Radix's TooltipTrigger opens
-    // instantly on focus, which doubles as the simplest reliable way to
-    // exercise the Radix wiring here without simulating pointer hover.
+    // Review fix: `SeenByChips` now wraps the whole chip stack in an outer
+    // `PopoverTrigger` button (so a no-overflow stack can also open the
+    // full "Seen by" list — see that file's own review-fix comment), which
+    // means the individual per-avatar tooltip trigger can no longer also be
+    // independently `tabIndex`-focusable without nesting two nested
+    // interactive controls (an axe `nested-interactive` violation this
+    // repo's Storybook a11y gate enforces). Its `onPointerMove` handler is
+    // untouched though, so real mouse hover still opens the per-avatar
+    // "Read by {name}" tooltip — exercised here via a synthetic
+    // `pointerMove` instead of the previous `chip.focus()`. Keyboard/
+    // screen-reader users now reach the same "Read by Alice" info via the
+    // outer trigger's full list instead (covered by `SeenByChips.test.tsx`).
     await act(async () => {
-      chip.focus();
+      fireEvent.pointerMove(chip, { pointerType: "mouse" });
       // Radix's Tooltip Presence/Portal content needs a tick beyond the
       // synchronous `open` state flip to actually mount into the portal.
       await new Promise((resolve) => setTimeout(resolve, 0));

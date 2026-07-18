@@ -128,7 +128,18 @@ pub async fn set_presence(
     presence: PresenceStateDto,
     status_msg: Option<String>,
 ) -> Result<(), String> {
-    let appear_offline = super::privacy_settings::current_settings(&app, &state)
+    // Review fix (P1): resolve the client once, up front, and read privacy
+    // settings via `current_settings_for_client` for both the pre-send and
+    // post-send checks below — using the same client throughout. This used
+    // to check settings via `current_settings(&state)` (which internally
+    // re-resolves its own client) and only resolve `state.require_client()`
+    // afterward for the actual send: a logout/login landing in that window
+    // meant the privacy check could read account A's settings while the
+    // send (and the post-send recheck) ran against account B's client,
+    // sending B's presence to the homeserver as if A's (now-irrelevant)
+    // appear_offline decision applied to it.
+    let client = state.require_client().await?;
+    let appear_offline = super::privacy_settings::current_settings_for_client(&app, &client)
         .await
         .appear_offline;
     if !presence_update_allowed(presence, appear_offline) {
@@ -136,7 +147,6 @@ pub async fn set_presence(
         // `appear_offline` toggle — see this command's own doc comment.
         return Ok(());
     }
-    let client = state.require_client().await?;
     set_presence_impl(&client, presence, status_msg).await?;
     // Review fix (P1): re-checked *after* the send, not just before it — the
     // pre-send check above only guards against `appear_offline` already
@@ -156,7 +166,7 @@ pub async fn set_presence(
     // the sync loop's timing.
     if !presence_update_allowed(
         presence,
-        super::privacy_settings::current_settings(&app, &state)
+        super::privacy_settings::current_settings_for_client(&app, &client)
             .await
             .appear_offline,
     ) {
