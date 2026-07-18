@@ -75,7 +75,12 @@ export function SeenByChips({ readers, senderNameByUserId, className }: SeenByCh
     </TooltipProvider>
   );
 
-  if (!expandableListEnabled) return stack;
+  // Review fix: `PopoverTrigger` only ever renders in the `overflowCount >
+  // 0` branch above — wrapping `stack` in `<Popover>` when there's nothing
+  // to overflow left the full-list `PopoverContent` mounted with no
+  // trigger to ever open it, an unreachable subtree with no way for the
+  // user to see it.
+  if (!expandableListEnabled || overflowCount <= 0) return stack;
 
   return (
     <Popover>

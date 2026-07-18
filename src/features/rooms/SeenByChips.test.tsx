@@ -28,6 +28,20 @@ describe("SeenByChips", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
+  it("does not wrap the chip stack in a triggerless Popover when nothing overflows (review fix)", () => {
+    // Review fix: `PopoverTrigger` only ever renders in the overflow
+    // branch — wrapping the stack in `<Popover>` regardless left a
+    // `PopoverContent` with no trigger to ever open it whenever
+    // presence_privacy_controls was on but there was nothing to overflow.
+    renderWithProviders(
+      <SeenByChips
+        readers={["@alice:localhost", "@bob:localhost"]}
+        senderNameByUserId={new Map()}
+      />,
+    );
+    expect(screen.queryByText(/^Seen by/)).not.toBeInTheDocument();
+  });
+
   it("clicking the overflow '+N' chip expands the full ordered seen-by list", () => {
     const readers = [
       "@a:localhost",

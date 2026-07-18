@@ -115,6 +115,18 @@ pub async fn current_settings(app: &AppHandle, state: &State<'_, MatrixState>) -
     let Ok(account_key) = account_key_for(state).await else {
         return PrivacySettings::default();
     };
+    // Review fix: `set_privacy_settings` holds `PRIVACY_PREFS_LOCK` while it
+    // rewrites the settings file with `std::fs::write` — not an atomic
+    // replace, so a read landing mid-write could see a truncated or
+    // partial file. Any read/parse error here falls back to all-off
+    // defaults (fail-*open*, so a transient error never blocks message-
+    // read/typing UX) — but that means a read racing an in-progress save
+    // would momentarily un-suppress hide_read_receipts/hide_typing/
+    // appear_offline right as the user turned them *on*, sending exactly
+    // the public receipt/typing notice they'd just asked to hide. Taking
+    // the same lock here serializes reads with writes, so a read can never
+    // observe a half-written file in the first place.
+    let _guard = PRIVACY_PREFS_LOCK.lock().await;
     load_settings(app, &account_key).unwrap_or_default()
 }
 

@@ -27,9 +27,33 @@ let privacySettingsWriteQueue: Promise<void> = Promise.resolve();
 // write enqueued before that point a no-op once its turn comes, instead of
 // actually calling into Rust.
 let privacySettingsWriteGeneration = 0;
+// Review fix: with rapid successive toggles, an earlier mutation's
+// `onSuccess`/`onError` can settle *after* a later mutation's `onMutate`
+// has already put a newer full snapshot into the cache — without this,
+// the earlier one would blindly overwrite that newer snapshot with its
+// own (now-stale) settings, and a subsequent toggle reading the cache in
+// `usePatchPrivacySettings` would then send yet another full snapshot
+// that silently drops the still-in-flight newer change. Module-level (not
+// a `useRef`) so it stays correct even if more than one component
+// happened to call `useSetPrivacySettings`/`usePatchPrivacySettings` at
+// once — matches `privacySettingsWriteGeneration`'s own scope. Also
+// bumped by `resetPrivacySettingsWriteQueue` below, for the same logout
+// scenario that function's own write-generation bump handles.
+let latestPrivacyMutationId = 0;
 export function resetPrivacySettingsWriteQueue(): void {
   privacySettingsWriteGeneration += 1;
   privacySettingsWriteQueue = Promise.resolve();
+  // Review fix: bumping the write generation alone only stops the queued
+  // write's *IPC call* — `serializedSetPrivacySettings` still resolves
+  // successfully (just without calling into Rust), so the mutation's own
+  // `onSuccess` still fires. Without also invalidating
+  // `latestPrivacyMutationId` here, that `onSuccess` would still pass its
+  // own "am I still the latest mutation" check and write the old account's
+  // settings snapshot into the cache — right after `queryClient.clear()`
+  // ran for the same logout, undoing it for whatever account signs in
+  // next. Bumping this too makes every mutation issued before this reset a
+  // no-op on both fronts: no IPC call, and no cache write either.
+  latestPrivacyMutationId += 1;
 }
 function serializedSetPrivacySettings(settings: PrivacySettings): Promise<void> {
   const generation = privacySettingsWriteGeneration;
@@ -74,18 +98,6 @@ export function usePrivacySettings(enabled = true) {
  * struct, not a per-field setter) so a caller always mutates off the latest
  * cached snapshot rather than racing partial updates against each other.
  */
-// Review fix: with rapid successive toggles, an earlier mutation's
-// `onSuccess`/`onError` can settle *after* a later mutation's `onMutate`
-// has already put a newer full snapshot into the cache — without this,
-// the earlier one would blindly overwrite that newer snapshot with its
-// own (now-stale) settings, and a subsequent toggle reading the cache in
-// `usePatchPrivacySettings` would then send yet another full snapshot
-// that silently drops the still-in-flight newer change. Module-level (not
-// a `useRef`) so it stays correct even if more than one component
-// happened to call `useSetPrivacySettings`/`usePatchPrivacySettings` at
-// once — matches `privacySettingsWriteGeneration`'s own scope above.
-let latestPrivacyMutationId = 0;
-
 export function useSetPrivacySettings() {
   const queryClient = useQueryClient();
   return useMutation({
