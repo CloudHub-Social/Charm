@@ -1,4 +1,4 @@
-import { Pin, X } from "lucide-react";
+import { Pin, PinOff, X } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { onTimelineUpdate, unpinEvent, type RoomMessageSummary } from "@/lib/matrix";
@@ -222,7 +222,7 @@ export function PinnedMessagesPanel({
                   onClick={() => handleUnpin(message.event_id)}
                   className="flex shrink-0 items-center px-3 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 >
-                  <Pin className="size-4" />
+                  <PinOff className="size-4" />
                 </button>
               )}
             </li>

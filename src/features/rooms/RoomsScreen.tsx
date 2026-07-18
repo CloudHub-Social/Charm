@@ -3,7 +3,7 @@ import { useAtom, useAtomValue } from "jotai";
 import { RoomList } from "./RoomList";
 import { SpaceRail, type RoomListMode } from "./SpaceRail";
 import { CreateJoinSpaceDialog } from "./CreateJoinSpaceDialog";
-import { ChatShell, type ChatShellHandle } from "./ChatShell";
+import { ChatShell } from "./ChatShell";
 import { VerificationOverlay } from "@/features/verification/VerificationOverlay";
 import { usePresenceListener } from "@/features/presence/usePresence";
 import { SettingsScreen } from "@/features/settings/SettingsScreen";
@@ -108,24 +108,26 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
-  // Spec 12's "jump to message" from the Saved Messages settings panel: the
-  // room + event to scroll to once that room is selected and loaded.
-  // `ChatShell` clears this itself (via `onJumpHandled`) once the jump
-  // completes or definitively fails, rather than this screen guessing when
-  // that happened.
+  // "Jump to message" — the room + event to scroll to once that room is
+  // selected and loaded. Shared by two entry points that both just need
+  // "load this event into view, paginating around it if it's outside the
+  // loaded window if necessary": Spec 12's Saved Messages settings panel,
+  // and the day-2 Spec 04 pinned-messages panel. `ChatShell` clears this
+  // itself (via `onJumpHandled`) once the jump completes or definitively
+  // fails, rather than this screen guessing when that happened.
   //
   // Review fix: this used to track only the event id, not which room it was
   // for. If the user clicked a saved message in room A, then manually
   // switched to room B before the jump resolved, the bare event id would
   // still be handed to whichever room was active by the time `ChatShell`'s
-  // effect ran — sending room A's bookmark event id into a
-  // `loadTimelineAroundEvent` call scoped to room B, which could clear or
-  // fail the jump based on an unrelated room. Storing the intended room id
-  // alongside the event id, and only passing the event id down to
-  // `ChatShell` when the currently active room actually matches it (see
-  // `activeJumpToEventId` below), means a manual room switch mid-jump simply
-  // stops the jump from ever reaching the wrong room, without needing to
-  // separately detect and clear it on every possible room-change path.
+  // effect ran — sending room A's event id into a `loadTimelineAroundEvent`
+  // call scoped to room B, which could clear or fail the jump based on an
+  // unrelated room. Storing the intended room id alongside the event id,
+  // and only passing the event id down to `ChatShell` when the currently
+  // active room actually matches it (see `activeJumpToEventId` below),
+  // means a manual room switch mid-jump simply stops the jump from ever
+  // reaching the wrong room, without needing to separately detect and clear
+  // it on every possible room-change path.
   const [jumpTarget, setJumpTarget] = useState<{ roomId: string; eventId: string } | null>(null);
   const autoSelectSuppressedRef = useRef<
     { kind: "space" } | { kind: "invite"; roomId: string } | null
@@ -462,31 +464,6 @@ export function RoomsScreen({
       ? pinnedMessagesDrawerOpenAtomFamily(activeRoom.room_id)
       : noRoomPinnedMessagesDrawerOpenAtom,
   );
-  // Lets `PinnedMessagesPanel` (rendered in the separate `rightPanel` slot
-  // below, a sibling of `ChatShell` — see `ChatShellHandle`'s doc comment)
-  // trigger the same in-timeline scroll-to-message `ChatShell` itself uses
-  // for reply-preview/search-result jumps.
-  const chatShellRef = useRef<ChatShellHandle>(null);
-  // Review fix: on mobile, `AppShell` renders `rightPanel ?? content` — while
-  // the pinned-messages panel is the visible `rightPanel`, `ChatShell`
-  // itself isn't mounted at all, so `chatShellRef.current` is `null` and a
-  // tap on a pinned row was a silent no-op. Closing the panel first
-  // (`setPinnedMessagesDrawerOpen(false)`) remounts `ChatShell` as `content`
-  // in the same commit; `chatShellRef.current` is populated again by the
-  // time this effect runs (refs are set during commit, before effects), so
-  // stashing the target here and scrolling once the panel has actually
-  // closed reaches a real, mounted `ChatShell` instead of a stale ref.
-  //
-  // Review fix: carries the target `roomId` alongside the event id, not
-  // just the event id alone — if the user quickly switches to a different
-  // room after tapping a pinned message but before the panel-close effect
-  // below runs, `ChatShell` remounts for the *new* room, and
-  // `scrollToMessage` would silently fail to find the old room's event id
-  // in this room's message list. Stored and checked against `activeRoom` so
-  // a stale target for an already-abandoned room is dropped instead of
-  // firing into the wrong room.
-  const pendingMobileJumpRef = useRef<{ roomId: string; eventId: string } | null>(null);
-
   // The members drawer is desktop-only (mobile has no room besides the
   // active one to show it alongside — see `AppShell`'s non-goals). Reset
   // only on the desktop -> mobile *transition* (tracked via
@@ -512,27 +489,6 @@ export function RoomsScreen({
     pinnedMessagesDrawerOpen,
     setPinnedMessagesDrawerOpen,
   ]);
-
-  // See `pendingMobileJumpRef`'s own doc comment — runs once the
-  // pinned-messages panel has actually closed (remounting `ChatShell`) and
-  // there's a jump this same close was for.
-  useEffect(() => {
-    if (pinnedMessagesDrawerOpen) return;
-    const pending = pendingMobileJumpRef.current;
-    if (pending === null) return;
-    pendingMobileJumpRef.current = null;
-    if (pending.roomId !== activeRoom?.room_id) return;
-    chatShellRef.current?.scrollToMessage(pending.eventId);
-  }, [pinnedMessagesDrawerOpen, activeRoom?.room_id]);
-
-  // Review fix: a pending mobile jump is only ever valid for the room it
-  // was requested from — if the user switches rooms before the effect
-  // above gets to run (e.g. via `RoomList` while the pinned panel is still
-  // closing), drop it here rather than let a stale event id fire against
-  // whatever room the user has since navigated to.
-  useEffect(() => {
-    pendingMobileJumpRef.current = null;
-  }, [activeRoom?.room_id]);
 
   return (
     <>
@@ -576,7 +532,6 @@ export function RoomsScreen({
         }
         content={
           <ChatShell
-            ref={chatShellRef}
             room={activeRoom}
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
@@ -592,13 +547,20 @@ export function RoomsScreen({
             <PinnedMessagesPanel
               roomId={activeRoom.room_id}
               onClose={() => setPinnedMessagesDrawerOpen(false)}
+              // Review fix: this used to call `ChatShell`'s own imperative
+              // `scrollToMessage` (a plain in-loaded-window `scrollToIndex`,
+              // no pagination fallback) — a pin from before the currently
+              // loaded window (the common case for an old pin) silently did
+              // nothing. Routing through the same `jumpTarget`/
+              // `jumpToEventId` mechanism Saved Messages' bookmark jumps
+              // already use gets the `loadTimelineAroundEvent` fallback for
+              // free, and (on mobile) `setPinnedMessagesDrawerOpen(false)`
+              // below still remounts `ChatShell` into the `content` slot —
+              // the jump reaching it is now driven by this prop rather than
+              // a ref that had to be re-populated after that remount.
               onJumpToMessage={(eventId) => {
-                if (layout === "mobile") {
-                  pendingMobileJumpRef.current = { roomId: activeRoom.room_id, eventId };
-                  setPinnedMessagesDrawerOpen(false);
-                  return;
-                }
-                chatShellRef.current?.scrollToMessage(eventId);
+                setJumpTarget({ roomId: activeRoom.room_id, eventId });
+                if (layout === "mobile") setPinnedMessagesDrawerOpen(false);
               }}
             />
           ) : activeRoom && membersDrawerOpen ? (

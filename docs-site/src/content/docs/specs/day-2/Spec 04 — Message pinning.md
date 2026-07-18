@@ -51,10 +51,13 @@ already-loaded `EventTimelineItem`, which only covers events inside the currentl
 loaded timeline window. A pinned message is routinely *outside* that window (pinned
 long ago, or in a room whose timeline hasn't been scrolled back that far), so this
 spec adds a new `get_pinned_messages(room_id)` command that resolves each pinned
-event id via `matrix_sdk::Room::event()` (checks the event cache, falls back to a
-homeserver `GET /rooms/{room_id}/event/{event_id}`) rather than reusing the reply
-mechanism. An event id that fails to resolve (deleted room, network error) is
-dropped from the result rather than failing the whole panel.
+event id via `matrix_sdk::Room::load_or_fetch_event()` (checks the local event
+cache first, falls back to a homeserver `GET /rooms/{room_id}/event/{event_id}`
+on a miss) rather than reusing the reply mechanism. An event id that fails to
+resolve (deleted room, network error, history-visibility denial) still comes
+back as a row — a placeholder with `is_unresolved: true` — rather than being
+dropped from the result: a silently-omitted row would leave a pin the user has
+no way to remove, since the Unpin control lives on the row itself.
 
 The pinned-messages panel's jump-to-message action reuses `ChatShell`'s existing
 `handleJumpToMessage` (the same loaded-`messages`-array `scrollToIndex` mechanism

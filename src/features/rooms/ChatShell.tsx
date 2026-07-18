@@ -1,12 +1,4 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -101,19 +93,6 @@ interface ChatShellProps {
    */
   jumpToEventId?: string | null;
   onJumpHandled?: () => void;
-}
-
-/**
- * Imperative handle so a sibling of `ChatShell` — namely `RoomsScreen`'s
- * `PinnedMessagesPanel`, rendered in the separate `rightPanel` layout slot
- * (see `AppShell`), not nested inside `ChatShell`'s own returned JSX — can
- * trigger the same scroll-to-loaded-message mechanism the in-timeline
- * reply-preview click and search-result click already use
- * (`handleJumpToMessage` below), without either lifting the whole `messages`
- * array/Virtuoso ref out of this component or duplicating the scroll logic.
- */
-export interface ChatShellHandle {
-  scrollToMessage: (eventId: string) => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
@@ -253,10 +232,14 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
-export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function ChatShell(
-  { room, currentUserId, onBack, onNavigateToRoom, jumpToEventId = null, onJumpHandled },
-  ref,
-) {
+export function ChatShell({
+  room,
+  currentUserId,
+  onBack,
+  onNavigateToRoom,
+  jumpToEventId = null,
+  onJumpHandled,
+}: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
@@ -562,10 +545,6 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
   useEffect(() => {
     pendingScrollTargetRef.current = null;
   }, [roomId]);
-  // Exposes the same scroll-to mechanism to `RoomsScreen`'s
-  // `PinnedMessagesPanel` — see `ChatShellHandle`'s doc comment for why this
-  // needs to cross a component boundary rather than being called directly.
-  useImperativeHandle(ref, () => ({ scrollToMessage: handleJumpToMessage }));
   // Jump-to-present state (Spec 26 Phase 2) lives here in `ChatShell`, not in
   // `useChatTimeline` or on the (per-room-remounted) Virtuoso instance —
   // switching rooms while scrolled away and mid-pill in room A must not
@@ -1747,4 +1726,4 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
       <MessagePillProfileDialog profile={pillProfile} onClose={() => setPillProfile(null)} />
     </div>
   );
-});
+}

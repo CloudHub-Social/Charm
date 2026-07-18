@@ -2,9 +2,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import type { ReactElement } from "react";
-import { createRef, forwardRef, useImperativeHandle, useState } from "react";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatShell, type ChatShellHandle } from "./ChatShell";
+import { ChatShell } from "./ChatShell";
 import type {
   ReactionToggleResult,
   ReceiptUpdate,
@@ -4869,7 +4869,20 @@ describe("ChatShell", () => {
 
   // --- Spec day-2/04: message pinning ---
 
-  it("exposes scrollToMessage via ref for the pinned-messages panel to jump with", async () => {
+  // Review fix: `PinnedMessagesPanel`'s jump used to go through a
+  // `ChatShellHandle` imperative ref exposing a plain in-loaded-window
+  // `scrollToMessage` — a pin from outside the currently loaded window (the
+  // common case for an old pin) silently did nothing, since that path had
+  // no pagination fallback. `RoomsScreen` now routes pin jumps through the
+  // same `jumpToEventId` prop Saved Messages' bookmark jumps already use,
+  // which does have a `loadTimelineAroundEvent` fallback — see the
+  // `jumpToEventId`-prefixed tests throughout this file (e.g. "resets the
+  // timeline to live when Jump to Present is clicked after a jump used
+  // loadTimelineAroundEvent") for that mechanism's own coverage of the
+  // not-yet-loaded, pagination-fallback, and stale-room-guard cases, which
+  // now apply to a pinned-message jump exactly as they already did to a
+  // bookmark jump.
+  it("scrolls to a loaded message via jumpToEventId, for a pinned-messages panel jump within the loaded window", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [
         summary({ event_id: "$1", sender: "@alice:localhost", body: "first" }),
@@ -4877,111 +4890,16 @@ describe("ChatShell", () => {
       ],
       next_cursor: null,
     });
-    const ref = createRef<ChatShellHandle>();
     render(
       <JotaiProvider store={createStore()}>
-        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$2" />
       </JotaiProvider>,
     );
-    await screen.findByText("first");
-
-    act(() => {
-      ref.current?.scrollToMessage("$2");
-    });
-
-    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
-      expect.objectContaining({ index: 1, align: "center" }),
-    );
-  });
-
-  it("retries scrollToMessage once the first page loads, for a jump requested before messages arrived (review fix)", async () => {
-    // Review fix regression test: `RoomsScreen`'s mobile pinned-message
-    // jump remounts `ChatShell` (closing the sibling panel that was
-    // occupying its slot) and calls `scrollToMessage` essentially
-    // immediately — before `useChatTimeline`'s first page has necessarily
-    // resolved. That call used to be a silent, permanent no-op since
-    // `messages` was still empty at that instant.
-    let resolveTimeline: ((page: unknown) => void) | undefined;
-    getTimelinePage.mockReturnValue(
-      new Promise((resolve) => {
-        resolveTimeline = resolve;
-      }),
-    );
-    const ref = createRef<ChatShellHandle>();
-    render(
-      <JotaiProvider store={createStore()}>
-        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
-      </JotaiProvider>,
-    );
-
-    // Requested before the first page has loaded — `messages` is still `[]`.
-    act(() => {
-      ref.current?.scrollToMessage("$2");
-    });
-    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
-
-    await act(async () => {
-      resolveTimeline?.({
-        messages: [
-          summary({ event_id: "$1", sender: "@alice:localhost", body: "first" }),
-          summary({ event_id: "$2", sender: "@alice:localhost", body: "second" }),
-        ],
-        next_cursor: null,
-      });
-    });
     await screen.findByText("first");
 
     expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
       expect.objectContaining({ index: 1, align: "center" }),
     );
-  });
-
-  it("drops a pending scrollToMessage retry when the room changes before it resolves (review fix)", async () => {
-    let resolveTimelineA: ((page: unknown) => void) | undefined;
-    getTimelinePage.mockImplementation((roomId: string) => {
-      if (roomId === room.room_id) {
-        return new Promise((resolve) => {
-          resolveTimelineA = resolve;
-        });
-      }
-      return Promise.resolve({
-        messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
-        next_cursor: null,
-      });
-    });
-    const ref = createRef<ChatShellHandle>();
-    const { rerender } = render(
-      <JotaiProvider store={createStore()}>
-        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
-      </JotaiProvider>,
-    );
-
-    act(() => {
-      ref.current?.scrollToMessage("$stale-target");
-    });
-
-    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
-    rerender(
-      <JotaiProvider store={createStore()}>
-        <ChatShell ref={ref} room={roomB} currentUserId="@me:localhost" />
-      </JotaiProvider>,
-    );
-    await screen.findByText("room B msg");
-    virtuosoScrollToIndexMock.mockClear();
-
-    // Room A's timeline finally resolves — its stale pending target must
-    // not fire a scroll now that Room B is the active room.
-    await act(async () => {
-      resolveTimelineA?.({
-        messages: [
-          summary({ event_id: "$stale-target", sender: "@alice:localhost", body: "room A msg" }),
-        ],
-        next_cursor: null,
-      });
-      await Promise.resolve();
-    });
-
-    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
   });
 
   it("gates the Pin action by RoomDetails.can.set_pinned_events and calls pinEvent", async () => {
