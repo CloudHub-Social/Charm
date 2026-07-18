@@ -559,6 +559,28 @@ export function ChatShell({
   // path can cancel it instead of leaving a stale timer that could
   // force-clear a *later*, unrelated jump for the same room+event key.
   const jumpFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Review fix: `loadRequestedForRef` is keyed by room id *and* event id,
+  // but was never cleared on a plain room switch — `ChatShell` isn't
+  // remounted between rooms (same instance, just a new `room` prop), so if
+  // a Saved Messages jump in room A is still awaiting its own
+  // `loadTimelineAroundEvent` call when the user switches to room B (which
+  // has no pending jump of its own), that promise's `.then()`/`.catch()`
+  // still find `loadRequestedForRef.current` unchanged and matching their
+  // closed-over room-A request key once they finally settle — acting on a
+  // stale result (setting `hasFocusedView` for room B, or clearing the
+  // *new* `jumpToEventId` the parent may have already set for room B) as if
+  // it were about the room the user is now looking at. Reset synchronously
+  // during render (not in an effect, which would run one paint too late)
+  // the moment the active room actually changes.
+  const previousJumpRoomIdRef = useRef(room?.room_id ?? null);
+  if (previousJumpRoomIdRef.current !== (room?.room_id ?? null)) {
+    previousJumpRoomIdRef.current = room?.room_id ?? null;
+    loadRequestedForRef.current = null;
+    if (jumpFallbackTimeoutRef.current !== null) {
+      clearTimeout(jumpFallbackTimeoutRef.current);
+      jumpFallbackTimeoutRef.current = null;
+    }
+  }
   useEffect(() => {
     if (!jumpToEventId || !room) return;
     // Review fix: keyed by room *and* event, not event alone — if the user

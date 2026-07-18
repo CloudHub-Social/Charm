@@ -3711,6 +3711,63 @@ describe("ChatShell", () => {
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(roomB.room_id));
   });
 
+  it("ignores a stale loadTimelineAroundEvent result from room A once the user has switched to room B (review fix)", async () => {
+    // Room A's jump target requires loadTimelineAroundEvent, which we hold
+    // open manually. Before it resolves, the user switches to room B
+    // (no pending jump of its own). The stale room-A promise then resolves
+    // with installed_focused_view: true — this must not show room B's
+    // "Jump to present" pill (which would call resetToLive() against the
+    // wrong room) nor call onJumpHandled for a jump the parent never
+    // started for room B.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$room-a-bookmark"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$room-a-bookmark"),
+    );
+
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" onJumpHandled={onJumpHandled} />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    onJumpHandled.mockClear();
+
+    // The stale room-A request finally resolves, claiming it installed a
+    // focused view.
+    await act(async () => {
+      resolveLoadAround?.({ found: true, installed_focused_view: true });
+    });
+
+    expect(screen.queryByText("Jump to present")).not.toBeInTheDocument();
+    expect(onJumpHandled).not.toHaveBeenCalled();
+  });
+
   it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
     getTimelinePage.mockResolvedValue({
       messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
