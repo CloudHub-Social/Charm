@@ -1,4 +1,5 @@
 import type { BadgeState } from "@bindings/BadgeState";
+import type { BookmarkEntry } from "@bindings/BookmarkEntry";
 import type { CommandResult } from "@bindings/CommandResult";
 import type { DndSnapshot } from "@bindings/DndSnapshot";
 import type { CrossSigningStatusSummary } from "@bindings/CrossSigningStatusSummary";
@@ -9,6 +10,7 @@ import type { EventReceipt } from "@bindings/EventReceipt";
 import type { HistoryVisibilityKind } from "@bindings/HistoryVisibilityKind";
 import type { JoinedRoom } from "@bindings/JoinedRoom";
 import type { JoinRuleKind } from "@bindings/JoinRuleKind";
+import type { JumpToEventResult } from "@bindings/JumpToEventResult";
 import type { LoginRequest } from "@bindings/LoginRequest";
 import type { LoginResponse } from "@bindings/LoginResponse";
 import type { MediaContent } from "@bindings/MediaContent";
@@ -124,6 +126,7 @@ export async function invokeMatrix<T>(
  */
 export type {
   BadgeState,
+  BookmarkEntry,
   CommandResult,
   CrossSigningStatusSummary,
   DeviceSummary,
@@ -132,6 +135,7 @@ export type {
   EventReceipt,
   HistoryVisibilityKind,
   JoinRuleKind,
+  JumpToEventResult,
   LoginRequest,
   LoginResponse,
   MediaContent,
@@ -314,12 +318,59 @@ export function onRoomListUpdate(callback: (rooms: RoomSummary[]) => void): Prom
   return listen<RoomSummary[]>("room_list:update", (e) => callback(e.payload));
 }
 
+/**
+ * `forceLive`: review fix — resets a room's cached, focused
+ * (`TimelineFocus::Event`) timeline (left over from a Saved Messages jump)
+ * back to its ordinary live tail if one is currently cached, instead of
+ * paginating within the focused view. Pass `true` only when genuinely
+ * opening/reopening a room (see `useChatTimeline`'s room-open effect); the
+ * separate pagination-loop call must pass `false` (the default) so scrolling
+ * further back while still viewing a bookmark's focused context extends that
+ * view instead of snapping back to live mid-scroll.
+ */
 export function getTimelinePage(
   roomId: string,
   cursor?: string,
   limit?: number,
+  forceLive = false,
 ): Promise<TimelinePage> {
-  return invoke("get_timeline_page", { roomId, cursor, limit });
+  return invoke("get_timeline_page", { roomId, cursor, limit, forceLive });
+}
+
+/**
+ * Spec 12's minimal "load timeline around an arbitrary event id" — pulls
+ * older history into the room's live timeline (the same `paginate_backwards`
+ * primitive `getTimelinePage` uses, pushed to the frontend via the existing
+ * `timeline:update` listener) until `eventId` is loaded, or gives up.
+ * `found: false` means it's further back than this will paginate to, or no
+ * longer reachable. `installedFocusedView` is only `true` when the rarer
+ * server-side `/context` fallback ran *and* actually swapped the room's
+ * cached timeline to a focused view — the common case (found via the
+ * already-cached live timeline or bounded backward-pagination) never
+ * touches that path, so callers should only force a live re-fetch (e.g. on
+ * "Jump to Present") when this is `true`.
+ */
+export function loadTimelineAroundEvent(
+  roomId: string,
+  eventId: string,
+): Promise<JumpToEventResult> {
+  return invoke("load_timeline_around_event", { roomId, eventId });
+}
+
+/** Bookmarks (Spec 12: personal, private "saved messages" — never a Matrix
+ * event of any kind, see `add_bookmark`'s Rust doc comment) a loaded message. */
+export function addBookmark(roomId: string, eventId: string): Promise<void> {
+  return invoke("add_bookmark", { roomId, eventId });
+}
+
+/** Removes a bookmark. A no-op if `eventId` isn't currently bookmarked. */
+export function removeBookmark(eventId: string): Promise<void> {
+  return invoke("remove_bookmark", { eventId });
+}
+
+/** Every bookmark for the current account, newest-saved first. */
+export function listBookmarks(): Promise<BookmarkEntry[]> {
+  return invoke("list_bookmarks");
 }
 
 /**

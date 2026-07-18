@@ -70,5 +70,11 @@
     "default": false,
     "description": "Pin/unpin and reorder the space rail, and manage a space from its right-click context menu (Invite, Add Existing, Mark/Unmark Suggested, Remove, Leave).",
     "owner": "Spec 63 (sidebar and space management)"
+  },
+  {
+    "key": "bookmarks",
+    "default": false,
+    "description": "Bookmark a message from its action menu and browse saved messages from a global Settings panel.",
+    "owner": "Day-2 Spec 12 (bookmarks and saved messages)"
   }
 ]

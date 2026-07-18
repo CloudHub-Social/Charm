@@ -69,6 +69,10 @@ const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 const openUrl = vi.fn().mockResolvedValue(undefined);
 const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+const listBookmarks = vi.fn().mockResolvedValue([]);
+const addBookmark = vi.fn().mockResolvedValue(undefined);
+const removeBookmark = vi.fn().mockResolvedValue(undefined);
+const loadTimelineAroundEvent = vi.fn().mockResolvedValue(false);
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -219,6 +223,13 @@ vi.mock("@/lib/matrix", () => ({
   // this test file doesn't mock.
   getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
   getUrlPreview: vi.fn(),
+  // Spec 12 (bookmarks): defaults to "nothing bookmarked yet" —
+  // `useMessageActions` fetches this unconditionally whenever the active
+  // room changes.
+  listBookmarks: (...args: unknown[]) => listBookmarks(...args),
+  addBookmark: (...args: unknown[]) => addBookmark(...args),
+  removeBookmark: (...args: unknown[]) => removeBookmark(...args),
+  loadTimelineAroundEvent: (...args: unknown[]) => loadTimelineAroundEvent(...args),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -350,6 +361,10 @@ describe("ChatShell", () => {
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
+    listBookmarks.mockReset().mockResolvedValue([]);
+    addBookmark.mockReset().mockResolvedValue(undefined);
+    removeBookmark.mockReset().mockResolvedValue(undefined);
+    loadTimelineAroundEvent.mockReset().mockResolvedValue(false);
     timelineUpdateCallback = undefined;
     receiptsCallback = undefined;
     typingCallback = undefined;
@@ -583,6 +598,297 @@ describe("ChatShell", () => {
     );
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
     await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id));
+  });
+
+  it("resets the timeline to live when Jump to Present is clicked after a jump used loadTimelineAroundEvent, so a focused bookmark view doesn't stay stuck (Codex review fix)", async () => {
+    // Once a Saved Messages jump actually calls `loadTimelineAroundEvent`
+    // (not the already-loaded fast path — see `mightHaveFocusedViewRef`'s
+    // own comment), the room's cached backend timeline *may* have been
+    // swapped to the Rust `TimelineFocus::Event` fallback — clicking
+    // "Jump to Present" is the one place a still-open room can force it
+    // back to live, since the room id itself never changes to re-trigger
+    // the room-open `forceLive` fetch.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    const { rerender } = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    // Simulates the successful jump's own `timeline:update` landing with
+    // the target now present, resolving the jump.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    rerender(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    getTimelinePage.mockClear();
+
+    fireAtBottomStateChange(true); // clear jump suppression before the pill click below
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    await vi.waitFor(() =>
+      expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true),
+    );
+  });
+
+  it("keeps the Jump to Present affordance when resetToLive fails, so the user can retry (Codex review fix)", async () => {
+    // `resetToLive` swallows its own errors internally and always resolves
+    // (never rejects) — a failed `getTimelinePage` there must not be
+    // mistaken for success. Clearing the focused-view flags unconditionally
+    // would drop the "Jump to Present" pill even though the room is still
+    // stuck on the focused (bookmark-jump) backend timeline, leaving the
+    // user with no in-room way to retry.
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+
+    const pill = await screen.findByRole("button", { name: "Jump to present" });
+    getTimelinePage.mockRejectedValueOnce(new Error("network error"));
+    await act(async () => {
+      fireEvent.click(pill);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+  });
+
+  it("shows a Jump to Present pill after a focused bookmark jump even with no new messages counted (Codex review fix)", async () => {
+    // A focused (`TimelineFocus::Event`) view from a Saved Messages jump
+    // never receives live updates, so `newMessageCount` (which only counts
+    // messages arriving via `timeline:update`) stays 0 forever after such a
+    // jump — the pill must still appear (with generic copy, since there's
+    // no count to show) so the user has an in-room way to reset back to
+    // live, rather than needing to leave and reopen the room.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+  });
+
+  it("discards a stale resetToLive response if the user switches rooms before it resolves (Codex review fix)", async () => {
+    // Room A's Jump to Present triggers resetToLive (a jump used
+    // loadTimelineAroundEvent earlier), but its getTimelinePage response
+    // doesn't land until after the user has already switched to room B.
+    // Room B's own messages must not be clobbered by room A's late,
+    // now-stale response.
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    let resolveRoomAReset: ((page: unknown) => void) | undefined;
+    getTimelinePage.mockImplementation(() => Promise.resolve({ messages: [], next_cursor: null }));
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+
+    fireAtBottomStateChange(true);
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    // resetToLive's own getTimelinePage call is made to hang here — it only
+    // resolves once `resolveRoomAReset` is invoked, well after the room
+    // switch below.
+    getTimelinePage.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRoomAReset = resolve;
+        }),
+    );
+    fireEvent.click(pill);
+    await vi.waitFor(() => expect(resolveRoomAReset).toBeDefined());
+
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+
+    // Room A's stale reset finally resolves — its (empty) response must not
+    // overwrite room B's already-loaded message. `act`'s async form (not a
+    // bare `Promise.resolve()`) is needed here: `resetToLive`'s `.then`
+    // continuation runs as a later microtask than the synchronous `resolve`
+    // call itself, and only the async form of `act` waits for it.
+    await act(async () => {
+      resolveRoomAReset?.({ messages: [], next_cursor: null });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("room B msg")).toBeInTheDocument();
+  });
+
+  it("does not re-fetch on Jump to Present when no bookmark jump ever used loadTimelineAroundEvent for this room (Codex review fix)", async () => {
+    // The common case: no Saved Messages jump ever happened (or the jump
+    // resolved entirely from the already-loaded page). Forcing a network
+    // re-fetch here regardless would replace `messages` out from under
+    // Virtuoso's own scroll, which is what broke
+    // `e2e/timeline-scroll.spec.ts`'s plain scroll-away/jump-to-present case.
+    getTimelinePage.mockResolvedValue({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+      ],
+      next_cursor: null,
+    });
+    renderChatShell();
+    await screen.findByText("first");
+    fireAtBottomStateChange(false);
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+        ],
+      });
+    });
+    await screen.findByText("second");
+    getTimelinePage.mockClear();
+
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    expect(getTimelinePage).not.toHaveBeenCalled();
+  });
+
+  it("does not re-fetch on Jump to Present when a bookmark jump resolved via the cheap live-pagination path, not the focused-view fallback (Sentry review fix)", async () => {
+    // loadTimelineAroundEvent's `found: true` covers two very different
+    // paths: the common one (found via the already-cached live timeline or
+    // bounded backward-pagination — no focused-view swap) and the rarer
+    // server `/context` fallback (which does swap the cache to a focused
+    // view). Only the latter needs a later Jump to Present to force a live
+    // re-fetch; forcing one for the former disrupts Virtuoso's scroll for
+    // no reason.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
+    const { rerender } = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+    rerender(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    getTimelinePage.mockClear();
+
+    fireAtBottomStateChange(true);
+    fireAtBottomStateChange(false);
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+          summary({ event_id: "$new", sender: "@alice:localhost", body: "new one" }),
+        ],
+      });
+    });
+    const pill = await screen.findByRole("button", { name: "1 new message" });
+    fireEvent.click(pill);
+
+    expect(getTimelinePage).not.toHaveBeenCalled();
   });
 
   it("does not show a pill for the user's own message sent through the composer while scrolled away, because sending scrolls to present first", async () => {
@@ -831,6 +1137,48 @@ describe("ChatShell", () => {
     // A newly-opened room is never scrolled away from bottom, regardless of
     // the previous room's state — no pill, even if a live update arrives.
     expect(screen.queryByText(/new message/)).not.toBeInTheDocument();
+  });
+
+  it("does not carry a focused-view Jump to Present pill over into a newly-selected room (Codex review fix)", async () => {
+    // Room A's bookmark jump installs a focused view (hasFocusedView).
+    // Switching to room B must not leave that pill rendered over room B's
+    // own first frame, and clicking it must not call resetToLive() for the
+    // wrong room.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$deep-history" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$deep-history"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$deep-history", sender: "@alice:localhost", body: "deep" }),
+        ],
+      });
+    });
+    await screen.findByText("deep");
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+
+    expect(screen.queryByRole("button", { name: "Jump to present" })).not.toBeInTheDocument();
   });
 
   it("clears an already-visible jump-to-present pill immediately when switching rooms, before room B's own atBottomStateChange fires", async () => {
@@ -1102,6 +1450,38 @@ describe("ChatShell", () => {
 
     await screen.findByText("first");
     expect(document.getElementById("message-$a")?.className).not.toMatch(/animate-in/);
+  });
+
+  it("passes forceLive: true on room open but not on subsequent pagination (Spec 12 review fix)", async () => {
+    // Review fix regression test: a room's cached timeline can be a
+    // TimelineFocus::Event view left over from a Saved Messages jump.
+    // Reopening the room should reset that back to live (forceLive: true,
+    // the room-open call), but pagination while still viewing that focused
+    // context must not (forceLive: false/omitted) — otherwise scrolling
+    // further back would snap back to the live tail mid-scroll.
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: "more",
+    });
+    renderChatShell();
+    await screen.findByText("second");
+
+    expect(getTimelinePage).toHaveBeenCalledWith(room.room_id, undefined, undefined, true);
+    getTimelinePage.mockClear();
+
+    getTimelinePage.mockResolvedValueOnce({
+      messages: [
+        summary({ event_id: "$a", sender: "@alice:localhost", body: "first", timestamp_ms: 1 }),
+        summary({ event_id: "$b", sender: "@alice:localhost", body: "second", timestamp_ms: 2 }),
+      ],
+      next_cursor: null,
+    });
+    fireStartReached();
+    await screen.findByText("first");
+
+    expect(getTimelinePage).toHaveBeenCalledWith(room.room_id);
   });
 
   it("does not animate history prepended by a live update racing an in-flight pagination request, and shifts firstItemIndex exactly once", async () => {
@@ -3149,6 +3529,566 @@ describe("ChatShell", () => {
     fireEvent.click(screen.getByRole("button", { name: /long gone/ }));
 
     expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("jumps to an already-loaded bookmark without paginating (Spec 12 Saved Messages)", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const store = createStore();
+    render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$bookmarked" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+  });
+
+  it("does not mark the room read on open while a bookmark jump to older history is pending (Codex review fix)", async () => {
+    // The bookmarked message isn't in the initial page — the room-open
+    // effect must not blanket mark-read while `loadTimelineAroundEvent` is
+    // still resolving, since the user is jumping to older history, not
+    // viewing (and hasn't seen) the live tail this would otherwise report
+    // as read.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "latest" })],
+      next_cursor: null,
+    });
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("latest");
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    expect(markRoomRead).not.toHaveBeenCalled();
+    resolveLoadAround?.({ found: false, installed_focused_view: false });
+  });
+
+  it("stays suppressed if Virtuoso reports the initial live-tail snapshot as atBottom while a bookmark jump is still pending (Codex review fix)", async () => {
+    // Virtuoso can report `atBottom=true` for the room's initial render
+    // (its own live-tail snapshot) before `loadTimelineAroundEvent` for a
+    // not-yet-loaded bookmark has resolved and scrolled anywhere — that
+    // report must not be treated as "the jump settled here", or mark-read
+    // would fire off the unrelated live tail while the jump to older,
+    // unseen history is still in flight.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$a", sender: "@alice:localhost", body: "latest" })],
+      next_cursor: null,
+    });
+    loadTimelineAroundEvent.mockReturnValue(new Promise(() => {}));
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("latest");
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    fireAtBottomStateChange(true);
+
+    expect(markRoomRead).not.toHaveBeenCalled();
+  });
+
+  it("does not mark read in the gap between onJumpHandled clearing jumpToEventId and Virtuoso's own atBottomStateChange report (Codex review fix)", async () => {
+    // Regression for a narrower window than the previous fix closed:
+    // `ChatShell` clears `jumpToEventId` (via `onJumpHandled`) synchronously
+    // right after calling Virtuoso's `scrollToIndex`, but the real
+    // `atBottomStateChange` report from that scroll lands asynchronously.
+    // `hasPendingJump` reading `false` again on this next render must not by
+    // itself be enough to let a stale `isAtBottomRef.current === true` (its
+    // default, never yet corrected by Virtuoso for this jump) mark the room
+    // read before Virtuoso actually reports the post-jump position.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+
+    // Virtuoso hasn't reported a position for this jump yet — mark-read
+    // must still be suppressed even though jumpToEventId is now null.
+    expect(markRoomRead).not.toHaveBeenCalled();
+
+    // Only once Virtuoso actually reports the post-jump position should
+    // mark-read be allowed to run again.
+    fireAtBottomStateChange(false);
+    expect(markRoomRead).not.toHaveBeenCalled();
+  });
+
+  it("eventually clears mark-read suppression via the fallback timer if Virtuoso's atBottomStateChange never fires (review fix)", async () => {
+    // A jump whose target leaves Virtuoso's at-bottom state genuinely
+    // unchanged (e.g. the bookmark is already the latest message) never
+    // triggers `atBottomStateChange` at all — that's the only other place
+    // suppression clears, so without a bounded fallback it would stay set
+    // forever. Real timers (not `vi.useFakeTimers`), same rationale as the
+    // sibling "force-clears a bookmark jump" fallback-timer test above.
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId={null} />
+      </JotaiProvider>,
+    );
+    expect(markRoomRead).not.toHaveBeenCalled();
+
+    // No `atBottomStateChange` is ever fired for this jump — only the
+    // fallback timer (5000ms) should eventually clear suppression and
+    // allow mark-read to run.
+    await waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(room.room_id), {
+      timeout: 7000,
+    });
+  }, 10000);
+
+  it("does not leak mark-read suppression into a different room after a bookmark jump is interrupted by a room switch (Sentry review fix)", async () => {
+    // Room A's jump target is never found (loadTimelineAroundEvent hangs),
+    // so Virtuoso never gets to report a post-jump position and clear the
+    // suppression the normal way — the user instead manually switches to
+    // room B, which has no pending jump of its own and should mark-read
+    // normally once it settles at the bottom.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockReturnValue(new Promise(() => {}));
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$never-found" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$never-found"),
+    );
+
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    // The room-open blanket mark-read (keyed off `hasPendingJump`, which is
+    // already correctly `false` for room B) fires regardless — clear it so
+    // the assertion below is specifically about the bottom-visibility path,
+    // which is what a leaked `suppressMarkReadRef` would actually break.
+    markRoomRead.mockClear();
+
+    // A new message arrives while room B sits at its default (never
+    // toggled) at-bottom state — this re-triggers the bottom-visibility
+    // mark-read path via the changed `latestEventId`, without needing a
+    // fresh `atBottomStateChange` call. If `suppressMarkReadRef` had leaked
+    // `true` from room A's interrupted jump, this would stay suppressed
+    // forever for room B since nothing in room B's own flow would ever
+    // clear it.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: roomB.room_id,
+        messages: [
+          summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" }),
+          summary({ event_id: "$c", sender: "@alice:localhost", body: "room B msg 2" }),
+        ],
+      });
+    });
+    await screen.findByText("room B msg 2");
+    await vi.waitFor(() => expect(markRoomRead).toHaveBeenCalledWith(roomB.room_id));
+  });
+
+  it("ignores a stale loadTimelineAroundEvent result from room A once the user has switched to room B (review fix)", async () => {
+    // Room A's jump target requires loadTimelineAroundEvent, which we hold
+    // open manually. Before it resolves, the user switches to room B
+    // (no pending jump of its own). The stale room-A promise then resolves
+    // with installed_focused_view: true — this must not show room B's
+    // "Jump to present" pill (which would call resetToLive() against the
+    // wrong room) nor call onJumpHandled for a jump the parent never
+    // started for room B.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    const onJumpHandled = vi.fn();
+    const store = createStore();
+
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$room-a-bookmark"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$room-a-bookmark"),
+    );
+
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+      next_cursor: null,
+    });
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" onJumpHandled={onJumpHandled} />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    onJumpHandled.mockClear();
+
+    // The stale room-A request finally resolves, claiming it installed a
+    // focused view.
+    await act(async () => {
+      resolveLoadAround?.({ found: true, installed_focused_view: true });
+    });
+
+    expect(screen.queryByText("Jump to present")).not.toBeInTheDocument();
+    expect(onJumpHandled).not.toHaveBeenCalled();
+  });
+
+  it("still shows Jump to present when the focused timeline's own update lands before the loadTimelineAroundEvent promise resolves (review fix)", async () => {
+    // Review fix: `load_timeline_around_event`'s Rust-side fallback can
+    // install its focused-timeline listener and have that listener emit
+    // the `timeline:update` carrying the target *before* the IPC promise
+    // itself resolves. That ordering makes the already-loaded branch (scroll
+    // + onJumpHandled) fire first, which used to make the later
+    // `installed_focused_view: true` result get discarded by the
+    // requestKey guard — losing "Jump to present" entirely even though
+    // Rust really did swap the room to a focused timeline.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    let resolveLoadAround:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockReturnValue(
+      new Promise((resolve) => {
+        resolveLoadAround = resolve;
+      }),
+    );
+    const onJumpHandled = vi.fn();
+
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$older-bookmark"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    // The focused timeline's own listener emits its update first, landing
+    // the already-loaded branch — before the IPC promise below resolves.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+
+    // Only now does the IPC promise resolve, confirming a focused view was
+    // installed.
+    await act(async () => {
+      resolveLoadAround?.({ found: true, installed_focused_view: true });
+    });
+
+    expect(await screen.findByText("Jump to present")).toBeInTheDocument();
+    // The already-loaded branch already called onJumpHandled once — this
+    // resolution must not call it again.
+    expect(onJumpHandled).toHaveBeenCalledOnce();
+  });
+
+  it("calls onJumpHandled once an already-loaded bookmark is scrolled to", async () => {
+    getTimelinePage.mockResolvedValue({
+      messages: [summary({ event_id: "$bookmarked", sender: "@alice:localhost", body: "save me" })],
+      next_cursor: null,
+    });
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$bookmarked"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await screen.findByText("save me");
+
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+  });
+
+  it("loads the timeline around a not-yet-loaded bookmark, then scrolls once it lands", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+
+    // Mirrors the real backend: a successful `loadTimelineAroundEvent`
+    // paginates the target into the room's live timeline, which arrives here
+    // as a `timeline:update` — not as that call's own return value driving
+    // `messages` directly.
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "old save" }),
+        ],
+      });
+    });
+
+    expect(await screen.findByText("old save")).toBeInTheDocument();
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 0, align: "center" }),
+    );
+  });
+
+  it("calls onJumpHandled without scrolling when a bookmark is never found", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: false, installed_focused_view: false });
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$gone"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$gone"),
+    );
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
+  it("retries a jump for the same event id after switching rooms mid-request (Codex review fix)", async () => {
+    // Review fix regression test: the in-flight dedupe ref used to key only
+    // on `jumpToEventId`, not room. If the user started a jump in room A
+    // and manually switched to room B before that request resolved (without
+    // the parent clearing `jumpToEventId`), the same event id landing in
+    // room B would be permanently blocked by room A's still-set key, and no
+    // new `loadTimelineAroundEvent` call would ever fire for room B.
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    let resolveRoomARequest:
+      | ((result: { found: boolean; installed_focused_view: boolean }) => void)
+      | undefined;
+    loadTimelineAroundEvent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRoomARequest ??= resolve;
+        }),
+    );
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+
+    const store = createStore();
+    const { rerender } = render(
+      <JotaiProvider store={store}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$shared-id" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$shared-id"),
+    );
+    loadTimelineAroundEvent.mockClear();
+
+    // Switch to room B without room A's request ever resolving.
+    rerender(
+      <JotaiProvider store={store}>
+        <ChatShell room={roomB} currentUserId="@me:localhost" jumpToEventId="$shared-id" />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(roomB.room_id, "$shared-id"),
+    );
+  });
+
+  it("calls onJumpHandled when loadTimelineAroundEvent rejects, same as a not-found result", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockRejectedValueOnce(new Error("network error"));
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$flaky"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$flaky"),
+    );
+    // Review fix regression: a rejected load-around must still clear the
+    // caller's `jumpToEventId` (via `onJumpHandled`), not just reset the
+    // internal dedup ref — otherwise `RoomsScreen` would keep retrying a
+    // stale target against later, unrelated room selections.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
+  });
+
+  it("force-clears a bookmark jump if loadTimelineAroundEvent finds the event but its timeline:update never lands (Sentry review fix)", async () => {
+    // A successful (`found: true`) loadTimelineAroundEvent normally clears
+    // the jump via its own timeline:update re-running this effect through
+    // the already-loaded branch. If that update is ever missed or
+    // dropped, nothing else would clear jumpToEventId — this fallback
+    // timer is what prevents the jump from getting stuck forever. Uses
+    // real timers (not `vi.useFakeTimers`) since the fallback's own
+    // `setTimeout` is scheduled from inside a real, already-resolved
+    // mock promise's `.then()` — fake timers enabled only after that
+    // point wouldn't retroactively apply to a timer already scheduled on
+    // the real clock.
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: false });
+    const onJumpHandled = vi.fn();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$never-updates"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$never-updates"),
+    );
+
+    // No timeline:update is ever fired for this jump — only the fallback
+    // timer (JUMP_FALLBACK_TIMEOUT_MS = 5000ms) should eventually clear it.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce(), { timeout: 7000 });
+  }, 10000);
+
+  it("does not call onJumpHandled for a stale request's late rejection once a newer jump has started", async () => {
+    getTimelinePage.mockResolvedValue({ messages: [], next_cursor: null });
+    const onJumpHandled = vi.fn();
+    let rejectFirst!: (err: unknown) => void;
+    const firstAttempt = new Promise<{ found: boolean; installed_focused_view: boolean }>(
+      (_resolve, reject) => {
+        rejectFirst = reject;
+      },
+    );
+    loadTimelineAroundEvent.mockReturnValueOnce(firstAttempt);
+    const store = createStore();
+
+    const view = render(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$old"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$old"));
+
+    // A newer jump target supersedes the still-in-flight one above (e.g. the
+    // user reopened Settings and picked a different bookmark) before the
+    // first request has settled.
+    loadTimelineAroundEvent.mockResolvedValueOnce({ found: false, installed_focused_view: false });
+    view.rerender(
+      <JotaiProvider store={store}>
+        <ChatShell
+          room={room}
+          currentUserId="@me:localhost"
+          jumpToEventId="$new"
+          onJumpHandled={onJumpHandled}
+        />
+      </JotaiProvider>,
+    );
+    await waitFor(() => expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$new"));
+
+    // The stale first request now rejects late — this must not fire
+    // `onJumpHandled` a second time (or clear anything) on behalf of the
+    // newer, still-registered `$new` target.
+    rejectFirst(new Error("late network error"));
+
+    // The newer ("$new") request resolving `false` is what should actually
+    // trigger `onJumpHandled` here — exactly once, not twice.
+    await waitFor(() => expect(onJumpHandled).toHaveBeenCalledOnce());
   });
 
   it("keys virtualized rows by message identity, not position", async () => {

@@ -46,6 +46,20 @@ export function installMockTauri(seed: {
   /** Initial native Do Not Disturb state for Focus-mode journeys. */
   dndState?: { enabled: boolean; until: number | null; revision: number };
   /**
+   * Spec 12: bookmarks already saved before the page loads, in the shape
+   * `list_bookmarks` returns (see `src-tauri/src/matrix/bookmarks.rs`'s
+   * `BookmarkEntry`) — drives the Saved Messages settings panel journey.
+   */
+  bookmarks?: {
+    room_id: string;
+    event_id: string;
+    saved_at_ms: number;
+    sender: string;
+    sender_display_name: string | null;
+    body_preview: string;
+    timestamp_ms: number;
+  }[];
+  /**
    * `false` for onboarding.spec.ts's "brand-new account" scenario — every
    * other spec keeps the default (rooms present) so Spec 12's onboarding
    * gate resolves straight to "done" and never mounts `OnboardingScreen`
@@ -192,6 +206,7 @@ export function installMockTauri(seed: {
   const hasSeededDndState = seed.dndState != null;
   let dndState = seed.dndState ?? { enabled: false, until: null as number | null, revision: 0 };
   const ignoredUsers: string[] = [...(seed.ignoredUsers ?? [])];
+  const bookmarks: NonNullable<typeof seed.bookmarks> = [...(seed.bookmarks ?? [])];
   const notificationSettings = {
     default_mode: "all_messages",
     keywords: [] as string[],
@@ -315,6 +330,34 @@ export function installMockTauri(seed: {
     // marked-unread, rename) failing to update. `list_rooms` runs once at
     // mount, so this copy isn't behind a hot path.
     list_rooms: () => (seed.hasRooms === false ? [] : allRooms.map((r) => ({ ...r }))),
+    // Spec 12: bookmarks. Real `list_bookmarks` re-sorts newest-saved-first
+    // and resolves a live preview when the room's timeline is open; this
+    // fake just returns the seeded (or since-added) entries sorted the same
+    // way — no separate resolution step, since the fake never persists a
+    // resolved-vs-placeholder distinction the way the real command does.
+    list_bookmarks: () => bookmarks.toSorted((a, b) => b.saved_at_ms - a.saved_at_ms),
+    add_bookmark: (args) => {
+      const roomId = args.roomId as string;
+      const eventId = args.eventId as string;
+      if (bookmarks.some((b) => b.event_id === eventId)) return null;
+      const message = (seed.initialMessages ?? []).find((m) => m.event_id === eventId);
+      bookmarks.push({
+        room_id: roomId,
+        event_id: eventId,
+        saved_at_ms: Date.now(),
+        sender: (message?.sender as string) ?? "",
+        sender_display_name: (message?.sender_display_name as string | null) ?? null,
+        body_preview: (message?.body as string) ?? "",
+        timestamp_ms: (message?.timestamp_ms as number) ?? Date.now(),
+      });
+      return null;
+    },
+    remove_bookmark: (args) => {
+      const eventId = args.eventId as string;
+      const index = bookmarks.findIndex((b) => b.event_id === eventId);
+      if (index >= 0) bookmarks.splice(index, 1);
+      return null;
+    },
     get_own_profile: () => ({
       user_id: profile.user_id,
       display_name: profile.display_name,

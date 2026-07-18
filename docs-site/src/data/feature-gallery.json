@@ -286,6 +286,26 @@
         "alt": "Charm room settings modal open to the General section",
         "caption": "A full application capture verifies the room-administration composition."
       }
+    },
+    {
+      "slug": "bookmarks-saved-messages",
+      "title": "Bookmarks and saved messages",
+      "summary": "Save a private bookmark on any message from its action menu, then browse every saved message across every room from one Settings panel.",
+      "status": "preview",
+      "spec": "Spec 12",
+      "specLinks": [
+        {
+          "label": "Spec 12",
+          "href": "/specs/day-2/spec-12--bookmarks-and-saved-messages/"
+        }
+      ],
+      "flag": "bookmarks",
+      "snapshot": {
+        "suite": "e2e",
+        "name": "feature-bookmarks-saved-messages",
+        "alt": "Charm Saved Messages settings panel showing a bookmarked message with room and sender context",
+        "caption": "The E2E fixture verifies the Saved Messages list renders room context, sender, and body preview."
+      }
     }
   ]
 }

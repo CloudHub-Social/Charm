@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T15:54:21.813Z",
+  "generatedAt": "2026-07-17T16:10:08.605Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
     "shipped": 30,
-    "follow-up": 9,
-    "in-progress": 3,
+    "follow-up": 10,
+    "in-progress": 2,
     "planned": 34
   },
   "attention": [
@@ -30,6 +30,13 @@
       "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
       "url": "https://github.com/CloudHub-Social/Charm/pull/291",
       "detail": "Day-1 Spec 40 · ready for review"
+    },
+    {
+      "type": "issue",
+      "number": 296,
+      "title": "User Feedback: Recovery key entry crashes application",
+      "url": "https://github.com/CloudHub-Social/Charm/issues/296",
+      "detail": "bug · Sentry"
     },
     {
       "type": "issue",
@@ -150,8 +157,8 @@
       ],
       "counts": {
         "shipped": 0,
-        "follow-up": 0,
-        "in-progress": 2,
+        "follow-up": 1,
+        "in-progress": 1,
         "planned": 11
       }
     }
@@ -1246,7 +1253,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/245",
           "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-14T04:43:27Z"
+          "updatedAt": "2026-07-17T15:54:49Z"
         },
         {
           "number": 242,
@@ -1546,7 +1553,7 @@
       "number": 12,
       "title": "Bookmarks and saved messages",
       "route": "/specs/day-2/spec-12--bookmarks-and-saved-messages/",
-      "status": "in-progress",
+      "status": "follow-up",
       "pullRequests": [
         {
           "number": 294,
@@ -1554,7 +1561,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/294",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T14:47:41Z"
+          "updatedAt": "2026-07-17T16:09:16Z"
         }
       ],
       "issues": []

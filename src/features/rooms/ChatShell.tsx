@@ -29,7 +29,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { isWebBuild } from "@/lib/platform";
-import { canRedactOthers, onRoomDetailsUpdate, type RoomSummary } from "@/lib/matrix";
+import {
+  canRedactOthers,
+  loadTimelineAroundEvent,
+  onRoomDetailsUpdate,
+  type RoomSummary,
+} from "@/lib/matrix";
 import { avatarColor, displayName, initials, resolveAvatar } from "./roomDisplay";
 import { Composer, type ComposerHandle, type ComposerMode } from "./Composer";
 import { type MessageActionsHandle } from "./MessageActions";
@@ -63,11 +68,27 @@ import { useMessageActions } from "./useMessageActions";
 import { useMessageSend } from "./useMessageSend";
 import { MessagePillProfileDialog, type MessagePillProfile } from "./MessagePillProfileDialog";
 
+// How long a successful `loadTimelineAroundEvent` gets to have its
+// `timeline:update` land (and clear the jump the normal way) before the
+// jump-in-progress effect force-clears it itself — see that fallback's own
+// comment for why this exists at all.
+const JUMP_FALLBACK_TIMEOUT_MS = 5000;
+
 interface ChatShellProps {
   room: RoomSummary | null;
   currentUserId: string;
   onBack?: () => void;
   onNavigateToRoom?: (roomIdentifier: string) => void;
+  /**
+   * An event id to scroll to as soon as it's loaded in this room's timeline
+   * (Spec 12's Saved Messages "jump to message"). Set by the caller after
+   * selecting the bookmark's room; cleared via `onJumpHandled` once the jump
+   * completes (found and scrolled to) or definitively fails (not reachable
+   * even after `loadTimelineAroundEvent`), so a stale target doesn't
+   * re-trigger a jump on some unrelated later render.
+   */
+  jumpToEventId?: string | null;
+  onJumpHandled?: () => void;
 }
 
 /** Virtuoso `Header` component (Spec 26 Phase 2) — reads `loadingMore` off
@@ -207,7 +228,14 @@ function useCanRedactMap(roomId: string, currentUserId: string, senders: readonl
   }, [senders, currentUserId, canRedactOthersInRoom]);
 }
 
-export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: ChatShellProps) {
+export function ChatShell({
+  room,
+  currentUserId,
+  onBack,
+  onNavigateToRoom,
+  jumpToEventId = null,
+  onJumpHandled,
+}: ChatShellProps) {
   const layout = useAdaptiveLayout();
   const mobileChatRedesignEnabled = useFlag("mobile_chat_redesign");
   const messageActionParityEnabled = useFlag("message_action_parity");
@@ -274,7 +302,8 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
-  } = useChatTimeline(room, roomSettingsOpen);
+    resetToLive,
+  } = useChatTimeline(room, roomSettingsOpen, jumpToEventId !== null);
   // Auto-paginates when the newest page comes back with zero *renderable*
   // messages but more history to page back through — some Matrix timeline
   // items (state events, polls, etc.) are filtered out of
@@ -333,12 +362,72 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   // exactly that case. Reset to 0 once the user is back at bottom, whether
   // by scrolling there themselves or by clicking the pill.
   const [newMessageCount, setNewMessageCount] = useState(0);
+  // Review fix: mirrors `mightHaveFocusedViewRef` as render-visible state.
+  // The ref alone can't drive the "Jump to Present" pill's visibility below
+  // — a focused (`TimelineFocus::Event`) view never receives live updates,
+  // so `newMessageCount` stays 0 after such a jump and the pill (gated on
+  // `!atBottom && newMessageCount > 0`) would never appear, leaving the
+  // user with no in-room way to reset back to live short of leaving and
+  // reopening the room.
+  const [hasFocusedView, setHasFocusedView] = useState(false);
+  // Review fix: set from `loadTimelineAroundEvent`'s own
+  // `installed_focused_view` flag — *not* preemptively before calling it.
+  // An earlier version set this unconditionally whenever the call was made
+  // at all, but most jumps resolve via the cheap already-cached-live-
+  // timeline or bounded-backward-pagination paths, neither of which ever
+  // installs a `TimelineFocus::Event` backend timeline — only the rarer
+  // server `/context` fallback does. Setting it regardless meant
+  // `handleJumpToPresent` forced an unnecessary live re-fetch (replacing
+  // `messages` and disrupting Virtuoso's scroll) for the much more common
+  // non-focusing case. Read by `handleJumpToPresent` to decide whether it's
+  // worth forcing that re-fetch — see its own comment for why that must
+  // stay conditional rather than unconditional. Declared here (not lower,
+  // where it's actually assigned) so the synchronous room-change reset
+  // below — which runs during render, not in an effect — can reference it.
+  const mightHaveFocusedViewRef = useRef(false);
   function handleVirtuosoAtBottomStateChange(bottom: boolean) {
     handleAtBottomStateChange(bottom);
     setAtBottom(bottom);
     if (bottom) setNewMessageCount(0);
   }
   function handleJumpToPresent() {
+    // Review fix: if a Saved Messages jump previously fell back to the Rust
+    // `TimelineFocus::Event` path, the room's cached backend `Timeline` is
+    // still the focused one — nothing else resets it back to live for an
+    // already-open room (see `resetToLive`'s own comment). Without this,
+    // "Jump to Present" would only scroll within whatever's loaded in that
+    // possibly-narrow focused window and the room would keep missing live
+    // updates entirely.
+    //
+    // Review fix (E2E regression): only when `mightHaveFocusedViewRef` is
+    // set — i.e. a jump for *this* room actually called
+    // `loadTimelineAroundEvent` at some point — not on every click. The far
+    // more common case (no bookmark jump ever happened, or the jump
+    // resolved from the already-loaded live page without ever calling
+    // `loadTimelineAroundEvent`) never touched the backend's focused-view
+    // path at all, so forcing a network re-fetch here is both unnecessary
+    // and actively wrong: it replaces `messages` out from under the
+    // scroll Virtuoso is mid-animating to, which is what broke
+    // `e2e/timeline-scroll.spec.ts`'s plain "scroll away, new message
+    // arrives, click the pill" case.
+    if (mightHaveFocusedViewRef.current) {
+      // Review fix: `resetToLive` swallows its own errors internally (its
+      // own comment) and always resolves — never rejects — so clearing
+      // these flags *before* awaiting it treated a failed reset as if it
+      // had succeeded. The room stayed on the backend's focused timeline
+      // (missing live updates) while the "Jump to Present" affordance that
+      // was the user's only in-room way to retry had already disappeared,
+      // with no recovery short of leaving and reopening the room. Only
+      // clear the flags once the reset actually reports success.
+      resetToLive()
+        .then((succeeded) => {
+          if (succeeded) {
+            mightHaveFocusedViewRef.current = false;
+            setHasFocusedView(false);
+          }
+        })
+        .catch(logAndIgnore);
+    }
     // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
     // own sentinel for "the actual last data item," regardless of
     // `firstItemIndex` — reads slightly clearer than the plain arithmetic and
@@ -394,11 +483,26 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
   // runs *after* paint, so room B's first frame would still show room A's
   // stale pill (and could even count an immediate room-B update as "arrived
   // while scrolled away") for one frame before the effect caught up.
+  //
+  // Review fix: `hasFocusedView`/`mightHaveFocusedViewRef` used to be reset
+  // in a separate `useEffect` instead of here — that effect fires after
+  // this same room change, but still one paint *after* this synchronous
+  // block runs, so room B's first frame could briefly render the generic
+  // "Jump to present" pill left over from room A's focused jump (and
+  // clicking it would call `resetToLive()` for the wrong room, since
+  // `handleJumpToPresent` reads these same two values). Consolidated into
+  // this same synchronous reset so both frames stay correct together.
   const previousActiveRoomIdForPillRef = useRef(activeRoomId);
   if (previousActiveRoomIdForPillRef.current !== activeRoomId) {
     previousActiveRoomIdForPillRef.current = activeRoomId;
     setAtBottom(true);
     setNewMessageCount(0);
+    // A genuinely different room's own room-open effect already forces its
+    // timeline live (`useChatTimeline`'s `forceLive` fetch) — these two are
+    // specifically about *this* room possibly still being focused from an
+    // earlier jump, which doesn't carry over to a different room id.
+    mightHaveFocusedViewRef.current = false;
+    setHasFocusedView(false);
   }
   // Tracks which message rows have already been rendered once, keyed by
   // `messageRowKey`, so only genuinely new arrivals get the slide-up+fade
@@ -450,6 +554,210 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     seededRoomIdRef.current = null;
     hasStartedLoadingRoomIdRef.current = null;
   }
+  // Drives Spec 12's Saved Messages "jump to message": the caller
+  // (`RoomsScreen`) selects the bookmark's room and sets `jumpToEventId`;
+  // once that room is actually the active one, this either scrolls straight
+  // to it (already loaded — same path as a reply-preview click) or triggers
+  // `loadTimelineAroundEvent` to paginate it in first. Re-runs whenever
+  // `messages` updates (each `timeline:update` from that pagination) so it
+  // notices the moment the target becomes loaded, but only issues the
+  // load-around request once per `jumpToEventId` value — `loadRequestedForRef`
+  // guards against re-firing it on every subsequent `messages` update while
+  // that request is still in flight.
+  const loadRequestedForRef = useRef<string | null>(null);
+  // Review fix: `load_timeline_around_event`'s Rust-side focused-timeline
+  // fallback can install its listener and have that listener emit the
+  // `timeline:update` carrying the target event *before* the IPC promise
+  // itself resolves. In that ordering, the already-loaded branch below
+  // fires first, clears `loadRequestedForRef` and calls `onJumpHandled`,
+  // so when the promise's own `.then()` runs afterward, its
+  // `loadRequestedForRef.current !== requestKey` guard (there to reject
+  // truly superseded/stale requests) trips for this still-relevant one too
+  // — losing `installed_focused_view` entirely, even though Rust really
+  // did swap the room to a focused timeline. This tracks "already handled
+  // via the already-loaded branch, but still need this specific request's
+  // `installed_focused_view` once it resolves" independently of the dedup
+  // ref, so the `.then()` can still apply it without re-doing anything
+  // else (scroll/`onJumpHandled` already happened).
+  const handledAwaitingFocusedViewRef = useRef<string | null>(null);
+  // Review fix: fallback for a `found: true` `loadTimelineAroundEvent`
+  // result whose corresponding `timeline:update` never lands (or is
+  // dropped) — see that branch's own comment for why this is needed.
+  // Holds the pending fallback's timer id, so the normal (update-arrives)
+  // path can cancel it instead of leaving a stale timer that could
+  // force-clear a *later*, unrelated jump for the same room+event key.
+  const jumpFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Review fix: `loadRequestedForRef` is keyed by room id *and* event id,
+  // but was never cleared on a plain room switch — `ChatShell` isn't
+  // remounted between rooms (same instance, just a new `room` prop), so if
+  // a Saved Messages jump in room A is still awaiting its own
+  // `loadTimelineAroundEvent` call when the user switches to room B (which
+  // has no pending jump of its own), that promise's `.then()`/`.catch()`
+  // still find `loadRequestedForRef.current` unchanged and matching their
+  // closed-over room-A request key once they finally settle — acting on a
+  // stale result (setting `hasFocusedView` for room B, or clearing the
+  // *new* `jumpToEventId` the parent may have already set for room B) as if
+  // it were about the room the user is now looking at. Reset synchronously
+  // during render (not in an effect, which would run one paint too late)
+  // the moment the active room actually changes.
+  const previousJumpRoomIdRef = useRef(room?.room_id ?? null);
+  if (previousJumpRoomIdRef.current !== (room?.room_id ?? null)) {
+    previousJumpRoomIdRef.current = room?.room_id ?? null;
+    loadRequestedForRef.current = null;
+    handledAwaitingFocusedViewRef.current = null;
+    if (jumpFallbackTimeoutRef.current !== null) {
+      clearTimeout(jumpFallbackTimeoutRef.current);
+      jumpFallbackTimeoutRef.current = null;
+    }
+  }
+  useEffect(() => {
+    if (!jumpToEventId || !room) return;
+    // Review fix: keyed by room *and* event, not event alone — if the user
+    // starts a jump in one room then manually switches away before it
+    // resolves, an event-id-only key would keep matching in every other
+    // room the user visits afterward (since `jumpToEventId` itself isn't
+    // cleared by a plain room switch), permanently blocking any new jump
+    // request until the original room is reopened.
+    const requestKey = `${room.room_id}:${jumpToEventId}`;
+    const index = messages.findIndex((m) => m.event_id === jumpToEventId);
+    if (index >= 0) {
+      handleJumpToMessage(jumpToEventId);
+      // Review fix: if a `loadTimelineAroundEvent` call is still in flight
+      // for this exact jump (its own focused-timeline listener beat the
+      // IPC promise to emitting this update), remember that so the
+      // `.then()` below can still apply `installed_focused_view` once it
+      // resolves — everything else about this jump (scroll,
+      // `onJumpHandled`) is already handled right here.
+      if (loadRequestedForRef.current === requestKey) {
+        handledAwaitingFocusedViewRef.current = requestKey;
+      }
+      loadRequestedForRef.current = null;
+      // The normal path landed — cancel any fallback still pending from
+      // this same jump so it can't later force-clear a subsequent one.
+      if (jumpFallbackTimeoutRef.current !== null) {
+        clearTimeout(jumpFallbackTimeoutRef.current);
+        jumpFallbackTimeoutRef.current = null;
+      }
+      onJumpHandled?.();
+      return;
+    }
+    // Waits for this room's own initial load to genuinely finish
+    // (`hasStartedLoadingRoomIdRef` — same "readyToSeed" gate the
+    // entrance-animation/unread-divider logic above already uses) before
+    // falling back to `loadTimelineAroundEvent`. `loading`'s own initial
+    // value is `false` before `useChatTimeline`'s fetch effect has even run
+    // (see this file's other uses of `hasStartedLoadingRoomIdRef` for the
+    // same caveat) — a plain `!loading` check would otherwise treat that
+    // premature render as "settled, and the event isn't here" and fire a
+    // redundant load-around request for a bookmark that's actually part of
+    // this very first page.
+    const initialLoadSettled = !loading && hasStartedLoadingRoomIdRef.current === activeRoomId;
+    if (!initialLoadSettled) return;
+    if (loadRequestedForRef.current === requestKey) return;
+    loadRequestedForRef.current = requestKey;
+    loadTimelineAroundEvent(room.room_id, jumpToEventId)
+      .then(({ found, installed_focused_view }) => {
+        // Review fix: the already-loaded branch above can fire for this
+        // exact request before this promise resolves (its own
+        // focused-timeline listener emitted the update first) — in that
+        // case it already cleared `loadRequestedForRef` and handled the
+        // scroll/`onJumpHandled`, but left `installed_focused_view` for
+        // this callback to still apply, tracked via
+        // `handledAwaitingFocusedViewRef`. Apply it and stop — everything
+        // else about this jump is already done.
+        if (handledAwaitingFocusedViewRef.current === requestKey) {
+          handledAwaitingFocusedViewRef.current = null;
+          if (installed_focused_view) {
+            mightHaveFocusedViewRef.current = true;
+            setHasFocusedView(true);
+          }
+          return;
+        }
+        // Only act on this request if it's still the current one — cleared
+        // (to `null`) the moment the already-loaded branch above fires for
+        // this same jump, which can still happen before this promise
+        // resolves. Without this check, an already-handled jump could
+        // double-call `onJumpHandled` once this stale promise finally
+        // settles.
+        if (loadRequestedForRef.current !== requestKey) return;
+        if (installed_focused_view) {
+          mightHaveFocusedViewRef.current = true;
+          setHasFocusedView(true);
+        }
+        // A `false` result means the event isn't reachable at all (further
+        // back than the pagination cap, or no longer in this room's
+        // history) — nothing more to try, so give up rather than leaving
+        // the caller's `jumpToEventId` set forever. Also reset the ref: left
+        // set to this key, the dedup check above would permanently block a
+        // retry of the exact same jump (e.g. the caller re-sets the same
+        // `jumpToEventId` after the panel is reopened) even though this
+        // attempt is now finished.
+        if (!found) {
+          loadRequestedForRef.current = null;
+          onJumpHandled?.();
+          return;
+        }
+        // A `true` result doesn't call `onJumpHandled` here directly: the
+        // `timeline:update` triggered by that pagination normally lands in
+        // `messages` and re-runs this effect, which then takes the
+        // already-loaded branch above (scrolling to the message *and*
+        // clearing the jump together).
+        //
+        // Review fix: if that update is ever missed or dropped, nothing
+        // else would clear `jumpToEventId` — the effect's dedup key
+        // (`loadRequestedForRef`) already matches this request, so it would
+        // never re-issue `loadTimelineAroundEvent` either, leaving the jump
+        // permanently "in progress" and the Saved Messages entry stuck
+        // showing as unresolved. This fallback timer gives the normal path
+        // a window to land first (preserving the scroll-to-message
+        // behavior in the common case), and only force-clears the jump —
+        // without a scroll — if it hasn't.
+        if (jumpFallbackTimeoutRef.current !== null) {
+          clearTimeout(jumpFallbackTimeoutRef.current);
+        }
+        jumpFallbackTimeoutRef.current = setTimeout(() => {
+          jumpFallbackTimeoutRef.current = null;
+          if (loadRequestedForRef.current === requestKey) {
+            loadRequestedForRef.current = null;
+            onJumpHandled?.();
+          }
+        }, JUMP_FALLBACK_TIMEOUT_MS);
+      })
+      .catch((err) => {
+        // Same "is this still the current request" guard as the `.then()`
+        // branch above — review fix: an earlier request's rejection must
+        // not clear a *newer* jump the user has since started (e.g.
+        // reopened Settings and picked a different bookmark while this one
+        // was still failing/pagination-erroring). Only the request whose
+        // key still matches this ref gets to reset it and notify the caller.
+        if (loadRequestedForRef.current === requestKey) {
+          // Also clear the caller's own jump target here (review fix) —
+          // otherwise `RoomsScreen` keeps the stale `jumpToEventId` set,
+          // and since mutating this ref alone doesn't trigger a re-render,
+          // a later room selection could still see this same value
+          // re-attempted against an unrelated room.
+          loadRequestedForRef.current = null;
+          onJumpHandled?.();
+        }
+        logAndIgnore(err);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpToEventId, room?.room_id, messages, loading, activeRoomId]);
+  // Review fix: only clears the fallback timer on unmount, not on every
+  // dependency change of the effect above — the fallback timer is the *only*
+  // thing that will ever call `onJumpHandled` for a request whose
+  // `timeline:update` never lands, so clearing it whenever `messages`/
+  // `loading` change (as a cleanup returned from that effect itself would)
+  // would leave a jump permanently "in progress" instead of just avoiding a
+  // stale callback into an unmounted component.
+  useEffect(() => {
+    return () => {
+      if (jumpFallbackTimeoutRef.current !== null) {
+        clearTimeout(jumpFallbackTimeoutRef.current);
+        jumpFallbackTimeoutRef.current = null;
+      }
+    };
+  }, []);
   // The memo callback below is pure — no ref mutation inside it. `React.
   // StrictMode` (see `src/main.tsx`) double-invokes memo callbacks for the
   // same commit; mutating `seenRowKeysRef`/`seededRoomIdRef` *inside this
@@ -631,6 +939,9 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
     handleEdit,
     handleResend,
     handleDiscard,
+    handleBookmark,
+    handleUnbookmark,
+    bookmarkedEventIds,
   } = useMessageActions({
     roomId: activeRoomId,
     setReplyTarget,
@@ -1035,23 +1346,40 @@ export function ChatShell({ room, currentUserId, onBack, onNavigateToRoom }: Cha
                     onJumpToMessage={handleJumpToMessage}
                     onUserPillClick={(userId, label) => setPillProfile({ userId, label })}
                     onRoomPillClick={onNavigateToRoom}
+                    // Bookmarks (Spec 12) have no local per-account store on
+                    // the web build — omitting these entirely (rather than
+                    // wiring them to a no-op) hides the menu item, same
+                    // pattern as `SettingsScreen`'s `webUnsupported` sections.
+                    onBookmark={isWebBuild() ? undefined : () => handleBookmark(message.event_id)}
+                    onUnbookmark={
+                      isWebBuild() ? undefined : () => handleUnbookmark(message.event_id)
+                    }
+                    isBookmarked={bookmarkedEventIds.has(message.event_id)}
                   />
                 </div>
               );
             }}
           />
         )}
-        {/* "Jump to present" (Spec 26 Phase 2): shown only while scrolled away
-            from the live bottom and at least one new (non-own) message has
-            arrived since — never while already at bottom, the Charm 1.0 #328
-            failure mode this migration is meant to avoid. */}
-        {!atBottom && newMessageCount > 0 && (
+        {/* "Jump to present" (Spec 26 Phase 2): shown while scrolled away
+            from the live bottom with at least one new (non-own) message
+            arrived since — never while already at bottom, the Charm 1.0
+            #328 failure mode this migration is meant to avoid.
+            Review fix: also shown whenever `hasFocusedView` is set,
+            regardless of `newMessageCount` — a focused (`TimelineFocus::Event`)
+            view from a Saved Messages jump never receives live updates, so
+            `newMessageCount` would otherwise stay 0 forever after such a
+            jump, leaving the user with no in-room way to reset back to
+            live short of leaving and reopening the room. */}
+        {(hasFocusedView || (!atBottom && newMessageCount > 0)) && (
           <button
             type="button"
             onClick={handleJumpToPresent}
             className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-primary-solid px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md hover:opacity-90"
           >
-            {newMessageCount} new message{newMessageCount === 1 ? "" : "s"}
+            {newMessageCount > 0
+              ? `${newMessageCount} new message${newMessageCount === 1 ? "" : "s"}`
+              : "Jump to present"}
             <ChevronDown className="size-3.5" />
           </button>
         )}

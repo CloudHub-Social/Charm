@@ -894,7 +894,20 @@ async fn fetch_message_mentions(
 /// `MessagesOptions::backward()` cursor, this has no opaque server-side token
 /// any more — see [`TimelinePage::next_cursor`]'s doc comment for the sentinel
 /// this now is. `cursor` is accepted (and ignored) purely to keep the
-/// frontend's `getTimelinePage(roomId, cursor, limit)` call shape stable.
+/// frontend's `getTimelinePage(roomId, cursor, limit, forceLive)` call shape
+/// stable.
+///
+/// `force_live`: review fix — a room can have a cached, focused
+/// (`TimelineFocus::Event`) `Timeline` left over from a Saved Messages jump
+/// (`MatrixState::replace_timeline`). Passing `true` resets that back to the
+/// room's ordinary live tail if present; the frontend passes `true` only
+/// from its room-*open* call (`useChatTimeline`'s effect keyed on
+/// `room?.room_id`), never from its separate pagination-loop call, so
+/// scrolling further back while still viewing a bookmark's focused context
+/// doesn't get treated as a fresh open and snapped back to live — but
+/// genuinely reopening that room (from the room list, after navigating
+/// away) does reset it, instead of leaving the user stuck on a stale
+/// focused view until LRU eviction or app restart.
 #[tauri::command]
 pub async fn get_timeline_page(
     app: AppHandle,
@@ -902,6 +915,7 @@ pub async fn get_timeline_page(
     room_id: String,
     cursor: Option<String>,
     limit: Option<u32>,
+    force_live: bool,
 ) -> Result<TimelinePage, String> {
     let _ = cursor;
     let client = state.require_client().await?;
@@ -935,7 +949,7 @@ pub async fn get_timeline_page(
     // would systematically exclude that cost and underreport cold opens.
     crate::observability_trace::traced(transaction_name, "matrix.timeline", async {
         let timeline = state
-            .get_or_create_timeline(&app, &client, &parsed_room_id)
+            .get_or_create_timeline(&app, &client, &parsed_room_id, force_live)
             .await?;
         let media_cache = state.require_media_cache(&app).await.ok();
 
@@ -988,6 +1002,262 @@ pub async fn get_timeline_page_impl(
             Some("more".to_string())
         },
     })
+}
+
+/// How many `paginate_backwards` batches [`load_timeline_around_event`] will
+/// request against the room's *live* timeline before falling back to
+/// [`load_focused_event_timeline`] — bounds worst-case work for the common
+/// case (a bookmark within recent-ish history) before paying for a second
+/// request/timeline swap. At `EVENTS_PER_BATCH` per iteration this covers
+/// several thousand events; deliberately not raised further; see the
+/// fallback below for events older than that.
+const MAX_LOAD_AROUND_ITERATIONS: usize = 20;
+const EVENTS_PER_BATCH: u16 = 50;
+
+/// Result of [`load_timeline_around_event`] — richer than a plain `found`
+/// bool so the frontend can tell *how* the event was found. Review fix: the
+/// common case (the event is within the room's already-cached live
+/// timeline, or reachable by the bounded `paginate_backwards` scan below)
+/// never touches [`load_focused_event_timeline`]'s server-side `/context`
+/// fallback at all — no focused-view swap happens, so the room's cached
+/// `Timeline` is still the live one. A plain `bool` return gave the
+/// frontend no way to distinguish that from the rarer case where the
+/// fallback *did* run and did swap the cache to a focused view, which is
+/// the only case where a later "Jump to Present" needs to force the room
+/// back to live — `ChatShell` was otherwise treating every successful jump
+/// as if it might have focused the view, forcing an unnecessary re-fetch
+/// (and the scroll-animation disruption that comes with replacing
+/// `messages`) for the much more common non-focusing case.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../src/bindings/")]
+pub struct JumpToEventResult {
+    pub found: bool,
+    pub installed_focused_view: bool,
+}
+
+/// Spec 12's minimal "load timeline around an arbitrary event id" capability
+/// — needed so jumping to a bookmarked message from the Saved Messages view
+/// works even when that message isn't in the room's currently-loaded
+/// timeline window (e.g. the room hasn't been opened yet, or the bookmark is
+/// older than what's paginated in). Tries the cheap path first: keep calling
+/// the existing `paginate_backwards` (the same primitive `get_timeline_page`
+/// already uses) until `event_id` shows up in the live snapshot, relying on
+/// the timeline listener's existing `timeline:update` emission (spawned by
+/// `get_or_create_timeline`) to push each newly-paginated batch to the
+/// frontend exactly the way backward-scrolling already does.
+///
+/// If that bounded walk doesn't find the event within
+/// `MAX_LOAD_AROUND_ITERATIONS` batches (review fix — previously this simply
+/// gave up and returned `false` here, even though the event exists and is
+/// reachable, just further back than ~1000 events), falls back to
+/// [`load_focused_event_timeline`], which resolves the event via the
+/// server's `/context` endpoint directly — no client-side scanning bound.
+///
+/// Returns whether `event_id` was found. `found: false` now only means the
+/// event is genuinely not reachable from the current sync state (e.g. a
+/// stale bookmark for an event since removed from the room's DAG the local
+/// store can see), not merely "further back than we were willing to page
+/// through".
+#[tauri::command]
+pub async fn load_timeline_around_event(
+    app: AppHandle,
+    state: State<'_, MatrixState>,
+    room_id: String,
+    event_id: String,
+) -> Result<JumpToEventResult, String> {
+    let client = state.require_client().await?;
+    let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
+    let parsed_event_id = matrix_sdk::ruma::EventId::parse(&event_id).map_err(|e| e.to_string())?;
+    // Review fix: registers this call as the room's *current* jump target
+    // before doing any work — see `MatrixState::latest_jump_target`'s own
+    // doc comment. Starting a second jump for this room immediately
+    // supersedes an earlier one still in flight, so that earlier call's own
+    // later check (in `load_focused_event_timeline`) can tell it's stale.
+    state
+        .latest_jump_target
+        .lock()
+        .await
+        .insert(parsed_room_id.to_owned(), parsed_event_id.to_owned());
+    // `force_live: false` — this is the jump machinery itself; it should
+    // start from whatever's already cached, including a focused view left
+    // over from a previous jump in this same room this session, not force a
+    // reset back to live.
+    let timeline = state
+        .get_or_create_timeline(&app, &client, &parsed_room_id, false)
+        .await?;
+
+    if timeline_contains_event(&timeline, &event_id).await {
+        return Ok(JumpToEventResult {
+            found: true,
+            installed_focused_view: false,
+        });
+    }
+
+    for _ in 0..MAX_LOAD_AROUND_ITERATIONS {
+        let hit_start = timeline
+            .paginate_backwards(EVENTS_PER_BATCH)
+            .await
+            .map_err(|e| e.to_string())?;
+        if timeline_contains_event(&timeline, &event_id).await {
+            return Ok(JumpToEventResult {
+                found: true,
+                installed_focused_view: false,
+            });
+        }
+        if hit_start {
+            // Review fix: this used to report not-found immediately here,
+            // reasoning that reaching the start of visible history means no
+            // further scanning could locate the event. That's only true if
+            // `timeline` is the room's live tail — but `get_or_create_timeline`
+            // above can just as well return a *cached, already-focused*
+            // `Timeline` left over from a previous `load_focused_event_timeline`
+            // call for a *different* event in this same room (`replace_timeline`
+            // swaps the cache entry to the focused view on every jump). Hitting
+            // the start of *that* narrow, event-focused window says nothing
+            // about whether the newly-requested event is reachable at all —
+            // only the server-side `/context` fallback below can answer that
+            // for an arbitrary target, so always fall through to it instead of
+            // reporting failure from a bounded scan whose starting point may
+            // not even be the room's actual live tail.
+            break;
+        }
+    }
+
+    // Exhausted the bounded live-timeline walk without hitting the start of
+    // history — the event may simply be deeper than we're willing to page
+    // through client-side. Fall back to a direct server-side lookup instead
+    // of reporting failure.
+    let found =
+        load_focused_event_timeline(&app, &state, &client, &parsed_room_id, &parsed_event_id)
+            .await?;
+    Ok(JumpToEventResult {
+        found,
+        // Only `true` when the fallback both found the event *and* actually
+        // won the race to install its focused timeline — see
+        // `load_focused_event_timeline`'s own re-checks (stale
+        // account/session, superseded jump target) for the cases where it
+        // returns `found: true` from a stale early-exit without installing
+        // anything.
+        installed_focused_view: found,
+    })
+}
+
+/// Fallback for [`load_timeline_around_event`] once the live timeline's
+/// bounded backward-pagination gives up without finding `event_id`. Builds a
+/// dedicated `TimelineFocus::Event`-focused `Timeline` (`matrix-sdk-ui`'s
+/// purpose-built mechanism for jumping to an arbitrary historical event,
+/// e.g. from a permalink) via `Room::timeline_builder`, which resolves the
+/// target through the server's `/context` endpoint
+/// (`Room::event_with_context` under the hood) in a single request no
+/// matter how far back it is — no client-side page-by-page scanning bound.
+///
+/// On success, swaps this room's cached timeline over to the focused one
+/// (see `MatrixState::replace_timeline`) so the frontend's next
+/// `get_timeline_page`/`timeline:update` sees events around the target
+/// instead of the room's unrelated live tail from before the jump.
+async fn load_focused_event_timeline(
+    app: &AppHandle,
+    state: &State<'_, MatrixState>,
+    client: &Client,
+    room_id: &RoomId,
+    event_id: &matrix_sdk::ruma::EventId,
+) -> Result<bool, String> {
+    use matrix_sdk_ui::timeline::{RoomExt as _, TimelineEventFocusThreadMode, TimelineFocus};
+
+    let room = client
+        .get_room(room_id)
+        .ok_or_else(|| format!("room {room_id} not found"))?;
+
+    let focused = room
+        .timeline_builder()
+        .with_focus(TimelineFocus::Event {
+            target: event_id.to_owned(),
+            num_context_events: EVENTS_PER_BATCH,
+            thread_mode: TimelineEventFocusThreadMode::Automatic {
+                hide_threaded_events: false,
+            },
+        })
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+    let focused = Arc::new(focused);
+
+    if !timeline_contains_event(&focused, event_id.as_str()).await {
+        return Ok(false);
+    }
+
+    // Review fix: `client` was captured (and potentially awaited on, both in
+    // `room.timeline_builder()...build()` above and in the caller's own
+    // bounded-pagination loop) well before this point. If the user logs out
+    // — or logs out and into a *different* account — while this is in
+    // flight, `clear_timelines()` runs against the new/absent session, but
+    // this task is still holding its own `Client` clone (an `Arc` handle
+    // that keeps working even after the session it belongs to has been
+    // logged out of) and would otherwise go ahead and install that stale
+    // account's focused `Timeline` into the process-wide, room-id-keyed
+    // cache — a later open of that same room id under the new session would
+    // then render or emit updates sourced from the old account. This is a
+    // cheap early-exit check only; `replace_timeline` itself performs the
+    // authoritative re-check immediately before installing anything, since
+    // it has its own internal await (stopping the previous listener) that
+    // this check alone can't cover.
+    //
+    // Review fix: compares `device_id()`, not just `user_id()` — a
+    // `user_id()`-only comparison would pass for a logout-then-re-login
+    // into the *same* account, even though that mints a fresh session (new
+    // device, revoked old tokens). `device_id()` is unique per login
+    // session, so it also catches that case, not just a switch to a
+    // different account.
+    //
+    // Review fix: `device_id()` alone isn't globally unique either — it's
+    // only scoped to be unique per Matrix user, so a switch to a
+    // *different* account could coincidentally mint a device id string
+    // equal to one the previous account had used. Comparing `user_id()`
+    // too closes that gap.
+    let still_active = match state.require_client().await {
+        Ok(current) => {
+            current.user_id() == client.user_id() && current.device_id() == client.device_id()
+        }
+        Err(_) => false,
+    };
+    if !still_active {
+        return Ok(false);
+    }
+
+    // Review fix: this call may have been superseded by a *newer* jump for
+    // this same room (targeting a different event) started while the
+    // `/context` lookup above was still in flight — see
+    // `MatrixState::latest_jump_target`'s own doc comment. Only the request
+    // whose target still matches gets to install its focused timeline;
+    // treat a superseded one the same as "not found" rather than letting it
+    // clobber whatever the newer jump already installed.
+    let still_latest = state
+        .latest_jump_target
+        .lock()
+        .await
+        .get(room_id)
+        .is_some_and(|target| target.as_str() == event_id.as_str());
+    if !still_latest {
+        return Ok(false);
+    }
+
+    // `replace_timeline` returns `None` if its own re-check finds the
+    // active client no longer matches, or this jump has since been
+    // superseded by a newer one for the same room, by the time it's ready
+    // to install — treat that identically to "not found", not as a
+    // successful jump.
+    Ok(state
+        .replace_timeline(app, client, room_id, focused, Some(event_id))
+        .await
+        .is_some())
+}
+
+async fn timeline_contains_event(timeline: &Timeline, event_id: &str) -> bool {
+    let (items, _stream) = timeline.subscribe().await;
+    items
+        .iter()
+        .filter_map(|item| item.as_event())
+        .any(|item| item.event_id().is_some_and(|id| id.as_str() == event_id))
 }
 
 #[cfg(test)]
