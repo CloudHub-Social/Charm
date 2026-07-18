@@ -476,6 +476,36 @@ describe("SpaceRail", () => {
     await waitFor(() => expectMenuItemEnabled(/Invite/));
   });
 
+  it("does not show the previous open's stale permission while a reopen's refetch is in flight", async () => {
+    renderRail();
+
+    // First open: permitted (the default fixture), so Invite is enabled.
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    await waitFor(() => expectMenuItemEnabled(/Invite/));
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // Reopen with a slow, still-unresolved refetch: the previously cached
+    // "enabled" must not remain visible/clickable during that gap — it
+    // should go back to disabled until the fresh result lands.
+    let resolveDetails: (details: ReturnType<typeof makeRoomDetails>) => void = () => {};
+    getRoomDetails.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveDetails = resolve;
+      }),
+    );
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Team, 1 unread, 3 mentions" }));
+    expectMenuItemDisabled(/Invite/);
+
+    resolveDetails(
+      makeRoomDetails({
+        room_id: "!space:localhost",
+        can: { ...makeRoomDetails().can, invite: false },
+      }),
+    );
+    await waitFor(() => expect(getRoomDetails).toHaveBeenCalledTimes(2));
+    expectMenuItemDisabled(/Invite/);
+  });
+
   it("swallows a permissions-fetch failure without surfacing the action-error toast", async () => {
     getRoomDetails.mockRejectedValueOnce(new Error("network unreachable"));
     renderRail();

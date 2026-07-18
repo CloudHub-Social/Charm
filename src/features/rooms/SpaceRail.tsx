@@ -106,6 +106,15 @@ export function SpaceRail({
   function ensurePermissionsLoaded(roomId: string) {
     if (permissionsFetchInFlight.current.has(roomId)) return;
     permissionsFetchInFlight.current.add(roomId);
+    // Drop any previously fetched value for this room before the new
+    // request lands, rather than leaving it visible mid-refetch — a stale
+    // `true` from the prior open would otherwise stay clickable for the
+    // gap between "menu reopened" and "fresh permissions arrived".
+    setPermissionsById((prev) => {
+      if (!(roomId in prev)) return prev;
+      const { [roomId]: _stale, ...rest } = prev;
+      return rest;
+    });
     getRoomDetails(roomId)
       .then((details) => {
         setPermissionsById((prev) => ({ ...prev, [roomId]: details.can }));
