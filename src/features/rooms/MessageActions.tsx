@@ -1,5 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import {
+  Bookmark,
+  BookmarkX,
   Copy,
   Link2,
   MoreHorizontal,
@@ -32,6 +34,17 @@ export interface MessageActionsProps {
   onDelete: () => void;
   onCopy: () => void;
   onCopyLink: () => void;
+  /**
+   * Bookmarks/unbookmarks this message (Spec 12: personal, private "saved
+   * messages" — purely local, no Matrix event sent, distinct from room
+   * pinning). Toggled by `isBookmarked`; not rendered at all when
+   * `onBookmark`/`onUnbookmark` are both omitted (the web build, which has
+   * no local per-account store for this — see `SettingsScreen`'s
+   * `webUnsupported` pattern).
+   */
+  onBookmark?: () => void;
+  onUnbookmark?: () => void;
+  isBookmarked?: boolean;
   /**
    * Retries a failed send in place (SDK send-queue retry, not a
    * re-composed re-send). Only rendered when `isError` is set — see that
@@ -103,6 +116,9 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
       onDelete,
       onCopy,
       onCopyLink,
+      onBookmark,
+      onUnbookmark,
+      isBookmarked = false,
       onResend,
       onDiscard,
       className,
@@ -113,6 +129,7 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
     ref,
   ) {
     const messageActionParityEnabled = useFlag("message_action_parity");
+    const bookmarksEnabled = useFlag("bookmarks");
     const [menuOpen, setMenuOpen] = useState(false);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -248,6 +265,33 @@ export const MessageActions = forwardRef<MessageActionsHandle, MessageActionsPro
                 Copy link
               </DropdownMenuItem>
             )}
+            {bookmarksEnabled &&
+              // Review fix: `disableRelationActions` already identifies a
+              // pending/failed local echo, whose `event_id` is a
+              // transaction id rather than a real Matrix event id — a
+              // bookmark saved against that id would either fail server-side
+              // or, worse, silently point at nothing once the real event id
+              // is assigned. Gate on the same flag other relation-dependent
+              // actions (reply/edit) already use, not just `isUndecrypted`.
+              (isBookmarked && onUnbookmark ? (
+                <DropdownMenuItem
+                  onSelect={onUnbookmark}
+                  disabled={disableRelationActions || isUndecrypted}
+                >
+                  <BookmarkX />
+                  Remove bookmark
+                </DropdownMenuItem>
+              ) : (
+                onBookmark && (
+                  <DropdownMenuItem
+                    onSelect={onBookmark}
+                    disabled={disableRelationActions || isUndecrypted}
+                  >
+                    <Bookmark />
+                    Bookmark
+                  </DropdownMenuItem>
+                )
+              ))}
             {messageActionParityEnabled && isError && onResend && (
               <DropdownMenuItem onSelect={onResend}>
                 <RotateCw />

@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use rand::distr::Alphanumeric;
@@ -24,6 +26,10 @@ const SESSION_ACCOUNT: &str = "session";
 /// — matrix-sdk doesn't unify the two, so neither does this persistence
 /// layer. `try_restore_session` checks both accounts.
 const OAUTH_SESSION_ACCOUNT: &str = "oauth-session";
+/// Deliberately its own keychain entry, never touched by `relocate_store` —
+/// see [`bookmarks_encryption_key`]'s own doc comment for why bookmarks
+/// can't be encrypted with `PASSPHRASE_ACCOUNT`'s secret.
+const BOOKMARKS_SECRET_ACCOUNT: &str = "bookmarks-encryption-secret";
 
 /// Prefix marking a `matrix_store/` subdirectory as a not-yet-adopted temp
 /// store from an in-progress SSO/QR login (see [`temp_store_key`]) rather
@@ -565,6 +571,10 @@ pub fn migrate_legacy_single_account_store(app: &AppHandle) -> Result<(), String
 
 fn passphrase_account(store_key: &str) -> String {
     format!("{PASSPHRASE_ACCOUNT}-{store_key}")
+}
+
+fn bookmarks_secret_account(account_key: &str) -> String {
+    format!("{BOOKMARKS_SECRET_ACCOUNT}-{account_key}")
 }
 
 fn session_account(account_key: &str) -> String {
@@ -1287,6 +1297,208 @@ pub fn has_onboarding_flag(app: &AppHandle, account_key: &str) -> Result<bool, S
     Ok(onboarding_flag_path(app, account_key)?.exists())
 }
 
+/// Where a single account's local bookmarks table (Spec 12: personal, private
+/// "saved messages" — never a Matrix account-data event, see the module doc
+/// on `add_bookmark`) lives on disk: one AES-256-GCM-encrypted file per
+/// [`account_key`], same `<root>/<subdir>/<account_key>` layout as
+/// [`onboarding_flag_path_at`], so two accounts signed into the same Charm
+/// install never see each other's bookmarks. `.json` kept as the extension
+/// even though the on-disk bytes are ciphertext, not JSON — the plaintext it
+/// decrypts to is JSON, and callers/tests reason about it that way.
+fn bookmarks_path_at(root: &Path, account_key: &str) -> Result<PathBuf, String> {
+    let dir = root.join("bookmarks");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{account_key}.json")))
+}
+
+/// Derives the AES-256-GCM key used to encrypt `account_key`'s bookmarks
+/// file at rest, from a keychain secret of its own (`BOOKMARKS_SECRET_ACCOUNT`),
+/// not the account's SQLCipher store passphrase.
+///
+/// Review fix: this used to derive from `get_or_create_passphrase(account_key)`
+/// — but `relocate_store` *replaces* that same keychain entry with a fresh
+/// temp store's passphrase on every successful login (a new device always
+/// gets a new crypto/SQLCipher store, so the passphrase has to change too;
+/// see `relocate_store_at_locked_with`'s doc comment). Bookmarks aren't
+/// re-encrypted when that happens — they're a separate file this function's
+/// caller (`load_bookmarks`/`save_bookmarks`) reads directly, untouched by
+/// relocation — so every bookmark saved before a logout-then-relogin to the
+/// *same* account became permanently undecryptable the moment the
+/// passphrase rotated. A dedicated secret, created once and never touched
+/// by relocation, keeps bookmarks readable across as many relogins as the
+/// user does.
+fn bookmarks_encryption_key(account_key: &str) -> Result<aes_gcm::Key<Aes256Gcm>, String> {
+    let secret = get_or_create_bookmarks_secret(account_key)?;
+    let digest = Sha256::digest(format!("bookmarks-encryption-key:{secret}").as_bytes());
+    Ok(aes_gcm::Key::<Aes256Gcm>::from(<[u8; 32]>::from(digest)))
+}
+
+/// Fetches `account_key`'s dedicated bookmarks-encryption secret from the OS
+/// keychain, generating and storing a new random one on first use — the
+/// same get-or-create shape as [`get_or_create_passphrase`], just a
+/// separate keychain entry that `relocate_store` never rotates.
+fn get_or_create_bookmarks_secret(account_key: &str) -> Result<String, String> {
+    let entry = SecretEntry::new(KEYCHAIN_SERVICE, &bookmarks_secret_account(account_key))
+        .map_err(|e| e.to_string())?;
+
+    match entry.get_password() {
+        Ok(secret) => Ok(secret),
+        Err(SecretStoreError::NotFound) => {
+            let secret: String = rand::rng()
+                .sample_iter(&Alphanumeric)
+                .take(32)
+                .map(char::from)
+                .collect();
+            // Same race-tolerance as `get_or_create_passphrase`: if another
+            // caller wins the race to create this entry first, use theirs
+            // rather than failing.
+            if let Err(e) = entry.set_password(&secret) {
+                return entry.get_password().map_err(|_| e.to_string());
+            }
+            Ok(secret)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// AES-GCM nonces are 96 bits; a fresh random one is generated for every
+/// [`encrypt_bookmarks`] call (never reused for a given key — nonce reuse
+/// under GCM breaks confidentiality) and stored alongside the ciphertext
+/// since the reader needs it back to decrypt.
+const NONCE_LEN: usize = 12;
+
+/// Encrypts `plaintext` (the serialized bookmarks JSON) for `account_key`,
+/// returning `nonce || ciphertext` ready to write to disk as-is — see
+/// [`decrypt_bookmarks`] for the inverse.
+fn encrypt_bookmarks(account_key: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let key = bookmarks_encryption_key(account_key)?;
+    let cipher = Aes256Gcm::new(&key);
+    let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
+    let nonce = Nonce::from(nonce_bytes);
+    let mut ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| format!("failed to encrypt bookmarks: {e}"))?;
+    let mut out = nonce_bytes.to_vec();
+    out.append(&mut ciphertext);
+    Ok(out)
+}
+
+/// Inverse of [`encrypt_bookmarks`]: splits the stored `nonce || ciphertext`
+/// bytes and decrypts back to the plaintext bookmarks JSON.
+fn decrypt_bookmarks(account_key: &str, data: &[u8]) -> Result<Vec<u8>, String> {
+    if data.len() < NONCE_LEN {
+        return Err("bookmarks file is too short to contain a valid nonce".to_string());
+    }
+    let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
+    let nonce_bytes: [u8; NONCE_LEN] = nonce_bytes
+        .try_into()
+        .map_err(|_| "bookmarks file has an invalid nonce length".to_string())?;
+    let key = bookmarks_encryption_key(account_key)?;
+    let cipher = Aes256Gcm::new(&key);
+    cipher
+        .decrypt(&Nonce::from(nonce_bytes), ciphertext)
+        .map_err(|e| format!("failed to decrypt bookmarks: {e}"))
+}
+
+/// Process-wide map of per-account mutexes guarding read-modify-write access
+/// to that account's bookmarks file. Review fix: `bookmarks::add_bookmark`/
+/// `remove_bookmark` each read the whole file, mutate the in-memory `Vec`,
+/// then write it back wholesale — with no lock, two concurrent calls for the
+/// same account (e.g. bookmarking from two windows) could both read the
+/// pre-mutation list and the later write would silently clobber the
+/// earlier one's change. Keyed by `account_key` (not a single global lock)
+/// so unrelated accounts never contend; a `tokio::sync::Mutex` (not
+/// `std::sync::Mutex`) since callers hold it across the async command's
+/// lifetime alongside other awaits in the same command.
+static BOOKMARKS_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Returns (creating if necessary) the mutex guarding `account_key`'s
+/// bookmarks file. Callers should acquire this *before* loading the current
+/// list and hold it until the corresponding save completes.
+pub fn bookmarks_lock(account_key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    let mut locks = BOOKMARKS_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    std::sync::Arc::clone(
+        locks
+            .entry(account_key.to_string())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))),
+    )
+}
+
+/// Reads `account_key`'s bookmarks list, or an empty `Vec` if the file
+/// doesn't exist yet (never bookmarked anything) — not an error, matching
+/// [`has_onboarding_flag`]'s "absence means default" convention.
+pub fn load_bookmarks<T: serde::de::DeserializeOwned>(
+    app: &AppHandle,
+    account_key: &str,
+) -> Result<Vec<T>, String> {
+    load_bookmarks_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+    )
+}
+
+pub fn load_bookmarks_at<T: serde::de::DeserializeOwned>(
+    root: &Path,
+    account_key: &str,
+) -> Result<Vec<T>, String> {
+    let path = bookmarks_path_at(root, account_key)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let plaintext = decrypt_bookmarks(account_key, &raw)?;
+    serde_json::from_slice(&plaintext).map_err(|e| e.to_string())
+}
+
+/// Overwrites `account_key`'s bookmarks list wholesale — callers read the
+/// current list, mutate the `Vec` in memory, then call this rather than this
+/// module offering an append/remove-by-id API of its own, since the list is
+/// small (personal bookmarks, not a synced/shared dataset) and every caller
+/// in `bookmarks.rs` already needs the full list in memory anyway (e.g.
+/// `remove_bookmark` finding-and-filtering by event id).
+pub fn save_bookmarks<T: serde::Serialize>(
+    app: &AppHandle,
+    account_key: &str,
+    bookmarks: &[T],
+) -> Result<(), String> {
+    save_bookmarks_at(
+        &app.path().app_data_dir().map_err(|e| e.to_string())?,
+        account_key,
+        bookmarks,
+    )
+}
+
+pub fn save_bookmarks_at<T: serde::Serialize>(
+    root: &Path,
+    account_key: &str,
+    bookmarks: &[T],
+) -> Result<(), String> {
+    let path = bookmarks_path_at(root, account_key)?;
+    let json = serde_json::to_vec(bookmarks).map_err(|e| e.to_string())?;
+    let encrypted = encrypt_bookmarks(account_key, &json)?;
+    write_atomically(&path, &encrypted)
+}
+
+/// Writes `contents` to `path` by first writing a sibling `.tmp` file, then
+/// renaming it over `path`. Review fix: a plain `std::fs::write` truncates
+/// the destination before writing the new contents — if the process or
+/// machine stops mid-write, the bookmarks file is left truncated/partially
+/// serialized, and every subsequent `load_bookmarks` call then fails to
+/// parse it, with no way to recover the previous valid list. A same-directory
+/// rename is atomic on the filesystems Charm targets (POSIX rename(2);
+/// Windows `MoveFileEx` in this same-volume case), so a reader always either
+/// sees the old complete file or the new complete file, never a partial one.
+fn write_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let tmp_path = path.with_extension("tmp");
+    std::fs::write(&tmp_path, contents).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp_path, path).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1309,6 +1521,7 @@ mod tests {
     const TEST_MXID_PASSPHRASE_B: &str = "@charm-persistence-test-passphrase-b:localhost";
     const TEST_MXID_RELOCATE: &str = "@charm-persistence-test-relocate:localhost";
     const TEST_MXID_RELOCATE_REUSE: &str = "@charm-persistence-test-relocate-reuse:localhost";
+    const TEST_MXID_BOOKMARKS_SECRET: &str = "@charm-persistence-test-bookmarks-secret:localhost";
 
     /// A scratch `matrix_store/`-equivalent directory for tests that need a
     /// real filesystem root, cleaned up on drop so parallel `cargo test`
@@ -1452,6 +1665,39 @@ mod tests {
 
         let other_account = get_or_create_passphrase(&key_b).unwrap();
         assert_ne!(first, other_account);
+    }
+
+    /// Review fix regression test: `bookmarks_encryption_key` used to derive
+    /// from `get_or_create_passphrase(account_key)` — the same keychain
+    /// entry `relocate_store` overwrites with a fresh passphrase on every
+    /// successful login. Simulates that rotation directly (rather than
+    /// running a full relocation) and confirms the derived bookmarks key is
+    /// unaffected, since every bookmark saved before the rotation must
+    /// still decrypt afterward.
+    #[test]
+    fn bookmarks_encryption_key_survives_passphrase_rotation() {
+        let key = account_key(TEST_MXID_BOOKMARKS_SECRET);
+
+        let before = bookmarks_encryption_key(&key).unwrap();
+
+        // Simulate `relocate_store` replacing the account's SQLCipher
+        // passphrase, exactly as a logout-then-relogin to the same account
+        // does. Generated (not a literal) so static analysis never mistakes
+        // this test fixture for a real hard-coded credential.
+        let rotated_passphrase: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(32)
+            .map(char::from)
+            .collect();
+        let passphrase_entry =
+            SecretEntry::new(KEYCHAIN_SERVICE, &passphrase_account(&key)).unwrap();
+        passphrase_entry.set_password(&rotated_passphrase).unwrap();
+
+        let after = bookmarks_encryption_key(&key).unwrap();
+        assert_eq!(
+            before, after,
+            "bookmarks encryption key must survive passphrase rotation"
+        );
     }
 
     #[test]
@@ -1847,5 +2093,36 @@ mod tests {
         assert!(!onboarding_flag_path_at(&root.0, &account_key_b)
             .unwrap()
             .exists());
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct TestBookmark {
+        event_id: String,
+    }
+
+    #[test]
+    fn bookmarks_round_trip_and_are_isolated_per_account() {
+        let root = ScratchRoot::new("bookmarks");
+        let account_key_a = account_key("@charm-persistence-test-bookmarks-a:localhost");
+        let account_key_b = account_key("@charm-persistence-test-bookmarks-b:localhost");
+
+        assert!(load_bookmarks_at::<TestBookmark>(&root.0, &account_key_a)
+            .unwrap()
+            .is_empty());
+
+        let bookmarks_a = vec![TestBookmark {
+            event_id: "$a1".to_string(),
+        }];
+        save_bookmarks_at(&root.0, &account_key_a, &bookmarks_a).unwrap();
+
+        assert_eq!(
+            load_bookmarks_at::<TestBookmark>(&root.0, &account_key_a).unwrap(),
+            bookmarks_a
+        );
+        // Account B never sees account A's bookmarks, even though both
+        // accounts share the same on-disk root.
+        assert!(load_bookmarks_at::<TestBookmark>(&root.0, &account_key_b)
+            .unwrap()
+            .is_empty());
     }
 }

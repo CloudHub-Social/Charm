@@ -22,6 +22,9 @@ import { isWebBuild } from "@/lib/platform";
 const DevicesPanel = lazy(() =>
   import("./DevicesPanel").then((mod) => ({ default: mod.DevicesPanel })),
 );
+const SavedMessagesPanel = lazy(() =>
+  import("./SavedMessagesPanel").then((mod) => ({ default: mod.SavedMessagesPanel })),
+);
 const GeneralPanel = lazy(() =>
   import("./GeneralPanel").then((mod) => ({ default: mod.GeneralPanel })),
 );
@@ -39,6 +42,9 @@ const isProductionEnv =
 
 interface SettingsScreenProps {
   onLoggedOut: () => void;
+  /** See `SavedMessagesPanel`'s doc comment. Omitted on the web build (see
+   * the `saved-messages` section's `webUnsupported`), so left optional. */
+  onJumpToBookmark?: (roomId: string, eventId: string) => void;
 }
 
 const SECTIONS: {
@@ -74,6 +80,11 @@ const SECTIONS: {
     flagGated: "presence_privacy_controls",
     webUnsupported: true,
   },
+  // Bookmarks (Spec 12) are stored in a local per-account file the Tauri
+  // process owns — same rationale as `focus`/`general`/`notifications`
+  // above, the web companion build has no store for this and no
+  // `invokeWeb` case for the bookmark commands (see `matrixTransport.ts`).
+  { value: "saved-messages", label: "Saved Messages", webUnsupported: true },
   { value: "about", label: "About" },
   { value: "keyboard-shortcuts", label: "Keyboard Shortcuts" },
   { value: "labs", label: "Labs", productionHidden: true },
@@ -83,16 +94,19 @@ function SettingsBody({
   section,
   onSectionChange,
   onLoggedOut,
+  onJumpToBookmark,
   mobile,
 }: {
   section: SettingsSection;
   onSectionChange: (value: SettingsSection) => void;
   onLoggedOut: () => void;
+  onJumpToBookmark?: (roomId: string, eventId: string) => void;
   mobile: boolean;
 }) {
   const showDesktopSection = useIsDesktopPlatform();
   const webBuild = isWebBuild();
   const focusModeEnabled = useFlag("focus_mode");
+  const bookmarksEnabled = useFlag("bookmarks");
   // Review fix: if `focus_mode` is later disabled (rollout killed, local
   // override cleared) while a user still has an active/indefinite DND
   // persisted, Rust enforcement keeps suppressing notifications regardless
@@ -113,7 +127,12 @@ function SettingsBody({
       (!s.desktopOnly || showDesktopSection) &&
       (!s.webUnsupported || !webBuild) &&
       sectionFlagEnabled(s.flagGated) &&
-      (!s.productionHidden || !isProductionEnv),
+      (!s.productionHidden || !isProductionEnv) &&
+      // Callers without a room-selection surface to jump to (e.g. a future
+      // embedding of `SettingsScreen` without `RoomsScreen`'s wiring) get no
+      // Saved Messages tab at all, rather than one whose jump action is a
+      // silent no-op.
+      (s.value !== "saved-messages" || (onJumpToBookmark !== undefined && bookmarksEnabled)),
   );
 
   // A `#/settings/desktop` deep link (or a stale one from switching from
@@ -201,6 +220,13 @@ function SettingsBody({
             <PrivacyPanel />
           </TabsContent>
         )}
+        {!webBuild && bookmarksEnabled && onJumpToBookmark && (
+          <TabsContent value="saved-messages">
+            <Suspense fallback={null}>
+              <SavedMessagesPanel onJumpToMessage={onJumpToBookmark} />
+            </Suspense>
+          </TabsContent>
+        )}
         <TabsContent value="about">
           <AboutPanel />
         </TabsContent>
@@ -229,11 +255,21 @@ function SettingsBody({
  * a router (Charm 2.0 has none; see Spec 18) — a hash sync stands in for
  * that.
  */
-export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
+export function SettingsScreen({ onLoggedOut, onJumpToBookmark }: SettingsScreenProps) {
   const { section, openSettings, closeSettings } = useSettingsNavigation();
   const layout = useAdaptiveLayout();
 
   if (!section) return null;
+
+  // Jumping to a bookmarked message should also close Settings — the whole
+  // point is to land back in the room's timeline, not leave the overlay
+  // open over it.
+  const handleJumpToBookmark = onJumpToBookmark
+    ? (roomId: string, eventId: string) => {
+        closeSettings();
+        onJumpToBookmark(roomId, eventId);
+      }
+    : undefined;
 
   if (layout === "mobile") {
     return (
@@ -254,6 +290,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
             section={section}
             onSectionChange={openSettings}
             onLoggedOut={onLoggedOut}
+            onJumpToBookmark={handleJumpToBookmark}
             mobile
           />
         </div>
@@ -281,6 +318,7 @@ export function SettingsScreen({ onLoggedOut }: SettingsScreenProps) {
           section={section}
           onSectionChange={openSettings}
           onLoggedOut={onLoggedOut}
+          onJumpToBookmark={handleJumpToBookmark}
           mobile={false}
         />
       </DialogContent>

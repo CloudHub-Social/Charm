@@ -76,5 +76,11 @@
     "default": false,
     "description": "Privacy controls for read receipts, typing indicators, presence (appear offline), and auto-idle timeout, plus expanded seen-by and presence status display.",
     "owner": "Spec 40 (presence and receipt privacy controls)"
+  },
+  {
+    "key": "bookmarks",
+    "default": false,
+    "description": "Bookmark a message from its action menu and browse saved messages from a global Settings panel.",
+    "owner": "Day-2 Spec 12 (bookmarks and saved messages)"
   }
 ]
