@@ -1631,6 +1631,7 @@ export function ChatShell({
             />
             <button
               type="button"
+              aria-label="Send attachment"
               onClick={handleConfirmPendingAttachment}
               className="shrink-0 rounded bg-primary-solid px-2.5 py-1 text-primary-foreground hover:opacity-90"
             >

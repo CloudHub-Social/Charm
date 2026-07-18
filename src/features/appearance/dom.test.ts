@@ -91,6 +91,8 @@ describe("applyAppearanceToDom", () => {
       messageLayout: "bubble",
       jumboEmojiSize: "lg",
       showUnreadCounts: false,
+      autoplayGifs: true,
+      stripExifOnUpload: true,
     });
     expect(document.documentElement.dataset.theme).toBe("midnight");
     expect(document.documentElement.dataset.density).toBe("compact");

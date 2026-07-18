@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { installMockTauri } from "./support/mockTauri";
 import { captureSnapshot } from "./support/sentrySnapshot";
 
@@ -147,7 +147,7 @@ test("upload progress shows while sending and clears once the attachment lands",
  * only activate behind the flag — every test below flips it on the same way
  * the drop-target test above does.
  */
-function enableMediaSendPolish(page: import("@playwright/test").Page) {
+function enableMediaSendPolish(page: Page) {
   return page.addInitScript(() => {
     localStorage.setItem(
       "charm:featureFlags",
@@ -176,7 +176,7 @@ test("captioning a staged attachment sends and renders the caption", async ({ pa
   const captionInput = page.getByRole("textbox", { name: "Attachment caption" });
   await expect(captionInput).toBeVisible();
   await captionInput.fill("Sunset over the lake");
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send attachment" }).click();
 
   await expect(page.getByRole("button", { name: "Open image photo.png" })).toBeVisible();
   await expect(page.getByText("Sunset over the lake")).toBeVisible();
@@ -217,7 +217,7 @@ test("cancelling an in-flight upload removes it from the tray", async ({ page })
   await expect(page.getByText("No messages yet")).toBeVisible();
 
   await page.getByRole("button", { name: "Attach" }).click();
-  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Send attachment" }).click();
 
   const uploadRow = page.getByText("big-video.mp4");
   await expect(uploadRow).toBeVisible();

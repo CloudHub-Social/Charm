@@ -4582,7 +4582,7 @@ describe("ChatShell", () => {
     fireEvent.click(attachButton);
 
     // media_send_polish stages the file for an optional caption first.
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
@@ -4608,7 +4608,7 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() => expect(screen.getByText("video.mp4")).toBeInTheDocument());
 
@@ -4673,7 +4673,7 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
 
@@ -4693,7 +4693,7 @@ describe("ChatShell", () => {
       clipboardData: { files: [file] },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
@@ -4780,7 +4780,7 @@ describe("ChatShell", () => {
     fireEvent.drop(shell, { dataTransfer });
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
@@ -4828,7 +4828,7 @@ describe("ChatShell", () => {
       dataTransfer: { files: [file] },
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
