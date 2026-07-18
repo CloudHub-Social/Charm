@@ -413,10 +413,19 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
 /// directions" logic (this block's own review-fix comments) is unit-
 /// testable without a live sync loop.
 ///
-/// - Flag disabled: always `Online`, regardless of what's cached — Appear
+/// - Flag disabled: lifts a cached `Offline` back to `Online` — Appear
 ///   offline is a `presence_privacy_controls`-gated feature, and its
 ///   settings UI disappears along with the flag, so this is the only
-///   remaining off-ramp for a cached `Offline` value.
+///   remaining off-ramp for an `Offline` value that flag left behind.
+///   Anything else (`Online`/`Unavailable`) is left alone.
+///
+///   Review fix (P2): this used to force `Online` unconditionally whenever
+///   the flag was disabled, regardless of `current` — that also caught
+///   pre-existing Spec 05 presence choices unrelated to this privacy
+///   feature (e.g. `Unavailable` from the auto-idle timer, or a future
+///   manual "away" control), silently overriding them back to `Online` on
+///   every sync iteration purely because the flag happened to be off.
+///   Only `Offline` is treated as this feature's own artifact here.
 /// - Flag enabled and `appear_offline` persisted: always `Offline` — closes
 ///   the gap where the flag is *re*-enabled after being off and a
 ///   previously-persisted `appear_offline` was never re-applied.
@@ -429,7 +438,11 @@ fn reconciled_sync_presence(
     current: PresenceStateDto,
 ) -> PresenceStateDto {
     if !presence_privacy_controls_enabled {
-        PresenceStateDto::Online
+        if current == PresenceStateDto::Offline {
+            PresenceStateDto::Online
+        } else {
+            current
+        }
     } else if appear_offline {
         PresenceStateDto::Offline
     } else {
@@ -718,13 +731,33 @@ mod reconciled_sync_presence_tests {
     use super::{reconciled_sync_presence, PresenceStateDto};
 
     #[test]
-    fn forces_online_when_the_flag_is_disabled_regardless_of_appear_offline() {
+    fn lifts_a_cached_offline_when_the_flag_is_disabled_regardless_of_appear_offline() {
         assert_eq!(
             reconciled_sync_presence(false, true, PresenceStateDto::Offline),
             PresenceStateDto::Online
         );
         assert_eq!(
+            reconciled_sync_presence(false, false, PresenceStateDto::Offline),
+            PresenceStateDto::Online
+        );
+    }
+
+    /// Review fix (P2) regression test: the flag being disabled must only
+    /// lift a cached `Offline` (this feature's own artifact) — it must not
+    /// also override an unrelated Spec 05 presence choice like
+    /// `Unavailable` (e.g. from the auto-idle timer) back to `Online`.
+    #[test]
+    fn leaves_non_offline_presence_alone_when_the_flag_is_disabled() {
+        assert_eq!(
             reconciled_sync_presence(false, false, PresenceStateDto::Unavailable),
+            PresenceStateDto::Unavailable
+        );
+        assert_eq!(
+            reconciled_sync_presence(false, true, PresenceStateDto::Unavailable),
+            PresenceStateDto::Unavailable
+        );
+        assert_eq!(
+            reconciled_sync_presence(false, false, PresenceStateDto::Online),
             PresenceStateDto::Online
         );
     }
