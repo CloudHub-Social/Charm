@@ -655,6 +655,44 @@ describe("ChatShell", () => {
     );
   });
 
+  it("keeps the Jump to Present affordance when resetToLive fails, so the user can retry (Codex review fix)", async () => {
+    // `resetToLive` swallows its own errors internally and always resolves
+    // (never rejects) — a failed `getTimelinePage` there must not be
+    // mistaken for success. Clearing the focused-view flags unconditionally
+    // would drop the "Jump to Present" pill even though the room is still
+    // stuck on the focused (bookmark-jump) backend timeline, leaving the
+    // user with no in-room way to retry.
+    getTimelinePage.mockResolvedValueOnce({ messages: [], next_cursor: null });
+    loadTimelineAroundEvent.mockResolvedValue({ found: true, installed_focused_view: true });
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell room={room} currentUserId="@me:localhost" jumpToEventId="$older-bookmark" />
+      </JotaiProvider>,
+    );
+    await waitFor(() =>
+      expect(loadTimelineAroundEvent).toHaveBeenCalledWith(room.room_id, "$older-bookmark"),
+    );
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: room.room_id,
+        messages: [
+          summary({ event_id: "$older-bookmark", sender: "@alice:localhost", body: "older" }),
+        ],
+      });
+    });
+    await screen.findByText("older");
+
+    const pill = await screen.findByRole("button", { name: "Jump to present" });
+    getTimelinePage.mockRejectedValueOnce(new Error("network error"));
+    await act(async () => {
+      fireEvent.click(pill);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("button", { name: "Jump to present" })).toBeInTheDocument();
+  });
+
   it("shows a Jump to Present pill after a focused bookmark jump even with no new messages counted (Codex review fix)", async () => {
     // A focused (`TimelineFocus::Event`) view from a Saved Messages jump
     // never receives live updates, so `newMessageCount` (which only counts

@@ -338,8 +338,16 @@ export function useChatTimeline(
   // one) until the user leaves and reopens the room. `ChatShell`'s
   // "Jump to Present" handler calls this to force the same live-tail
   // re-fetch/reset the room-open path does, without needing a room switch.
-  async function resetToLive() {
-    if (!room) return;
+  // Review fix: returns whether the reset actually landed, instead of
+  // unconditionally swallowing a failure — `ChatShell`'s "Jump to Present"
+  // handler needs to know this before it clears the focused-view retry
+  // affordance (`hasFocusedView`/`mightHaveFocusedViewRef`); clearing it
+  // unconditionally left the user with no in-room way to retry a failed
+  // reset until leaving and reopening the room. A stale-visit (room
+  // switched away from mid-call) still reports `false` — there's no
+  // "present" flag left to manage for a room that's no longer mounted.
+  async function resetToLive(): Promise<boolean> {
+    if (!room) return false;
     const targetRoomId = room.room_id;
     // Review fix: without this, a slow response landing after the user has
     // since switched rooms (or revisited this same room id — a plain
@@ -357,13 +365,15 @@ export function useChatTimeline(
     setLoading(true);
     try {
       const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
-      if (visitGenerationRef.current !== generation) return;
+      if (visitGenerationRef.current !== generation) return false;
       applyMessages(page.messages);
       nextCursorRef.current = page.next_cursor;
       setHasMore(page.next_cursor !== null);
+      return true;
     } catch (err) {
-      if (visitGenerationRef.current !== generation) return;
+      if (visitGenerationRef.current !== generation) return false;
       logAndIgnore(err);
+      return false;
     } finally {
       if (visitGenerationRef.current === generation) {
         setLoading(false);

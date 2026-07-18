@@ -411,9 +411,22 @@ export function ChatShell({
     // `e2e/timeline-scroll.spec.ts`'s plain "scroll away, new message
     // arrives, click the pill" case.
     if (mightHaveFocusedViewRef.current) {
-      mightHaveFocusedViewRef.current = false;
-      setHasFocusedView(false);
-      resetToLive().catch(logAndIgnore);
+      // Review fix: `resetToLive` swallows its own errors internally (its
+      // own comment) and always resolves — never rejects — so clearing
+      // these flags *before* awaiting it treated a failed reset as if it
+      // had succeeded. The room stayed on the backend's focused timeline
+      // (missing live updates) while the "Jump to Present" affordance that
+      // was the user's only in-room way to retry had already disappeared,
+      // with no recovery short of leaving and reopening the room. Only
+      // clear the flags once the reset actually reports success.
+      resetToLive()
+        .then((succeeded) => {
+          if (succeeded) {
+            mightHaveFocusedViewRef.current = false;
+            setHasFocusedView(false);
+          }
+        })
+        .catch(logAndIgnore);
     }
     // `"LAST"` (rather than the equivalent `messages.length - 1`): Virtuoso's
     // own sentinel for "the actual last data item," regardless of
