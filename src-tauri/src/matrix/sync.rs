@@ -195,28 +195,38 @@ async fn emit_room_updates(
                 // against each other.
                 //
                 // Review fix (P2): captured *before* waiting on that lock,
-                // not after — `pin_event`/`unpin_event` bump
-                // `pinned_event_local_write_seq` right after a successful,
-                // homeserver-verified write, while still holding this same
-                // per-room lock. If one of them held the lock when this sync
-                // response arrived, this reconciliation blocks until it
-                // releases — but `Room::pinned_event_ids()` (local, synced
-                // state from this already-in-flight sync response) can
-                // still predate that just-verified write. Re-checking the
-                // seq after finally acquiring the lock detects that a local
-                // write completed while this was waiting, and skips
-                // clobbering the fresher cached list with stale synced
-                // state — this sync round simply no-ops for pin
-                // reconciliation; a later sync (once the local write's own
-                // echo has landed) reconciles correctly once both agree.
-                let seq_before_wait = state
+                // not after — `pin_event`/`unpin_event` bump this room's
+                // entry in `pinned_event_local_write_seq` right after a
+                // successful, homeserver-verified write, while still holding
+                // this same per-room lock. If one of them held the lock when
+                // this sync response arrived, this reconciliation blocks
+                // until it releases — but `Room::pinned_event_ids()` (local,
+                // synced state from this already-in-flight sync response)
+                // can still predate that just-verified write. Re-checking
+                // this room's seq after finally acquiring the lock detects
+                // that a local write for *this room* completed while this
+                // was waiting, and skips clobbering the fresher cached list
+                // with stale synced state — this sync round simply no-ops
+                // for pin reconciliation; a later sync (once the local
+                // write's own echo has landed) reconciles correctly once
+                // both agree. Scoped per-room (not a single global counter)
+                // — see `pinned_event_local_write_seq`'s own doc comment for
+                // why a different room's write must not cause this room's
+                // reconciliation to skip.
+                let seq_before_wait = *state
                     .pinned_event_local_write_seq
-                    .load(std::sync::atomic::Ordering::SeqCst);
+                    .lock()
+                    .await
+                    .get(room_id)
+                    .unwrap_or(&0);
                 let lock = state.pinned_event_lock(room_id).await;
                 let _guard = lock.lock().await;
-                let local_write_raced_in = state
+                let local_write_raced_in = *state
                     .pinned_event_local_write_seq
-                    .load(std::sync::atomic::Ordering::SeqCst)
+                    .lock()
+                    .await
+                    .get(room_id)
+                    .unwrap_or(&0)
                     != seq_before_wait;
                 if !local_write_raced_in {
                     let mut pinned_cache = state.pinned_event_cache.lock().await;

@@ -1077,7 +1077,7 @@ pub async fn pin_event(
             .pinned_event_cache
             .lock()
             .await
-            .insert(parsed_room_id, new_list);
+            .insert(parsed_room_id.clone(), new_list);
         // Review fix (P2): bumped after a successful, *verified* write —
         // see `pinned_event_local_write_seq`'s own doc comment. Lets
         // `sync.rs`'s pin-cache reconciliation (which can be waiting on
@@ -1085,9 +1085,8 @@ pub async fn pin_event(
         // completed while it waited, so it skips overwriting this
         // just-cached, homeserver-verified list with a synced-state read
         // that may predate it.
-        state
-            .pinned_event_local_write_seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut local_write_seq = state.pinned_event_local_write_seq.lock().await;
+        *local_write_seq.entry(parsed_room_id).or_insert(0) += 1;
     }
     Ok(())
 }
@@ -1192,12 +1191,11 @@ pub async fn unpin_event(
             .pinned_event_cache
             .lock()
             .await
-            .insert(parsed_room_id, new_list);
+            .insert(parsed_room_id.clone(), new_list);
         // Review fix (P2): same as `pin_event` — see
         // `pinned_event_local_write_seq`'s own doc comment.
-        state
-            .pinned_event_local_write_seq
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut local_write_seq = state.pinned_event_local_write_seq.lock().await;
+        *local_write_seq.entry(parsed_room_id).or_insert(0) += 1;
     }
     Ok(())
 }

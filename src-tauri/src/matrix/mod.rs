@@ -307,17 +307,27 @@ pub struct MatrixState {
     /// two maps above use): read/incremented without ever needing to hold
     /// across an `.await`.
     pub(crate) pinned_event_cache_generation: std::sync::atomic::AtomicU64,
-    /// Bumped by `pin_event`/`unpin_event` (`room_admin.rs`) after a
-    /// successful, verified write. `sync.rs`'s `pinned_event_cache`
-    /// reconciliation captures this before waiting on a room's
-    /// `pinned_event_lock` and re-checks it after acquiring that lock —
-    /// see that reconciliation's own comment for the race this catches.
-    /// Global rather than per-room: a false-positive skip (a *different*
-    /// room's write bumping this while we're waiting) is harmless — the
-    /// reconciliation just no-ops for one sync round and catches up on the
-    /// next — whereas under-detecting the real per-room race would
-    /// silently roll a cache entry back to stale state.
-    pub(crate) pinned_event_local_write_seq: std::sync::atomic::AtomicU64,
+    /// Per-room counter, bumped by `pin_event`/`unpin_event` (`room_admin.rs`)
+    /// after a successful, verified write for that room. `sync.rs`'s
+    /// `pinned_event_cache` reconciliation captures this room's count before
+    /// waiting on the room's `pinned_event_lock` and re-checks it after
+    /// acquiring that lock — see that reconciliation's own comment for the
+    /// race this catches.
+    ///
+    /// Review fix (P2): scoped per-room, not a single global counter — a
+    /// global counter meant a local write for a *different* room bumping it
+    /// while this room's reconciliation waited would also skip this room's
+    /// reconciliation, even though nothing about this room actually raced.
+    /// This reconciliation only runs when a sync response for this room
+    /// actually carries `m.room.pinned_events`, so there's no guarantee of a
+    /// later sync round to "catch up" on for this specific room — an
+    /// unrelated skip here could leave `pinned_event_cache` stale
+    /// indefinitely, not just for one round. A plain `u64` behind the same
+    /// `Mutex<HashMap<...>>` shape as the two maps above (not an atomic per
+    /// room — reads/writes here already happen while holding this room's
+    /// `pinned_event_lock`, so there's no need for lock-free atomics).
+    pub(crate) pinned_event_local_write_seq:
+        Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, u64>>,
 }
 
 impl Default for MatrixState {
@@ -353,7 +363,7 @@ impl Default for MatrixState {
             pinned_event_locks: Mutex::default(),
             pinned_event_cache: Mutex::default(),
             pinned_event_cache_generation: std::sync::atomic::AtomicU64::default(),
-            pinned_event_local_write_seq: std::sync::atomic::AtomicU64::default(),
+            pinned_event_local_write_seq: Mutex::default(),
         }
     }
 }
@@ -1179,5 +1189,56 @@ mod tests {
         clear_call
             .await
             .expect("clear_pinned_event_cache should complete");
+    }
+
+    /// Review fix regression test: `pinned_event_local_write_seq` is scoped
+    /// per-room, not a single global counter — bumping one room's entry
+    /// must never make a *different* room's entry look like it changed.
+    /// `sync.rs`'s pin-cache reconciliation reads this map keyed by
+    /// `room_id`, so a global counter would make an unrelated room's local
+    /// write cause this room's reconciliation to skip — and since that
+    /// reconciliation only runs when a sync response for *this* room
+    /// actually carries `m.room.pinned_events`, there's no guarantee of a
+    /// later round to catch up on, so the skip could leave this room's
+    /// cache stale indefinitely rather than just for one sync round.
+    #[tokio::test]
+    async fn pinned_event_local_write_seq_is_scoped_per_room() {
+        let state = MatrixState::default();
+        let room_a = matrix_sdk::ruma::room_id!("!room-a:example.org").to_owned();
+        let room_b = matrix_sdk::ruma::room_id!("!room-b:example.org").to_owned();
+
+        let seq_b_before = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_b)
+            .unwrap_or(&0);
+
+        // Simulates the bump `pin_event`/`unpin_event` do for room A only.
+        *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .entry(room_a.clone())
+            .or_insert(0) += 1;
+
+        let seq_a_after = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_a)
+            .unwrap_or(&0);
+        let seq_b_after = *state
+            .pinned_event_local_write_seq
+            .lock()
+            .await
+            .get(&room_b)
+            .unwrap_or(&0);
+
+        assert_eq!(seq_a_after, 1, "room A's own write must bump its own count");
+        assert_eq!(
+            seq_b_after, seq_b_before,
+            "a different room's write must never affect room B's count"
+        );
     }
 }
