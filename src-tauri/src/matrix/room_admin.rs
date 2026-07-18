@@ -925,17 +925,55 @@ pub async fn pin_event(
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let lock = state.pinned_event_lock(&parsed_room_id).await;
     let _guard = lock.lock().await;
-    pin_event_impl(&client, &room_id, &event_id).await
+    // Review fix: holding the lock alone isn't enough — matrix-sdk's own
+    // `Room::pin_event`/`unpin_event` build their replacement list from
+    // `Room::pinned_event_ids()`, which reads *local, synced* room state.
+    // Sending our state event doesn't retroactively update that local
+    // state; it only lands once a later `/sync` response processes it. So
+    // even fully serialized, a second call arriving before that sync
+    // round-trip completes would still read the same pre-first-write list
+    // matrix-sdk has cached and silently drop the first call's change.
+    // `pinned_event_cache` is this module's own authoritative list, seeded
+    // once from `Room::pinned_event_ids()` and updated immediately after
+    // each successful write — every call under this lock reads and writes
+    // through it instead of matrix-sdk's own (sync-lagged) local state.
+    let current =
+        pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
+    let new_list = pin_event_impl(&client, &room_id, &event_id, current).await?;
+    state
+        .pinned_event_cache
+        .lock()
+        .await
+        .insert(parsed_room_id, new_list);
+    Ok(())
 }
 
-/// Core logic behind [`pin_event`].
-pub async fn pin_event_impl(client: &Client, room_id: &str, event_id: &str) -> Result<(), String> {
+/// Core logic behind [`pin_event`] — pure computation over an explicit
+/// `current_pinned` list (rather than reading `Room::pinned_event_ids()`
+/// itself) so the command wrapper's authoritative-cache re-check (see its
+/// own comment) is the only source of truth for what's currently pinned.
+/// Returns the new list on success, for the caller to update that cache
+/// with.
+pub async fn pin_event_impl(
+    client: &Client,
+    room_id: &str,
+    event_id: &str,
+    current_pinned: Vec<matrix_sdk::ruma::OwnedEventId>,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
     let room = require_room(client, room_id)?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
-    room.pin_event(&parsed_event_id)
+    if current_pinned.contains(&parsed_event_id) {
+        return Ok(current_pinned);
+    }
+    let mut new_list = current_pinned;
+    new_list.push(parsed_event_id);
+    let content = matrix_sdk::ruma::events::room::pinned_events::RoomPinnedEventsEventContent::new(
+        new_list.clone(),
+    );
+    room.send_state_event(content)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(new_list)
 }
 
 /// Unpins `event_id` in `room_id`. See [`pin_event`]'s doc comment for the
@@ -947,26 +985,66 @@ pub async fn unpin_event(
     event_id: String,
 ) -> Result<(), String> {
     let client = state.require_client().await?;
-    // Review fix: same per-room serialization as `pin_event` — see
-    // `MatrixState::pinned_event_locks`'s doc comment.
+    // Review fix: same per-room serialization and authoritative-cache
+    // re-check as `pin_event` — see that command's own comment.
     let parsed_room_id = RoomId::parse(&room_id).map_err(|e| e.to_string())?;
     let lock = state.pinned_event_lock(&parsed_room_id).await;
     let _guard = lock.lock().await;
-    unpin_event_impl(&client, &room_id, &event_id).await
+    let current =
+        pinned_event_cache_get_or_seed(&state, &client, &parsed_room_id, &room_id).await?;
+    let new_list = unpin_event_impl(&client, &room_id, &event_id, current).await?;
+    state
+        .pinned_event_cache
+        .lock()
+        .await
+        .insert(parsed_room_id, new_list);
+    Ok(())
 }
 
-/// Core logic behind [`unpin_event`].
+/// Core logic behind [`unpin_event`]. See [`pin_event_impl`]'s doc comment
+/// for why this takes an explicit `current_pinned` list.
 pub async fn unpin_event_impl(
     client: &Client,
     room_id: &str,
     event_id: &str,
-) -> Result<(), String> {
+    current_pinned: Vec<matrix_sdk::ruma::OwnedEventId>,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
     let room = require_room(client, room_id)?;
     let parsed_event_id = matrix_sdk::ruma::EventId::parse(event_id).map_err(|e| e.to_string())?;
-    room.unpin_event(&parsed_event_id)
+    if !current_pinned.contains(&parsed_event_id) {
+        return Ok(current_pinned);
+    }
+    let new_list: Vec<_> = current_pinned
+        .into_iter()
+        .filter(|id| *id != parsed_event_id)
+        .collect();
+    let content = matrix_sdk::ruma::events::room::pinned_events::RoomPinnedEventsEventContent::new(
+        new_list.clone(),
+    );
+    room.send_state_event(content)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(new_list)
+}
+
+/// Returns this module's authoritative last-known pinned list for
+/// `room_id` — see [`pin_event`]'s own comment for why matrix-sdk's local
+/// `Room::pinned_event_ids()` isn't sufficient on its own. Seeds the cache
+/// from that same local state on first use for the room.
+async fn pinned_event_cache_get_or_seed(
+    state: &MatrixState,
+    client: &Client,
+    parsed_room_id: &matrix_sdk::ruma::RoomId,
+    room_id: &str,
+) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
+    let mut cache = state.pinned_event_cache.lock().await;
+    if let Some(existing) = cache.get(parsed_room_id) {
+        return Ok(existing.clone());
+    }
+    let room = require_room(client, room_id)?;
+    let seeded = room.pinned_event_ids().unwrap_or_default();
+    cache.insert(parsed_room_id.to_owned(), seeded.clone());
+    Ok(seeded)
 }
 
 /// Local (server-published, room-directory) aliases for `room_id` — distinct
@@ -1288,11 +1366,85 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let result = pin_event_impl(&client, room_id.as_str(), to_pin.as_str()).await;
+        let result =
+            pin_event_impl(&client, room_id.as_str(), to_pin.as_str(), vec![existing]).await;
         assert!(
             result.is_ok(),
             "expected the pin to succeed, got {result:?}"
         );
+    }
+
+    /// Review fix regression test: composes two pins by feeding the first
+    /// call's *returned* list into the second, rather than having the
+    /// second independently re-derive its base list from
+    /// `Room::pinned_event_ids()` (which wouldn't yet reflect the first
+    /// call's not-actually-synced-yet write) — this is exactly what the
+    /// `pin_event`/`unpin_event` command wrappers' authoritative cache does
+    /// for two quick real-world calls. Asserts the second PUT still
+    /// carries both pins, proving the first one isn't silently dropped.
+    #[tokio::test]
+    async fn pin_event_impl_composes_two_pins_fed_through_the_returned_list() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let first_pin = matrix_sdk::ruma::owned_event_id!("$first-pin");
+        let second_pin = matrix_sdk::ruma::owned_event_id!("$second-pin");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        // Local synced state never advances between the two calls below —
+        // simulating the sync round-trip lag the fix accounts for.
+        let room_builder = JoinedRoomBuilder::new(room_id).add_state_event(
+            factory.room_pinned_events(Vec::<matrix_sdk::ruma::OwnedEventId>::new()),
+        );
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [second_pin],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$first_update",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PUT"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "pinned": [second_pin, first_pin],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "event_id": "$second_update",
+                })),
+            )
+            .expect(1)
+            .mount(server.server())
+            .await;
+
+        let after_first = pin_event_impl(&client, room_id.as_str(), second_pin.as_str(), vec![])
+            .await
+            .expect("first pin should succeed");
+        let after_second =
+            pin_event_impl(&client, room_id.as_str(), first_pin.as_str(), after_first)
+                .await
+                .expect("second pin should succeed");
+
+        assert_eq!(after_second, vec![second_pin, first_pin]);
     }
 
     #[tokio::test]
@@ -1331,7 +1483,13 @@ mod tests {
             .mount(server.server())
             .await;
 
-        let result = unpin_event_impl(&client, room_id.as_str(), to_unpin.as_str()).await;
+        let result = unpin_event_impl(
+            &client,
+            room_id.as_str(),
+            to_unpin.as_str(),
+            vec![to_keep, to_unpin.clone()],
+        )
+        .await;
         assert!(
             result.is_ok(),
             "expected the unpin to succeed, got {result:?}"

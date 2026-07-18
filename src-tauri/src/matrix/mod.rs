@@ -226,6 +226,28 @@ pub struct MatrixState {
     /// starts from a list that already includes the first change.
     pub(crate) pinned_event_locks:
         Mutex<std::collections::HashMap<matrix_sdk::ruma::OwnedRoomId, std::sync::Arc<Mutex<()>>>>,
+    /// This module's own authoritative last-known-pinned list per room,
+    /// used (and kept current) by `room_admin::pin_event`/`unpin_event`.
+    ///
+    /// Review fix: `pinned_event_locks` alone serializes *calls*, but
+    /// matrix-sdk's `Room::pin_event`/`unpin_event` still build their
+    /// replacement list from `Room::pinned_event_ids()` — local, synced
+    /// room state that our own state-event send doesn't retroactively
+    /// update; it only lands once a later `/sync` response processes it.
+    /// So even with calls fully serialized, a second call arriving before
+    /// that sync round-trip completes would still read the same
+    /// pre-first-write list matrix-sdk has cached, silently dropping the
+    /// first call's change. This cache is seeded from that same local
+    /// state on first use per room, then updated immediately after every
+    /// successful write — always read/written while holding this room's
+    /// `pinned_event_locks` guard, so no separate locking discipline is
+    /// needed between the two maps.
+    pub(crate) pinned_event_cache: Mutex<
+        std::collections::HashMap<
+            matrix_sdk::ruma::OwnedRoomId,
+            Vec<matrix_sdk::ruma::OwnedEventId>,
+        >,
+    >,
 }
 
 impl Default for MatrixState {
@@ -257,6 +279,7 @@ impl Default for MatrixState {
             dnd: std::sync::Mutex::default(),
             preview_registered_rooms: std::sync::Mutex::default(),
             pinned_event_locks: Mutex::default(),
+            pinned_event_cache: Mutex::default(),
         }
     }
 }

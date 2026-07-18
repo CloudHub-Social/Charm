@@ -95,7 +95,22 @@ export function PinnedMessagesPanel({
   // manual reopen of the panel (which refetches via a fresh `pinnedEventIds`
   // query key change, or simply revisiting the room) still picks it up.
   useEffect(() => {
+    // Review fix: `onTimelineUpdate`'s cleanup (the `unlisten` call below)
+    // is unavoidably asynchronous — it wraps Tauri's own `listen()`, which
+    // only ever resolves an `UnlistenFn`, never returns one synchronously —
+    // so when `pinnedEventIds` changes, a new effect can register its own
+    // listener before the previous one has actually been torn down. In
+    // that window, an incoming `timeline:update` would run *both*
+    // callbacks: the old one still closes over the previous
+    // `pinnedEventIds`, so its `pinnedMessagesQueryKey(...)` targets a
+    // now-stale query key — invalidating a cache entry nothing renders
+    // from anymore instead of (or in addition to) the current one. This
+    // `cancelled` flag makes the old callback a no-op the instant its own
+    // effect is torn down, synchronously, independent of how long the
+    // actual `unlisten()` call takes to resolve.
+    let cancelled = false;
     const unlistenPromise = onTimelineUpdate((update) => {
+      if (cancelled) return;
       if (update.room_id !== roomId) return;
       const touchesAPinnedMessage = update.messages.some((message) => {
         if (!pinnedEventIds.includes(message.event_id)) return false;
@@ -109,6 +124,7 @@ export function PinnedMessagesPanel({
       }
     });
     return () => {
+      cancelled = true;
       unlistenPromise.then((unlisten) => unlisten()).catch(logAndIgnore);
     };
   }, [roomId, pinnedEventIds, queryClient]);
