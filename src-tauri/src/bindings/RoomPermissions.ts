@@ -16,4 +16,13 @@ set_canonical_alias: boolean,
  * `m.room.pinned_events`, same pattern as every other `set_*` field
  * above.
  */
-set_pinned_events: boolean, };
+set_pinned_events: boolean, 
+/**
+ * Gates `SpaceRail`'s "Add existing…", "Mark/Unmark as suggested", and
+ * "Remove from space" actions (Spec 63) — power level required to send
+ * `m.space.child` in *this* room. "Add existing" checks it against the
+ * target space being added to; "Suggested"/"Remove" check it against
+ * the child's *parent* space (a second, separately-fetched
+ * `RoomDetails`), since that's whose `m.space.child` edge is mutated.
+ */
+set_space_child: boolean, };
