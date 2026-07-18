@@ -3,7 +3,7 @@ title: Charm 2.0 Spec — Link previews
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: shipped
+status: in-progress
 ---
 
 ## Implementation status
