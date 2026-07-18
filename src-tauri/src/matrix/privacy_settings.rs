@@ -86,6 +86,32 @@ async fn account_key_for(state: &State<'_, MatrixState>) -> Result<String, Strin
     Ok(super::persistence::account_key(user_id.as_str()))
 }
 
+/// Snapshots the current client together with the account key derived from
+/// *that same client* — a single, consistent pairing.
+///
+/// Review fix: `set_privacy_settings` used to call `account_key_for` (which
+/// internally resolves its own client) up front, then separately call
+/// `state.require_client()` again after the locked load/save/transition
+/// calculation to push the presence change. If the user logged out and a
+/// different account logged in during that window (awaiting the
+/// `PRIVACY_PREFS_LOCK` and doing disk I/O), the second `require_client()`
+/// call could return account B's client while `account_key`/`settings` still
+/// referred to account A — silently applying account A's appear-offline
+/// toggle to account B's presence. Resolving the client once and deriving
+/// the account key from it means the whole command operates on one
+/// consistent user/client pairing throughout.
+async fn client_and_account_key_for(
+    state: &State<'_, MatrixState>,
+) -> Result<(matrix_sdk::Client, String), String> {
+    let client = state.require_client().await?;
+    let user_id = client
+        .user_id()
+        .ok_or_else(|| "not logged in".to_string())?
+        .to_owned();
+    let account_key = super::persistence::account_key(user_id.as_str());
+    Ok((client, account_key))
+}
+
 /// Best-effort helper other command modules (`ephemeral.rs`, `sync.rs`) use
 /// to check current privacy settings before deciding whether to suppress an
 /// outgoing receipt/typing event or apply appear-offline presence. Falls
@@ -103,6 +129,30 @@ async fn account_key_for(state: &State<'_, MatrixState>) -> Result<String, Strin
 /// every enforcement site uniformly rather than needing the flag check
 /// duplicated at each call site.
 pub async fn current_settings(app: &AppHandle, state: &State<'_, MatrixState>) -> PrivacySettings {
+    let Ok(client) = state.require_client().await else {
+        return PrivacySettings::default();
+    };
+    current_settings_for_client(app, &client).await
+}
+
+/// Same as [`current_settings`], but derives the account key from an
+/// already-resolved `Client` instead of re-resolving one from `state`.
+///
+/// Review fix (P1): `ephemeral.rs`'s `send_read_receipt`/`send_typing`/
+/// `mark_room_read` each used to call `current_settings(&app, &state)` (which
+/// internally re-resolves the account via `state.require_client()`) and
+/// *then* separately call `state.require_client()` again to actually send.
+/// A logout/login landing in that window meant the privacy check ran against
+/// one account while the send used another — e.g. reading account A's
+/// `hide_read_receipts`/`hide_typing` but sending on account B's client,
+/// leaking a receipt/typing notice account B never agreed to hide (or
+/// suppressing one account B *did* want sent). Callers now resolve the
+/// client once and pass it here, so the settings lookup and the send that
+/// follows always agree on the same client/account.
+pub async fn current_settings_for_client(
+    app: &AppHandle,
+    client: &matrix_sdk::Client,
+) -> PrivacySettings {
     let flag_enabled = app.path().app_data_dir().is_ok_and(|dir| {
         crate::feature_flags::flag(
             &dir,
@@ -112,9 +162,10 @@ pub async fn current_settings(app: &AppHandle, state: &State<'_, MatrixState>) -
     if !flag_enabled {
         return PrivacySettings::default();
     }
-    let Ok(account_key) = account_key_for(state).await else {
+    let Some(user_id) = client.user_id() else {
         return PrivacySettings::default();
     };
+    let account_key = super::persistence::account_key(user_id.as_str());
     // Review fix: `set_privacy_settings` holds `PRIVACY_PREFS_LOCK` while it
     // rewrites the settings file with `std::fs::write` — not an atomic
     // replace, so a read landing mid-write could see a truncated or
@@ -183,7 +234,7 @@ pub async fn set_privacy_settings(
     state: State<'_, MatrixState>,
     settings: PrivacySettings,
 ) -> Result<(), String> {
-    let account_key = account_key_for(&state).await?;
+    let (client, account_key) = client_and_account_key_for(&state).await?;
     // Review fix (P2): the lock previously stayed held through the
     // best-effort presence push below too — while held, every other
     // `PRIVACY_PREFS_LOCK` caller (`current_settings`, read by
@@ -201,7 +252,9 @@ pub async fn set_privacy_settings(
     };
 
     if let Some(presence) = appear_offline_transition(&previous, &settings) {
-        let client = state.require_client().await?;
+        // Review fix: reuse the client snapshotted above (paired with the
+        // same `account_key` used for the load/save) instead of re-resolving
+        // `state.require_client()` here — see `client_and_account_key_for`.
         // Review fix: `sync_presence` used to only get updated when this
         // one-shot push actually succeeded — a transient failure (network
         // blip, homeserver hiccup) left it holding the *previous* value, so

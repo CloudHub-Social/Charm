@@ -215,7 +215,7 @@ function SettingsBody({
             <FocusPanel />
           </TabsContent>
         )}
-        {presencePrivacyControlsEnabled && (
+        {!webBuild && presencePrivacyControlsEnabled && (
           <TabsContent value="privacy">
             <PrivacyPanel />
           </TabsContent>

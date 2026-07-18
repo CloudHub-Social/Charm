@@ -18,28 +18,25 @@ describe("SeenByChips", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("has no overflow trigger when readers fit within MAX_RECEIPT_AVATARS", () => {
+  // Review fix: the whole chip stack is clickable even when nothing
+  // overflows (readers.length <= MAX_RECEIPT_AVATARS) — previously only the
+  // "+N" overflow chip was wrapped in a `PopoverTrigger`, so this common
+  // case (1-2 readers) rendered a static, non-clickable stack with no way
+  // to open the full "Seen by" list at all.
+  it("the chip stack itself is clickable and opens the full list when nothing overflows", () => {
     renderWithProviders(
       <SeenByChips
         readers={["@alice:localhost", "@bob:localhost"]}
         senderNameByUserId={new Map()}
       />,
     );
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-  });
+    const trigger = screen.getByRole("button", { name: /Seen by 2 people/i });
 
-  it("does not wrap the chip stack in a triggerless Popover when nothing overflows (review fix)", () => {
-    // Review fix: `PopoverTrigger` only ever renders in the overflow
-    // branch — wrapping the stack in `<Popover>` regardless left a
-    // `PopoverContent` with no trigger to ever open it whenever
-    // presence_privacy_controls was on but there was nothing to overflow.
-    renderWithProviders(
-      <SeenByChips
-        readers={["@alice:localhost", "@bob:localhost"]}
-        senderNameByUserId={new Map()}
-      />,
-    );
-    expect(screen.queryByText(/^Seen by/)).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+
+    expect(screen.getByText("Seen by 2")).toBeInTheDocument();
+    expect(screen.getByText("@alice:localhost")).toBeInTheDocument();
+    expect(screen.getByText("@bob:localhost")).toBeInTheDocument();
   });
 
   it("clicking the overflow '+N' chip expands the full ordered seen-by list", () => {

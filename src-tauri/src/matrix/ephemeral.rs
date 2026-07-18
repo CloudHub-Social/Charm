@@ -132,10 +132,15 @@ pub async fn send_read_receipt(
     event_id: String,
     private: bool,
 ) -> Result<(), String> {
-    let hide_read_receipts = privacy_settings::current_settings(&app, &state)
+    // Review fix (P1): resolve the client once and derive the privacy
+    // settings from that same client, rather than checking settings via
+    // `state` (which re-resolves its own client internally) and then
+    // separately re-resolving a possibly-different client to send — see
+    // `privacy_settings::current_settings_for_client`'s doc comment.
+    let client = state.require_client().await?;
+    let hide_read_receipts = privacy_settings::current_settings_for_client(&app, &client)
         .await
         .hide_read_receipts;
-    let client = state.require_client().await?;
     send_read_receipt_impl(&client, &room_id, event_id, private, hide_read_receipts).await
 }
 
@@ -193,14 +198,16 @@ pub async fn send_typing(
     room_id: String,
     typing: bool,
 ) -> Result<(), String> {
+    // Review fix (P1): same client-snapshot ordering as `send_read_receipt`
+    // above.
+    let client = state.require_client().await?;
     if typing
-        && privacy_settings::current_settings(&app, &state)
+        && privacy_settings::current_settings_for_client(&app, &client)
             .await
             .hide_typing
     {
         return Ok(());
     }
-    let client = state.require_client().await?;
     send_typing_impl(&client, &room_id, typing).await
 }
 
@@ -225,10 +232,12 @@ pub async fn mark_room_read(
     state: State<'_, MatrixState>,
     room_id: String,
 ) -> Result<(), String> {
-    let hide_read_receipts = privacy_settings::current_settings(&app, &state)
+    // Review fix (P1): same client-snapshot ordering as `send_read_receipt`
+    // above.
+    let client = state.require_client().await?;
+    let hide_read_receipts = privacy_settings::current_settings_for_client(&app, &client)
         .await
         .hide_read_receipts;
-    let client = state.require_client().await?;
     mark_room_read_impl(&client, &room_id, hide_read_receipts).await
 }
 

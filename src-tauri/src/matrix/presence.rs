@@ -143,18 +143,28 @@ pub async fn set_presence(
     // being on when this call started. If it turns on while this request is
     // still in flight, `set_privacy_settings` can persist/apply `Offline`
     // first and then have this now-stale request land last, overwriting
-    // `sync_presence` back to whatever non-offline value it was sending.
-    // The already-sent request to the homeserver can't be un-sent, but the
-    // sync loop's *next* report is what actually matters for staying
-    // hidden — skipping this write leaves `sync_presence` at whatever
-    // `set_privacy_settings` (or a still-earlier winning call) already set,
-    // instead of regressing it.
+    // the homeserver's presence back to whatever non-offline value this
+    // call just sent.
+    //
+    // Review fix: this used to only skip the local `sync_presence` cache
+    // write in that case, leaving the just-sent non-offline presence live on
+    // the homeserver until the sync loop's own next poll happened to
+    // overwrite it — a real, if narrow, window where "Appear offline" was on
+    // but the homeserver (and thus every other client/user watching this
+    // account) still saw the stale non-offline state. Actively re-asserting
+    // `Offline` here closes that window immediately rather than waiting on
+    // the sync loop's timing.
     if !presence_update_allowed(
         presence,
         super::privacy_settings::current_settings(&app, &state)
             .await
             .appear_offline,
     ) {
+        let _ = set_presence_impl(&client, PresenceStateDto::Offline, None).await;
+        *state
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = PresenceStateDto::Offline;
         return Ok(());
     }
     *state

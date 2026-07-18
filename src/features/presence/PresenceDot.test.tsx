@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatLastActiveAgo, PresenceDot } from "./PresenceDot";
 import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
@@ -106,6 +106,25 @@ describe("PresenceDot", () => {
       );
 
       expect(screen.getByText(/Active 1m ago/)).toBeInTheDocument();
+    });
+
+    it("ages the label on its own via a periodic timer, with no external re-render trigger", () => {
+      // Review fix: re-anchoring alone only recomputes the displayed label
+      // when *something else* causes a re-render. A long-mounted component
+      // that receives no further presence updates and has no unrelated
+      // parent re-renders (the common case for a DM header/list row left
+      // open) used to keep showing a frozen label forever, since nothing
+      // was scheduling a render purely to let time pass. This test never
+      // calls `rerender` — only fake-timer advancement — so it fails
+      // without the interval driving its own re-render.
+      renderWithProviders(<PresenceDot presence="online" lastActiveAgoMs={5 * 60_000} />);
+      expect(screen.getByText(/Active 5m ago/)).toBeInTheDocument();
+
+      act(() => {
+        vi.advanceTimersByTime(3 * 60_000);
+      });
+
+      expect(screen.getByText(/Active 8m ago/)).toBeInTheDocument();
     });
   });
 });

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AvatarBadge } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { PresenceStateDto } from "@/lib/matrix";
@@ -49,15 +49,33 @@ export function formatLastActiveAgo(lastActiveAgoMs: number): string {
  * just an unrelated parent re-render) means every render after that reads
  * `Date.now()` fresh against a fixed point in time instead.
  */
+// Review fix: re-anchoring alone only recomputes the label when something
+// *else* triggers a render (a new presence update, a parent re-render,
+// etc). A DM header/list row that stays mounted with no further presence
+// event kept showing a frozen "Active 5m ago" label forever, since nothing
+// was scheduling a re-render purely to let time pass. A 60s interval tick
+// forces a re-render so the label keeps aging on its own; the interval
+// itself is cheap (one `setState` a minute) and only runs while a
+// timestamp is actually being shown.
+const LAST_ACTIVE_TICK_MS = 60_000;
+
 function useAnchoredLastActiveAgoMs(lastActiveAgoMs: number | null | undefined): number | null {
   const anchorRef = useRef<{ source: number; at: number } | null>(null);
+  const [, forceRerender] = useState(0);
+
   if (lastActiveAgoMs == null) {
     anchorRef.current = null;
-    return null;
-  }
-  if (anchorRef.current === null || anchorRef.current.source !== lastActiveAgoMs) {
+  } else if (anchorRef.current === null || anchorRef.current.source !== lastActiveAgoMs) {
     anchorRef.current = { source: lastActiveAgoMs, at: Date.now() - lastActiveAgoMs };
   }
+
+  useEffect(() => {
+    if (lastActiveAgoMs == null) return;
+    const id = setInterval(() => forceRerender((n) => n + 1), LAST_ACTIVE_TICK_MS);
+    return () => clearInterval(id);
+  }, [lastActiveAgoMs]);
+
+  if (anchorRef.current === null) return null;
   return Date.now() - anchorRef.current.at;
 }
 
