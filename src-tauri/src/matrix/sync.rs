@@ -484,6 +484,11 @@ pub(crate) async fn abort_current_sync_loop(app: &AppHandle) {
         let _ = previous_presence.await;
     }
     app.state::<MatrixState>().clear_timelines().await;
+    // Review fix: see `clear_pinned_event_cache`'s own doc comment — same
+    // "nothing from the old session carries over" cleanup as
+    // `clear_timelines` above, for pin/unpin's own cache instead of the
+    // timeline listeners.
+    app.state::<MatrixState>().clear_pinned_event_cache().await;
     *app.state::<MatrixState>().client.lock().await = None;
 }
 

@@ -506,6 +506,26 @@ impl MatrixState {
         }
     }
 
+    /// Clears this module's authoritative pinned-events cache and its
+    /// per-room lock map entirely.
+    ///
+    /// Review fix: `abort_current_sync_loop` already drops the old
+    /// `Client` (and its store) before a logout or a same-process
+    /// re-login/account-switch installs a new one, but it left
+    /// `pinned_event_cache` untouched — a process-wide map keyed only by
+    /// room id, with no notion of *which* client/session populated an
+    /// entry. A same-process re-login (or account switch) reusing a room
+    /// id the previous session had already cached would let the very next
+    /// pin/unpin send a full `m.room.pinned_events` replacement built from
+    /// the *previous* session's stale list, silently dropping any pins
+    /// that changed while that old client was signed out. Called
+    /// alongside `clear_timelines` for the same "nothing carries over from
+    /// the old client" guarantee.
+    pub(crate) async fn clear_pinned_event_cache(&self) {
+        self.pinned_event_cache.lock().await.clear();
+        self.pinned_event_locks.lock().await.clear();
+    }
+
     /// Lazily initializes (on first use) and returns the shared media cache,
     /// rebuilding its in-memory index from a directory scan the first time
     /// it's created.
@@ -557,5 +577,25 @@ mod tests {
         assert!(state.mark_notified("$b:example.org"));
         assert!(!state.mark_notified("$a:example.org"));
         assert!(!state.mark_notified("$b:example.org"));
+    }
+
+    /// Review fix regression test: a same-process re-login/account-switch
+    /// reusing a room id a previous session had already cached must not
+    /// see that previous session's stale pinned list — see
+    /// `clear_pinned_event_cache`'s own doc comment.
+    #[tokio::test]
+    async fn clear_pinned_event_cache_empties_the_cache_and_lock_map() {
+        let state = MatrixState::default();
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org").to_owned();
+        state.pinned_event_cache.lock().await.insert(
+            room_id.clone(),
+            vec![matrix_sdk::ruma::owned_event_id!("$stale")],
+        );
+        let _lock = state.pinned_event_lock(&room_id).await;
+
+        state.clear_pinned_event_cache().await;
+
+        assert!(state.pinned_event_cache.lock().await.is_empty());
+        assert!(state.pinned_event_locks.lock().await.is_empty());
     }
 }

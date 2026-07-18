@@ -1050,8 +1050,7 @@ async fn pinned_event_cache_get_or_seed(
     parsed_room_id: &matrix_sdk::ruma::RoomId,
     room_id: &str,
 ) -> Result<Vec<matrix_sdk::ruma::OwnedEventId>, String> {
-    let mut cache = state.pinned_event_cache.lock().await;
-    if let Some(existing) = cache.get(parsed_room_id) {
+    if let Some(existing) = state.pinned_event_cache.lock().await.get(parsed_room_id) {
         return Ok(existing.clone());
     }
     let room = require_room(client, room_id)?;
@@ -1066,15 +1065,38 @@ async fn pinned_event_cache_get_or_seed(
     // `Room::pin_event`/`unpin_event` used before this cache replaced them
     // — so a `None` only ever seeds an empty list once the homeserver has
     // confirmed there's genuinely nothing pinned.
+    //
+    // Review fix (CRITICAL): the cache's own lock must never be held across
+    // this network `.await` — this whole function runs under the caller's
+    // `pinned_event_locks` guard already (see `pin_event`/`unpin_event`,
+    // and the sync loop's reconciliation after this round's other fix), so
+    // holding `pinned_event_cache`'s lock too for the duration of a
+    // potentially slow homeserver round-trip would stall every *other*
+    // room's pin/unpin calls and cache reconciliation for no reason — they
+    // don't touch this room's entry at all. Look the cache up again after
+    // the network read completes (another call for this exact room can't
+    // have run concurrently, since the per-room `pinned_event_locks` guard
+    // already serializes that), but re-checking costs nothing and keeps
+    // this function correct even if that invariant ever changes.
     let seeded = match room.pinned_event_ids() {
         Some(ids) => ids,
-        None => room
-            .load_pinned_events()
-            .await
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default(),
+        None => {
+            let from_network = room
+                .load_pinned_events()
+                .await
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
+            if let Some(existing) = state.pinned_event_cache.lock().await.get(parsed_room_id) {
+                return Ok(existing.clone());
+            }
+            from_network
+        }
     };
-    cache.insert(parsed_room_id.to_owned(), seeded.clone());
+    state
+        .pinned_event_cache
+        .lock()
+        .await
+        .insert(parsed_room_id.to_owned(), seeded.clone());
     Ok(seeded)
 }
 
@@ -1569,6 +1591,80 @@ mod tests {
             vec![from_server],
             "expected the cache to be seeded from the server's own pinned list, not an empty one"
         );
+    }
+
+    /// Review fix regression test (CRITICAL): the network-fallback seed
+    /// must not hold `pinned_event_cache`'s lock for the duration of the
+    /// homeserver round-trip — an unrelated room's cache read must be able
+    /// to proceed while a slow `load_pinned_events` call for a *different*
+    /// room is still in flight.
+    #[tokio::test]
+    async fn pinned_event_cache_get_or_seed_does_not_hold_the_cache_lock_across_the_network_await()
+    {
+        let slow_room_id = matrix_sdk::ruma::room_id!("!slow:example.org");
+        let other_room_id = matrix_sdk::ruma::room_id!("!other:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, slow_room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        // Directly seed a cache entry for the *other* room — no network
+        // call needed for it, so if the lock were genuinely held across
+        // `slow_room_id`'s network await, reading it below would hang for
+        // the same ~300ms instead of returning immediately.
+        state
+            .pinned_event_cache
+            .lock()
+            .await
+            .insert(other_room_id.to_owned(), vec![]);
+
+        let slow_state = std::sync::Arc::clone(&state);
+        let slow_client = client.clone();
+        let slow_call = tokio::spawn(async move {
+            pinned_event_cache_get_or_seed(
+                slow_state.as_ref(),
+                &slow_client,
+                slow_room_id,
+                slow_room_id.as_str(),
+            )
+            .await
+        });
+        // Give the spawned call time to acquire-then-release the lock (if
+        // fixed) or acquire-and-hold it (if regressed) before racing the
+        // unrelated read below. Generous relative to CI/parallel-test
+        // scheduling jitter — correctness only needs "well under the 2s
+        // network delay," not tight sub-100ms precision.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let unrelated_read = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            state.pinned_event_cache.lock(),
+        )
+        .await;
+        assert!(
+            unrelated_read.is_ok(),
+            "an unrelated room's cache lock acquisition must not block on another room's in-flight network read"
+        );
+        drop(unrelated_read);
+
+        slow_call
+            .await
+            .expect("task should not panic")
+            .expect("seeding should still succeed once the delayed response lands");
     }
 
     #[tokio::test]
