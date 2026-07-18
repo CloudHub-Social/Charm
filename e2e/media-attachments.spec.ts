@@ -141,3 +141,86 @@ test("upload progress shows while sending and clears once the attachment lands",
   await expect(page.getByText("Upload failed")).toHaveCount(0);
   await captureSnapshot(page, "media-attachments-upload-complete");
 });
+
+/**
+ * Spec 42 (media_send_polish): captioning, upload cancel, and size preflight
+ * only activate behind the flag — every test below flips it on the same way
+ * the drop-target test above does.
+ */
+function enableMediaSendPolish(page: import("@playwright/test").Page) {
+  return page.addInitScript(() => {
+    localStorage.setItem(
+      "charm:featureFlags",
+      JSON.stringify({
+        state: { overrides: { media_send_polish: true } },
+        updatedAt: Date.now(),
+      }),
+    );
+  });
+}
+
+test("captioning a staged attachment sends and renders the caption", async ({ page }) => {
+  await enableMediaSendPolish(page);
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+    filePickerResult: "/Users/e2e/photo.png",
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByText("No messages yet")).toBeVisible();
+
+  await page.getByRole("button", { name: "Attach" }).click();
+
+  const captionInput = page.getByRole("textbox", { name: "Attachment caption" });
+  await expect(captionInput).toBeVisible();
+  await captionInput.fill("Sunset over the lake");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect(page.getByRole("button", { name: "Open image photo.png" })).toBeVisible();
+  await expect(page.getByText("Sunset over the lake")).toBeVisible();
+  await captureSnapshot(page, "media-attachments-caption");
+});
+
+test("cancelling a staged attachment before sending discards it", async ({ page }) => {
+  await enableMediaSendPolish(page);
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+    filePickerResult: "/Users/e2e/photo.png",
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByText("No messages yet")).toBeVisible();
+
+  await page.getByRole("button", { name: "Attach" }).click();
+  await expect(page.getByRole("textbox", { name: "Attachment caption" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Cancel attachment" }).click();
+
+  await expect(page.getByRole("textbox", { name: "Attachment caption" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open image photo.png" })).toHaveCount(0);
+});
+
+test("cancelling an in-flight upload removes it from the tray", async ({ page }) => {
+  await enableMediaSendPolish(page);
+  await page.addInitScript(installMockTauri, {
+    userId: USER_ID,
+    deviceId: "E2E_DEVICE",
+    room: ROOM,
+    filePickerResult: "/Users/e2e/big-video.mp4",
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: ROOM.name }).click();
+  await expect(page.getByText("No messages yet")).toBeVisible();
+
+  await page.getByRole("button", { name: "Attach" }).click();
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const uploadRow = page.getByText("big-video.mp4");
+  await expect(uploadRow).toBeVisible();
+  await page.getByRole("button", { name: "Cancel upload big-video.mp4" }).click();
+  await expect(uploadRow).toHaveCount(0);
+});
