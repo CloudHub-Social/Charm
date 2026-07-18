@@ -28,6 +28,7 @@ describe("MediaMessage", () => {
       height: 600,
       has_thumbnail: false,
       blurhash: null,
+      caption: null,
     };
     renderWithClient(
       <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="cat.png" />,
@@ -44,6 +45,7 @@ describe("MediaMessage", () => {
       height: 600,
       has_thumbnail: false,
       blurhash: null,
+      caption: null,
     };
     renderWithClient(
       <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="cat.png" />,
@@ -62,6 +64,7 @@ describe("MediaMessage", () => {
       height: null,
       has_thumbnail: false,
       blurhash: null,
+      caption: null,
     };
     renderWithClient(
       <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="cat.png" />,
@@ -80,6 +83,7 @@ describe("MediaMessage", () => {
       height: 1080,
       duration_ms: 5000,
       has_thumbnail: false,
+      caption: null,
     };
     renderWithClient(
       <MediaMessage content={content} roomId="!room:localhost" eventId="$event" body="clip.mp4" />,

@@ -42,6 +42,11 @@ pub enum MediaContent {
         height: Option<u32>,
         has_thumbnail: bool,
         blurhash: Option<String>,
+        /// The sender's caption, per the Matrix caption convention: present
+        /// only when `filename` was set to something other than `body` (see
+        /// `caption_from`) — otherwise `body` is just the plain filename and
+        /// this is `None`.
+        caption: Option<String>,
     },
     Video {
         mime: Option<String>,
@@ -54,6 +59,8 @@ pub enum MediaContent {
         #[ts(type = "number | null")]
         duration_ms: Option<u64>,
         has_thumbnail: bool,
+        /// See `MediaContent::Image::caption`.
+        caption: Option<String>,
     },
     Audio {
         mime: Option<String>,
@@ -68,6 +75,16 @@ pub enum MediaContent {
         #[ts(type = "number | null")]
         size: Option<u64>,
     },
+}
+
+/// Per the Matrix caption convention (see `ImageMessageEventContent::body`'s
+/// doc comment): `body` is a caption only when `filename` is set to
+/// something *other* than `body` — otherwise `filename` unset (or equal to
+/// `body`) means `body` is just the plain filename, not a caption.
+fn caption_from(body: &str, filename: Option<&str>) -> Option<String> {
+    filename
+        .filter(|filename| *filename != body)
+        .map(|_| body.to_string())
 }
 
 /// Builds the `media` field for a `RoomMessageSummary` from a `MessageType` —
@@ -93,6 +110,7 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
                 .as_ref()
                 .is_some_and(|i| i.thumbnail_source.is_some()),
             blurhash: None,
+            caption: caption_from(&image.body, image.filename.as_deref()),
         }),
         MessageType::Video(video) => Some(MediaContent::Video {
             mime: video.info.as_ref().and_then(|i| i.mimetype.clone()),
@@ -116,6 +134,7 @@ fn message_type_to_media(msgtype: &MessageType) -> Option<MediaContent> {
                 .info
                 .as_ref()
                 .is_some_and(|i| i.thumbnail_source.is_some()),
+            caption: caption_from(&video.body, video.filename.as_deref()),
         }),
         MessageType::Audio(audio) => Some(MediaContent::Audio {
             mime: audio.info.as_ref().and_then(|i| i.mimetype.clone()),

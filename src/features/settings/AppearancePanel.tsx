@@ -167,6 +167,7 @@ function PickerControl<T extends string>({
 export function AppearancePanel() {
   const richMessageRenderingEnabled = useFlag("rich_message_rendering");
   const roomListEnrichmentEnabled = useFlag("room_list_unread_filter");
+  const mediaSendPolishEnabled = useFlag("media_send_polish");
   const {
     theme,
     fontSize,
@@ -175,6 +176,8 @@ export function AppearancePanel() {
     messageLayout,
     jumboEmojiSize,
     showUnreadCounts,
+    autoplayGifs,
+    stripExifOnUpload,
     setTheme,
     setFontSize,
     setDensity,
@@ -182,6 +185,8 @@ export function AppearancePanel() {
     setMessageLayout,
     setJumboEmojiSize,
     setShowUnreadCounts,
+    setAutoplayGifs,
+    setStripExifOnUpload,
   } = useAppearance();
 
   return (
@@ -258,6 +263,32 @@ export function AppearancePanel() {
                 aria-label="Show unread message counts"
                 checked={showUnreadCounts}
                 onCheckedChange={setShowUnreadCounts}
+              />
+            }
+          />
+        )}
+        {mediaSendPolishEnabled && (
+          <SettingTile
+            title="Autoplay GIFs"
+            description="Play animated images inline in the timeline instead of showing a static thumbnail."
+            control={
+              <Switch
+                aria-label="Autoplay GIFs"
+                checked={autoplayGifs}
+                onCheckedChange={setAutoplayGifs}
+              />
+            }
+          />
+        )}
+        {mediaSendPolishEnabled && (
+          <SettingTile
+            title="Strip photo metadata on upload"
+            description="Remove GPS location, camera info, and capture time from images before sending."
+            control={
+              <Switch
+                aria-label="Strip photo metadata on upload"
+                checked={stripExifOnUpload}
+                onCheckedChange={setStripExifOnUpload}
               />
             }
           />

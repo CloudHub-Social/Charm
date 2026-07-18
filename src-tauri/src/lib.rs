@@ -1448,6 +1448,8 @@ pub fn run() {
             matrix::timeline::load_timeline_around_event,
             matrix::send::send_message,
             matrix::send::send_attachment,
+            matrix::send::cancel_attachment_upload,
+            matrix::send::get_media_config,
             matrix::media::resolve_media,
             matrix::actions::edit_message,
             matrix::actions::redact_event,

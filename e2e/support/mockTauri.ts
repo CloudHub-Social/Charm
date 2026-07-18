@@ -425,6 +425,7 @@ export function installMockTauri(seed: {
       const isImage = /\.(png|jpe?g|gif|webp)$/i.test(filename);
       const isVideo = /\.(mp4|webm|mov)$/i.test(filename);
       const isAudio = /\.(mp3|wav|ogg|m4a)$/i.test(filename);
+      const caption = (args.caption as string | undefined) ?? null;
       const media = isImage
         ? {
             type: "Image",
@@ -434,6 +435,7 @@ export function installMockTauri(seed: {
             height: 600,
             has_thumbnail: true,
             blurhash: null,
+            caption,
           }
         : isVideo
           ? {
@@ -444,6 +446,7 @@ export function installMockTauri(seed: {
               height: 720,
               duration_ms: 4200,
               has_thumbnail: true,
+              caption,
             }
           : isAudio
             ? { type: "Audio", mime: "audio/mpeg", size: 22222, duration_ms: 3000 }
@@ -481,6 +484,8 @@ export function installMockTauri(seed: {
       pushTimelineUpdate(roomId);
       return undefined;
     },
+    cancel_attachment_upload: () => undefined,
+    get_media_config: () => 100 * 1024 * 1024,
     resolve_media: () =>
       // A tiny same-origin placeholder path — `convertFileSrc` is a no-op in
       // this mock (`installMockTauri`'s own `convertFileSrc: (p) => p`

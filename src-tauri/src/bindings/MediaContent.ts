@@ -9,4 +9,15 @@
  * thumbnail)`, which re-derives the real `MediaSource` server-side by
  * looking the event back up — nothing decodable ever crosses IPC.
  */
-export type MediaContent = { "type": "Image", mime: string | null, size: number | null, width: number | null, height: number | null, has_thumbnail: boolean, blurhash: string | null, } | { "type": "Video", mime: string | null, size: number | null, width: number | null, height: number | null, duration_ms: number | null, has_thumbnail: boolean, } | { "type": "Audio", mime: string | null, size: number | null, duration_ms: number | null, } | { "type": "File", filename: string, mime: string | null, size: number | null, };
+export type MediaContent = { "type": "Image", mime: string | null, size: number | null, width: number | null, height: number | null, has_thumbnail: boolean, blurhash: string | null, 
+/**
+ * The sender's caption, per the Matrix caption convention: present
+ * only when `filename` was set to something other than `body` (see
+ * `caption_from`) — otherwise `body` is just the plain filename and
+ * this is `None`.
+ */
+caption: string | null, } | { "type": "Video", mime: string | null, size: number | null, width: number | null, height: number | null, duration_ms: number | null, has_thumbnail: boolean, 
+/**
+ * See `MediaContent::Image::caption`.
+ */
+caption: string | null, } | { "type": "Audio", mime: string | null, size: number | null, duration_ms: number | null, } | { "type": "File", filename: string, mime: string | null, size: number | null, };

@@ -3,24 +3,43 @@ title: Charm 2.0 Spec — Media send polish
 type: spec
 project: Charm 2.0
 created: 2026-07-13
-status: in-progress
+status: shipped
 ---
 
 ## Implementation status
 
-**In progress behind the default-off `media_send_polish` feature flag.** The first
-independently releasable slice adds a full-chat drop-target overlay while a file is
-dragged over the active room. It uses related-target containment plus a deferred
-leave guard so crossing nested message or composer elements does not flicker the
-target. Non-file drags remain inert without showing the upload affordance; file-drag
-state clears on drop, leave, or room switch, and the existing desktop/web attachment
-payload handling remains unchanged. The public media-and-attachments gallery entry
-now identifies this flag as a preview rollout while the broader attachment experience
-remains usable.
+**All five gaps landed behind the still-default-off `media_send_polish` feature
+flag.** The drop-target overlay slice shipped first; this PR adds the rest:
 
-Captions, upload-size preflight, actual upload cancellation, GIF autoplay controls,
-and default EXIF stripping remain planned. This spec is therefore not shipped or
-complete.
+- **Captions:** picking, dropping, or pasting a file now stages it (behind the flag)
+  with an inline "Add a caption (optional)" prompt before it uploads, instead of
+  sending immediately. The caption rides Spec 02's existing `send_attachment` IPC
+  (`caption: Option<String>`, already wired to `AttachmentConfig::caption` there) and
+  is rendered under the media in `MediaMessage.tsx` — derived from the Matrix caption
+  convention (`filename` set and different from `body` means `body` is a caption, not
+  the plain filename), not just reused as alt text.
+- **Upload size preflight:** a new `get_media_config` command wraps
+  matrix-rust-sdk's own cached `load_or_fetch_max_upload_size()`; the frontend warns
+  ("Too large — this server's limit is X MB") before ever starting an over-limit
+  upload.
+- **Upload cancel:** `send_attachment` registers a `tokio_util::sync::CancellationToken`
+  per `txn_id`; a new `cancel_attachment_upload` command flips it, and the upload
+  future races the cancellation via `tokio::select!` so cancelling actually drops the
+  in-flight request instead of only hiding the tray row. `UploadTray` now shows a
+  cancel affordance on in-progress rows, not just failed ones.
+- **GIF autoplay:** a new `autoplayGifs` appearance toggle (default on, matching
+  Charm 1.0) controls whether an animated `image/gif` renders its full animated
+  source inline instead of the homeserver's static thumbnail.
+- **EXIF stripping:** `send_attachment` re-encodes JPEG/PNG uploads through the
+  `image` crate (which doesn't carry metadata segments forward) by default, gated by
+  a new `stripExifOnUpload` appearance toggle (default **on**). EXIF `Orientation` is
+  read first (via `kamadak-exif`) and baked into the pixels before the strip, so a
+  portrait photo doesn't come out sideways. Animated GIF/WebP and anything that fails
+  to decode upload unchanged rather than failing the send.
+
+All five settings/behaviors are gated by `media_send_polish` staying default-off;
+flipping it on exposes the caption-staging composer flow and the two new Appearance
+toggles together.
 
 **Workstream:** one PR / one agent. Small cluster of Spec 02 (media) sub-features
 the parity audit found scoped out. Individually minor, collectively noticeable.

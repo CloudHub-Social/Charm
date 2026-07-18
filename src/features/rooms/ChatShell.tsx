@@ -271,6 +271,14 @@ export function ChatShell({
   const [pillProfile, setPillProfile] = useState<MessagePillProfile | null>(null);
   const [redactionTargetEventId, setRedactionTargetEventId] = useState<string | null>(null);
   const [fileDragActive, setFileDragActive] = useState(false);
+  // A file picked/dropped/pasted while `media_send_polish` is on is staged
+  // here (rather than uploaded immediately) so the user gets a chance to add
+  // a caption before it sends — see `handleConfirmPendingAttachment`.
+  const [pendingAttachment, setPendingAttachment] = useState<{
+    file: string | File;
+    filename: string;
+  } | null>(null);
+  const [pendingAttachmentCaption, setPendingAttachmentCaption] = useState("");
   // On touch, `MessageActions`' own trigger buttons are hover-only and thus
   // invisible/undiscoverable — a long-press on the bubble itself is what
   // users actually try. Forwarding the row's touch events to each
@@ -1016,6 +1024,8 @@ export function ChatShell({
   const participants = useRoomParticipants(activeRoomId, currentUserId);
   useEffect(() => {
     setFollowingExpanded(false);
+    setPendingAttachment(null);
+    setPendingAttachmentCaption("");
   }, [activeRoomId]);
   const { uploads, handleAttachFile, dismissUpload } = useAttachmentUploads(activeRoomId);
   const { commandFeedback, setCommandFeedback, handleComposerSubmit, handleSlashCommand } =
@@ -1100,6 +1110,32 @@ export function ChatShell({
     if (parsed.command === "me" && succeeded) scrollToPresentAfterOwnSend();
   }
 
+  // Files stage for an optional caption when `media_send_polish` is on;
+  // otherwise (or if the polish flag never lands for this build) they upload
+  // immediately, matching pre-Spec-42 behavior.
+  function stageOrSendAttachment(file: string | File) {
+    if (!mediaSendPolishEnabled) {
+      handleAttachFile(file);
+      return;
+    }
+    const filename = typeof file === "string" ? (file.split(/[/\\]/).pop() ?? file) : file.name;
+    setPendingAttachmentCaption("");
+    setPendingAttachment({ file, filename });
+  }
+
+  function handleConfirmPendingAttachment() {
+    if (!pendingAttachment) return;
+    const caption = pendingAttachmentCaption.trim();
+    handleAttachFile(pendingAttachment.file, caption.length > 0 ? caption : undefined);
+    setPendingAttachment(null);
+    setPendingAttachmentCaption("");
+  }
+
+  function handleCancelPendingAttachment() {
+    setPendingAttachment(null);
+    setPendingAttachmentCaption("");
+  }
+
   async function handleAttachClick() {
     if (isWebBuild()) {
       attachmentInputRef.current?.click();
@@ -1107,7 +1143,7 @@ export function ChatShell({
     }
     const selected = await openFileDialog({ multiple: false });
     if (typeof selected === "string") {
-      await handleAttachFile(selected);
+      stageOrSendAttachment(selected);
     }
   }
 
@@ -1115,7 +1151,7 @@ export function ChatShell({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (file) {
-      handleAttachFile(file);
+      stageOrSendAttachment(file);
     }
   }
 
@@ -1130,7 +1166,7 @@ export function ChatShell({
     const file = files[0];
     const upload = file ? attachmentUploadPayload(file) : null;
     if (upload) {
-      handleAttachFile(upload);
+      stageOrSendAttachment(upload);
     }
   }
 
@@ -1173,7 +1209,7 @@ export function ChatShell({
     const upload = file ? attachmentUploadPayload(file) : null;
     if (upload) {
       event.preventDefault();
-      handleAttachFile(upload);
+      stageOrSendAttachment(upload);
     }
   }
 
@@ -1571,6 +1607,45 @@ export function ChatShell({
           </span>
           <span>{typingText}</span>
         </output>
+      )}
+
+      {mediaSendPolishEnabled && pendingAttachment && (
+        <div className="flex flex-col gap-2 px-4 pb-2">
+          <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-[13px]">
+            <span className="truncate text-foreground">{pendingAttachment.filename}</span>
+            <input
+              type="text"
+              value={pendingAttachmentCaption}
+              onChange={(e) => setPendingAttachmentCaption(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleConfirmPendingAttachment();
+                } else if (e.key === "Escape") {
+                  handleCancelPendingAttachment();
+                }
+              }}
+              placeholder="Add a caption (optional)"
+              aria-label="Attachment caption"
+              className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-foreground outline-none focus:border-primary-solid"
+            />
+            <button
+              type="button"
+              onClick={handleConfirmPendingAttachment}
+              className="shrink-0 rounded bg-primary-solid px-2.5 py-1 text-primary-foreground hover:opacity-90"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              aria-label="Cancel attachment"
+              onClick={handleCancelPendingAttachment}
+              className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
       )}
 
       <UploadTray uploads={uploads} onDismiss={dismissUpload} />

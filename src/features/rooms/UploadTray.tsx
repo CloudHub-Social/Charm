@@ -6,6 +6,10 @@ export interface PendingUpload {
   sent: number;
   total: number;
   failed: boolean;
+  /** Overrides the default "Upload failed" text — used for a friendlier
+   * pre-flight message (e.g. over the server's upload-size limit) instead of
+   * letting the send fail opaquely. */
+  errorMessage?: string;
 }
 
 interface UploadTrayProps {
@@ -27,7 +31,9 @@ export function UploadTray({ uploads, onDismiss }: UploadTrayProps) {
           <span className="truncate text-foreground">{upload.filename}</span>
           {upload.failed ? (
             <>
-              <span className="text-destructive-foreground">Upload failed</span>
+              <span className="text-destructive-foreground">
+                {upload.errorMessage ?? "Upload failed"}
+              </span>
               <button
                 type="button"
                 aria-label={`Dismiss failed upload ${upload.filename}`}
@@ -38,17 +44,27 @@ export function UploadTray({ uploads, onDismiss }: UploadTrayProps) {
               </button>
             </>
           ) : (
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
-              <div
-                className="h-full bg-primary transition-[width]"
-                style={{
-                  width:
-                    upload.total > 0
-                      ? `${Math.min(100, (upload.sent / upload.total) * 100)}%`
-                      : "10%",
-                }}
-              />
-            </div>
+            <>
+              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
+                <div
+                  className="h-full bg-primary transition-[width]"
+                  style={{
+                    width:
+                      upload.total > 0
+                        ? `${Math.min(100, (upload.sent / upload.total) * 100)}%`
+                        : "10%",
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                aria-label={`Cancel upload ${upload.filename}`}
+                onClick={() => onDismiss(upload.txnId)}
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent"
+              >
+                <X size={14} />
+              </button>
+            </>
           )}
         </div>
       ))}

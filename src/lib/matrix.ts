@@ -542,8 +542,29 @@ export function sendAttachment(
   filePath: string | File,
   txnId: string,
   caption?: string,
+  stripExifEnabled = true,
 ): Promise<void> {
-  return invoke("send_attachment", { roomId, filePath, txnId, caption });
+  return invoke("send_attachment", {
+    roomId,
+    filePath,
+    txnId,
+    caption,
+    stripExifEnabled,
+  });
+}
+
+/** Cancels an in-flight `sendAttachment` upload keyed by `txnId`. A no-op if
+ * the upload already settled — see the Rust command's doc comment. */
+export function cancelAttachmentUpload(txnId: string): Promise<void> {
+  return invoke("cancel_attachment_upload", { txnId });
+}
+
+/** The homeserver's `m.upload.size` limit, in bytes, fetched (and cached
+ * server-side) once per session. Used to warn pre-flight before an
+ * over-limit attachment is picked, rather than letting the send fail
+ * opaquely against the server. */
+export function getMediaConfig(): Promise<number> {
+  return invoke("get_media_config");
 }
 
 /**
