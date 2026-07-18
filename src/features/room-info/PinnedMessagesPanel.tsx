@@ -1,10 +1,23 @@
 import { Pin, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { onTimelineUpdate, unpinEvent } from "@/lib/matrix";
+import { onTimelineUpdate, unpinEvent, type RoomMessageSummary } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useRoomDetails } from "./useRoomDetails";
 import { pinnedMessagesQueryKey, usePinnedMessages } from "./usePinnedMessages";
+import type { PinnedMessageSummary } from "@bindings/PinnedMessageSummary";
+
+/** Cheap "did this pinned message actually change" fingerprint, covering
+ * the fields the panel renders — comparable across `PinnedMessageSummary`
+ * (this panel's own query data) and `RoomMessageSummary` (a `timeline:update`
+ * payload), since the two DTOs name the same content differently
+ * (`preview`/`is_redacted` vs `body`/`redacted`). */
+function pinnedSummarySignature(message: PinnedMessageSummary): string {
+  return `${message.preview}|${message.is_redacted}`;
+}
+function timelineMessageSignature(message: RoomMessageSummary): string {
+  return `${message.body}|${message.redacted}`;
+}
 
 interface PinnedMessagesPanelProps {
   roomId: string;
@@ -52,6 +65,22 @@ export function PinnedMessagesPanel({
   const canUnpin = details?.can.set_pinned_events ?? false;
   const queryClient = useQueryClient();
 
+  // Review fix: `spawn_timeline_listener` re-emits the *full* loaded-window
+  // snapshot on every `timeline:update`, not just the changed messages — so
+  // checking "is a pinned event anywhere in this update" was true on nearly
+  // every unrelated update in an active room (any pinned message still in
+  // the loaded window), triggering a refetch each time. This ref tracks the
+  // last-known body/edited/redacted fingerprint per pinned event id (seeded
+  // from `usePinnedMessages`' own query data below) so the listener can
+  // tell an actual change from the routine full-snapshot resend.
+  const knownSignaturesRef = useRef(new Map<string, string>());
+  useEffect(() => {
+    if (!pinnedMessages) return;
+    for (const message of pinnedMessages) {
+      knownSignaturesRef.current.set(message.event_id, pinnedSummarySignature(message));
+    }
+  }, [pinnedMessages]);
+
   // Review fix: `usePinnedMessages` only refetches when the *pinned id
   // list itself* changes (its query key includes `pinnedEventIds`) — an
   // edit or redaction to a message that stays pinned doesn't change that
@@ -59,12 +88,20 @@ export function PinnedMessagesPanel({
   // pre-edit/pre-redaction preview until something unrelated happened to
   // invalidate the query. Same pattern `SavedMessagesPanel` already uses
   // for the identical staleness problem on its own bookmark previews.
+  //
+  // Still doesn't catch an edit to a pinned event that's currently *outside*
+  // the loaded timeline window — that event never appears in `update.messages`
+  // at all, loaded-window-scoped like the rest of this update payload. A
+  // manual reopen of the panel (which refetches via a fresh `pinnedEventIds`
+  // query key change, or simply revisiting the room) still picks it up.
   useEffect(() => {
     const unlistenPromise = onTimelineUpdate((update) => {
       if (update.room_id !== roomId) return;
-      const touchesAPinnedMessage = update.messages.some((message) =>
-        pinnedEventIds.includes(message.event_id),
-      );
+      const touchesAPinnedMessage = update.messages.some((message) => {
+        if (!pinnedEventIds.includes(message.event_id)) return false;
+        const known = knownSignaturesRef.current.get(message.event_id);
+        return known !== undefined && known !== timelineMessageSignature(message);
+      });
       if (touchesAPinnedMessage) {
         void queryClient.invalidateQueries({
           queryKey: pinnedMessagesQueryKey(roomId, pinnedEventIds),

@@ -170,6 +170,41 @@ describe("PinnedMessagesPanel", () => {
     expect(await screen.findByText("This message was deleted.")).toBeInTheDocument();
   });
 
+  it("does not refetch when a timeline:update resends an unchanged pinned message (review fix)", async () => {
+    // Review fix: `spawn_timeline_listener` re-emits the full loaded-window
+    // snapshot on every `timeline:update`, not just the changed messages —
+    // so a pinned message merely being *present* in an unrelated update
+    // (e.g. a new message arriving elsewhere in the room) must not trigger
+    // a refetch on its own; only an actual content change should.
+    const details = makeRoomDetails({ pinned_event_ids: ["$1"] });
+    getRoomDetails.mockResolvedValue(details);
+    getPinnedMessages.mockResolvedValue([
+      pinnedMessage({ event_id: "$1", preview: "unchanged body" }),
+    ]);
+
+    renderWithProviders(
+      <PinnedMessagesPanel
+        roomId={details.room_id}
+        onClose={() => {}}
+        onJumpToMessage={() => {}}
+      />,
+    );
+    await screen.findByText("unchanged body");
+    expect(timelineUpdateCallback).toBeDefined();
+    getPinnedMessages.mockClear();
+
+    act(() => {
+      timelineUpdateCallback?.({
+        room_id: details.room_id,
+        messages: [{ event_id: "$1", body: "unchanged body", redacted: false } as never],
+      });
+    });
+
+    // No content actually changed, so no refetch should have been triggered.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(getPinnedMessages).not.toHaveBeenCalled();
+  });
+
   it("shows an unpin action for a redacted pinned message the user has permission to unpin (Codex review fix)", async () => {
     // MessageActions' own Pin/Unpin entry is unreachable for a redacted
     // message (every timeline row wraps it in `!message.redacted`), so a

@@ -38,6 +38,7 @@ import {
 import { useRoomDetails } from "@/features/room-info/useRoomDetails";
 import { logAndIgnore } from "@/lib/logAndIgnore";
 import { useFlag } from "@/featureFlags";
+import { isWebBuild } from "@/lib/platform";
 
 const noopDismissCrashRecoveryPrompt = () => {};
 
@@ -78,7 +79,14 @@ export function RoomsScreen({
   // off, but gating the panel's render here too means a previously-set atom
   // value (e.g. the flag flipped off mid-session) can't leave the panel
   // showing regardless.
-  const messagePinningEnabled = useFlag("message_pinning");
+  //
+  // Review fix: matches `ChatShell`'s identical `messagePinningEnabled`
+  // definition, which also excludes web builds (pin/unpin has no
+  // `invokeWeb` case). This constant alone never called the Tauri IPC
+  // command itself, so the omission wasn't yet a live bug, but keeping the
+  // two definitions in sync avoids it becoming one the next time either
+  // file's gating logic changes.
+  const messagePinningEnabled = useFlag("message_pinning") && !isWebBuild();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const roomsRef = useRef(rooms);
   roomsRef.current = rooms;
