@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "CloudHub-Social/Charm",
-  "generatedAt": "2026-07-17T16:58:43.513Z",
+  "generatedAt": "2026-07-18T07:03:58.942Z",
   "source": "GitHub pull requests, prioritized issues, and repository-native specs",
   "summary": {
-    "shipped": 30,
+    "shipped": 31,
     "follow-up": 10,
-    "in-progress": 2,
+    "in-progress": 1,
     "planned": 34
   },
   "attention": [
@@ -16,13 +16,6 @@
       "title": "feat(settings): presence and receipt privacy controls (Spec 40)",
       "url": "https://github.com/CloudHub-Social/Charm/pull/291",
       "detail": "Day-1 Spec 40 · ready for review"
-    },
-    {
-      "type": "pull-request",
-      "number": 294,
-      "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
-      "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-      "detail": "Day-2 Spec 12 · ready for review"
     },
     {
       "type": "pull-request",
@@ -156,9 +149,9 @@
         "day-2-13"
       ],
       "counts": {
-        "shipped": 0,
+        "shipped": 1,
         "follow-up": 1,
-        "in-progress": 1,
+        "in-progress": 0,
         "planned": 11
       }
     }
@@ -1107,7 +1100,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/291",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T16:38:05Z"
+          "updatedAt": "2026-07-18T07:03:28Z"
         },
         {
           "number": 292,
@@ -1472,7 +1465,7 @@
           "url": "https://github.com/CloudHub-Social/Charm/pull/293",
           "state": "open",
           "draft": false,
-          "updatedAt": "2026-07-17T01:51:57Z"
+          "updatedAt": "2026-07-18T06:56:18Z"
         }
       ],
       "issues": []
@@ -1553,15 +1546,15 @@
       "number": 12,
       "title": "Bookmarks and saved messages",
       "route": "/specs/day-2/spec-12--bookmarks-and-saved-messages/",
-      "status": "in-progress",
+      "status": "shipped",
       "pullRequests": [
         {
           "number": 294,
           "title": "feat(rooms): bookmarks and saved messages (Day-2 Spec 12)",
           "url": "https://github.com/CloudHub-Social/Charm/pull/294",
-          "state": "open",
+          "state": "merged",
           "draft": false,
-          "updatedAt": "2026-07-17T16:20:02Z"
+          "updatedAt": "2026-07-18T06:13:20Z"
         }
       ],
       "issues": []

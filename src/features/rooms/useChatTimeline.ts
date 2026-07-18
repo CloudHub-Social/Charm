@@ -19,7 +19,17 @@ import { messageRowKey } from "./messageRowShared";
 // `scrollHeight`/`scrollTop` delta math entirely.
 const INITIAL_FIRST_ITEM_INDEX = 1_000_000_000;
 
-export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: boolean) {
+// Matches `ChatShell`'s own `JUMP_FALLBACK_TIMEOUT_MS` — same rationale
+// (give the normal signal, here Virtuoso's `atBottomStateChange`, a window
+// to land before forcing the fallback), not shared/exported since the two
+// aren't required to move in lockstep.
+const MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS = 5000;
+
+export function useChatTimeline(
+  room: RoomSummary | null,
+  roomSettingsOpen: boolean,
+  hasPendingJump = false,
+) {
   const [messages, setMessages] = useState<RoomMessageSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -67,6 +77,24 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // signal answers it directly, so mark-as-read and sticky-bottom share one
   // boolean instead of needing two mechanisms).
   const isAtBottomRef = useRef(true);
+  // Review fix: `hasPendingJump` alone isn't a wide enough suppression
+  // window for mark-read — `ChatShell` clears its `jumpToEventId` (flipping
+  // `hasPendingJump` back to `false`) immediately after calling Virtuoso's
+  // `scrollToIndex`, which is synchronous but whose resulting
+  // `atBottomStateChange` report is not — it lands on a later render once
+  // Virtuoso has actually measured the new scroll position. In that gap,
+  // `hasPendingJump` already reads `false` while `isAtBottomRef` still holds
+  // whatever value it had *before* the jump (typically `true`, from the
+  // room's initial mount), so `markReadIfAtBottom` would fire prematurely.
+  // This ref stays `true` from the moment a jump starts until Virtuoso's own
+  // `atBottomStateChange` callback actually reports a position afterward —
+  // a real signal, not just a prop having changed — so mark-read stays
+  // suppressed for the entire gap, however long it turns out to be.
+  const suppressMarkReadRef = useRef(false);
+  if (hasPendingJump) suppressMarkReadRef.current = true;
+  // See the `hasPendingJump` transition-clearing effect below for why this
+  // is needed alongside `handleAtBottomStateChange`'s own clearing.
+  const prevHasPendingJumpRef = useRef(hasPendingJump);
   // Tracks which room `loadMoreHistory`'s in-flight request was issued for,
   // so a slow response landing after the user has since switched rooms (or
   // this room's own subsequent request) doesn't apply its scroll anchor or
@@ -270,7 +298,14 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     // which holds items in their natural oldest-to-newest order — unlike the
     // old `room.messages()` backward-pagination page, which was newest-first
     // and needed reversing.
-    getTimelinePage(timelineRoomId)
+    //
+    // `forceLive: true` — this effect fires only on a genuine room open
+    // (keyed on `room?.room_id` below), so it's the right place to reset a
+    // stale focused (Saved Messages jump) view back to live; the separate
+    // pagination call further down must not do the same (see its own
+    // comment) or scrolling further back while still viewing a bookmark's
+    // context would snap back to the live tail mid-scroll.
+    getTimelinePage(timelineRoomId, undefined, undefined, true)
       .then((page) => {
         if (cancelled) return;
         applyMessages(page.messages);
@@ -286,6 +321,65 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `applyMessages` closes over refs/setState, not state that should re-run this effect.
   }, [room?.room_id]);
+
+  // Review fix: once a Saved Messages jump falls back to the Rust
+  // `TimelineFocus::Event` path (the live-tail-only client-side scan in
+  // `load_timeline_around_event` gave up and it resolved the target via the
+  // server's `/context` endpoint instead), the room's cached backend
+  // `Timeline` stays swapped to that focused view — `replace_timeline`
+  // installs it, and nothing resets it back to live afterward. The
+  // room-open effect above is the *only* place that passes `forceLive:
+  // true`, and it's keyed on `room?.room_id`, which never changes for this
+  // case (the user is still in the same room, just scrolled to older
+  // history within it) — so it never re-runs. Without an explicit reset,
+  // "Jump to Present" only scrolls within whatever's loaded in that
+  // (possibly narrow) focused window, and the room stops receiving live
+  // updates entirely (the listener is on the focused timeline, not the live
+  // one) until the user leaves and reopens the room. `ChatShell`'s
+  // "Jump to Present" handler calls this to force the same live-tail
+  // re-fetch/reset the room-open path does, without needing a room switch.
+  // Review fix: returns whether the reset actually landed, instead of
+  // unconditionally swallowing a failure — `ChatShell`'s "Jump to Present"
+  // handler needs to know this before it clears the focused-view retry
+  // affordance (`hasFocusedView`/`mightHaveFocusedViewRef`); clearing it
+  // unconditionally left the user with no in-room way to retry a failed
+  // reset until leaving and reopening the room. A stale-visit (room
+  // switched away from mid-call) still reports `false` — there's no
+  // "present" flag left to manage for a room that's no longer mounted.
+  async function resetToLive(): Promise<boolean> {
+    if (!room) return false;
+    const targetRoomId = room.room_id;
+    // Review fix: without this, a slow response landing after the user has
+    // since switched rooms (or revisited this same room id — a plain
+    // `currentRoomIdRef` comparison wouldn't catch that, see
+    // `loadMoreHistory`'s identical use of this same ref) would still apply
+    // its `messages`/pagination state to whatever room is currently
+    // mounted, the same staleness class `loadMoreHistory`'s own generation
+    // check already guards against.
+    const generation = visitGenerationRef.current;
+    setLoadingMore(false);
+    setHasMore(false);
+    setPaginationError(false);
+    setFirstItemIndex(INITIAL_FIRST_ITEM_INDEX);
+    setPrependedCount(0);
+    setLoading(true);
+    try {
+      const page = await getTimelinePage(targetRoomId, undefined, undefined, true);
+      if (visitGenerationRef.current !== generation) return false;
+      applyMessages(page.messages);
+      nextCursorRef.current = page.next_cursor;
+      setHasMore(page.next_cursor !== null);
+      return true;
+    } catch (err) {
+      if (visitGenerationRef.current !== generation) return false;
+      logAndIgnore(err);
+      return false;
+    } finally {
+      if (visitGenerationRef.current === generation) {
+        setLoading(false);
+      }
+    }
+  }
 
   useEffect(() => {
     const listenerRoomId = room?.room_id;
@@ -320,6 +414,19 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
 
   useEffect(() => {
     lastMarkedReadEventId.current = null;
+    // Review fix: without this, a jump interrupted by a manual room switch
+    // before Virtuoso ever reported a post-jump position (the only thing
+    // that otherwise clears it — see `suppressMarkReadRef`'s own comment)
+    // would leave mark-read suppressed forever for whatever room the user
+    // opens next, even though that room has no pending jump of its own.
+    // Set (not unconditionally cleared) from the current `hasPendingJump`
+    // rather than hardcoded `false`: this effect and the render-time
+    // `if (hasPendingJump) suppressMarkReadRef.current = true` statement
+    // above can both apply to the very same room-open (opening a *new*
+    // room via a bookmark jump) — resetting to a bare `false` here would
+    // undo that render's own correct suppression.
+    suppressMarkReadRef.current = hasPendingJump;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally only re-runs on room change; reads the latest hasPendingJump from this render's closure.
   }, [room?.room_id]);
 
   // Mark the room read as soon as it becomes active — deduped on room id
@@ -338,8 +445,19 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     if (roomSettingsOpen) return;
     if (lastMarkedReadRoomId.current === room.room_id) return;
     lastMarkedReadRoomId.current = room.room_id;
+    // Review fix: a Saved Messages jump opens this room to scroll to an
+    // older bookmarked message, not the live tail. Blindly mark-reading the
+    // whole room here (as a normal room-open otherwise does) would send a
+    // read receipt/fully-read marker for the room's latest event and clear
+    // its unread state even though the user is about to view — and hasn't
+    // actually seen — messages newer than the bookmark. Skip the blanket
+    // mark-read for this open (still consuming the dedup key above, so it
+    // doesn't fire retroactively once the jump resolves either);
+    // `markReadIfAtBottom` below still marks read normally if/when the user
+    // actually scrolls down to the live tail themselves.
+    if (hasPendingJump) return;
     markRoomRead(room.room_id).catch(logAndIgnore);
-  }, [room, roomSettingsOpen]);
+  }, [room, roomSettingsOpen, hasPendingJump]);
 
   // Marks the room read once the true bottom of the timeline is visible —
   // driven by Virtuoso's own `atBottomStateChange` (see
@@ -349,6 +467,15 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   function markReadIfAtBottom() {
     if (!room || !latestEventId) return;
     if (roomSettingsOpen) return;
+    // Review fix: checks the suppression ref (which stays set across the
+    // gap between `hasPendingJump` clearing and Virtuoso's own
+    // `atBottomStateChange` report — see that ref's own comment), not
+    // `hasPendingJump` directly. `isAtBottomRef` defaults to `true` (assumes
+    // the live tail until Virtuoso reports otherwise), so without this,
+    // mark-read could still fire on the very first post-jump render, before
+    // Virtuoso has had a chance to report the real post-jump scroll
+    // position at all.
+    if (suppressMarkReadRef.current) return;
     if (!isAtBottomRef.current) return;
     if (lastMarkedReadEventId.current === latestEventId) return;
     lastMarkedReadEventId.current = latestEventId;
@@ -360,12 +487,61 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
   // `atBottomStateChange` firing (Virtuoso only calls it on an actual
   // visibility transition).
   useEffect(() => {
+    // Review fix: a jump that resolves to a target which leaves Virtuoso's
+    // at-bottom state *unchanged* (e.g. the bookmark is already the latest
+    // message, or the list was already scrolled to bottom before the jump)
+    // never fires `atBottomStateChange` at all — that's the only other
+    // place suppression gets cleared, so without this it would stay set
+    // forever, permanently blocking mark-read for the rest of this room's
+    // session.
+    //
+    // Not cleared immediately on this `true -> false` transition, though —
+    // `ChatShell`'s existing regression test ("does not mark read in the
+    // gap between onJumpHandled clearing jumpToEventId and Virtuoso's own
+    // atBottomStateChange report") documents that `hasPendingJump` reading
+    // `false` again can itself still be one render ahead of Virtuoso's
+    // actual post-jump scroll report, with `isAtBottomRef.current` still
+    // holding a stale pre-jump value. Clearing here unconditionally would
+    // reopen exactly that gap. Instead this is a bounded fallback (same
+    // `JUMP_FALLBACK_TIMEOUT_MS` pattern `ChatShell`'s own jump effect
+    // uses for its analogous "the normal signal might never arrive"
+    // problem): if Virtuoso's own `atBottomStateChange` hasn't cleared
+    // suppression within the window, force it here so a jump whose bottom
+    // state never changes doesn't suppress mark-read forever.
+    const wasPending = prevHasPendingJumpRef.current;
+    prevHasPendingJumpRef.current = hasPendingJump;
+    if (wasPending && !hasPendingJump) {
+      const timeoutId = setTimeout(() => {
+        suppressMarkReadRef.current = false;
+        markReadIfAtBottom();
+      }, MARK_READ_SUPPRESSION_FALLBACK_TIMEOUT_MS);
+      return () => clearTimeout(timeoutId);
+    }
     markReadIfAtBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `markReadIfAtBottom` closes over refs, not state.
-  }, [room, latestEventId, roomSettingsOpen]);
+  }, [room, latestEventId, roomSettingsOpen, hasPendingJump]);
 
   function handleAtBottomStateChange(atBottom: boolean) {
     isAtBottomRef.current = atBottom;
+    // Review fix: this is the actual signal `suppressMarkReadRef` is
+    // waiting for — Virtuoso reporting a real post-jump scroll position,
+    // not just `hasPendingJump` having flipped back to `false` on a
+    // possibly-earlier render. Clearing it here (rather than wherever
+    // `hasPendingJump` changes) is what closes that gap.
+    //
+    // Review fix: only while a jump *isn't* pending, though — Virtuoso can
+    // still report `atBottom=true` for the room's initial live-tail
+    // snapshot before a not-yet-loaded bookmark's own `loadTimelineAroundEvent`
+    // has resolved and scrolled anywhere (that resolution, and the
+    // `scrollToIndex` it triggers, is what actually clears `hasPendingJump`
+    // — see `ChatShell`'s jump effect). Clearing suppression on *that*
+    // report would mark read off the room's unrelated live tail while the
+    // jump to older, unseen history is still in flight. The render-time
+    // `if (hasPendingJump) suppressMarkReadRef.current = true` above already
+    // re-asserts suppression on every render while a jump is pending, but
+    // this callback can run independently of that render cycle (a child's
+    // effect, not a state update), so it must not undo it in between.
+    if (!hasPendingJump) suppressMarkReadRef.current = false;
     if (atBottom) markReadIfAtBottom();
   }
 
@@ -429,6 +605,12 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     const initialFirstItemIndex = firstItemIndexRef.current;
     try {
       for (;;) {
+        // `forceLive` defaults to `false` here (deliberately not passed) —
+        // this loop is pagination within whatever's already the active view,
+        // which may itself be a focused (Saved Messages jump) timeline the
+        // user is still scrolling further back through; forcing live here
+        // would snap that view back to the room's live tail mid-scroll. Only
+        // the room-open effect above passes `true`.
         const page = await getTimelinePage(roomId);
         // Stale if the room has changed since this request was issued —
         // including a revisit to the same room id, which `visitGenerationRef`
@@ -480,5 +662,6 @@ export function useChatTimeline(room: RoomSummary | null, roomSettingsOpen: bool
     prependedCount,
     loadMoreHistory,
     handleAtBottomStateChange,
+    resetToLive,
   };
 }

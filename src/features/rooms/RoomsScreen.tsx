@@ -108,6 +108,25 @@ export function RoomsScreen({
   const [acceptedRoomPendingSelection, setAcceptedRoomPendingSelection] = useState<string | null>(
     null,
   );
+  // Spec 12's "jump to message" from the Saved Messages settings panel: the
+  // room + event to scroll to once that room is selected and loaded.
+  // `ChatShell` clears this itself (via `onJumpHandled`) once the jump
+  // completes or definitively fails, rather than this screen guessing when
+  // that happened.
+  //
+  // Review fix: this used to track only the event id, not which room it was
+  // for. If the user clicked a saved message in room A, then manually
+  // switched to room B before the jump resolved, the bare event id would
+  // still be handed to whichever room was active by the time `ChatShell`'s
+  // effect ran — sending room A's bookmark event id into a
+  // `loadTimelineAroundEvent` call scoped to room B, which could clear or
+  // fail the jump based on an unrelated room. Storing the intended room id
+  // alongside the event id, and only passing the event id down to
+  // `ChatShell` when the currently active room actually matches it (see
+  // `activeJumpToEventId` below), means a manual room switch mid-jump simply
+  // stops the jump from ever reaching the wrong room, without needing to
+  // separately detect and clear it on every possible room-change path.
+  const [jumpTarget, setJumpTarget] = useState<{ roomId: string; eventId: string } | null>(null);
   const autoSelectSuppressedRef = useRef<
     { kind: "space" } | { kind: "invite"; roomId: string } | null
   >(null);
@@ -172,6 +191,20 @@ export function RoomsScreen({
   function selectNewlyCreatedOrJoinedSpace(spaceId: string) {
     selectSpace(spaceId);
     autoSelectSuppressedRef.current = { kind: "space" };
+  }
+
+  /** Handles a jump-to-message click from the Saved Messages settings panel
+   * (Spec 12): selects the bookmark's room (in whatever nav mode it belongs
+   * to, same as clicking it in the room list) and hands the target event id
+   * to `ChatShell`, which does the actual scroll/load-around once that room
+   * is active. A bookmark whose room isn't currently joined (left since
+   * saving) has nothing to select into — silently does nothing, same as
+   * `navigateToRoomPill`'s handling of an unresolvable target. */
+  function handleJumpToBookmark(roomId: string, eventId: string) {
+    const room = joinedRooms.find((candidate) => candidate.room_id === roomId);
+    if (!room) return;
+    selectRoomInVisibleMode(room);
+    setJumpTarget({ roomId, eventId });
   }
 
   function selectRoomInVisibleMode(room: RoomSummary, visibleRooms = joinedRooms) {
@@ -548,6 +581,10 @@ export function RoomsScreen({
             currentUserId={currentUserId}
             onBack={() => setMobileView("list")}
             onNavigateToRoom={navigateToRoomPill}
+            jumpToEventId={
+              jumpTarget && activeRoom?.room_id === jumpTarget.roomId ? jumpTarget.eventId : null
+            }
+            onJumpHandled={() => setJumpTarget(null)}
           />
         }
         rightPanel={
@@ -581,7 +618,7 @@ export function RoomsScreen({
       />
       <RoomSettingsModal currentUserId={currentUserId} />
       <VerificationOverlay />
-      <SettingsScreen onLoggedOut={onLoggedOut} />
+      <SettingsScreen onLoggedOut={onLoggedOut} onJumpToBookmark={handleJumpToBookmark} />
       <CrashRecoveryPrompt
         open={crashRecoveryPromptOpen}
         onDismiss={onDismissCrashRecoveryPrompt}

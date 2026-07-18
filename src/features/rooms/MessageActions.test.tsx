@@ -81,6 +81,51 @@ describe("MessageActions", () => {
     expect(screen.getByText("Delete")).toBeInTheDocument();
   });
 
+  it("shows no bookmark item when onBookmark/onUnbookmark are both omitted", async () => {
+    renderActions();
+    openMenu();
+
+    expect(await screen.findByText("Reply")).toBeInTheDocument();
+    expect(screen.queryByText("Bookmark")).not.toBeInTheDocument();
+    expect(screen.queryByText("Remove bookmark")).not.toBeInTheDocument();
+  });
+
+  it("shows Bookmark (not Remove bookmark) when isBookmarked is false", async () => {
+    const onBookmark = vi.fn();
+    renderActions({ onBookmark, isBookmarked: false });
+    openMenu();
+
+    expect(await screen.findByText("Bookmark")).toBeInTheDocument();
+    expect(screen.queryByText("Remove bookmark")).not.toBeInTheDocument();
+  });
+
+  it("shows Remove bookmark (not Bookmark) when isBookmarked is true", async () => {
+    const onUnbookmark = vi.fn();
+    renderActions({ onUnbookmark, isBookmarked: true });
+    openMenu();
+
+    expect(await screen.findByText("Remove bookmark")).toBeInTheDocument();
+    expect(screen.queryByText("Bookmark")).not.toBeInTheDocument();
+  });
+
+  it("calls onBookmark when Bookmark is selected", async () => {
+    const onBookmark = vi.fn();
+    renderActions({ onBookmark, isBookmarked: false });
+    openMenu();
+    fireEvent.click(await screen.findByText("Bookmark"));
+
+    expect(onBookmark).toHaveBeenCalledOnce();
+  });
+
+  it("calls onUnbookmark when Remove bookmark is selected", async () => {
+    const onUnbookmark = vi.fn();
+    renderActions({ onUnbookmark, isBookmarked: true });
+    openMenu();
+    fireEvent.click(await screen.findByText("Remove bookmark"));
+
+    expect(onUnbookmark).toHaveBeenCalledOnce();
+  });
+
   it("calls onReply when Reply is selected", async () => {
     const { onReply } = renderActions();
     openMenu();

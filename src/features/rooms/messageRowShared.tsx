@@ -61,6 +61,11 @@ export interface MessageRowLayoutProps {
   onCopyLink: () => void;
   onPin: () => void;
   onUnpin: () => void;
+  /** Bookmarks this message (Spec 12). Omitted entirely on the web build — see `MessageActions`' doc comment. */
+  onBookmark?: () => void;
+  /** Removes this message's bookmark. See {@link onBookmark}. */
+  onUnbookmark?: () => void;
+  isBookmarked?: boolean;
   /** Retries a failed send in place via the send queue. Only meaningful (and rendered) when `isError` is set. */
   onResend: () => void;
   /** Discards a failed send's local echo. Only meaningful (and rendered) when `isError` is set. */

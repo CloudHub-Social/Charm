@@ -41,6 +41,11 @@ interface MessageRowProps {
   onCopyLink: () => void;
   onPin: () => void;
   onUnpin: () => void;
+  /** See `MessageRowLayoutProps.onBookmark`. */
+  onBookmark?: () => void;
+  /** See `MessageRowLayoutProps.onUnbookmark`. */
+  onUnbookmark?: () => void;
+  isBookmarked?: boolean;
   /** See `MessageRowLayoutProps.onResend`. */
   onResend: () => void;
   /** See `MessageRowLayoutProps.onDiscard`. */

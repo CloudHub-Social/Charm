@@ -63,8 +63,13 @@ vi.mock("@tauri-apps/plugin-notification", () => ({
 }));
 
 let focusModeFlagEnabled = false;
+let bookmarksFlagEnabled = false;
 vi.mock("@/featureFlags", () => ({
-  useFlag: (key: string) => (key === "focus_mode" ? focusModeFlagEnabled : false),
+  useFlag: (key: string) => {
+    if (key === "focus_mode") return focusModeFlagEnabled;
+    if (key === "bookmarks") return bookmarksFlagEnabled;
+    return false;
+  },
 }));
 
 // `useFocusMode` gates its `getDndState` query on `isTauri()` (whether
@@ -80,14 +85,17 @@ vi.mock("@/lib/platform", async (importOriginal) => {
   return { ...actual, isTauri: () => true };
 });
 
-function renderScreen(section: SettingsSection | null) {
+function renderScreen(
+  section: SettingsSection | null,
+  options: { onJumpToBookmark?: (roomId: string, eventId: string) => void } = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const store = createStore();
   store.set(settingsOpenAtom, section);
   render(
     <QueryClientProvider client={client}>
       <JotaiProvider store={store}>
-        <SettingsScreen onLoggedOut={vi.fn()} />
+        <SettingsScreen onLoggedOut={vi.fn()} onJumpToBookmark={options.onJumpToBookmark} />
       </JotaiProvider>
     </QueryClientProvider>,
   );
@@ -97,6 +105,7 @@ function renderScreen(section: SettingsSection | null) {
 beforeEach(() => {
   vi.clearAllMocks();
   focusModeFlagEnabled = false;
+  bookmarksFlagEnabled = false;
 });
 
 afterEach(() => {
@@ -215,5 +224,42 @@ describe("SettingsScreen", () => {
     tab.focus();
     fireEvent.click(tab);
     expect(await screen.findByRole("checkbox", { name: /do not disturb/i })).toBeInTheDocument();
+  });
+
+  it("hides Saved Messages when the bookmarks flag is off, even with a jump handler wired", async () => {
+    bookmarksFlagEnabled = false;
+
+    renderScreen("account", { onJumpToBookmark: vi.fn() });
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Saved Messages" })).not.toBeInTheDocument();
+  });
+
+  it("hides Saved Messages when the bookmarks flag is on but no jump handler is wired", async () => {
+    bookmarksFlagEnabled = true;
+
+    renderScreen("account");
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Saved Messages" })).not.toBeInTheDocument();
+  });
+
+  it("shows Saved Messages when the bookmarks flag is on and a jump handler is wired", async () => {
+    bookmarksFlagEnabled = true;
+
+    renderScreen("account", { onJumpToBookmark: vi.fn() });
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.getByRole("tab", { name: "Saved Messages" })).toBeInTheDocument();
+  });
+
+  it("hides Saved Messages in web builds even when flag-enabled and a jump handler is wired", async () => {
+    bookmarksFlagEnabled = true;
+    vi.stubEnv("VITE_CHARM_BUILD_TARGET", "web");
+
+    renderScreen("account", { onJumpToBookmark: vi.fn() });
+    await screen.findByRole("heading", { name: "Profile" });
+
+    expect(screen.queryByRole("tab", { name: "Saved Messages" })).not.toBeInTheDocument();
   });
 });

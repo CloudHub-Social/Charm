@@ -37,6 +37,9 @@ export function BubbleMessageRow({
   onUnpin,
   onCopy,
   onCopyLink,
+  onBookmark,
+  onUnbookmark,
+  isBookmarked,
   onResend,
   onDiscard,
   onJumpToMessage,
@@ -142,6 +145,9 @@ export function BubbleMessageRow({
               onUnpin={onUnpin}
               onCopy={onCopy}
               onCopyLink={onCopyLink}
+              onBookmark={onBookmark}
+              onUnbookmark={onUnbookmark}
+              isBookmarked={isBookmarked}
               onResend={onResend}
               onDiscard={onDiscard}
             />

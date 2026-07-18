@@ -129,6 +129,9 @@ define_feature_flag_keys!(
         /// the pinned-messages right-panel drawer, and the room-header
         /// pin-count badge.
         MessagePinning,
+        /// Day-2 Spec 12: personal, private message bookmarks and the global
+        /// Saved Messages view.
+        Bookmarks,
     }
 );
 
@@ -150,6 +153,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => false,
             FeatureFlagKey::SpaceRailManagement => false,
             FeatureFlagKey::MessagePinning => false,
+            FeatureFlagKey::Bookmarks => false,
         }
     }
 
@@ -196,6 +200,9 @@ impl FeatureFlagKey {
             FeatureFlagKey::MessagePinning => {
                 "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge."
             }
+            FeatureFlagKey::Bookmarks => {
+                "Bookmark a message from its action menu and browse saved messages from a global Settings panel."
+            }
         }
     }
 
@@ -218,6 +225,7 @@ impl FeatureFlagKey {
             }
             FeatureFlagKey::SpaceRailManagement => "Spec 63 (sidebar and space management)",
             FeatureFlagKey::MessagePinning => "day-2 Spec 04 (message pinning)",
+            FeatureFlagKey::Bookmarks => "Day-2 Spec 12 (bookmarks and saved messages)",
         }
     }
 
@@ -238,6 +246,7 @@ impl FeatureFlagKey {
             FeatureFlagKey::RoomListMessagePreview => "room_list_message_preview",
             FeatureFlagKey::SpaceRailManagement => "space_rail_management",
             FeatureFlagKey::MessagePinning => "message_pinning",
+            FeatureFlagKey::Bookmarks => "bookmarks",
         }
     }
 }

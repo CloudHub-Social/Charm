@@ -11,9 +11,10 @@ real product scope but are sequenced after the primary daily-driver foundation.
 Numbering is independent of [Day-1](/specs/day-1/).
 
 **Status audited 2026-07-14:** no matching merged or open implementation pull
-request was found for any Day-2 spec. All thirteen remain planned. This statement
-is about implementation, not design readiness: several specs already contain a
-settled architecture and detailed acceptance criteria.
+request was found for any Day-2 spec; all thirteen were planned. Spec 12
+(Bookmarks and saved messages) has since shipped — see its own spec for the PR.
+This statement is about implementation, not design readiness: several specs
+already contain a settled architecture and detailed acceptance criteria.
 
 | # | Spec | Status | Boundary or dependency |
 |---|---|---|---|
@@ -28,14 +29,18 @@ settled architecture and detailed acceptance criteria.
 | 09 | [Multi-account switcher](/specs/day-2/spec-09--multi-account-switcher-ui/) | **Planned** | Builds on shipped Day-1 Spec 15 store isolation |
 | 10 | [Export chat history](/specs/day-2/spec-10--export-chat-history/) | **Planned** | Per-room text, HTML, and JSON export |
 | 11 | [Jump to date](/specs/day-2/spec-11--jump-to-date/) | **Planned** | Must preserve Day-1 Spec 26 timeline anchoring |
-| 12 | [Bookmarks and saved messages](/specs/day-2/spec-12--bookmarks-and-saved-messages/) | **Planned** | Private saves, distinct from shared room pins |
+| 12 | [Bookmarks and saved messages](/specs/day-2/spec-12--bookmarks-and-saved-messages/) | **Shipped** | Private saves, distinct from shared room pins |
 | 13 | [Scheduled and delayed send](/specs/day-2/spec-13--scheduled-and-delayed-send/) | **Planned** | Prefer server-side MSC4140 delayed events |
 
 ## Shared implementation seams
 
 Message pinning, jump-to-date, and bookmarks all need to load a timeline around an
-event outside the current window. The first implementation should establish one
-reusable matrix-sdk-ui path instead of three competing loaders.
+event outside the current window. Bookmarks (Spec 12) shipped with its own
+minimal version of this (`load_timeline_around_event`, a plain repeated
+`paginate_backwards` loop — see `src-tauri/src/matrix/timeline.rs`), deliberately
+not built as a shared abstraction per that spec's own scope. Whichever of
+pinning or jump-to-date implements next should evaluate reusing or generalizing
+that command rather than writing a third competing loader from scratch.
 
 Calling must begin with [widget support](/specs/day-1/spec-49--widget-support/).
 The Sable Call decision is already made; a new native-WebRTC-versus-iframe spike is

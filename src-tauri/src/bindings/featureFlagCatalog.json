@@ -76,5 +76,11 @@
     "default": false,
     "description": "Pin/unpin messages in a room, browse the pinned-messages panel, and show the room-header pin-count badge.",
     "owner": "day-2 Spec 04 (message pinning)"
+  },
+  {
+    "key": "bookmarks",
+    "default": false,
+    "description": "Bookmark a message from its action menu and browse saved messages from a global Settings panel.",
+    "owner": "Day-2 Spec 12 (bookmarks and saved messages)"
   }
 ]
