@@ -15,6 +15,60 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::broadcast::error::RecvError;
 use ts_rs::TS;
 
+/// Rotation/flip implied by an EXIF `Orientation` tag (values 2-8; 1 is
+/// already upright and needs no transform). `image`'s decoders don't apply
+/// this automatically, so stripping EXIF (which silently discards the tag)
+/// would otherwise leave portrait photos sideways — this is read from the
+/// original bytes before the strip and baked into the pixels instead.
+fn apply_exif_orientation(img: image::DynamicImage, orientation: u32) -> image::DynamicImage {
+    match orientation {
+        2 => img.fliph(),
+        3 => img.rotate180(),
+        4 => img.flipv(),
+        5 => img.rotate90().fliph(),
+        6 => img.rotate90(),
+        7 => img.rotate270().fliph(),
+        8 => img.rotate270(),
+        _ => img,
+    }
+}
+
+/// Strips EXIF/metadata (GPS location, camera info, capture timestamp, etc.)
+/// from a JPEG or PNG image by decoding and re-encoding it — `image`'s
+/// encoders don't carry the source's metadata segments forward, so a
+/// straightforward round-trip is a real strip, not just a best-effort one.
+/// Bakes in any EXIF `Orientation` first so the re-encoded, metadata-free
+/// image still displays upright. Returns `None` (leaving the original bytes
+/// untouched) for animated GIF/WebP — re-encoding through `image::DynamicImage`
+/// would collapse them to a single frame, which is worse than leaving their
+/// (comparatively low-signal) metadata in place — and for anything that fails
+/// to decode, so a corrupt-but-otherwise-uploadable file still sends.
+fn strip_exif(mime: &mime::Mime, data: &[u8]) -> Option<Vec<u8>> {
+    let format = match (mime.type_().as_str(), mime.subtype().as_str()) {
+        ("image", "jpeg") => image::ImageFormat::Jpeg,
+        ("image", "png") => image::ImageFormat::Png,
+        _ => return None,
+    };
+
+    let orientation = exif::Reader::new()
+        .read_from_container(&mut std::io::Cursor::new(data))
+        .ok()
+        .and_then(|exif| {
+            exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)
+                .cloned()
+        })
+        .and_then(|field| field.value.get_uint(0))
+        .unwrap_or(1);
+
+    let img = image::load_from_memory_with_format(data, format).ok()?;
+    let img = apply_exif_orientation(img, orientation);
+
+    let mut out = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut out), format)
+        .ok()?;
+    Some(out)
+}
+
 use super::MatrixState;
 
 const IPC_OPERATION_ID_HEADER: &str = "x-charm-operation-id";
@@ -263,6 +317,7 @@ pub fn build_message_content(
 /// the send queue is the one behavior not preserved for attachments — a
 /// known, called-out gap rather than a silent one.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // one Tauri IPC command; splitting args into a struct would only move the count, not reduce it
 pub async fn send_attachment(
     app: AppHandle,
     state: State<'_, MatrixState>,
@@ -271,6 +326,7 @@ pub async fn send_attachment(
     file_path: String,
     caption: Option<String>,
     txn_id: String,
+    strip_exif_enabled: bool,
 ) -> Result<(), String> {
     let operation_id = ipc_operation_id(&request);
     // Continues a trace started in the webview (see `observability_trace`'s
@@ -314,6 +370,20 @@ pub async fn send_attachment(
         "Attachment IPC started"
     );
 
+    // Registered before any `.await` so a cancel request that arrives while
+    // this command is still reading the file off disk isn't lost — it just
+    // flips the token, and the `tokio::select!` below observes it as soon as
+    // the upload future actually starts. Removed unconditionally once this
+    // call settles (success, failure, or cancellation) so the map doesn't
+    // grow across a session's uploads.
+    let txn_id_for_cancellation = txn_id.clone();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .insert(txn_id_for_cancellation.clone(), cancellation.clone());
+
     let result = async {
         let client = state.require_client().await?;
 
@@ -346,8 +416,16 @@ pub async fn send_attachment(
         }
 
         let data = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
-        let total_bytes = data.len() as u64;
         let mime = mime_guess::from_path(path).first_or_octet_stream();
+        // Best-effort: an unstrippable image (animated GIF/WebP, or one that
+        // fails to decode) sends with its original bytes rather than failing
+        // the whole upload — see `strip_exif`'s doc comment for why.
+        let data = if strip_exif_enabled {
+            strip_exif(&mime, &data).unwrap_or(data)
+        } else {
+            data
+        };
+        let total_bytes = data.len() as u64;
         breadcrumb_total_bytes = Some(total_bytes);
         breadcrumb_mime = Some(mime.clone());
         tracing::info!(
@@ -389,7 +467,16 @@ pub async fn send_attachment(
             .send_attachment(filename, &mime, data, config)
             .with_send_progress_observable(progress.clone());
 
-        let result = send.await;
+        // Races the upload against a user-initiated cancel
+        // (`cancel_attachment_upload` flips `cancellation`). Dropping `send`
+        // (what `select!` does to the losing branch) drops the underlying
+        // `Client::media()` upload request future, which tears down its
+        // in-flight HTTP body stream rather than letting it run to
+        // completion in the background.
+        let result = tokio::select! {
+            result = send => result.map_err(|error| error.to_string()),
+            () = cancellation.cancelled() => Err("upload cancelled".to_string()),
+        };
         // The forwarder task holds its own clone of `progress`'s subscriber, so
         // dropping the local `progress` binding here doesn't close its stream —
         // abort it explicitly (same pattern as `qr_login.rs`) rather than
@@ -414,9 +501,15 @@ pub async fn send_attachment(
             );
         }
 
-        result.map(|_| ()).map_err(|error| error.to_string())
+        result.map(|_| ())
     }
     .await;
+
+    state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .remove(&txn_id_for_cancellation);
 
     let duration_ms = started_at.elapsed().as_millis();
     let tracing_duration_ms = u64::try_from(duration_ms).unwrap_or(u64::MAX);
@@ -471,6 +564,41 @@ pub async fn send_attachment(
     }
 
     outcome
+}
+
+/// Cancels an in-flight `send_attachment` call for `txn_id`, if one is still
+/// running. A no-op (not an error) if the upload already settled or was never
+/// started — the tray row that triggers this can race the upload's own
+/// completion, and losing that race just means there's nothing left to
+/// cancel.
+#[tauri::command]
+pub async fn cancel_attachment_upload(
+    state: State<'_, MatrixState>,
+    txn_id: String,
+) -> Result<(), String> {
+    if let Some(token) = state
+        .attachment_cancellations
+        .lock()
+        .expect("attachment_cancellations mutex poisoned")
+        .get(&txn_id)
+    {
+        token.cancel();
+    }
+    Ok(())
+}
+
+/// Fetches (and caches, via matrix-rust-sdk's own `OnceCell`) the
+/// homeserver's `m.upload.size` limit, in bytes, so the frontend can warn
+/// pre-flight instead of letting an over-limit upload fail opaquely against
+/// the server.
+#[tauri::command]
+pub async fn get_media_config(state: State<'_, MatrixState>) -> Result<u64, String> {
+    let client = state.require_client().await?;
+    let upload_size = client
+        .load_or_fetch_max_upload_size()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(i64::from(upload_size) as u64)
 }
 
 /// Subscribes to `progress` and forwards each update as an `upload:progress`

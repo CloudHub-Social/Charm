@@ -71,6 +71,8 @@ const getRoomDetails = vi
 const markRoomRead = vi.fn().mockResolvedValue(undefined);
 const sendTyping = vi.fn().mockResolvedValue(undefined);
 const sendAttachment = vi.fn().mockResolvedValue(undefined);
+const cancelAttachmentUpload = vi.fn().mockResolvedValue(undefined);
+const getMediaConfig = vi.fn().mockResolvedValue(100 * 1024 * 1024);
 const openFileDialog = vi.fn();
 const getRoomMembers = vi.fn().mockResolvedValue([]);
 const listRooms = vi.fn().mockResolvedValue([]);
@@ -208,6 +210,8 @@ vi.mock("@/lib/matrix", () => ({
   markRoomRead: (...args: unknown[]) => markRoomRead(...args),
   sendTyping: (...args: unknown[]) => sendTyping(...args),
   sendAttachment: (...args: unknown[]) => sendAttachment(...args),
+  cancelAttachmentUpload: (...args: unknown[]) => cancelAttachmentUpload(...args),
+  getMediaConfig: (...args: unknown[]) => getMediaConfig(...args),
   getRoomMembers: (...args: unknown[]) => getRoomMembers(...args),
   listRooms: (...args: unknown[]) => listRooms(...args),
   runCommand: (...args: unknown[]) => runCommand(...args),
@@ -391,6 +395,8 @@ describe("ChatShell", () => {
       idle_timeout_minutes: null,
     });
     sendAttachment.mockReset().mockResolvedValue(undefined);
+    cancelAttachmentUpload.mockReset().mockResolvedValue(undefined);
+    getMediaConfig.mockReset().mockResolvedValue(100 * 1024 * 1024);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);
     listBookmarks.mockReset().mockResolvedValue([]);
@@ -4575,11 +4581,16 @@ describe("ChatShell", () => {
 
     fireEvent.click(attachButton);
 
+    // media_send_polish stages the file for an optional caption first.
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/cat.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
       ),
     );
   });
@@ -4597,6 +4608,7 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() => expect(screen.getByText("video.mp4")).toBeInTheDocument());
 
@@ -4661,6 +4673,7 @@ describe("ChatShell", () => {
     renderChatShell();
 
     fireEvent.click(await screen.findByRole("button", { name: "Attach" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
 
     await waitFor(() => expect(screen.getByText("Upload failed")).toBeInTheDocument());
 
@@ -4680,11 +4693,15 @@ describe("ChatShell", () => {
       clipboardData: { files: [file] },
     });
 
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
+
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/pasted.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
       ),
     );
   });
@@ -4763,11 +4780,14 @@ describe("ChatShell", () => {
     fireEvent.drop(shell, { dataTransfer });
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
       expect(sendAttachment).toHaveBeenCalledWith(
         room.room_id,
         "/Users/me/drop.png",
         expect.any(String),
+        undefined,
+        expect.any(Boolean),
       ),
     );
   });
@@ -4808,8 +4828,15 @@ describe("ChatShell", () => {
       dataTransfer: { files: [file] },
     });
 
+    fireEvent.click(await screen.findByRole("button", { name: "Send attachment" }));
     await waitFor(() =>
-      expect(sendAttachment).toHaveBeenCalledWith(room.room_id, file, expect.any(String)),
+      expect(sendAttachment).toHaveBeenCalledWith(
+        room.room_id,
+        file,
+        expect.any(String),
+        undefined,
+        expect.any(Boolean),
+      ),
     );
   });
 

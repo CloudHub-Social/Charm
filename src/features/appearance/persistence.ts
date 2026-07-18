@@ -199,5 +199,13 @@ export function mergeAppearance(partial: Partial<AppearanceState> | null): Appea
       typeof partial.showUnreadCounts === "boolean"
         ? partial.showUnreadCounts
         : DEFAULT_APPEARANCE.showUnreadCounts,
+    autoplayGifs:
+      typeof partial.autoplayGifs === "boolean"
+        ? partial.autoplayGifs
+        : DEFAULT_APPEARANCE.autoplayGifs,
+    stripExifOnUpload:
+      typeof partial.stripExifOnUpload === "boolean"
+        ? partial.stripExifOnUpload
+        : DEFAULT_APPEARANCE.stripExifOnUpload,
   };
 }

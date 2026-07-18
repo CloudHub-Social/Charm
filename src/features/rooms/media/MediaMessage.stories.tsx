@@ -58,6 +58,7 @@ export const Image: Story = {
       height: 600,
       has_thumbnail: true,
       blurhash: null,
+      caption: null,
     };
     const client = withSeededMedia([
       { roomId: ROOM_ID, eventId: "$story-image", thumbnail: true, url: PLACEHOLDER_IMAGE },
@@ -87,6 +88,7 @@ export const Video: Story = {
       height: 1080,
       duration_ms: 12_000,
       has_thumbnail: true,
+      caption: null,
     };
     const client = withSeededMedia([
       { roomId: ROOM_ID, eventId: "$story-video", thumbnail: true, url: PLACEHOLDER_IMAGE },

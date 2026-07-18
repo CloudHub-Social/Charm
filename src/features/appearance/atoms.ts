@@ -20,6 +20,14 @@ export interface AppearanceState {
   messageLayout: MessageLayout;
   jumboEmojiSize: JumboEmojiSize;
   showUnreadCounts: boolean;
+  /** Spec 42: autoplay animated images (GIFs) inline in the timeline instead
+   * of showing a static thumbnail until opened in the lightbox. */
+  autoplayGifs: boolean;
+  /** Spec 42: strip EXIF/metadata (GPS location, camera info, capture
+   * timestamp) from images before upload. Default-on — a real privacy leak
+   * otherwise, since sharing a photo would silently share where it was
+   * taken. */
+  stripExifOnUpload: boolean;
 }
 
 /**
@@ -54,6 +62,8 @@ export const DEFAULT_APPEARANCE: AppearanceState = {
   messageLayout: "bubble",
   jumboEmojiSize: "lg",
   showUnreadCounts: false,
+  autoplayGifs: true,
+  stripExifOnUpload: true,
 };
 
 /**
@@ -69,3 +79,5 @@ export const reducedMotionAtom = atom<ReducedMotion>(DEFAULT_APPEARANCE.reducedM
 export const messageLayoutAtom = atom<MessageLayout>(DEFAULT_APPEARANCE.messageLayout);
 export const jumboEmojiSizeAtom = atom<JumboEmojiSize>(DEFAULT_APPEARANCE.jumboEmojiSize);
 export const showUnreadCountsAtom = atom<boolean>(DEFAULT_APPEARANCE.showUnreadCounts);
+export const autoplayGifsAtom = atom<boolean>(DEFAULT_APPEARANCE.autoplayGifs);
+export const stripExifOnUploadAtom = atom<boolean>(DEFAULT_APPEARANCE.stripExifOnUpload);
