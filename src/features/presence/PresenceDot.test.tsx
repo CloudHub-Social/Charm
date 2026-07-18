@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatLastActiveAgo, PresenceDot } from "./PresenceDot";
-import { renderWithProviders } from "@/test/renderWithProviders";
+import { renderWithProviders, wrapWithProviders } from "@/test/renderWithProviders";
 import type * as FeatureFlagsModule from "@/featureFlags";
 
 vi.mock("@/featureFlags", async () => {
@@ -55,5 +55,57 @@ describe("PresenceDot", () => {
     expect(screen.getByText("Online")).toBeInTheDocument();
     expect(screen.queryByText(/Making cupcakes/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Active 5m ago/)).not.toBeInTheDocument();
+  });
+
+  describe("last-active label aging (review fix)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("keeps the last-active label aging across re-renders instead of freezing at the first-received value", () => {
+      // Review fix: `lastActiveAgoMs` is a snapshot relative to whenever the
+      // presence update carrying it arrived — formatting it directly every
+      // render only produced the correct elapsed time at that exact
+      // instant. A mounted-but-not-updated DM header/list row used to keep
+      // showing the same stale "Active Xm ago" indefinitely.
+      const { rerender, client } = renderWithProviders(
+        <PresenceDot presence="online" lastActiveAgoMs={5 * 60_000} />,
+      );
+      expect(screen.getByText(/Active 5m ago/)).toBeInTheDocument();
+
+      // Real time passes with no new presence update (the prop value is
+      // unchanged) — only a later, unrelated re-render happens. Rerendered
+      // through the same provider tree (`wrapWithProviders`, not a bare
+      // `rerender(<PresenceDot .../>)`) so the component instance — and so
+      // its anchor ref — actually persists across this rerender instead of
+      // remounting from scratch.
+      vi.setSystemTime(new Date("2026-01-01T00:03:00.000Z"));
+      rerender(
+        wrapWithProviders(<PresenceDot presence="online" lastActiveAgoMs={5 * 60_000} />, client),
+      );
+
+      expect(screen.getByText(/Active 8m ago/)).toBeInTheDocument();
+    });
+
+    it("re-anchors from a genuinely new lastActiveAgoMs value instead of compounding onto the old anchor", () => {
+      const { rerender, client } = renderWithProviders(
+        <PresenceDot presence="online" lastActiveAgoMs={5 * 60_000} />,
+      );
+      expect(screen.getByText(/Active 5m ago/)).toBeInTheDocument();
+
+      vi.setSystemTime(new Date("2026-01-01T00:10:00.000Z"));
+      // A genuinely new presence update arrives, reporting 1m ago as of
+      // *this* render — must not be added on top of the previous anchor.
+      rerender(
+        wrapWithProviders(<PresenceDot presence="online" lastActiveAgoMs={1 * 60_000} />, client),
+      );
+
+      expect(screen.getByText(/Active 1m ago/)).toBeInTheDocument();
+    });
   });
 });

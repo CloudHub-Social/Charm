@@ -138,6 +138,25 @@ pub async fn set_presence(
     }
     let client = state.require_client().await?;
     set_presence_impl(&client, presence, status_msg).await?;
+    // Review fix (P1): re-checked *after* the send, not just before it — the
+    // pre-send check above only guards against `appear_offline` already
+    // being on when this call started. If it turns on while this request is
+    // still in flight, `set_privacy_settings` can persist/apply `Offline`
+    // first and then have this now-stale request land last, overwriting
+    // `sync_presence` back to whatever non-offline value it was sending.
+    // The already-sent request to the homeserver can't be un-sent, but the
+    // sync loop's *next* report is what actually matters for staying
+    // hidden — skipping this write leaves `sync_presence` at whatever
+    // `set_privacy_settings` (or a still-earlier winning call) already set,
+    // instead of regressing it.
+    if !presence_update_allowed(
+        presence,
+        super::privacy_settings::current_settings(&app, &state)
+            .await
+            .appear_offline,
+    ) {
+        return Ok(());
+    }
     *state
         .sync_presence
         .lock()

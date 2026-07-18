@@ -114,12 +114,27 @@ export function useSetPrivacySettings() {
       // hidden while they were still being sent. Snapshot the previous
       // value here so `onError` can restore it.
       //
-      // Deliberately synchronous (not `async`, no awaited
-      // `cancelQueries` before the write) — `usePatchPrivacySettings`'s own
-      // doc comment depends on this write landing before the *next*
+      // Deliberately synchronous (not `async`) — `usePatchPrivacySettings`'s
+      // own doc comment depends on this write landing before the *next*
       // synchronous `fireEvent`/click in the same tick can read the cache,
-      // for back-to-back toggles. An awaited `cancelQueries` first would
-      // push this write a microtask later, reopening that exact race.
+      // for back-to-back toggles. `cancelQueries` below is fire-and-forget
+      // (its own promise isn't awaited) rather than gating the write behind
+      // it — `QueryClient.cancelQueries` calls each matching query's own
+      // `.cancel()` synchronously before ever returning a promise (only the
+      // *settlement* of those cancellations is async), so the abort signal
+      // for an in-flight refetch is already sent by the time `setQueryData`
+      // runs on the next line; awaiting it first would only add a
+      // needless microtask delay, reopening the exact race this stays
+      // synchronous to avoid.
+      //
+      // Review fix: without this, a refetch already in flight when this
+      // mutation starts (e.g. from an earlier `invalidateQueries`, or a
+      // window-focus refetch) could resolve *after* this optimistic write
+      // and silently overwrite it with the older persisted snapshot —
+      // exactly the same class of race `onSettled`'s own latest-mutation
+      // guard handles for a refetch triggered *after* this mutation, just
+      // for one already running *before* it.
+      void queryClient.cancelQueries({ queryKey: PRIVACY_SETTINGS_QUERY_KEY });
       const previous = queryClient.getQueryData<PrivacySettings>(PRIVACY_SETTINGS_QUERY_KEY);
       queryClient.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, settings);
       const mutationId = ++latestPrivacyMutationId;

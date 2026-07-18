@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { AvatarBadge } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { PresenceStateDto } from "@/lib/matrix";
@@ -33,6 +34,33 @@ export function formatLastActiveAgo(lastActiveAgoMs: number): string {
   return `Active ${days}d ago`;
 }
 
+/**
+ * Anchors a `last_active_ago_ms` snapshot (relative to whenever the
+ * `PresenceUpdate` that carried it arrived) to an absolute point in time,
+ * so the label stays accurate at whenever it's actually *rendered* — not
+ * frozen at however long ago the update happened to land.
+ *
+ * Review fix: without this, `formatLastActiveAgo` was called directly on
+ * the raw prop every render, which is only ever the correct elapsed time
+ * at the exact instant the update arrived. A DM header/list row that stays
+ * mounted without a further presence event (no re-render to recompute
+ * anything) could keep showing "Active 5m ago" for hours. Re-anchoring
+ * only when `lastActiveAgoMs` itself changes (a genuinely new update, not
+ * just an unrelated parent re-render) means every render after that reads
+ * `Date.now()` fresh against a fixed point in time instead.
+ */
+function useAnchoredLastActiveAgoMs(lastActiveAgoMs: number | null | undefined): number | null {
+  const anchorRef = useRef<{ source: number; at: number } | null>(null);
+  if (lastActiveAgoMs == null) {
+    anchorRef.current = null;
+    return null;
+  }
+  if (anchorRef.current === null || anchorRef.current.source !== lastActiveAgoMs) {
+    anchorRef.current = { source: lastActiveAgoMs, at: Date.now() - lastActiveAgoMs };
+  }
+  return Date.now() - anchorRef.current.at;
+}
+
 interface PresenceDotProps {
   presence: PresenceStateDto | null | undefined;
   /** Custom presence status message (e.g. "Making cupcakes"), from `PresenceUpdate.status_msg`. */
@@ -64,12 +92,18 @@ export function PresenceDot({ presence, statusMsg, lastActiveAgoMs, className }:
   // call sites (`ChatShell`, `RoomListItem`) pass these fields unconditionally,
   // so gating has to happen here, not at each caller.
   const detailEnabled = useFlag("presence_privacy_controls");
+  // Called unconditionally, before the early `return null` below, per the
+  // rules of hooks — the anchor itself is cheap to maintain even when
+  // there's no `presence` to render yet.
+  const anchoredLastActiveAgoMs = useAnchoredLastActiveAgoMs(lastActiveAgoMs);
   if (!presence) return null;
 
   const label = PRESENCE_LABELS[presence];
   const tooltipLines = [
     detailEnabled && statusMsg ? `${label} — ${statusMsg}` : label,
-    detailEnabled && lastActiveAgoMs != null ? formatLastActiveAgo(lastActiveAgoMs) : null,
+    detailEnabled && anchoredLastActiveAgoMs != null
+      ? formatLastActiveAgo(anchoredLastActiveAgoMs)
+      : null,
   ].filter((line): line is string => line != null);
 
   const dot = (

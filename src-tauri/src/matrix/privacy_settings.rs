@@ -184,9 +184,21 @@ pub async fn set_privacy_settings(
     settings: PrivacySettings,
 ) -> Result<(), String> {
     let account_key = account_key_for(&state).await?;
-    let _guard = PRIVACY_PREFS_LOCK.lock().await;
-    let previous = load_settings(&app, &account_key)?;
-    save_settings(&app, &account_key, &settings)?;
+    // Review fix (P2): the lock previously stayed held through the
+    // best-effort presence push below too — while held, every other
+    // `PRIVACY_PREFS_LOCK` caller (`current_settings`, read by
+    // `send_read_receipt`/`send_typing`/`set_presence` on their own hot
+    // paths) blocks behind that same network request. A slow/hanging
+    // presence endpoint would then stall ordinary message actions, not
+    // just this command. Scoped so the lock only covers the local
+    // load/save/transition-calculation, and is released before any
+    // Matrix I/O.
+    let previous = {
+        let _guard = PRIVACY_PREFS_LOCK.lock().await;
+        let previous = load_settings(&app, &account_key)?;
+        save_settings(&app, &account_key, &settings)?;
+        previous
+    };
 
     if let Some(presence) = appear_offline_transition(&previous, &settings) {
         let client = state.require_client().await?;

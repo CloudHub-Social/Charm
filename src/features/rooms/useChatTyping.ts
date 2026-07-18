@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { onTypingUpdate, sendTyping } from "@/lib/matrix";
 import { logAndIgnore } from "@/lib/logAndIgnore";
+import { usePrivacySettings } from "@/features/settings/usePrivacySettings";
 
 /** How often `sendTyping(true)` is re-sent while the user keeps typing, in ms. */
 const TYPING_REFRESH_MS = 4000;
@@ -98,6 +99,25 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
     lastTypingSentAt.current = now;
     sendTyping(roomId, true).catch(logAndIgnore);
   }
+
+  // Review fix: `send_typing`'s own Rust enforcement (Spec 40) only
+  // suppresses *future* typing sends once `hide_typing` is on — it can't
+  // retroactively withdraw an `m.typing: true` notice already sent to
+  // other room members before the toggle flipped. Without this, other
+  // members keep seeing "is typing…" until the notice's own server
+  // timeout, or until the composer blurs/the room changes, even though the
+  // user just explicitly asked to hide it. `sendTyping(roomId, false)` is
+  // documented as always going through (harmless if nothing was actually
+  // pending), so this fires unconditionally on the toggle rather than
+  // tracking whether a notice is actually outstanding.
+  const hideTyping = usePrivacySettings().data?.hide_typing ?? false;
+  const wasHidingTyping = useRef(hideTyping);
+  useEffect(() => {
+    if (hideTyping && !wasHidingTyping.current && roomId) {
+      sendTyping(roomId, false).catch(logAndIgnore);
+    }
+    wasHidingTyping.current = hideTyping;
+  }, [hideTyping, roomId]);
 
   function stopTyping() {
     if (roomId) sendTyping(roomId, false).catch(logAndIgnore);

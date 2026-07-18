@@ -69,6 +69,12 @@ const listRooms = vi.fn().mockResolvedValue([]);
 const runCommand = vi.fn().mockResolvedValue({ status: "success" });
 const openUrl = vi.fn().mockResolvedValue(undefined);
 const clipboardWriteText = vi.fn().mockResolvedValue(undefined);
+const getPrivacySettings = vi.fn().mockResolvedValue({
+  hide_read_receipts: false,
+  hide_typing: false,
+  appear_offline: false,
+  idle_timeout_minutes: null,
+});
 
 let timelineUpdateCallback: ((update: RoomTimelineUpdate) => void) | undefined;
 let receiptsCallback: ((update: ReceiptUpdate) => void) | undefined;
@@ -219,6 +225,11 @@ vi.mock("@/lib/matrix", () => ({
   // this test file doesn't mock.
   getRoomDetails: vi.fn().mockResolvedValue({ room_id: "!general:localhost", is_encrypted: true }),
   getUrlPreview: vi.fn(),
+  // `useChatTyping` reads this (Spec 40 review fix: withdraws an
+  // already-sent typing notice when hide_typing flips on) — default keeps
+  // existing typing-indicator tests unaffected; overridden where the fix
+  // itself is exercised.
+  getPrivacySettings: (...args: unknown[]) => getPrivacySettings(...args),
 }));
 
 // Composer's own rich-text/TipTap behavior (formatting, autocomplete,
@@ -347,6 +358,12 @@ describe("ChatShell", () => {
     discardFailedMessage.mockReset().mockResolvedValue(true);
     markRoomRead.mockReset().mockResolvedValue(undefined);
     sendTyping.mockReset().mockResolvedValue(undefined);
+    getPrivacySettings.mockReset().mockResolvedValue({
+      hide_read_receipts: false,
+      hide_typing: false,
+      appear_offline: false,
+      idle_timeout_minutes: null,
+    });
     sendAttachment.mockReset().mockResolvedValue(undefined);
     openFileDialog.mockReset();
     openUrl.mockReset().mockResolvedValue(undefined);

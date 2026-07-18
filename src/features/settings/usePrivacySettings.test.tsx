@@ -221,4 +221,62 @@ describe("useSetPrivacySettings", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(updated);
   });
+
+  it("does not let an already-in-flight refetch overwrite a newer optimistic write (review fix)", async () => {
+    // Review fix: a refetch already running when a mutation starts (e.g.
+    // from an earlier invalidation, or a window-focus refetch) used to be
+    // able to resolve *after* this mutation's optimistic write and
+    // silently clobber it with the older persisted snapshot. onMutate now
+    // cancels any in-flight fetch for this key before writing.
+    //
+    // Deliberately no mounted `usePrivacySettings()` observer here: with
+    // one active, onSettled's own (later, legitimate) `invalidateQueries`
+    // call would trigger a second real refetch that converges back to the
+    // correct value regardless of whether the race in the middle was
+    // actually guarded against — masking exactly the bug this test exists
+    // to catch. `fetchQuery` still creates a real, cancellable in-flight
+    // query without an observer, and `invalidateQueries`'s default
+    // `refetchType: 'active'` skips a query with none.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
+
+    let resolveStaleFetch: ((settings: PrivacySettings) => void) | undefined;
+    getPrivacySettings.mockReturnValue(
+      new Promise<PrivacySettings>((resolve) => {
+        resolveStaleFetch = resolve;
+      }),
+    );
+    const staleFetch = client.fetchQuery({
+      queryKey: PRIVACY_SETTINGS_QUERY_KEY,
+      queryFn: getPrivacySettings,
+    });
+    await waitFor(() =>
+      expect(client.getQueryState(PRIVACY_SETTINGS_QUERY_KEY)?.fetchStatus).toBe("fetching"),
+    );
+
+    // The mutation's own IPC call deliberately never resolves within this
+    // test — isolates the moment right after `onMutate` runs (optimistic
+    // write + cancel) from `onSuccess`/`onSettled`'s own later writes,
+    // which would otherwise unconditionally re-apply `updated` regardless
+    // of whether the race in between was actually guarded against, masking
+    // the bug this test exists to catch.
+    setPrivacySettings.mockReturnValue(new Promise(() => {}));
+    const { result: mutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const updated: PrivacySettings = { ...DEFAULT_SETTINGS, hide_typing: true };
+    mutation.current.mutate(updated);
+    await waitFor(() => expect(mutation.current.isPending).toBe(true));
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(updated);
+
+    // The stale in-flight fetch finally resolves with the *old* snapshot —
+    // must be discarded (a `CancelledError`) rather than clobbering the
+    // optimistic write that's still the only thing in the cache right now.
+    resolveStaleFetch?.(DEFAULT_SETTINGS);
+    await staleFetch.catch(() => undefined);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(updated);
+  });
 });
