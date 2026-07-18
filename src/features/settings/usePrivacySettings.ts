@@ -143,7 +143,24 @@ export function useSetPrivacySettings() {
     // last-known-good *client* snapshot, but this is what confirms it
     // still matches what Rust actually has on disk (e.g. if the IPC call
     // itself succeeded but this hook never got the response).
-    onSettled: () => {
+    //
+    // Review fix: gated on the same "am I still the latest mutation" check
+    // as `onError`/`onSuccess` above — writes are serialized
+    // (`serializedSetPrivacySettings`), so with two toggles queued in quick
+    // succession the *older* one's IPC call still settles first. Refetching
+    // unconditionally here raced the newer mutation's own optimistic write:
+    // the older mutation's `onSettled` could invalidate and refetch while
+    // the newer write was still queued (not yet applied on the Rust side),
+    // pulling back a first-only persisted snapshot that overwrote the
+    // already-cached combined snapshot. A third toggle before the second
+    // settled would then read that stale cache in
+    // `usePatchPrivacySettings` and send a full snapshot that silently
+    // dropped the second change. Only the latest mutation's settlement gets
+    // to trigger a refetch — an older one settling after a newer optimistic
+    // write now leaves that newer write alone, matching `onError`/
+    // `onSuccess`.
+    onSettled: (_data, _error, _settings, context) => {
+      if (context?.mutationId !== latestPrivacyMutationId) return;
       void queryClient.invalidateQueries({ queryKey: PRIVACY_SETTINGS_QUERY_KEY });
     },
   });

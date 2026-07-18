@@ -155,6 +155,57 @@ describe("useSetPrivacySettings", () => {
     expect(setPrivacySettings).toHaveBeenCalledTimes(1);
   });
 
+  it("does not refetch on an older mutation's settlement once a newer one is queued (review fix)", async () => {
+    // Review fix: writes are serialized, so the *older* of two queued
+    // mutations settles first. Its `onSettled` used to unconditionally
+    // invalidate/refetch — that refetch could pull back a first-only
+    // persisted snapshot and overwrite the newer mutation's already-cached
+    // optimistic (combined) snapshot before the newer write had even
+    // reached Rust. Only the latest mutation's settlement should trigger
+    // a refetch.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
+    getPrivacySettings.mockResolvedValue(DEFAULT_SETTINGS);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+
+    let resolveFirst: (() => void) | undefined;
+    let resolveSecond: (() => void) | undefined;
+    setPrivacySettings.mockImplementation((settings: PrivacySettings) => {
+      if (settings.hide_typing) {
+        return new Promise<void>((resolve) => {
+          resolveFirst = resolve;
+        });
+      }
+      return new Promise<void>((resolve) => {
+        resolveSecond = resolve;
+      });
+    });
+
+    const { result: first } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    const { result: second } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+
+    first.current.mutate({ ...DEFAULT_SETTINGS, hide_typing: true });
+    await waitFor(() => expect(setPrivacySettings).toHaveBeenCalledTimes(1));
+    second.current.mutate({ ...DEFAULT_SETTINGS, appear_offline: true });
+    await waitFor(() => expect(second.current.isPending).toBe(true));
+
+    // The first (older, queued-behind) mutation settles first — its
+    // onSettled must not refetch, since a newer mutation is already
+    // in flight/cached.
+    resolveFirst?.();
+    await waitFor(() => expect(first.current.isSuccess).toBe(true));
+    expect(invalidateSpy).not.toHaveBeenCalled();
+
+    // The second (latest) mutation settling should trigger the refetch.
+    resolveSecond?.();
+    await waitFor(() => expect(second.current.isSuccess).toBe(true));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(1));
+  });
+
   it("keeps the optimistic value once the mutation succeeds", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, DEFAULT_SETTINGS);
