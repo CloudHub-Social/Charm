@@ -482,7 +482,21 @@ pub(crate) fn spawn_sync_task(app: AppHandle, client: Client) {
         let _ = client.event_cache().subscribe();
 
         // Establish initial sync state before entering the long-running loop below.
-        let initial_response = match client.sync_once(SyncSettings::default()).await {
+        //
+        // Review fix: this used to call `sync_once` with a bare
+        // `SyncSettings::default()`, which has no explicit `set_presence`
+        // of its own — per the `/sync` endpoint's spec, an absent
+        // `set_presence` defaults to reporting the account online (see the
+        // steady-state loop's own comment below), so even after the
+        // one-shot `set_presence_impl` call above had already applied
+        // `appear_offline`, this very next request could still reset it
+        // back to online for the homeserver's purposes. Explicitly passing
+        // `initial_presence` here closes that gap the same way the
+        // steady-state loop already does for every later `sync_once` call.
+        let initial_response = match client
+            .sync_once(SyncSettings::default().set_presence(initial_presence.into()))
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let _ = app.emit(

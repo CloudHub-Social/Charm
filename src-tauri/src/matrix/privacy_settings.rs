@@ -178,14 +178,24 @@ pub async fn set_privacy_settings(
 
     if let Some(presence) = appear_offline_transition(&previous, &settings) {
         let client = state.require_client().await?;
+        // Review fix: `sync_presence` used to only get updated when this
+        // one-shot push actually succeeded — a transient failure (network
+        // blip, homeserver hiccup) left it holding the *previous* value, so
+        // every later successful `sync_once` in the steady-state loop kept
+        // resending that stale presence indefinitely, with the persisted
+        // setting and the UI both already showing the new (unapplied)
+        // state. Updating it unconditionally, before attempting the
+        // best-effort immediate push, means a failed push here still gets
+        // picked up and retried by the sync loop's own next iteration
+        // instead of silently sticking forever.
+        *state
+            .sync_presence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = presence;
         // Best-effort: a homeserver that disables presence shouldn't block
-        // saving the rest of the privacy preferences.
-        if set_presence_impl(&client, presence, None).await.is_ok() {
-            *state
-                .sync_presence
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = presence;
-        }
+        // saving the rest of the privacy preferences, and the update above
+        // means a failure here isn't the last word on this transition.
+        let _ = set_presence_impl(&client, presence, None).await;
     }
 
     Ok(())
