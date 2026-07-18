@@ -166,7 +166,18 @@ export function PresenceDot({
   // Called unconditionally, before the early `return null` below, per the
   // rules of hooks — the anchor itself is cheap to maintain even when
   // there's no `presence` to render yet.
-  const anchoredLastActiveAgoMs = useAnchoredLastActiveAgoMs(lastActiveAgoMs, updateToken);
+  //
+  // Review fix (P3): passes `null` (not the raw `lastActiveAgoMs`) when
+  // `detailEnabled` is off — the hook starts a 60s re-render interval
+  // whenever it's given a non-null value (see its own comment), and with
+  // the flag off (the default rollout state) every DM row in the
+  // non-virtualized room list would otherwise schedule that interval for
+  // data that's never actually displayed, since the detail lines below are
+  // already gated on `detailEnabled` too.
+  const anchoredLastActiveAgoMs = useAnchoredLastActiveAgoMs(
+    detailEnabled ? lastActiveAgoMs : null,
+    updateToken,
+  );
   if (!presence) return null;
 
   const label = PRESENCE_LABELS[presence];

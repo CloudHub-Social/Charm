@@ -134,6 +134,22 @@ describe("PresenceDot", () => {
       expect(screen.getByText(/Active just now/)).toBeInTheDocument();
     });
 
+    it("does not start the last-active timer when presence_privacy_controls is off (review fix)", async () => {
+      // Review fix (P3): the detail lines (status/last-active) are already
+      // gated on `detailEnabled`, but the anchor hook used to still receive
+      // the raw `lastActiveAgoMs` regardless — starting its 60s re-render
+      // interval for data that's never actually displayed. With the flag
+      // off (the default rollout state), every DM row showing last-active
+      // data would otherwise schedule that interval for nothing.
+      const { useFlag } = await import("@/featureFlags");
+      vi.mocked(useFlag).mockReturnValueOnce(false);
+      const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+
+      renderWithProviders(<PresenceDot presence="online" lastActiveAgoMs={5 * 60_000} />);
+
+      expect(setIntervalSpy).not.toHaveBeenCalled();
+    });
+
     it("ages the label on its own via a periodic timer, with no external re-render trigger", () => {
       // Review fix: re-anchoring alone only recomputes the displayed label
       // when *something else* causes a re-render. A long-mounted component

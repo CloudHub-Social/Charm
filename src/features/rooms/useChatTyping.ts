@@ -34,6 +34,18 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   const [typingUserIds, setTypingUserIds] = useState<string[]>([]);
   const lastTypingSentAt = useRef(0);
   const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Review fix (P2): `handleTypingInput` used to send `typing: true` on
+  // every keystroke regardless of this — the withdrawal effect below only
+  // fires once, right when `hideTyping` flips on, but composer input can
+  // keep arriving afterward (especially while a privacy write is still
+  // queued or hasn't reached Rust yet) and would send a fresh public
+  // typing notice moments after the user asked to hide it. Rust's own
+  // `send_typing` enforcement does suppress it server-side once the
+  // *persisted* setting has actually landed, but the optimistic window
+  // between the toggle and that write settling is exactly what this
+  // guards against — the UI already shows typing hidden, so it shouldn't
+  // ask to send it at all in the meantime.
+  const hideTyping = usePrivacySettings().data?.hide_typing ?? false;
 
   useEffect(() => {
     // Clear on every room change, not just to `null` — otherwise switching
@@ -93,7 +105,7 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   }, [roomId]);
 
   function handleTypingInput() {
-    if (!roomId) return;
+    if (!roomId || hideTyping) return;
     const now = Date.now();
     if (now - lastTypingSentAt.current < TYPING_REFRESH_MS) return;
     lastTypingSentAt.current = now;
@@ -110,7 +122,6 @@ export function useChatTyping(roomId: string | null, currentUserId: string) {
   // documented as always going through (harmless if nothing was actually
   // pending), so this fires unconditionally on the toggle rather than
   // tracking whether a notice is actually outstanding.
-  const hideTyping = usePrivacySettings().data?.hide_typing ?? false;
   const wasHidingTyping = useRef(hideTyping);
   useEffect(() => {
     if (hideTyping && !wasHidingTyping.current && roomId) {
