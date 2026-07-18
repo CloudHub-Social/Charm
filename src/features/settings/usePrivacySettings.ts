@@ -108,9 +108,25 @@ export function usePrivacySettings(enabled = true) {
     // Every successful fetch is real, server-confirmed state — keeps
     // `lastConfirmedPrivacySettings` current for `useSetPrivacySettings`'s
     // `onError` rollback, not just its own mutation successes.
+    //
+    // Review fix (P2): gated on the write generation still matching the one
+    // captured when this fetch *started*, not recorded unconditionally.
+    // `resetPrivacySettingsWriteQueue` (logout/account-switch) bumps the
+    // generation and clears `lastConfirmedPrivacySettings` — but a
+    // `getPrivacySettings()` request for the outgoing account that was
+    // already in flight when that happened can still resolve afterward.
+    // Recording it unconditionally would repopulate
+    // `lastConfirmedPrivacySettings` with the *old* account's snapshot; if
+    // the new account's first privacy mutation then failed before its own
+    // fetch had confirmed anything, `onError` would roll its cache back to
+    // that stale old-account snapshot, and a later toggle could persist the
+    // whole stale thing.
     queryFn: async () => {
+      const generation = privacySettingsWriteGeneration;
       const settings = await getPrivacySettings();
-      lastConfirmedPrivacySettings = settings;
+      if (generation === privacySettingsWriteGeneration) {
+        lastConfirmedPrivacySettings = settings;
+      }
       return settings;
     },
     enabled: enabled && !isWebBuild(),

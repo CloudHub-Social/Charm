@@ -487,4 +487,59 @@ describe("useSetPrivacySettings", () => {
 
     expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(DEFAULT_SETTINGS);
   });
+
+  it("does not record a stale account's in-flight fetch as confirmed after logout (review fix)", async () => {
+    // Review fix (P2): a getPrivacySettings() request for the outgoing
+    // account that was already in flight when logout/reset happened can
+    // still resolve afterward. Recording it unconditionally would
+    // repopulate lastConfirmedPrivacySettings with the old account's
+    // snapshot; if the new account's first mutation then failed before its
+    // own fetch had confirmed anything, onError would roll its cache back
+    // to that stale old-account data.
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const oldAccountSettings: PrivacySettings = { ...DEFAULT_SETTINGS, hide_typing: true };
+    let resolveOldAccountFetch: ((settings: PrivacySettings) => void) | undefined;
+    getPrivacySettings.mockReturnValue(
+      new Promise<PrivacySettings>((resolve) => {
+        resolveOldAccountFetch = resolve;
+      }),
+    );
+    const { unmount: unmountOldAccountQuery } = renderHook(() => usePrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(getPrivacySettings).toHaveBeenCalled());
+
+    // Logout happens while the old account's fetch is still in flight — the
+    // Settings screen (and so this query's own component) unmounts, the
+    // same as a real account switch, before the stale fetch's promise ever
+    // settles.
+    unmountOldAccountQuery();
+    resetPrivacySettingsWriteQueue();
+    // The new account's row starts with its own seeded snapshot in the
+    // cache (e.g. from a synchronous default before its own fetch
+    // resolves) — this is what a rollback should fall back to, not the
+    // stale old-account data below.
+    const newAccountSeed: PrivacySettings = { ...DEFAULT_SETTINGS, hide_read_receipts: true };
+    client.setQueryData(PRIVACY_SETTINGS_QUERY_KEY, newAccountSeed);
+
+    // The stale in-flight fetch for the *old* account finally resolves,
+    // with no mounted observer left to receive it — only
+    // `lastConfirmedPrivacySettings`'s own module-level side effect is at
+    // stake here, not React Query's normal cache-write path (which a real
+    // unmounted query no longer participates in the same way).
+    resolveOldAccountFetch?.(oldAccountSettings);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A genuinely failing mutation for the new account must roll back to
+    // its own seeded snapshot, not the stale old-account fetch above.
+    setPrivacySettings.mockRejectedValueOnce(new Error("disk full"));
+    const { result: newAccountMutation } = renderHook(() => useSetPrivacySettings(), {
+      wrapper: makeWrapper(client),
+    });
+    newAccountMutation.current.mutate({ ...newAccountSeed, appear_offline: true });
+    await waitFor(() => expect(newAccountMutation.current.isError).toBe(true));
+
+    expect(client.getQueryData(PRIVACY_SETTINGS_QUERY_KEY)).toEqual(newAccountSeed);
+  });
 });
