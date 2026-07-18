@@ -435,7 +435,16 @@ export function RoomsScreen({
   // time this effect runs (refs are set during commit, before effects), so
   // stashing the target here and scrolling once the panel has actually
   // closed reaches a real, mounted `ChatShell` instead of a stale ref.
-  const pendingMobileJumpEventIdRef = useRef<string | null>(null);
+  //
+  // Review fix: carries the target `roomId` alongside the event id, not
+  // just the event id alone — if the user quickly switches to a different
+  // room after tapping a pinned message but before the panel-close effect
+  // below runs, `ChatShell` remounts for the *new* room, and
+  // `scrollToMessage` would silently fail to find the old room's event id
+  // in this room's message list. Stored and checked against `activeRoom` so
+  // a stale target for an already-abandoned room is dropped instead of
+  // firing into the wrong room.
+  const pendingMobileJumpRef = useRef<{ roomId: string; eventId: string } | null>(null);
 
   // The members drawer is desktop-only (mobile has no room besides the
   // active one to show it alongside — see `AppShell`'s non-goals). Reset
@@ -463,16 +472,26 @@ export function RoomsScreen({
     setPinnedMessagesDrawerOpen,
   ]);
 
-  // See `pendingMobileJumpEventIdRef`'s own doc comment — runs once the
+  // See `pendingMobileJumpRef`'s own doc comment — runs once the
   // pinned-messages panel has actually closed (remounting `ChatShell`) and
   // there's a jump this same close was for.
   useEffect(() => {
     if (pinnedMessagesDrawerOpen) return;
-    const eventId = pendingMobileJumpEventIdRef.current;
-    if (eventId === null) return;
-    pendingMobileJumpEventIdRef.current = null;
-    chatShellRef.current?.scrollToMessage(eventId);
-  }, [pinnedMessagesDrawerOpen]);
+    const pending = pendingMobileJumpRef.current;
+    if (pending === null) return;
+    pendingMobileJumpRef.current = null;
+    if (pending.roomId !== activeRoom?.room_id) return;
+    chatShellRef.current?.scrollToMessage(pending.eventId);
+  }, [pinnedMessagesDrawerOpen, activeRoom?.room_id]);
+
+  // Review fix: a pending mobile jump is only ever valid for the room it
+  // was requested from — if the user switches rooms before the effect
+  // above gets to run (e.g. via `RoomList` while the pinned panel is still
+  // closing), drop it here rather than let a stale event id fire against
+  // whatever room the user has since navigated to.
+  useEffect(() => {
+    pendingMobileJumpRef.current = null;
+  }, [activeRoom?.room_id]);
 
   return (
     <>
@@ -530,7 +549,7 @@ export function RoomsScreen({
               onClose={() => setPinnedMessagesDrawerOpen(false)}
               onJumpToMessage={(eventId) => {
                 if (layout === "mobile") {
-                  pendingMobileJumpEventIdRef.current = eventId;
+                  pendingMobileJumpRef.current = { roomId: activeRoom.room_id, eventId };
                   setPinnedMessagesDrawerOpen(false);
                   return;
                 }

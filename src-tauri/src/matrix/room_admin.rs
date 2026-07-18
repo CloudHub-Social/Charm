@@ -758,13 +758,27 @@ fn disambiguated_display_name(
 }
 
 /// Resolves the current body of `event_id` after any `m.replace` edits, or
-/// `None` if there is no edit (or the lookup fails) — the caller falls back
-/// to the original event's own body in that case. Fetches the event's
-/// `m.replace` relations directly (network, falling back to a cached copy on
-/// a later call) rather than depending on the main timeline's own
+/// `None` if there is no (valid) edit (or the lookup fails) — the caller
+/// falls back to the original event's own body in that case. Fetches the
+/// event's `m.replace` relations directly (network, falling back to a cached
+/// copy on a later call) rather than depending on the main timeline's own
 /// edit-collapsing, since a pinned event routinely isn't part of the
 /// currently-loaded timeline window at all.
-async fn latest_edit_body(room: &Room, event_id: &matrix_sdk::ruma::EventId) -> Option<String> {
+///
+/// Review fix: a replacement is only valid per the spec
+/// (https://spec.matrix.org/v1.11/client-server-api/#validity-of-replacement-events)
+/// if its sender matches `original_sender` — anyone else in the room can
+/// send an `m.replace` event targeting someone else's message, and without
+/// this check the pinned panel would render that attacker-supplied
+/// `m.new_content` as if the original sender had edited their own pinned
+/// message. Fetches a small batch (not just the single most recent
+/// relation) and skips any whose sender doesn't match, so one invalid edit
+/// sent after a legitimate one can't hide it.
+async fn latest_edit_body(
+    room: &Room,
+    event_id: &matrix_sdk::ruma::EventId,
+    original_sender: &matrix_sdk::ruma::UserId,
+) -> Option<String> {
     use matrix_sdk::room::{IncludeRelations, RelationsOptions};
     use matrix_sdk::ruma::events::relation::RelationType;
     use matrix_sdk::ruma::events::room::message::Relation;
@@ -778,24 +792,31 @@ async fn latest_edit_body(room: &Room, event_id: &matrix_sdk::ruma::EventId) -> 
             RelationsOptions {
                 dir: matrix_sdk::ruma::api::Direction::Backward,
                 include_relations: IncludeRelations::RelationsOfType(RelationType::Replacement),
-                limit: matrix_sdk::ruma::UInt::new(1),
+                limit: matrix_sdk::ruma::UInt::new(20),
                 ..Default::default()
             },
         )
         .await
         .ok()?;
-    let latest_edit = relations.chunk.first()?;
-    let raw_edit = latest_edit.raw().deserialize().ok()?;
-    let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
-        SyncMessageLikeEvent::Original(edit),
-    )) = raw_edit
-    else {
-        return None;
-    };
-    let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
-        return None;
-    };
-    Some(replacement.new_content.msgtype.body().to_string())
+    for candidate in &relations.chunk {
+        let Ok(raw_edit) = candidate.raw().deserialize() else {
+            continue;
+        };
+        let AnySyncTimelineEvent::MessageLike(AnySyncMessageLikeEvent::RoomMessage(
+            SyncMessageLikeEvent::Original(edit),
+        )) = raw_edit
+        else {
+            continue;
+        };
+        if edit.sender != *original_sender {
+            continue;
+        }
+        let Some(Relation::Replacement(replacement)) = &edit.content.relates_to else {
+            continue;
+        };
+        return Some(replacement.new_content.msgtype.body().to_string());
+    }
+    None
 }
 
 /// Core logic behind [`get_pinned_messages`].
@@ -853,7 +874,7 @@ pub async fn get_pinned_messages_impl(
                     // any) the same way the client-server API's own
                     // aggregation endpoint would, falling back to the
                     // original body if there is no edit or the lookup fails.
-                    let body = latest_edit_body(&room, &event_id)
+                    let body = latest_edit_body(&room, &event_id, &sender)
                         .await
                         .unwrap_or_else(|| msg.content.body().to_string());
                     (body, false)
@@ -1457,6 +1478,83 @@ mod tests {
 
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].preview, "edited body");
+    }
+
+    /// Review fix regression test: a replacement is only valid if its
+    /// sender matches the original event's sender
+    /// (https://spec.matrix.org/v1.11/client-server-api/#validity-of-replacement-events).
+    /// An `m.replace` from a *different* sender must be ignored — otherwise
+    /// any room member could inject arbitrary text into someone else's
+    /// pinned message preview.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_ignores_a_replacement_from_a_different_sender() {
+        use matrix_sdk_test::{JoinedRoomBuilder, ALICE, BOB};
+
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        server.sync_joined_room(&client, room_id).await;
+
+        let original = matrix_sdk::ruma::owned_event_id!("$original");
+        let forged_edit = matrix_sdk::ruma::owned_event_id!("$forged");
+        let factory = matrix_sdk_test::event_factory::EventFactory::new()
+            .room(room_id)
+            .sender(&ALICE);
+        let room_builder = JoinedRoomBuilder::new(room_id)
+            .add_state_event(factory.room_pinned_events(vec![original.clone()]));
+        server.sync_room(&client, room_builder).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v3/rooms/{room_id}/event/{original}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "type": "m.room.message",
+                    "event_id": original,
+                    "room_id": room_id,
+                    "sender": *ALICE,
+                    "origin_server_ts": 1_700_000_000_000u64,
+                    "content": { "msgtype": "m.text", "body": "original body" },
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/_matrix/client/v1/rooms/{room_id}/relations/{original}/m.replace"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "chunk": [{
+                        "type": "m.room.message",
+                        "event_id": forged_edit,
+                        "room_id": room_id,
+                        // Different sender than the original event — an invalid
+                        // replacement per the spec.
+                        "sender": *BOB,
+                        "origin_server_ts": 1_700_000_001_000u64,
+                        "content": {
+                            "msgtype": "m.text",
+                            "body": "* attacker text",
+                            "m.new_content": { "msgtype": "m.text", "body": "attacker text" },
+                            "m.relates_to": { "rel_type": "m.replace", "event_id": original },
+                        },
+                    }],
+                })),
+            )
+            .mount(server.server())
+            .await;
+
+        let summaries = get_pinned_messages_impl(&client, room_id.as_str())
+            .await
+            .expect("pinned messages should resolve");
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].preview, "original body");
     }
 
     /// Review fix regression test: a sender whose display name is shared
