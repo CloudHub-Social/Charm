@@ -874,8 +874,21 @@ pub async fn get_pinned_messages_impl(
 ) -> Result<Vec<PinnedMessageSummary>, String> {
     let room = require_room(client, room_id)?;
     let parsed_room_id = RoomId::parse(room_id).map_err(|e| e.to_string())?;
-    let pinned_event_ids =
-        pinned_event_cache_get_or_seed(state, client, &parsed_room_id, room_id).await?;
+    // Review fix (HIGH): `pinned_event_locks` serializes *every* read/write
+    // of `pinned_event_cache` — see that field's own doc comment — but this
+    // read path called `pinned_event_cache_get_or_seed` without holding it.
+    // A concurrent cache-miss seed here racing a `pin_event`/`unpin_event`
+    // write could insert a stale (pre-pin) list into the cache *after* that
+    // write's own fresher insert, silently reverting a just-completed pin.
+    // Held only around the seed/read below, not the slower per-event
+    // fetch loop after it — unlike `pin_event`/`unpin_event`, nothing here
+    // writes back to the cache, so there's nothing later in this function
+    // that needs the lock's protection.
+    let pinned_event_ids = {
+        let lock = state.pinned_event_lock(&parsed_room_id).await;
+        let _guard = lock.lock().await;
+        pinned_event_cache_get_or_seed(state, client, &parsed_room_id, room_id).await?
+    };
 
     let mut summaries = Vec::with_capacity(pinned_event_ids.len());
     for event_id in pinned_event_ids {
@@ -1734,6 +1747,71 @@ mod tests {
             .await
             .expect("task should not panic")
             .expect("seeding should still succeed once the delayed response lands");
+    }
+
+    /// Review fix regression test (HIGH): `get_pinned_messages_impl` must
+    /// hold the room's `pinned_event_lock` while it seeds the cache — the
+    /// same lock `pin_event`/`unpin_event` hold for their own cache reads
+    /// and writes (see `MatrixState::pinned_event_locks`'s own doc
+    /// comment). Without it, a cache-miss seed here racing a concurrent
+    /// pin/unpin could insert a stale (pre-pin) list *after* that write's
+    /// own fresher insert, silently reverting a just-completed pin.
+    /// Asserts the lock itself is actually held for the duration of the
+    /// seed by trying to acquire it directly while the seed is still
+    /// in flight — the inverse assertion of the CRITICAL test above,
+    /// which covers a different lock (`pinned_event_cache`'s own mutex)
+    /// that must specifically *not* be held across the same network await.
+    #[tokio::test]
+    async fn get_pinned_messages_impl_holds_the_room_lock_while_seeding() {
+        let room_id = matrix_sdk::ruma::room_id!("!room:example.org");
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        server.mock_room_state_encryption().plain().mount().await;
+        // No `m.room.pinned_events` state ever synced — `Room::pinned_event_ids()`
+        // reads `None`, forcing the network-fallback seed path.
+        server.sync_joined_room(&client, room_id).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path_regex(
+                r"^/_matrix/client/v3/rooms/.*/state/m\.room\.pinned_events/.*",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(2))
+                    .set_body_json(serde_json::json!({ "pinned": [] })),
+            )
+            .mount(server.server())
+            .await;
+
+        let state = std::sync::Arc::new(MatrixState::default());
+        let read_state = std::sync::Arc::clone(&state);
+        let read_client = client.clone();
+        let read_call = tokio::spawn(async move {
+            get_pinned_messages_impl(read_state.as_ref(), &read_client, room_id.as_str()).await
+        });
+        // Generous margin relative to CI/parallel-test scheduling jitter —
+        // same rationale as the CRITICAL test above.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let lock = state.pinned_event_lock(room_id).await;
+        let racing_acquire =
+            tokio::time::timeout(std::time::Duration::from_millis(500), lock.lock()).await;
+        assert!(
+            racing_acquire.is_err(),
+            "expected the room's pin lock to still be held by the in-flight seed, but it was acquired"
+        );
+
+        read_call
+            .await
+            .expect("task should not panic")
+            .expect("the read should still succeed once the delayed response lands");
+
+        // Once the seed has finished (and released the lock), it must be
+        // acquirable again promptly.
+        let _guard = tokio::time::timeout(std::time::Duration::from_millis(500), lock.lock())
+            .await
+            .expect("the room lock should be released once the seed completes");
     }
 
     #[tokio::test]

@@ -3954,6 +3954,96 @@ describe("ChatShell", () => {
     );
   });
 
+  it("retries scrollToMessage once the first page loads, for a jump requested before messages arrived (review fix)", async () => {
+    // Review fix regression test: `RoomsScreen`'s mobile pinned-message
+    // jump remounts `ChatShell` (closing the sibling panel that was
+    // occupying its slot) and calls `scrollToMessage` essentially
+    // immediately — before `useChatTimeline`'s first page has necessarily
+    // resolved. That call used to be a silent, permanent no-op since
+    // `messages` was still empty at that instant.
+    let resolveTimeline: ((page: unknown) => void) | undefined;
+    getTimelinePage.mockReturnValue(
+      new Promise((resolve) => {
+        resolveTimeline = resolve;
+      }),
+    );
+    const ref = createRef<ChatShellHandle>();
+    render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    // Requested before the first page has loaded — `messages` is still `[]`.
+    act(() => {
+      ref.current?.scrollToMessage("$2");
+    });
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveTimeline?.({
+        messages: [
+          summary({ event_id: "$1", sender: "@alice:localhost", body: "first" }),
+          summary({ event_id: "$2", sender: "@alice:localhost", body: "second" }),
+        ],
+        next_cursor: null,
+      });
+    });
+    await screen.findByText("first");
+
+    expect(virtuosoScrollToIndexMock).toHaveBeenCalledWith(
+      expect.objectContaining({ index: 1, align: "center" }),
+    );
+  });
+
+  it("drops a pending scrollToMessage retry when the room changes before it resolves (review fix)", async () => {
+    let resolveTimelineA: ((page: unknown) => void) | undefined;
+    getTimelinePage.mockImplementation((roomId: string) => {
+      if (roomId === room.room_id) {
+        return new Promise((resolve) => {
+          resolveTimelineA = resolve;
+        });
+      }
+      return Promise.resolve({
+        messages: [summary({ event_id: "$b", sender: "@alice:localhost", body: "room B msg" })],
+        next_cursor: null,
+      });
+    });
+    const ref = createRef<ChatShellHandle>();
+    const { rerender } = render(
+      <JotaiProvider store={createStore()}>
+        <ChatShell ref={ref} room={room} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+
+    act(() => {
+      ref.current?.scrollToMessage("$stale-target");
+    });
+
+    const roomB: RoomSummary = makeRoomSummary({ room_id: "!roomB:localhost", name: "Room B" });
+    rerender(
+      <JotaiProvider store={createStore()}>
+        <ChatShell ref={ref} room={roomB} currentUserId="@me:localhost" />
+      </JotaiProvider>,
+    );
+    await screen.findByText("room B msg");
+    virtuosoScrollToIndexMock.mockClear();
+
+    // Room A's timeline finally resolves — its stale pending target must
+    // not fire a scroll now that Room B is the active room.
+    await act(async () => {
+      resolveTimelineA?.({
+        messages: [
+          summary({ event_id: "$stale-target", sender: "@alice:localhost", body: "room A msg" }),
+        ],
+        next_cursor: null,
+      });
+      await Promise.resolve();
+    });
+
+    expect(virtuosoScrollToIndexMock).not.toHaveBeenCalled();
+  });
+
   it("gates the Pin action by RoomDetails.can.set_pinned_events and calls pinEvent", async () => {
     getRoomDetails.mockResolvedValue({
       room_id: room.room_id,

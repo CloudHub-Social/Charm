@@ -1,4 +1,12 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -421,15 +429,57 @@ export const ChatShell = forwardRef<ChatShellHandle, ChatShellProps>(function Ch
   // of-range number that Virtuoso's own clamping silently resolves to the
   // *last* item — every reply jump before this fix landed on the newest
   // message instead of the replied-to one.
+  // Review fix: a target requested right after this component (re)mounts
+  // for this room — e.g. `RoomsScreen`'s mobile pinned-message jump, which
+  // remounts `ChatShell` by closing the sibling panel that was previously
+  // occupying its slot — can arrive before `useChatTimeline`'s first page
+  // has loaded, when `messages` is still empty. That used to be a silent,
+  // permanent no-op with no later retry. Tagged with the room id it was
+  // requested for so a room switch before the retry fires can't scroll a
+  // now-different room to a target that was never its own.
+  const pendingScrollTargetRef = useRef<{ roomId: string; eventId: string } | null>(null);
   function handleJumpToMessage(eventId: string) {
     const index = messages.findIndex((m) => m.event_id === eventId);
-    if (index < 0) return;
+    if (index < 0) {
+      if (roomId) pendingScrollTargetRef.current = { roomId, eventId };
+      return;
+    }
+    pendingScrollTargetRef.current = null;
     virtuosoRef.current?.scrollToIndex({
       index,
       align: "center",
       behavior: "smooth",
     });
   }
+  // Retries a jump that arrived before the first page of messages had
+  // loaded — see `pendingScrollTargetRef`'s own comment. Depends on both
+  // `messages` and `loading`, not just `messages`: `Virtuoso` itself only
+  // mounts once `!loading && messages.length > 0` (below), and
+  // `useChatTimeline`'s `setMessages`/`setLoading(false)` calls land in
+  // separate promise-chain callbacks (`.then()` vs `.finally()`), which can
+  // commit separately — so the render where `messages` first populates can
+  // still have `loading` true and `Virtuoso` not yet mounted at all.
+  // Depending on `loading` too means this re-runs on that later commit
+  // instead of only the (possibly premature) one.
+  //
+  // A layout effect, not a passive `useEffect`, for the commit where both
+  // conditions are already true in one render: `virtuosoRef` is populated
+  // by `Virtuoso`'s own `useImperativeHandle` (what its mock, and the real
+  // component, use to expose that ref), which is itself built on
+  // `useLayoutEffect` — a passive effect here would run in a later phase
+  // than that child's layout effect, seeing a `null` ref.
+  useLayoutEffect(() => {
+    const pending = pendingScrollTargetRef.current;
+    if (pending === null || pending.roomId !== roomId || loading) return;
+    handleJumpToMessage(pending.eventId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when `messages`/`loading` change; `handleJumpToMessage`/`roomId` are stable enough within a room visit for this retry's purpose.
+  }, [messages, loading]);
+  // A pending target only ever applies to the room it was requested for —
+  // drop it on any room change so a later, unrelated load in a *new* room
+  // can't accidentally retry a stale target into the wrong room.
+  useEffect(() => {
+    pendingScrollTargetRef.current = null;
+  }, [roomId]);
   // Exposes the same scroll-to mechanism to `RoomsScreen`'s
   // `PinnedMessagesPanel` — see `ChatShellHandle`'s doc comment for why this
   // needs to cross a component boundary rather than being called directly.
